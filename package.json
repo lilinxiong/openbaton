@@ -1,0 +1,31 @@
+{
+  "name": "baton",
+  "version": "0.1.0",
+  "description": "Director for multi-model work. 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.",
+  "type": "module",
+  "bin": {
+    "baton": "bin/baton.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "baton": "node bin/baton.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    "SKILL.md",
+    "README.md",
+    "PRODUCT.md"
+  ],
+  "keywords": [
+    "baton",
+    "director",
+    "openspec",
+    "multi-model"
+  ],
+  "license": "MIT"
+}

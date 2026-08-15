@@ -1,0 +1,17 @@
+# baton director config
+# Cards are the only routing input. No default model. No parent-model inherit.
+
+[director]
+# Concurrent workers. Beyond this, queue — never refuse a logical spawn.
+max_concurrent = 4
+# Children cannot spawn children. This is a flat tree, not a count cap.
+max_depth = 1
+
+# Example cards — replace with models you actually have.
+[[models]]
+id = "example-coder"
+strengths = "write code, implement, fix tests, grind on a repo"
+
+[[models]]
+id = "example-explorer"
+strengths = "explore, research, short plans, do not think forever"

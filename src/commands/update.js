@@ -1,0 +1,39 @@
+import fs from "node:fs";
+import path from "node:path";
+import { packageRoot, skillPath, configPath, batonDir } from "../lib/paths.js";
+import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
+import { parseToml } from "../lib/toml.js";
+
+/**
+ * Refresh baton-owned files. Never clobber user model cards.
+ * --force only replaces SKILL.md, not config.toml cards.
+ */
+export function updateProject(cwd, { forceSkill = true } = {}) {
+  fs.mkdirSync(batonDir(cwd), { recursive: true });
+  const tmplRoot = packageRoot();
+  const actions = [];
+
+  const destSkill = skillPath(cwd);
+  const skillTmpl = path.join(tmplRoot, "SKILL.md");
+  if (!fs.existsSync(destSkill) || forceSkill) {
+    fs.copyFileSync(skillTmpl, destSkill);
+    actions.push(`updated ${path.relative(cwd, destSkill)}`);
+  }
+
+  const destConfig = configPath(cwd);
+  const tmpl = parseToml(fs.readFileSync(path.join(tmplRoot, "templates", "config.toml"), "utf8"));
+  if (!fs.existsSync(destConfig)) {
+    fs.copyFileSync(path.join(tmplRoot, "templates", "config.toml"), destConfig);
+    actions.push(`wrote ${path.relative(cwd, destConfig)} (was missing)`);
+  } else {
+    const current = loadConfig(cwd);
+    const merged = normalizeConfig({
+      director: { ...tmpl.director, ...current.director },
+      models: current.models,
+    });
+    saveConfig(cwd, merged);
+    actions.push(`merged director defaults into ${path.relative(cwd, destConfig)} (cards kept)`);
+  }
+
+  return { actions };
+}
