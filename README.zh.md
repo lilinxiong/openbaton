@@ -16,7 +16,7 @@ baton init
 不是又一个 coding CLI。而是一套 skill pack + `init`，坐在你已经在用的宿主前面（Claude Code、Cursor、Grok、Codex、…）。
 
 - **只认能力卡。** 每个模型是 `id` + strengths。CLI 按任务选人。没有 subagent 默认值。不继承父模型当默认。匹配不上就拦住。
-- **宿主原生 worker。** 进程内 spawn 子代理。不要 shell 出去跑 `claude -p` / `cursor-agent -p`。
+- **宿主原生 worker。** 进程内 spawn 子代理。不要 shell 出去跑 `claude -p` / `cursor-agent -p` / `grok -p`。Grok 上 init 会写 `.grok/agents/<card-id>.md`，spawn 用 `subagent_type` = 卡 id（官方 spawn 没有 `model` 参数）。
 - **逻辑上无限 spawn。** 宿主有硬上限就排队。永不拒绝。深度 1。
 - **洁癖。** Worker 只回一句短结论。工具倾倒不进主会话。
 

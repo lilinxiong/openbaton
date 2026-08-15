@@ -1,5 +1,7 @@
 # baton director config
 # Cards are the only routing input. No default model. No parent-model inherit.
+# Strength scores are Artificial Analysis Intelligence Index (v4.1.1), not Coding Agent Index.
+# Aliases reuse the parent model's AA entry — they do not invent a new number.
 
 [director]
 # Concurrent workers. Beyond this, queue — never refuse a logical spawn.
@@ -7,11 +9,26 @@ max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1
 
-# Example cards — replace with models you actually have.
 [[models]]
-id = "example-coder"
-strengths = "write code, implement, fix tests, grind on a repo"
+id = "mimo-v2.5"
+strengths = "AA Intelligence Index 38. omnimodal, image, video, audio, vision, speech, everyday understanding, not heavy SWE"
 
 [[models]]
-id = "example-explorer"
-strengths = "explore, research, short plans, do not think forever"
+id = "mimo-v2.5-pro"
+strengths = "AA Intelligence Index 43. long-horizon agent, complex software engineering, thousands of tool calls, SWE, token-efficient coding agent"
+
+[[models]]
+id = "kimi-for-coding"
+strengths = "AA Intelligence Index 43. Kimi K2.7 Code. code completion, routine feature development, everyday coding"
+
+[[models]]
+id = "kimi-for-coding-highspeed"
+strengths = "AA Intelligence Index 43 (same as kimi-for-coding / K2.7 Code; no separate AA entry). same coding but fast output, low latency, 5-6x speed"
+
+[[models]]
+id = "k3"
+strengths = "AA Intelligence Index 60. flagship Kimi K3, 1M context, large repo, multi-file refactor, architecture, video"
+
+[[models]]
+id = "k3-256k"
+strengths = "AA Intelligence Index 60 (same K3 AA entry). same K3 quality, 256k context, cheaper daily, single-file edits, small fixes, no video"

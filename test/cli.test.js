@@ -31,9 +31,9 @@ describe("cli run()", () => {
     assert.ok(fs.existsSync(path.join(cwd, ".grok/skills/baton/SKILL.md")));
 
     const hitOut = capture();
-    const hit = await run(["match", "implement the login form"], { cwd, stdout: hitOut, stderr: capture() });
+    const hit = await run(["match", "code completion routine feature development"], { cwd, stdout: hitOut, stderr: capture() });
     assert.equal(hit, 0);
-    assert.match(hitOut.text(), /example-coder/);
+    assert.match(hitOut.text(), /kimi-for-coding/);
 
     const missOut = capture();
     const miss = await run(["match", "paint the barn purple"], { cwd, stdout: missOut, stderr: capture() });
@@ -41,10 +41,10 @@ describe("cli run()", () => {
     assert.match(missOut.text(), /blocked:/);
 
     const spawnOut = capture();
-    const spawned = await run(["spawn", "implement the login form"], { cwd, stdout: spawnOut, stderr: capture() });
+    const spawned = await run(["spawn", "code completion routine feature development"], { cwd, stdout: spawnOut, stderr: capture() });
     assert.equal(spawned, 0);
     assert.match(spawnOut.text(), /spawn spn-0001/);
-    assert.match(spawnOut.text(), /example-coder/);
+    assert.match(spawnOut.text(), /kimi-for-coding/);
     assert.ok(fs.existsSync(path.join(cwd, ".baton", "spawns", "spn-0001.json")));
   });
 });

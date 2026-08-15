@@ -16,7 +16,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
 
-3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode.
+3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `grok -p`, `claude -p`, `cursor-agent -p`, or any other CLI print mode.
 
 4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
 
@@ -27,6 +27,15 @@ You are the director. This is a skill pack plus `init` that installs into the co
 7. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - If absent: still fully usable via `baton spawn`.
+
+## Grok spawn
+
+Official `spawn_subagent` has no `model` param. Children would inherit the parent (grok-4.6) unless the agent type pins the model.
+
+- Match a card, then spawn with `subagent_type` = card id (for example `k3`).
+- Never spawn `general-purpose` / `explore` / `plan` for card-routed work.
+- Each card is a project agent at `.grok/agents/<id>.md` with `model` set to that id. `baton init`, `baton update`, and `baton cards add` refresh these files.
+- If the agent type is missing, blocked — do not inherit the parent model.
 
 ## Commands
 

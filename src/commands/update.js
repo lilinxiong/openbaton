@@ -4,6 +4,7 @@ import { packageRoot, skillPath, configPath, batonDir } from "../lib/paths.js";
 import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
+import { grokSkillInstalled, syncGrokCardAgents } from "../lib/grok-agents.js";
 
 /**
  * Refresh baton-owned files. Never clobber user model cards.
@@ -38,6 +39,12 @@ export function updateProject(cwd, { forceSkill = true } = {}) {
 
   const hosts = refreshInstalledHostSkills(cwd);
   actions.push(...hosts.actions);
+
+  if (grokSkillInstalled(cwd)) {
+    const agents = syncGrokCardAgents(cwd, loadConfig(cwd).models);
+    for (const f of agents.created) actions.push(`updated ${f}`);
+    for (const f of agents.pruned) actions.push(`removed ${f}`);
+  }
 
   return { actions };
 }

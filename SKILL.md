@@ -16,7 +16,8 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
 
-3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode.
+3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `claude -p`, `cursor-agent -p`, `grok -p`, or any other CLI print mode.
+   - **Grok:** spawn with `subagent_type` = card id. Never `general-purpose` / `explore` / `plan` for card-routed work. Missing agent type → blocked; do not inherit the parent model.
 
 4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
 
