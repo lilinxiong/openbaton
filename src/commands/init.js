@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonDir, configPath, skillPath } from "../lib/paths.js";
+import { installHostSkills } from "../lib/hosts.js";
 
-export function initProject(cwd, { force = false } = {}) {
+export function initProject(cwd, { force = false, tools } = {}) {
   const dir = batonDir(cwd);
   const created = [];
   const skipped = [];
@@ -28,7 +29,11 @@ export function initProject(cwd, { force = false } = {}) {
     skipped.push(rel(cwd, destSkill));
   }
 
-  return { dir: rel(cwd, dir), created, skipped };
+  const hosts = installHostSkills(cwd, { force, tools });
+  created.push(...hosts.created);
+  skipped.push(...hosts.skipped);
+
+  return { dir: rel(cwd, dir), created, skipped, tools: hosts.tools };
 }
 
 function rel(cwd, p) {

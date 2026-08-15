@@ -3,10 +3,11 @@ import path from "node:path";
 import { packageRoot, skillPath, configPath, batonDir } from "../lib/paths.js";
 import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
+import { refreshInstalledHostSkills } from "../lib/hosts.js";
 
 /**
  * Refresh baton-owned files. Never clobber user model cards.
- * --force only replaces SKILL.md, not config.toml cards.
+ * Refreshes installed host SKILL copies. Does not install new hosts.
  */
 export function updateProject(cwd, { forceSkill = true } = {}) {
   fs.mkdirSync(batonDir(cwd), { recursive: true });
@@ -34,6 +35,9 @@ export function updateProject(cwd, { forceSkill = true } = {}) {
     saveConfig(cwd, merged);
     actions.push(`merged director defaults into ${path.relative(cwd, destConfig)} (cards kept)`);
   }
+
+  const hosts = refreshInstalledHostSkills(cwd);
+  actions.push(...hosts.actions);
 
   return { actions };
 }

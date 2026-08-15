@@ -19,8 +19,8 @@ the director context clean. Apply is multi-model, uncapped, card-routed executio
 of OpenSpec tasks, with conclusions written back. Not a thin adapter.
 
 Usage:
-  baton init [--force]              initialize .baton/ in this project
-  baton update                      refresh SKILL + director defaults; keep cards
+  baton init [--force] [--tools a,b]  initialize .baton/ and host skill paths
+  baton update                        refresh SKILL + director defaults; keep cards
   baton cards                       list model cards
   baton cards add --id ID --strengths "..."
   baton match <text>                show which card would run
@@ -75,8 +75,10 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
 }
 
 function cmdInit(args, cwd, stdout) {
-  const force = args.includes("--force");
-  const result = initProject(cwd, { force });
+  const flags = parseFlags(args);
+  const force = Boolean(flags.force) || args.includes("--force");
+  const tools = flags.tools ? String(flags.tools).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const result = initProject(cwd, { force, tools });
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);

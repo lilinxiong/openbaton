@@ -31,7 +31,7 @@ baton init
 ## 命令
 
 ```
-baton init
+baton init [--force] [--tools claude,cursor,grok,codex,agents]
 baton cards
 baton cards add --id opus --strengths "hard reasoning, long refactors"
 baton match "fix the flaky auth tests"
