@@ -1,11 +1,11 @@
 /**
- * baton login — consume ocx account login. Browser/account sign-in only.
+ * baton login — consume account login. Browser/account sign-in only.
  * Do not ask anyone to paste a base URL or API key.
  */
 import { loadConfig } from "../lib/config.js";
 import {
-  ocxCliAvailable,
-  missingOcxMessage,
+  resolveOcx,
+  engineMissingMessage,
   authProviderForCard,
   listOcxAccounts,
   loginOcxProvider,
@@ -13,40 +13,44 @@ import {
   MIMO_KEY_ONLY_MESSAGE,
 } from "../lib/opencodex.js";
 
-export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner } = {}) {
-  if (!ocxCliAvailable(env)) {
-    stdout.write(`${missingOcxMessage()}\n`);
+export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve, startProxy } = {}) {
+  const resolved = (resolve || resolveOcx)({ env, cwd });
+  if (!resolved) {
+    stdout.write(`${engineMissingMessage()}\n`);
     return 2;
   }
 
   const flags = parseFlags(args);
   const provider = firstPositional(args);
+  const engine = { cwd, stdout, stderr, env, runner, resolve, resolved, startProxy };
 
   if (flags.card != null) {
     if (flags.card === true || String(flags.card).trim() === "") {
       stdout.write("usage: baton login --card <id>\n");
       return 2;
     }
-    const resolved = resolveCardForLogin(cwd, String(flags.card).trim());
-    if (resolved.error) {
-      stdout.write(resolved.error + "\n");
+    const mapped = resolveCardForLogin(cwd, String(flags.card).trim());
+    if (mapped.error) {
+      stdout.write(mapped.error + "\n");
       return 1;
     }
-    return doLogin(resolved.provider, { cwd, stdout, stderr, env, runner });
+    return doLogin(mapped.provider, engine);
   }
 
   if (provider) {
-    return doLogin(provider, { cwd, stdout, stderr, env, runner });
+    return doLogin(provider, engine);
   }
 
-  return doList({ cwd, stdout, env, runner });
+  return doList(engine);
 }
 
-function doLogin(provider, { cwd, stdout, stderr, env, runner }) {
+function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved, startProxy }) {
   const inheritStdio = stdout === process.stdout && stderr === process.stderr;
   let result;
   try {
-    result = loginOcxProvider(provider, { cwd, env, runner, inheritStdio });
+    result = loginOcxProvider(provider, {
+      cwd, env, runner, resolve, resolved, startProxy, inheritStdio,
+    });
   } catch (err) {
     if (err.code === "OCX_MISSING") {
       stdout.write(err.message + "\n");
@@ -64,10 +68,10 @@ function doLogin(provider, { cwd, stdout, stderr, env, runner }) {
   return 0;
 }
 
-function doList({ cwd, stdout, env, runner }) {
+function doList({ cwd, stdout, env, runner, resolve, resolved, startProxy }) {
   let result;
   try {
-    result = listOcxAccounts({ cwd, env, runner });
+    result = listOcxAccounts({ cwd, env, runner, resolve, resolved, startProxy });
   } catch (err) {
     if (err.code === "OCX_MISSING") {
       stdout.write(err.message + "\n");

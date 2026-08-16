@@ -30,9 +30,9 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - If absent: still fully usable via `baton spawn`.
 
 8. **OpenCodex is consumed for account login, not reimplemented.**
-   - `baton login` lists ocx accounts and card->provider. `baton login <provider>` and `baton login --card <id>` open `ocx account login` so the user signs in with a browser.
-   - Account-login providers: kimi, xai, cursor. Cursor login is experimental in OpenCodex (PKCE). Do not enable ocx nativeLocalExec. Do not paste Cursor keys.
-   - Never ask the user to paste a base URL or API key. If `ocx` is missing: blocked. Install OpenCodex, then `baton login kimi`.
+   - `baton login` lists accounts and card->provider. `baton login <provider>` and `baton login --card <id>` open a browser so the user signs in.
+   - Account-login providers: kimi, xai, cursor. Cursor login is experimental (PKCE). Do not enable nativeLocalExec. Do not paste Cursor keys.
+   - Never ask the user to paste a base URL or API key. The user only types `baton login kimi`. Do not tell them to install ocx.
 
 ## Commands
 

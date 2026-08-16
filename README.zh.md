@@ -30,14 +30,14 @@ baton init
 
 ## OpenCodex
 
-账号登录交给 OpenCodex（ocx）消费，不重做。浏览器登录一次即可：
+账号登录交给 OpenCodex 消费，不重做 — 和 OpenSpec 一样。用浏览器登录即可：
 
 ```
 baton login kimi      # Moonshot Kimi
-baton login cursor    # Cursor（OpenCodex 上实验性 PKCE）
+baton login cursor    # Cursor（实验性 PKCE）
 ```
 
-不要粘贴 base URL 或 API key。不要粘贴 Cursor 密钥。不要打开 ocx nativeLocalExec。
+不要粘贴 base URL 或 API key。不要粘贴 Cursor 密钥。
 
 既能独立，又能 1+1>2 — baton 负责分派；账号由 OpenCodex 持有。
 

@@ -28,5 +28,8 @@
     "openspec",
     "multi-model"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@bitkyc08/opencodex": "^2.22.0"
+  }
 }

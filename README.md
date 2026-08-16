@@ -30,14 +30,14 @@ Do not reimplement OpenSpec.
 
 ## OpenCodex
 
-Account login is consumed from OpenCodex (ocx), not reimplemented. Sign in once with a browser:
+Account login is consumed from OpenCodex, not reimplemented — same idea as OpenSpec. Sign in with a browser:
 
 ```
 baton login kimi      # Moonshot Kimi
-baton login cursor    # Cursor (experimental PKCE in OpenCodex)
+baton login cursor    # Cursor (experimental PKCE)
 ```
 
-Do not paste a base URL or API key. Do not paste Cursor keys. Do not enable ocx nativeLocalExec.
+Do not paste a base URL or API key. Do not paste Cursor keys.
 
 既能独立，又能 1+1>2 — baton routes; OpenCodex holds the account.
 

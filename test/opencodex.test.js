@@ -7,7 +7,13 @@ import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.js";
 import { initProject } from "../src/commands/init.js";
 import { loadConfig } from "../src/lib/config.js";
-import { authProviderForCard } from "../src/lib/opencodex.js";
+import {
+  authProviderForCard,
+  resolveOcx,
+  engineMissingMessage,
+  isProxyDown,
+  OCX_PACKAGE,
+} from "../src/lib/opencodex.js";
 
 const FAKE_OCX = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-ocx.sh");
 
@@ -55,17 +61,147 @@ function secretLikeFiles(dir) {
 }
 
 describe("opencodex account login consume", () => {
-  it("blocks when ocx is missing and does not reimplement login", async () => {
+  it("missing PATH ocx is not a hard fail when resolver can resolve", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
+    const calls = [];
+    const resolve = () => ({ source: "npx", command: "npx", prefixArgs: ["-y", OCX_PACKAGE] });
+    const runner = ({ command, prefixArgs, args }) => {
+      calls.push({ command, prefixArgs, args });
+      return { status: 0, stdout: "login kimi\n", stderr: "" };
+    };
+    const code = await run(["login", "kimi"], {
+      cwd, stdout: capture(), stderr: capture(), env: noOcxEnv().env, resolve, runner,
+    });
+    assert.equal(code, 0);
+    const login = calls.find((c) => c.args[0] === "account" && c.args[1] === "login");
+    assert.ok(login);
+    assert.deepEqual(login.args, ["account", "login", "kimi"]);
+    assert.equal(login.command, "npx");
+    assert.deepEqual(login.prefixArgs, ["-y", OCX_PACKAGE]);
+  });
+
+  it("when the engine cannot be resolved, does not tell the user to install ocx", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const out = capture();
-    const code = await run(["login", "kimi"], { cwd, stdout: out, stderr: capture(), env: noOcxEnv().env });
+    const code = await run(["login", "kimi"], {
+      cwd, stdout: out, stderr: capture(), env: noOcxEnv().env, resolve: () => null,
+    });
     assert.equal(code, 2);
     const t = out.text();
     assert.match(t, /blocked:/);
+    assert.match(t, /login engine/);
     assert.match(t, /consumed/);
     assert.match(t, /not reimplemented/);
-    assert.ok(t.includes("@bitkyc08/" + "opencodex"));
     assert.match(t, /Do not paste/);
+    assert.doesNotMatch(t, /OpenCodex is not on PATH/);
+    assert.doesNotMatch(t, /Install:/);
+    assert.equal(t.trim(), engineMissingMessage());
+  });
+
+  it("resolver tries PATH then bundled then npx", () => {
+    const order = [];
+    const pathHit = resolveOcx({
+      env: {},
+      findOnPath: () => { order.push("path"); return "/usr/bin/ocx"; },
+      findBundled: () => { order.push("bundled"); return "/pkg/node_modules/.bin/ocx"; },
+      npxAvailable: () => { order.push("npx"); return true; },
+    });
+    assert.equal(pathHit.source, "path");
+    assert.equal(pathHit.command, "/usr/bin/ocx");
+    assert.deepEqual(order, ["path"]);
+
+    order.length = 0;
+    const bundled = resolveOcx({
+      env: {},
+      findOnPath: () => { order.push("path"); return null; },
+      findBundled: () => { order.push("bundled"); return "/pkg/node_modules/.bin/ocx"; },
+      npxAvailable: () => { order.push("npx"); return true; },
+    });
+    assert.equal(bundled.source, "bundled");
+    assert.equal(bundled.command, "/pkg/node_modules/.bin/ocx");
+    assert.deepEqual(order, ["path", "bundled"]);
+
+    order.length = 0;
+    const viaNpx = resolveOcx({
+      env: {},
+      findOnPath: () => { order.push("path"); return null; },
+      findBundled: () => { order.push("bundled"); return null; },
+      npxAvailable: () => { order.push("npx"); return true; },
+    });
+    assert.equal(viaNpx.source, "npx");
+    assert.deepEqual(viaNpx.prefixArgs, ["-y", OCX_PACKAGE]);
+    assert.deepEqual(order, ["path", "bundled", "npx"]);
+
+    const none = resolveOcx({
+      env: {},
+      findOnPath: () => null,
+      findBundled: () => null,
+      npxAvailable: () => false,
+    });
+    assert.equal(none, null);
+  });
+
+  it("resolver finds bundled ocx next to baton when PATH is empty", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "baton-bundled-"));
+    const binDir = path.join(root, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const bundled = path.join(binDir, "ocx");
+    fs.copyFileSync(FAKE_OCX, bundled);
+    fs.chmodSync(bundled, 0o755);
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "baton-empty-path-"));
+    const hit = resolveOcx({
+      env: { ...process.env, PATH: empty },
+      packageRoot: root,
+      npxAvailable: () => false,
+    });
+    assert.equal(hit.source, "bundled");
+    assert.equal(hit.command, bundled);
+  });
+
+  it("starts the proxy once when list/login fails because it is down", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
+    const starts = [];
+    let lists = 0;
+    const resolve = () => ({ source: "path", command: "/tmp/ocx", prefixArgs: [] });
+    const runner = ({ args }) => {
+      if (args[0] === "account" && args[1] === "list") {
+        lists += 1;
+        if (lists === 1) {
+          return { status: 1, stdout: "", stderr: "proxy is down: connection refused" };
+        }
+        return { status: 0, stdout: "PROVIDER TYPE ID\nkimi oauth acc-1\n", stderr: "" };
+      }
+      if (args[0] === "account" && args[1] === "login") {
+        return { status: 0, stdout: "login " + args[2] + "\n", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "unexpected " + args.join(" ") };
+    };
+    const startProxy = (opts) => {
+      starts.push(opts);
+      return { status: 0, started: true, method: "service" };
+    };
+    const loginCode = await run(["login", "kimi"], {
+      cwd, stdout: capture(), stderr: capture(), env: noOcxEnv().env, resolve, runner, startProxy,
+    });
+    assert.equal(loginCode, 0);
+    assert.equal(starts.length, 1);
+
+    lists = 0;
+    starts.length = 0;
+    const listOut = capture();
+    const listCode = await run(["login"], {
+      cwd, stdout: listOut, stderr: capture(), env: noOcxEnv().env, resolve, runner, startProxy,
+    });
+    assert.equal(listCode, 0);
+    assert.equal(starts.length, 1);
+    assert.match(listOut.text(), /kimi/);
+  });
+
+  it("isProxyDown detects refused proxy and not a generic failure", () => {
+    assert.equal(isProxyDown({ status: 1, stderr: "proxy is down: connection refused" }), true);
+    assert.equal(isProxyDown({ status: 1, error: { code: "ECONNREFUSED", message: "connect" } }), true);
+    assert.equal(isProxyDown({ status: 1, stderr: "unexpected: account foo" }), false);
+    assert.equal(isProxyDown({ status: 0, stdout: "ok" }), false);
   });
 
   it("baton login kimi invokes ocx account login kimi", async () => {
@@ -156,5 +292,22 @@ describe("opencodex account login consume", () => {
   it("maps grok ids to xai and does not invent a cursor card", () => {
     assert.equal(authProviderForCard({ id: "grok-4.6" }).provider, "xai");
     assert.equal(authProviderForCard({ id: "cursor" }).provider, null);
+  });
+
+  it("help and docs do not tell the user to install ocx", async () => {
+    const out = capture();
+    const code = await run(["help"], { cwd: os.tmpdir(), stdout: out, stderr: capture() });
+    assert.equal(code, 0);
+    const help = out.text();
+    assert.match(help, /baton login <provider>/);
+    assert.match(help, /sign in with a browser/);
+    assert.doesNotMatch(help, /ocx account login/);
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+    for (const rel of ["SKILL.md", "README.md", "README.zh.md"]) {
+      const text = fs.readFileSync(path.join(root, rel), "utf8");
+      assert.doesNotMatch(text, /you must have ocx/i);
+      assert.doesNotMatch(text, /If `ocx` is missing/);
+      assert.doesNotMatch(text, /Install OpenCodex/);
+    }
   });
 });
