@@ -29,9 +29,17 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - If absent: still fully usable via `baton spawn`.
 
+8. **OpenCodex is consumed for account login, not reimplemented.**
+   - `baton login` lists ocx accounts and card->provider. `baton login <provider>` and `baton login --card <id>` open `ocx account login` so the user signs in with a browser.
+   - Account-login providers: kimi, xai, cursor. Cursor login is experimental in OpenCodex (PKCE). Do not enable ocx nativeLocalExec. Do not paste Cursor keys.
+   - Never ask the user to paste a base URL or API key. If `ocx` is missing: blocked. Install OpenCodex, then `baton login kimi`.
+
 ## Commands
 
 ```
+baton login
+baton login <provider>
+baton login --card <id>
 baton cards
 baton cards add --id ID --strengths "..."
 baton match <text>
@@ -45,4 +53,6 @@ baton status
 
 - Do not invent a default model.
 - Do not reimplement OpenSpec.
+- Do not reimplement OpenCodex OAuth, account pool, dashboard, or proxy.
+- Do not ask the user to paste a base URL or API key.
 - Do not dump worker tool output into this conversation.

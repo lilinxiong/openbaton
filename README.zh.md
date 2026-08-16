@@ -28,10 +28,24 @@ baton init
 
 不重做 OpenSpec。
 
+## OpenCodex
+
+账号登录交给 OpenCodex（ocx）消费，不重做。浏览器登录一次即可：
+
+```
+baton login kimi      # Moonshot Kimi
+baton login cursor    # Cursor（OpenCodex 上实验性 PKCE）
+```
+
+不要粘贴 base URL 或 API key。不要粘贴 Cursor 密钥。不要打开 ocx nativeLocalExec。
+
+既能独立，又能 1+1>2 — baton 负责分派；账号由 OpenCodex 持有。
+
 ## 命令
 
 ```
 baton init [--force] [--tools claude,cursor,grok,codex,agents]
+baton login kimi
 baton cards
 baton cards add --id opus --strengths "hard reasoning, long refactors"
 baton match "fix the flaky auth tests"

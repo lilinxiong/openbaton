@@ -1,6 +1,7 @@
 import { initProject } from "./commands/init.js";
 import { updateProject } from "./commands/update.js";
 import { listCards, addCard } from "./commands/cards.js";
+import { runLogin } from "./commands/login.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
@@ -27,12 +28,15 @@ Usage:
   baton spawn <text> [--model ID]   card-route a standalone unit
   baton apply [change]              execute an OpenSpec change (consume, do not invent)
   baton conclude <id> --text "..."  write a short conclusion (hygiene)
+  baton login                       list OpenCodex accounts + card->provider
+  baton login <provider>            ocx account login (browser; kimi, xai, cursor)
+  baton login --card <id>           resolve card then login
   baton status                      director queue + OpenSpec status if present
   baton help | --help | -h
   baton version | --version | -v
 `;
 
-export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env } = {}) {
   const args = argv.slice();
   const cmd = args.shift() || "help";
 
@@ -62,6 +66,8 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
         return cmdApply(args, cwd, stdout);
       case "conclude":
         return cmdConclude(args, cwd, stdout);
+      case "login":
+        return runLogin(args, { cwd, stdout, stderr, env });
       case "status":
         return cmdStatus(cwd, stdout);
       default:

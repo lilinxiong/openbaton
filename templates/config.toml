@@ -20,16 +20,20 @@ strengths = "AA Terminal-Bench v2.1 65.2, SciCode 50.2. long-horizon agent, comp
 
 [[models]]
 id = "kimi-for-coding"
+auth_provider = "kimi"
 strengths = "AA Terminal-Bench v2.1 67.4, SciCode 47.5. Kimi K2.7 Code. code completion, routine feature development, everyday coding"
 
 [[models]]
 id = "kimi-for-coding-highspeed"
+auth_provider = "kimi"
 strengths = "AA Terminal-Bench v2.1 67.4, SciCode 47.5 (same as kimi-for-coding / K2.7 Code; no separate AA entry). same coding but fast output, low latency, 5-6x speed"
 
 [[models]]
 id = "k3"
+auth_provider = "kimi"
 strengths = "AA Terminal-Bench v2.1 85.0, SciCode 58.7. flagship Kimi K3, 1M context, large repo, multi-file refactor, architecture, video"
 
 [[models]]
 id = "k3-256k"
+auth_provider = "kimi"
 strengths = "AA Terminal-Bench v2.1 85.0, SciCode 58.7 (same K3 AA entry). same K3 quality, 256k context, cheaper daily, single-file edits, small fixes, no video"

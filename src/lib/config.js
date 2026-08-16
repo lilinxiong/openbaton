@@ -29,10 +29,16 @@ export function normalizeConfig(raw) {
   const models = Array.isArray(raw.models) ? raw.models : [];
   cfg.models = models
     .filter((m) => m && typeof m === "object")
-    .map((m) => ({
-      id: String(m.id || "").trim(),
-      strengths: String(m.strengths || "").trim(),
-    }))
+    .map((m) => {
+      const card = {
+        id: String(m.id || "").trim(),
+        strengths: String(m.strengths || "").trim(),
+      };
+      if (typeof m.auth_provider === "string" && m.auth_provider.trim()) {
+        card.auth_provider = m.auth_provider.trim();
+      }
+      return card;
+    })
     .filter((m) => m.id);
   return cfg;
 }
