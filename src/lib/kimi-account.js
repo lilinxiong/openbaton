@@ -1,6 +1,7 @@
 /**
  * Wire Grok custom models to the logged-in Kimi account token.
- * Reads ~/.opencodex/auth.json (injectable path/HOME). Writes
+ * Reads ~/.opencodex/auth.json (injectable path/HOME). Refreshes the
+ * OIDC access token when it expires within ~120s. Writes
  * ~/.baton/kimi-account.env and upserts marked [model.*] blocks in
  * ~/.grok/config.toml. Never prints the token. Never writes api_key
  * inline. Never starts a proxy. Never edits ~/.codex/config.toml.
@@ -15,6 +16,11 @@ export const BATON_KIMI_MODELS_MARK = "# baton-kimi-account-models";
 export const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1";
 export const GROK_ENV_SOURCE_LINE =
   `[ -f "$HOME/.baton/kimi-account.env" ] && . "$HOME/.baton/kimi-account.env"`;
+export const KIMI_TOKEN_URL = "https://auth.kimi.com/api/oauth/token";
+export const KIMI_OAUTH_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
+export const REFRESH_SKEW_MS = 120_000;
+export const EXPIRES_WRITE_SKEW_MS = 5 * 60 * 1000;
+export const KIMI_REFRESH_ERROR = "KIMI_REFRESH_FAILED";
 
 export const KIMI_ACCOUNT_MODELS = [
   { id: "k3", context_window: 1048576 },
@@ -55,19 +61,61 @@ export function grokConfigPath(opts = {}) {
   return path.join(optsHome(opts), ".grok", "config.toml");
 }
 
+export class KimiRefreshError extends Error {
+  constructor(message, extras = {}) {
+    super(message);
+    this.name = "KimiRefreshError";
+    this.code = extras.code || KIMI_REFRESH_ERROR;
+    if (extras.status != null) this.status = extras.status;
+  }
+}
+
+export function isKimiAccountModel(id) {
+  return KIMI_ACCOUNT_MODEL_IDS.has(String(id || "").trim());
+}
+
 function accountIdOf(account, fallback) {
   if (!account || typeof account !== "object") return fallback || "";
   const id = account.id || account.accountId || account.account_id;
   return id == null ? fallback || "" : String(id);
 }
 
+function credentialOf(account) {
+  if (!account || typeof account !== "object") return {};
+  if (account.credential && typeof account.credential === "object") return account.credential;
+  return account;
+}
+
 function accessOf(account) {
-  if (!account || typeof account !== "object") return "";
-  const cred = account.credential && typeof account.credential === "object"
-    ? account.credential
-    : account;
+  const cred = credentialOf(account);
   const access = cred.access || cred.access_token || cred.token;
   return access == null ? "" : String(access).trim();
+}
+
+function refreshOf(account) {
+  const cred = credentialOf(account);
+  const refresh = cred.refresh || cred.refresh_token;
+  return refresh == null ? "" : String(refresh).trim();
+}
+
+function expiresOf(account) {
+  const cred = credentialOf(account);
+  const expires = cred.expires;
+  if (expires == null || expires === "") return null;
+  const n = Number(expires);
+  return Number.isFinite(n) ? n : null;
+}
+
+function summarizeAccount(account, fallbackId) {
+  const cred = credentialOf(account);
+  return {
+    id: accountIdOf(account, fallbackId),
+    access: accessOf(account),
+    refresh: refreshOf(account),
+    expires: expiresOf(account),
+    accountId: cred.accountId == null ? undefined : cred.accountId,
+    source: cred.source == null ? undefined : cred.source,
+  };
 }
 
 function listAccounts(kimi) {
@@ -75,17 +123,49 @@ function listAccounts(kimi) {
   if (Array.isArray(raw)) {
     return raw
       .filter((a) => a && typeof a === "object")
-      .map((a) => ({ id: accountIdOf(a), access: accessOf(a) }));
+      .map((a) => summarizeAccount(a));
   }
   if (raw && typeof raw === "object") {
-    return Object.entries(raw).map(([key, a]) => ({
-      id: accountIdOf(a, key),
-      access: accessOf(a),
-    }));
+    return Object.entries(raw).map(([key, a]) => summarizeAccount(a, key));
   }
-  const direct = accessOf(kimi);
-  if (direct) return [{ id: accountIdOf(kimi, "kimi"), access: direct }];
+  if (kimi && typeof kimi === "object") {
+    const direct = summarizeAccount(kimi, "kimi");
+    if (direct.access || direct.refresh) return [direct];
+  }
   return [];
+}
+
+function readAuthStore(opts = {}) {
+  const file = authStorePath(opts);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function pickActiveAccount(kimi) {
+  if (!kimi || typeof kimi !== "object") return null;
+  const accounts = listAccounts(kimi);
+  if (!accounts.length) return null;
+  const activeId = kimi.activeAccountId == null ? "" : String(kimi.activeAccountId);
+  const active = activeId ? accounts.find((a) => a.id === activeId && a.access) : null;
+  if (active) return active;
+  return accounts.find((a) => a.access) || accounts[0] || null;
+}
+
+/**
+ * Read the active Kimi account credential from the login store.
+ * Never logs tokens.
+ */
+export function readKimiAccount(opts = {}) {
+  const raw = readAuthStore(opts);
+  if (!raw) return null;
+  const account = pickActiveAccount(raw.kimi);
+  return account || null;
 }
 
 /**
@@ -93,28 +173,180 @@ function listAccounts(kimi) {
  * Returns the token string or null. Never logs it.
  */
 export function readKimiAccountToken(opts = {}) {
-  const file = authStorePath(opts);
-  if (!fs.existsSync(file)) return null;
-  let raw;
-  try {
-    raw = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-  if (!raw || typeof raw !== "object") return null;
-  const kimi = raw.kimi;
-  if (!kimi || typeof kimi !== "object") return null;
-  const accounts = listAccounts(kimi);
-  if (!accounts.length) return null;
-  const activeId = kimi.activeAccountId == null ? "" : String(kimi.activeAccountId);
-  const active = activeId ? accounts.find((a) => a.id === activeId && a.access) : null;
-  if (active) return active.access;
-  const first = accounts.find((a) => a.access);
-  return first ? first.access : null;
+  const account = readKimiAccount(opts);
+  return account && account.access ? account.access : null;
 }
 
 export function hasKimiAccount(opts = {}) {
   return Boolean(readKimiAccountToken(opts));
+}
+
+export function tokenNeedsRefresh(expires, opts = {}) {
+  const now = opts.now != null ? Number(opts.now) : Date.now();
+  const skew = opts.skewMs != null ? Number(opts.skewMs) : REFRESH_SKEW_MS;
+  if (expires == null || expires === "") return true;
+  const exp = Number(expires);
+  if (!Number.isFinite(exp)) return true;
+  return exp <= now + (Number.isFinite(skew) ? skew : REFRESH_SKEW_MS);
+}
+
+function tokenUrlOf(opts = {}) {
+  if (opts.tokenUrl) return String(opts.tokenUrl);
+  const env = optsEnv(opts);
+  if (env.BATON_KIMI_TOKEN_URL) return String(env.BATON_KIMI_TOKEN_URL);
+  return KIMI_TOKEN_URL;
+}
+
+function refreshFailed(status) {
+  const suffix = status != null ? ` (${status})` : "";
+  return new KimiRefreshError(
+    `Kimi account token refresh failed${suffix}. Sign in again: baton login kimi`,
+    { code: KIMI_REFRESH_ERROR, status },
+  );
+}
+
+/**
+ * POST grant_type=refresh_token. Never includes tokens in thrown errors.
+ */
+export async function refreshKimiOidcToken(opts = {}) {
+  const refreshToken = opts.refreshToken == null ? "" : String(opts.refreshToken).trim();
+  if (!refreshToken) {
+    throw new KimiRefreshError(
+      "Kimi account has no refresh token. Sign in again: baton login kimi",
+      { code: "KIMI_NO_REFRESH" },
+    );
+  }
+  const url = tokenUrlOf(opts);
+  const clientId = opts.clientId || KIMI_OAUTH_CLIENT_ID;
+  const body = new URLSearchParams({
+    client_id: clientId,
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  });
+  const fetchImpl = opts.fetch || fetch;
+  let res;
+  try {
+    res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+  } catch {
+    throw refreshFailed();
+  }
+  if (!res || !res.ok) {
+    throw refreshFailed(res && res.status);
+  }
+  let data;
+  try {
+    data = typeof res.json === "function" ? await res.json() : JSON.parse(String(res.body || ""));
+  } catch {
+    throw new KimiRefreshError(
+      "Kimi account token refresh failed (invalid response). Sign in again: baton login kimi",
+      { code: "KIMI_REFRESH_INVALID" },
+    );
+  }
+  const access = data && (data.access_token || data.access);
+  if (!access) {
+    throw new KimiRefreshError(
+      "Kimi account token refresh failed (invalid response). Sign in again: baton login kimi",
+      { code: "KIMI_REFRESH_INVALID" },
+    );
+  }
+  const rotated = data.refresh_token || data.refresh;
+  const nextRefresh = rotated == null || String(rotated).trim() === ""
+    ? refreshToken
+    : String(rotated);
+  const expiresIn = Number(data.expires_in);
+  const now = opts.now != null ? Number(opts.now) : Date.now();
+  const ttlMs = Number.isFinite(expiresIn) ? expiresIn * 1000 : 900_000;
+  return {
+    access: String(access),
+    refresh: String(nextRefresh),
+    expires: now + ttlMs - EXPIRES_WRITE_SKEW_MS,
+  };
+}
+
+function patchActiveCredential(raw, patch) {
+  const kimi = raw.kimi;
+  if (!kimi || typeof kimi !== "object") return false;
+  const apply = (account) => {
+    if (!account || typeof account !== "object") return false;
+    if (!account.credential || typeof account.credential !== "object") {
+      account.credential = {};
+    }
+    const cred = account.credential;
+    cred.access = patch.access;
+    if (patch.refresh) cred.refresh = patch.refresh;
+    cred.expires = patch.expires;
+    if (cred.accountId == null && account.id != null) cred.accountId = account.id;
+    if (!cred.source) cred.source = "oauth";
+    return true;
+  };
+  const activeId = kimi.activeAccountId == null ? "" : String(kimi.activeAccountId);
+  const accounts = kimi.accounts;
+  if (Array.isArray(accounts)) {
+    const hit = (activeId && accounts.find((a) => accountIdOf(a) === activeId))
+      || accounts.find((a) => accessOf(a) || refreshOf(a));
+    return apply(hit);
+  }
+  if (accounts && typeof accounts === "object") {
+    const hit = (activeId && accounts[activeId])
+      || Object.values(accounts).find((a) => a && typeof a === "object");
+    return apply(hit);
+  }
+  return apply(kimi);
+}
+
+export function writeKimiAccountCredential(patch, opts = {}) {
+  const file = authStorePath(opts);
+  const raw = readAuthStore(opts);
+  if (!raw) {
+    throw new KimiRefreshError(
+      "Kimi account token refresh failed (no login store). Sign in again: baton login kimi",
+      { code: "KIMI_NO_STORE" },
+    );
+  }
+  if (!patchActiveCredential(raw, patch)) {
+    throw new KimiRefreshError(
+      "Kimi account token refresh failed (no login store). Sign in again: baton login kimi",
+      { code: "KIMI_NO_STORE" },
+    );
+  }
+  const body = JSON.stringify(raw, null, 2) + "\n";
+  fs.writeFileSync(file, body, { encoding: "utf8", mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+  return file;
+}
+
+/**
+ * Refresh when the access token expires within ~120s, then write
+ * ~/.baton/kimi-account.env. Writes new access+refresh+expires back
+ * to the login store. Never returns the token to callers that print.
+ */
+export async function ensureFreshKimiAccount(opts = {}) {
+  const account = readKimiAccount(opts);
+  if (!account || (!account.access && !account.refresh)) {
+    return { refreshed: false, wired: false, files: [] };
+  }
+  let cred = account;
+  let refreshed = false;
+  if (tokenNeedsRefresh(account.expires, opts)) {
+    const next = await refreshKimiOidcToken({
+      ...opts,
+      refreshToken: account.refresh,
+    });
+    writeKimiAccountCredential(next, opts);
+    cred = { ...account, ...next };
+    refreshed = true;
+  }
+  const envFile = writeKimiAccountEnv(cred.access, opts);
+  return {
+    refreshed,
+    wired: true,
+    files: [envFile],
+    expires: cred.expires,
+  };
 }
 
 export function writeKimiAccountEnv(token, opts = {}) {
@@ -209,19 +441,21 @@ export function upsertGrokKimiModels(opts = {}) {
 }
 
 /**
- * If the login store has a Kimi account, write the env file and Grok models.
- * Returns { wired, files } — files are display paths, never the token.
+ * If the login store has a Kimi account, refresh if needed, write the
+ * env file and Grok models. Returns { wired, refreshed, files } —
+ * files are display paths, never the token.
  */
-export function wireKimiAccountToGrok(opts = {}) {
-  const token = readKimiAccountToken(opts);
-  if (!token) return { wired: false, files: [] };
-  const envFile = writeKimiAccountEnv(token, opts);
+export async function wireKimiAccountToGrok(opts = {}) {
+  const fresh = await ensureFreshKimiAccount(opts);
+  if (!fresh.wired) return { wired: false, refreshed: false, files: [] };
   const grokEnv = ensureGrokEnvSource(opts);
   const grokConfig = upsertGrokKimiModels(opts);
   const env = optsEnv(opts);
   const cwd = opts.cwd;
+  const envFile = fresh.files[0] || kimiAccountEnvPath(opts);
   return {
     wired: true,
+    refreshed: Boolean(fresh.refreshed),
     files: [envFile, grokEnv, grokConfig].map((f) => displayHomePath(f, { cwd, env })),
   };
 }

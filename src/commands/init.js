@@ -7,7 +7,7 @@ import { syncGrokCardAgents } from "../lib/grok-agents.js";
 import { syncCodexCardAgents } from "../lib/codex-agents.js";
 import { wireKimiAccountToGrok } from "../lib/kimi-account.js";
 
-export function initProject(cwd, { force = false, tools, env } = {}) {
+export async function initProject(cwd, { force = false, tools, env } = {}) {
   const dir = batonHomeDir(env);
   const created = [];
   const skipped = [];
@@ -41,7 +41,7 @@ export function initProject(cwd, { force = false, tools, env } = {}) {
   if (hosts.tools.includes("grok")) {
     const agents = syncGrokCardAgents(cwd, cards, { env });
     created.push(...agents.created);
-    const wired = wireKimiAccountToGrok({ env, cwd });
+    const wired = await wireKimiAccountToGrok({ env, cwd });
     if (wired.wired) created.push(...wired.files);
   }
   if (hosts.tools.includes("codex")) {

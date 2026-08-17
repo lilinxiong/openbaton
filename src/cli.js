@@ -8,6 +8,7 @@ import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
 import { applyChange, concludeSpawn } from "./lib/apply.js";
 import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
+import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
 
 export const VERSION = "0.1.0";
 
@@ -53,7 +54,7 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
         stdout.write(`baton ${VERSION}\n`);
         return 0;
       case "init":
-        return cmdInit(args, cwd, stdout, env);
+        return await cmdInit(args, cwd, stdout, env);
       case "update":
         return cmdUpdate(cwd, stdout, env);
       case "cards":
@@ -61,13 +62,13 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
       case "match":
         return cmdMatch(args, cwd, stdout, env);
       case "spawn":
-        return cmdSpawn(args, cwd, stdout, env);
+        return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
-        return cmdApply(args, cwd, stdout, env);
+        return await cmdApply(args, cwd, stdout, env);
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "login":
-        return runLogin(args, { cwd, stdout, stderr, env, runner, resolve });
+        return await runLogin(args, { cwd, stdout, stderr, env, runner, resolve });
       case "status":
         return cmdStatus(cwd, stdout, env);
       default:
@@ -80,11 +81,11 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
   }
 }
 
-function cmdInit(args, cwd, stdout, env) {
+async function cmdInit(args, cwd, stdout, env) {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
   const tools = flags.tools ? String(flags.tools).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-  const result = initProject(cwd, { force, tools, env });
+  const result = await initProject(cwd, { force, tools, env });
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
@@ -138,11 +139,12 @@ function cmdMatch(args, cwd, stdout, env) {
   }
 }
 
-function cmdSpawn(args, cwd, stdout, env) {
+async function cmdSpawn(args, cwd, stdout, env) {
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
   const cfg = loadConfig(cwd, { env });
+  await ensureFreshKimiAccount({ env, cwd });
   const queue = DispatchQueue.fromConfig(cfg);
   // account for already-running tickets
   for (const s of listSpawns(cwd)) {
@@ -171,9 +173,10 @@ function cmdSpawn(args, cwd, stdout, env) {
   return 0;
 }
 
-function cmdApply(args, cwd, stdout, env) {
+async function cmdApply(args, cwd, stdout, env) {
   const change = args.find((a) => !a.startsWith("-")) || null;
   const cfg = loadConfig(cwd, { env });
+  await ensureFreshKimiAccount({ env, cwd });
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
     stdout.write("  baton spawn \"explore the auth module\"\n");

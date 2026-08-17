@@ -6,16 +6,22 @@ import path from "node:path";
 import { run } from "../src/cli.js";
 import { initProject } from "../src/commands/init.js";
 import { withHome, fakeEnv } from "./home.js";
+import http from "node:http";
 import {
   readKimiAccountToken,
   writeKimiAccountEnv,
   wireKimiAccountToGrok,
+  ensureFreshKimiAccount,
   kimiAccountEnvPath,
   grokConfigPath,
+  authStorePath,
   GROK_ENV_SOURCE_LINE,
   KIMI_CODING_BASE_URL,
   KIMI_ACCOUNT_TOKEN_KEY,
   BATON_KIMI_MODELS_MARK,
+  KIMI_OAUTH_CLIENT_ID,
+  EXPIRES_WRITE_SKEW_MS,
+  KimiRefreshError,
 } from "../src/lib/kimi-account.js";
 
 const TOKEN = "test-kimi-access-token-not-for-prod";
@@ -35,15 +41,66 @@ function capture() {
   };
 }
 
-function writeAuth(home, token = TOKEN, { map = false, active = "acc-1" } = {}) {
+function writeAuth(home, token = TOKEN, { map = false, active = "acc-1", expires = Date.now() + 3_600_000, refresh = REFRESH, extra = {} } = {}) {
   const dir = path.join(home, ".opencodex");
   fs.mkdirSync(dir, { recursive: true });
-  const cred = { access: token, refresh: REFRESH, expires: Date.now() + 3_600_000 };
+  const cred = { access: token, refresh, expires, accountId: "acc-1", source: "oauth", ...extra };
   const account = { id: "acc-1", credential: cred };
   const kimi = map
     ? { activeAccountId: active, accounts: { "acc-1": { credential: cred } } }
     : { activeAccountId: active, accounts: [account] };
   fs.writeFileSync(path.join(dir, "auth.json"), JSON.stringify({ kimi }), "utf8");
+}
+
+const NEXT_ACCESS = "rotated-kimi-access-token-not-for-prod";
+const NEXT_REFRESH = "rotated-kimi-refresh-token-not-for-prod";
+
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function assertNoSecrets(text, extras = []) {
+  const visible = String(text);
+  for (const secret of [TOKEN, REFRESH, NEXT_ACCESS, NEXT_REFRESH, ...extras]) {
+    assert.doesNotMatch(visible, new RegExp(escapeRe(secret)));
+  }
+}
+
+function readStore(home) {
+  return JSON.parse(fs.readFileSync(path.join(home, ".opencodex", "auth.json"), "utf8"));
+}
+
+function startTokenServer(handler) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const rec = {
+        method: req.method,
+        url: req.url,
+        contentType: req.headers["content-type"] || "",
+        params: Object.fromEntries(new URLSearchParams(raw)),
+      };
+      requests.push(rec);
+      const out = handler(rec) || {};
+      const status = out.status || 200;
+      const body = out.body == null ? "" : (typeof out.body === "string" ? out.body : JSON.stringify(out.body));
+      res.writeHead(status, { "Content-Type": out.contentType || "application/json" });
+      res.end(body);
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      resolve({
+        url: `http://127.0.0.1:${port}/api/oauth/token`,
+        requests,
+        close: () => new Promise((r, j) => server.close((e) => (e ? j(e) : r()))),
+      });
+    });
+  });
 }
 
 function assertWired(home, token = TOKEN) {
@@ -115,7 +172,7 @@ describe("kimi-account lib", () => {
     assert.equal(readKimiAccountToken({ home }), null);
   });
 
-  it("writes kimi-account.env 0600 and upserts four Grok models without touching default", () => {
+  it("writes kimi-account.env 0600 and upserts four Grok models without touching default", async () => {
     const home = tmp("baton-kimi-wire-");
     writeAuth(home);
     fs.mkdirSync(path.join(home, ".grok"), { recursive: true });
@@ -124,7 +181,7 @@ describe("kimi-account lib", () => {
       `[models]\ndefault = "grok-build"\nweb_search = "grok-4.6"\n\n[session]\nload_envrc = true\n`,
       "utf8",
     );
-    const result = wireKimiAccountToGrok({ home });
+    const result = await wireKimiAccountToGrok({ home });
     assert.equal(result.wired, true);
     assert.ok(result.files.every((f) => !String(f).includes(TOKEN)));
     assertWired(home);
@@ -138,17 +195,17 @@ describe("kimi-account lib", () => {
     assert.doesNotMatch(cfg, /\[model\."grok-4.6"\]/);
   });
 
-  it("upsert is idempotent and replaces a previous marked block", () => {
+  it("upsert is idempotent and replaces a previous marked block", async () => {
     const home = tmp("baton-kimi-upsert-");
     writeAuth(home);
-    wireKimiAccountToGrok({ home });
+    await wireKimiAccountToGrok({ home });
     const first = fs.readFileSync(path.join(home, ".grok", "config.toml"), "utf8");
     fs.writeFileSync(
       path.join(home, ".grok", "config.toml"),
       first.replace("context_window = 1048576", "context_window = 1"),
       "utf8",
     );
-    wireKimiAccountToGrok({ home });
+    await wireKimiAccountToGrok({ home });
     const again = fs.readFileSync(path.join(home, ".grok", "config.toml"), "utf8");
     assert.equal((again.match(/# baton-kimi-account-models/g) || []).length, 1);
     assert.equal((again.match(/\[model\."k3"\]/g) || []).length, 1);
@@ -156,9 +213,9 @@ describe("kimi-account lib", () => {
     assert.doesNotMatch(again, /^context_window = 1$/m);
   });
 
-  it("does not write when there is no kimi account", () => {
+  it("does not write when there is no kimi account", async () => {
     const home = tmp("baton-kimi-nowire-");
-    const result = wireKimiAccountToGrok({ home });
+    const result = await wireKimiAccountToGrok({ home });
     assert.equal(result.wired, false);
     assertNotWired(home);
   });
@@ -172,24 +229,24 @@ describe("kimi-account lib", () => {
 });
 
 describe("init --tools grok wires only when a kimi account exists", () => {
-  it("does not write grok model tables or the env file without a kimi account", () => {
-    withHome((home) => {
+  it("does not write grok model tables or the env file without a kimi account", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      initProject(cwd, { tools: ["grok"], env });
+      await initProject(cwd, { tools: ["grok"], env });
       assert.ok(fs.existsSync(path.join(home, ".grok", "agents", "k3.md")));
       assertNotWired(home);
     });
   });
 
-  it("wires env + four models when the login store already has a kimi account", () => {
-    withHome((home) => {
+  it("wires env + four models when the login store already has a kimi account", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       writeAuth(home);
       const out = capture();
       const err = capture();
-      const result = initProject(cwd, { tools: ["grok"], env });
+      const result = await initProject(cwd, { tools: ["grok"], env });
       assertWired(home);
       assert.ok(result.created.some((f) => String(f).includes("kimi-account.env")));
       assert.ok(result.created.some((f) => String(f).includes("config.toml") && String(f).includes("grok")));
@@ -199,12 +256,12 @@ describe("init --tools grok wires only when a kimi account exists", () => {
     });
   });
 
-  it("init --tools claude does not write grok config even if a kimi account exists", () => {
-    withHome((home) => {
+  it("init --tools claude does not write grok config even if a kimi account exists", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       writeAuth(home);
-      initProject(cwd, { tools: ["claude"], env });
+      await initProject(cwd, { tools: ["claude"], env });
       assert.ok(!fs.existsSync(path.join(home, ".grok")));
       assert.ok(!fs.existsSync(path.join(home, ".baton", "kimi-account.env")));
     });
@@ -322,5 +379,149 @@ describe("baton login kimi wires Grok to the account token", () => {
       assert.equal(code, 0);
       assert.equal(fs.readFileSync(codexCfg, "utf8"), "model = \"gpt-5\"\n");
     });
+  });
+});
+
+describe("kimi OIDC refresh", () => {
+  it("expired access token refreshes, rotates refresh, writes store 0600 and env 0600", async () => {
+    const now = 1_700_000_000_000;
+    const server = await startTokenServer(() => ({
+      status: 200,
+      body: { access_token: NEXT_ACCESS, refresh_token: NEXT_REFRESH, expires_in: 900 },
+    }));
+    try {
+      const home = tmp("baton-kimi-expired-");
+      writeAuth(home, TOKEN, { expires: now - 1_000 });
+      const result = await wireKimiAccountToGrok({ home, tokenUrl: server.url, now });
+      assert.equal(result.wired, true);
+      assert.equal(result.refreshed, true);
+      assert.equal(server.requests.length, 1);
+      const req = server.requests[0];
+      assert.equal(req.method, "POST");
+      assert.match(req.contentType, /application\/x-www-form-urlencoded/);
+      assert.equal(req.params.grant_type, "refresh_token");
+      assert.equal(req.params.client_id, KIMI_OAUTH_CLIENT_ID);
+      assert.equal(req.params.refresh_token, REFRESH);
+      assertWired(home, NEXT_ACCESS);
+      const store = readStore(home);
+      assert.equal(store.kimi.activeAccountId, "acc-1");
+      const cred = store.kimi.accounts[0].credential;
+      assert.equal(cred.access, NEXT_ACCESS);
+      assert.equal(cred.refresh, NEXT_REFRESH);
+      assert.equal(cred.expires, now + 900_000 - EXPIRES_WRITE_SKEW_MS);
+      assert.equal(cred.accountId, "acc-1");
+      assert.equal(cred.source, "oauth");
+      const authFile = authStorePath({ home });
+      assert.equal(fs.statSync(authFile).mode & 0o777, 0o600);
+      const raw = fs.readFileSync(authFile, "utf8");
+      assert.equal(raw, JSON.stringify(store, null, 2) + "\n");
+      assert.ok(result.files.every((f) => !String(f).includes(TOKEN)));
+      assert.ok(result.files.every((f) => !String(f).includes(NEXT_ACCESS)));
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("unexpired access token does not call the token endpoint", async () => {
+    const now = 1_700_000_000_000;
+    const server = await startTokenServer(() => {
+      throw new Error("token endpoint should not be called");
+    });
+    try {
+      const home = tmp("baton-kimi-fresh-");
+      writeAuth(home, TOKEN, { expires: now + 3_600_000 });
+      const before = fs.readFileSync(path.join(home, ".opencodex", "auth.json"), "utf8");
+      const result = await wireKimiAccountToGrok({ home, tokenUrl: server.url, now });
+      assert.equal(result.wired, true);
+      assert.equal(result.refreshed, false);
+      assert.equal(server.requests.length, 0);
+      assert.equal(fs.readFileSync(path.join(home, ".opencodex", "auth.json"), "utf8"), before);
+      assertWired(home, TOKEN);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("token expiring within 120s is refreshed", async () => {
+    const now = 1_700_000_000_000;
+    const server = await startTokenServer(() => ({
+      status: 200,
+      body: { access_token: NEXT_ACCESS, refresh_token: NEXT_REFRESH, expires_in: 900 },
+    }));
+    try {
+      const home = tmp("baton-kimi-skew-");
+      writeAuth(home, TOKEN, { expires: now + 60_000 });
+      const result = await ensureFreshKimiAccount({ home, tokenUrl: server.url, now });
+      assert.equal(result.refreshed, true);
+      assert.equal(server.requests.length, 1);
+      assert.equal(readKimiAccountToken({ home }), NEXT_ACCESS);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("401 refresh is a clean error and does not leak tokens or rewrite the store", async () => {
+    const now = 1_700_000_000_000;
+    const server = await startTokenServer(() => ({
+      status: 401,
+      body: {
+        error: "invalid_grant",
+        error_description: `leaked ${REFRESH} ${TOKEN}`,
+        refresh_token: REFRESH,
+        access_token: TOKEN,
+      },
+    }));
+    try {
+      const home = tmp("baton-kimi-401-");
+      writeAuth(home, TOKEN, { expires: now - 1 });
+      const before = fs.readFileSync(path.join(home, ".opencodex", "auth.json"), "utf8");
+      await assert.rejects(
+        () => wireKimiAccountToGrok({ home, tokenUrl: server.url, now }),
+        (err) => {
+          assert.ok(err instanceof KimiRefreshError);
+          assert.equal(err.status, 401);
+          assert.match(err.message, /401/);
+          assert.match(err.message, /baton login kimi/);
+          assertNoSecrets(err.message);
+          assertNoSecrets(err.stack || "");
+          return true;
+        },
+      );
+      assert.equal(fs.readFileSync(path.join(home, ".opencodex", "auth.json"), "utf8"), before);
+      assert.ok(!fs.existsSync(path.join(home, ".baton", "kimi-account.env")));
+      assert.equal(server.requests.length, 1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("spawn refreshes an expired token before the k3 ticket and never prints it", async () => {
+    const now = Date.now();
+    const server = await startTokenServer(() => ({
+      status: 200,
+      body: { access_token: NEXT_ACCESS, refresh_token: NEXT_REFRESH, expires_in: 900 },
+    }));
+    try {
+      await withHome(async (home) => {
+        const cwd = tmp();
+        const env = fakeEnv(home, { BATON_KIMI_TOKEN_URL: server.url });
+        writeAuth(home, TOKEN, { expires: now + 3_600_000 });
+        await initProject(cwd, { tools: ["grok"], env });
+        writeAuth(home, TOKEN, { expires: now - 1_000 });
+        const out = capture();
+        const err = capture();
+        const code = await run(["spawn", "flagship Kimi K3 large repo refactor"], {
+          cwd, stdout: out, stderr: err, env,
+        });
+        assert.equal(code, 0);
+        assert.match(out.text(), /k3/);
+        assert.equal(server.requests.length, 1);
+        assert.equal(readKimiAccountToken({ home }), NEXT_ACCESS);
+        assert.equal(fs.readFileSync(path.join(home, ".baton", "kimi-account.env"), "utf8"), `${KIMI_ACCOUNT_TOKEN_KEY}=${NEXT_ACCESS}\n`);
+        assertNoSecrets(out.text() + err.text());
+      });
+    } finally {
+      await server.close();
+    }
   });
 });

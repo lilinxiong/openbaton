@@ -20,11 +20,11 @@ function assertNoProjectHostDirs(cwd) {
 }
 
 describe("initProject", () => {
-  it("writes ~/.baton and default host skill paths; grok/codex stay in home", () => {
-    withHome((home) => {
+  it("writes ~/.baton and default host skill paths; grok/codex stay in home", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      const result = initProject(cwd, { env });
+      const result = await initProject(cwd, { env });
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(home, ".baton", "SKILL.md")));
       assert.ok(fs.existsSync(path.join(cwd, HOST_SKILL_REL.claude)));
@@ -39,11 +39,11 @@ describe("initProject", () => {
     });
   });
 
-  it("init --tools grok writes home skill + k3 agent and nothing in the project", () => {
-    withHome((home) => {
+  it("init --tools grok writes home skill + k3 agent and nothing in the project", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      initProject(cwd, { tools: ["grok"], env });
+      await initProject(cwd, { tools: ["grok"], env });
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(home, ".grok", "skills", "baton", "SKILL.md")));
       const k3 = fs.readFileSync(path.join(home, ".grok", "agents", "k3.md"), "utf8");
@@ -52,11 +52,11 @@ describe("initProject", () => {
     });
   });
 
-  it("init --tools codex writes home skill but not card agents", () => {
-    withHome((home) => {
+  it("init --tools codex writes home skill but not card agents", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      initProject(cwd, { tools: ["codex"], env });
+      await initProject(cwd, { tools: ["codex"], env });
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(home, ".codex", "skills", "baton", "SKILL.md")));
       assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "k3.toml")));
@@ -67,11 +67,11 @@ describe("initProject", () => {
     });
   });
 
-  it("init --tools claude writes project .claude and does not write home grok/codex agents", () => {
-    withHome((home) => {
+  it("init --tools claude writes project .claude and does not write home grok/codex agents", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      initProject(cwd, { tools: ["claude"], env });
+      await initProject(cwd, { tools: ["claude"], env });
       assert.ok(fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(!fs.existsSync(path.join(home, ".grok")));
@@ -83,31 +83,31 @@ describe("initProject", () => {
     });
   });
 
-  it("honors --tools and does not clobber without --force", () => {
-    withHome((home) => {
+  it("honors --tools and does not clobber without --force", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      initProject(cwd, { tools: ["claude"], env });
+      await initProject(cwd, { tools: ["claude"], env });
       assert.ok(fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
       assert.ok(!fs.existsSync(path.join(cwd, ".cursor/skills/baton/SKILL.md")));
       assert.ok(!fs.existsSync(path.join(cwd, "AGENTS.md")));
 
       fs.writeFileSync(path.join(cwd, ".claude/skills/baton/SKILL.md"), "USER\n");
-      const again = initProject(cwd, { tools: ["claude"], env });
+      const again = await initProject(cwd, { tools: ["claude"], env });
       assert.equal(fs.readFileSync(path.join(cwd, ".claude/skills/baton/SKILL.md"), "utf8"), "USER\n");
       assert.ok(again.skipped.some((f) => f.includes(".claude")));
 
-      initProject(cwd, { force: true, tools: ["claude"], env });
+      await initProject(cwd, { force: true, tools: ["claude"], env });
       assert.match(fs.readFileSync(path.join(cwd, ".claude/skills/baton/SKILL.md"), "utf8"), /You are the director/);
     });
   });
 
-  it("appends a baton pointer to an existing AGENTS.md without rewriting it", () => {
-    withHome((home) => {
+  it("appends a baton pointer to an existing AGENTS.md without rewriting it", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       fs.writeFileSync(path.join(cwd, "AGENTS.md"), "# Mine\n\nKeep this.\n");
-      initProject(cwd, { tools: ["cursor"], env });
+      await initProject(cwd, { tools: ["cursor"], env });
       const text = fs.readFileSync(path.join(cwd, "AGENTS.md"), "utf8");
       assert.match(text, /# Mine/);
       assert.match(text, /Keep this/);
@@ -117,11 +117,11 @@ describe("initProject", () => {
 });
 
 describe("updateProject", () => {
-  it("refreshes SKILL and director defaults but never clobbers user cards", () => {
-    withHome((home) => {
+  it("refreshes SKILL and director defaults but never clobbers user cards", async () => {
+    await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      initProject(cwd, { tools: ["grok"], env });
+      await initProject(cwd, { tools: ["grok"], env });
       const cfgPath = path.join(home, ".baton", "config.toml");
       fs.writeFileSync(
         cfgPath,

@@ -15,7 +15,7 @@ import {
 } from "../lib/opencodex.js";
 import { wireKimiAccountToGrok } from "../lib/kimi-account.js";
 
-export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve } = {}) {
+export async function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve } = {}) {
   const resolved = (resolve || resolveOcx)({ env, cwd });
   if (!resolved) {
     stdout.write(`${engineMissingMessage()}\n`);
@@ -36,17 +36,17 @@ export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner,
       stdout.write(mapped.error + "\n");
       return 1;
     }
-    return doLogin(mapped.provider, engine);
+    return await doLogin(mapped.provider, engine);
   }
 
   if (provider) {
-    return doLogin(provider, engine);
+    return await doLogin(provider, engine);
   }
 
   return doList(engine);
 }
 
-function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved }) {
+async function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved }) {
   const inheritStdio = stdout === process.stdout && stderr === process.stderr;
   let result;
   try {
@@ -66,7 +66,7 @@ function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved
   }
   if (String(resolveLoginProvider(provider)).toLowerCase() === "kimi") {
     try {
-      wireKimiAccountToGrok({ env, cwd });
+      await wireKimiAccountToGrok({ env, cwd });
     } catch {
       // login already succeeded; wiring is best-effort and must not print the token
     }
