@@ -150,6 +150,27 @@ describe("opencodex account login consume", () => {
     assert.equal(none, null);
   });
 
+  it("resolver finds the OpenCodex git submodule before node_modules", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "baton-submod-"));
+    const subBin = path.join(root, "opencodex", "bin");
+    fs.mkdirSync(subBin, { recursive: true });
+    const submodule = path.join(subBin, "ocx.mjs");
+    fs.copyFileSync(FAKE_OCX, submodule);
+    const binDir = path.join(root, "node_modules", ".bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const npmBin = path.join(binDir, "ocx");
+    fs.copyFileSync(FAKE_OCX, npmBin);
+    fs.chmodSync(npmBin, 0o755);
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "baton-empty-path-"));
+    const hit = resolveOcx({
+      env: { ...process.env, PATH: empty },
+      packageRoot: root,
+      npxAvailable: () => false,
+    });
+    assert.equal(hit.source, "bundled");
+    assert.equal(hit.command, submodule);
+  });
+
   it("resolver finds bundled ocx next to baton when PATH is empty", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "baton-bundled-"));
     const binDir = path.join(root, "node_modules", ".bin");

@@ -30,6 +30,12 @@ baton init
 
 ## OpenCodex
 
+OpenCodex 以 git submodule 放在 `opencodex/`。Claude / Codex / Grok 的模型接入归它。baton 只调度（card、match、director），不重做宿主接入。
+
+```
+git clone --recurse-submodules https://github.com/lilinxiong/openbaton.git
+```
+
 账号登录交给 OpenCodex 消费，不重做 — 和 OpenSpec 一样。用浏览器登录即可：
 
 ```

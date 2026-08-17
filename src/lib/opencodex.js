@@ -1,8 +1,8 @@
 /**
- * Consume OpenCodex for account login. Resolve the engine; do not start a
- * local proxy and do not reimplement OAuth. After Kimi login, kimi-account.js
- * copies the access token into ~/.baton/kimi-account.env for Grok env_key
- * models. Never write openai_base_url or a catalog into ~/.codex.
+ * Consume OpenCodex (git submodule at opencodex/). It owns Claude / Codex /
+ * Grok model integration. baton only schedules. Resolve the vendored engine;
+ * do not start a local proxy and do not reimplement OAuth. Never write
+ * openai_base_url or a catalog into ~/.codex.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -64,8 +64,17 @@ export function ocxCliAvailable(env = process.env) {
   return findBinaryOnPath("ocx", env);
 }
 
+export function findSubmoduleOcx(opts = {}) {
+  const root = opts.packageRoot || packageRoot();
+  const submodule = path.join(root, "opencodex", "bin", "ocx.mjs");
+  if (isFile(submodule)) return submodule;
+  return null;
+}
+
 export function findBundledOcx(opts = {}) {
   const root = opts.packageRoot || packageRoot();
+  const submodule = findSubmoduleOcx({ packageRoot: root });
+  if (submodule) return submodule;
   const binDir = path.join(root, "node_modules", ".bin");
   for (const bin of binaryNames("ocx")) {
     const candidate = path.join(binDir, bin);
@@ -77,7 +86,8 @@ export function findBundledOcx(opts = {}) {
 }
 
 /**
- * Resolve an ocx invocation: PATH, then node_modules/.bin next to baton, then npx.
+ * Resolve an ocx invocation: PATH, then the OpenCodex git submodule
+ * (opencodex/bin/ocx.mjs), then node_modules, then npx.
  * Returns { source, command, prefixArgs } or null.
  */
 export function resolveOcx(opts = {}) {

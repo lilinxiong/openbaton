@@ -30,7 +30,13 @@ Do not reimplement OpenSpec.
 
 ## OpenCodex
 
-Account login is consumed from OpenCodex, not reimplemented — same idea as OpenSpec. Sign in with a browser:
+OpenCodex is vendored as a git submodule (`opencodex/`). It owns Claude / Codex / Grok model integration. baton only schedules (cards, match, director). Do not reimplement that host wiring.
+
+```
+git clone --recurse-submodules https://github.com/lilinxiong/openbaton.git
+```
+
+Account login is consumed, not reimplemented — same idea as OpenSpec. Sign in with a browser:
 
 ```
 baton login kimi      # Moonshot Kimi

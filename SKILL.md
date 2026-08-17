@@ -31,7 +31,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - If absent: still fully usable via `baton spawn`.
 
-8. **OpenCodex is consumed for account login, not reimplemented.**
+8. **OpenCodex is consumed, not reimplemented.** It is vendored as a git submodule and owns Claude / Codex / Grok model integration. baton only schedules.
    - `baton login` lists accounts and card->provider. `baton login <provider>` and `baton login --card <id>` open a browser so the user signs in.
    - Account-login providers: kimi, xai, cursor. Cursor login is experimental (PKCE). Do not enable nativeLocalExec. Do not paste Cursor keys.
    - Never ask the user to paste a base URL or API key. The user only types `baton login kimi`. Do not tell them to install ocx.
