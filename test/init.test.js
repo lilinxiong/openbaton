@@ -52,15 +52,17 @@ describe("initProject", () => {
     });
   });
 
-  it("init --tools codex writes home skill + k3 toml agent and nothing in the project", () => {
+  it("init --tools codex writes home skill but not card agents", () => {
     withHome((home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       initProject(cwd, { tools: ["codex"], env });
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(home, ".codex", "skills", "baton", "SKILL.md")));
-      const k3 = fs.readFileSync(path.join(home, ".codex", "agents", "k3.toml"), "utf8");
-      assert.match(k3, /model = "k3"/);
+      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "k3.toml")));
+      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "k3-256k.toml")));
+      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "kimi-for-coding.toml")));
+      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "mimo-v2.5.toml")));
       assertNoProjectHostDirs(cwd);
     });
   });

@@ -7,40 +7,52 @@ import { initProject } from "../src/commands/init.js";
 import { updateProject } from "../src/commands/update.js";
 import { addCard } from "../src/commands/cards.js";
 import { withHome, fakeEnv } from "./home.js";
+import { isCodexSpawnableCard, isChatGptNativeModel, BATON_CARD_MARK } from "../src/lib/codex-agents.js";
+
+const DEFAULT_IDS = [
+  "mimo-v2.5",
+  "mimo-v2.5-pro",
+  "kimi-for-coding",
+  "kimi-for-coding-highspeed",
+  "k3",
+  "k3-256k",
+];
 
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "baton-codex-"));
 }
 
 describe("Codex card agents", () => {
-  it("init with codex writes ~/.codex/agents/<id>.toml with model = card id", () => {
+  it("init with codex writes ~/.baton + skill, not ~/.codex/agents card files", () => {
     withHome((home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       initProject(cwd, { tools: ["codex"], env });
-      const k3 = fs.readFileSync(path.join(home, ".codex", "agents", "k3.toml"), "utf8");
-      assert.match(k3, /name = "k3"/);
-      assert.match(k3, /model = "k3"/);
-      assert.match(k3, /# baton-card/);
+      assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       const skill = fs.readFileSync(path.join(home, ".codex", "skills", "baton", "SKILL.md"), "utf8");
-      assert.match(skill, /agent_type/);
-      assert.match(skill, /fork_turns/);
-      assert.match(skill, /default/);
+      assert.match(skill, /director-only/i);
+      assert.match(skill, /spawn `k3`/);
+      assert.match(skill, /not inherit/i);
+      assert.match(skill, /No match on this host → blocked/);
       assert.match(skill, /agents\.default_subagent_model/);
+      assert.doesNotMatch(skill, /spawn with `agent_type` = card id/);
+      for (const id of DEFAULT_IDS) {
+        assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", `${id}.toml`)), id);
+      }
       assert.ok(!fs.existsSync(path.join(cwd, ".codex")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
     });
   });
 
-  it("cards add writes a home Codex agent when the skill is installed", () => {
+  it("cards add does not write a Codex agent for non-native cards", () => {
     withHome((home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       initProject(cwd, { tools: ["codex"], env });
       addCard(cwd, { id: "opus-card", strengths: "hard reasoning", env });
-      const text = fs.readFileSync(path.join(home, ".codex", "agents", "opus-card.toml"), "utf8");
-      assert.match(text, /name = "opus-card"/);
-      assert.match(text, /model = "opus-card"/);
+      addCard(cwd, { id: "k3", strengths: "flagship", env });
+      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "opus-card.toml")));
+      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "k3.toml")));
     });
   });
 
@@ -49,14 +61,21 @@ describe("Codex card agents", () => {
       const cwd = tmp();
       const env = fakeEnv(home);
       initProject(cwd, { tools: ["codex"], env });
+      const agentsDir = path.join(home, ".codex", "agents");
+      fs.mkdirSync(agentsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(agentsDir, "k3.toml"),
+        `${BATON_CARD_MARK}\nname = "k3"\nmodel = "k3"\n`,
+      );
+      fs.writeFileSync(path.join(agentsDir, "user.toml"), 'name = "user"\nmodel = "gpt-5"\n');
       fs.writeFileSync(
         path.join(home, ".baton", "config.toml"),
         `[director]\nmax_concurrent = 2\nmax_depth = 1\n\n[[models]]\nid = "opus"\nstrengths = "hard reasoning"\n`,
       );
       updateProject(cwd, { env });
-      const opus = fs.readFileSync(path.join(home, ".codex", "agents", "opus.toml"), "utf8");
-      assert.match(opus, /model = "opus"/);
-      assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "k3.toml")));
+      assert.ok(!fs.existsSync(path.join(agentsDir, "k3.toml")));
+      assert.ok(!fs.existsSync(path.join(agentsDir, "opus.toml")));
+      assert.ok(fs.existsSync(path.join(agentsDir, "user.toml")));
     });
   });
 
@@ -75,5 +94,17 @@ describe("Codex card agents", () => {
       assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", "codex-mini.toml")));
       assert.ok(!fs.existsSync(path.join(home, ".codex", "config.toml")));
     });
+  });
+
+  it("isCodexSpawnableCard is false for defaults and ChatGPT-native ids", () => {
+    for (const id of DEFAULT_IDS) {
+      assert.equal(isCodexSpawnableCard(id), false, id);
+    }
+    assert.equal(isCodexSpawnableCard("opus-card"), false);
+    assert.equal(isChatGptNativeModel("gpt-5"), true);
+    assert.equal(isCodexSpawnableCard("gpt-5"), false);
+    assert.equal(isCodexSpawnableCard("o3-mini"), false);
+    assert.equal(isCodexSpawnableCard("chatgpt"), false);
+    assert.equal(isCodexSpawnableCard("codex-mini"), false);
   });
 });

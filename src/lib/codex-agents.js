@@ -1,7 +1,8 @@
 /**
- * Codex host adapter: one user-home agent per card.
- * Official spawn has no model param; the agent definition pins it.
+ * Codex host adapter: director-only on this ChatGPT account.
+ * Official spawn has no model param; the agent definition would pin it.
  * Never write ChatGPT/OpenAI native models into ~/.codex agents or config.
+ * Never write Kimi/MiMo/non-Codex-native cards — this host cannot run them.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -13,6 +14,16 @@ export const BATON_CARD_MARK = "# baton-card";
 
 const SAFE_CARD_ID = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
+/** Current default cards — none are Codex-native. */
+const DEFAULT_NON_CODEX_CARDS = new Set([
+  "k3",
+  "k3-256k",
+  "kimi-for-coding",
+  "kimi-for-coding-highspeed",
+  "mimo-v2.5",
+  "mimo-v2.5-pro",
+]);
+
 /** ChatGPT / OpenAI native models must never be cards/agents under ~/.codex. */
 export function isChatGptNativeModel(id) {
   const s = String(id || "").trim().toLowerCase();
@@ -21,6 +32,22 @@ export function isChatGptNativeModel(id) {
   if (s.startsWith("o1") || s.startsWith("o3") || s.startsWith("o4")) return true;
   if (s.includes("chatgpt")) return true;
   if (s === "codex-mini" || s.startsWith("codex-mini")) return true;
+  return false;
+}
+
+/**
+ * True only if this ChatGPT account can run the card as a worker.
+ * ChatGPT-native models are never cards. Current defaults (k3, kimi-*,
+ * mimo-*) and any other non-Codex-native id are not spawnable. No
+ * ChatGPT stand-in.
+ */
+export function isCodexSpawnableCard(id) {
+  const s = String(id || "").trim();
+  if (!s) return false;
+  if (isChatGptNativeModel(s)) return false;
+  const lower = s.toLowerCase();
+  if (DEFAULT_NON_CODEX_CARDS.has(lower)) return false;
+  // Codex ChatGPT cannot run Kimi/MiMo or any other third-party card.
   return false;
 }
 
@@ -51,7 +78,7 @@ export function renderCodexCardAgent(card) {
 
 export function writeCodexCardAgent(cwd, card, { env } = {}) {
   const id = String(card.id || "").trim();
-  if (!isSafeCardId(id) || isChatGptNativeModel(id)) return null;
+  if (!isSafeCardId(id) || isChatGptNativeModel(id) || !isCodexSpawnableCard(id)) return null;
   const dest = codexAgentPath(cwd, id, { env });
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, renderCodexCardAgent({ ...card, id }), "utf8");

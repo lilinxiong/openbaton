@@ -30,15 +30,14 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 ## Codex spawn
 
-Official spawn has no `model` param. Children would inherit the parent unless the agent type pins the model.
+On Codex you are **director-only**. This ChatGPT account cannot run card workers (`k3`, `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`, `mimo-v2.5`, `mimo-v2.5-pro`, or any other non-ChatGPT card).
 
-- Match a card, then spawn with `agent_type` = card id (for example `k3`).
-- Set `fork_turns` to none. Do not inherit the parent session.
-- Never spawn `default` / `worker` / `explorer` for card-routed work.
+- Do **not** spawn `k3` or other card workers this ChatGPT account cannot run.
+- Do **not** inherit the parent/host model. Do not spawn `default` / `worker` / `explorer` as a stand-in.
+- Do **not** fall back to a ChatGPT / OpenAI native model (gpt-*, o1, o3, o4, chatgpt, codex-mini) as a stand-in for a card.
 - Do not set or rely on `agents.default_subagent_model`.
-- Each card is a user agent at `~/.codex/agents/<id>.toml` with `model` set to that id. Cards live in `~/.baton`. `baton init`, `baton update`, and `baton cards add` refresh these files.
-- Never use a ChatGPT / OpenAI native model (gpt-*, o1, o3, o4, chatgpt, codex-mini) as the agent type.
-- If the agent type is missing, blocked — do not inherit the parent model.
+- No match on this host → blocked. Ask the user to add or narrow a card, or use a host that can run it. Never silently pick.
+- `baton init` / `update` / `cards add` do not write card agents under `~/.codex/agents` for non-Codex-native cards. Stale `# baton-card` agent files are pruned.
 
 ## Commands
 
