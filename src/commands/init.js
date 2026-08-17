@@ -5,6 +5,7 @@ import { installHostSkills } from "../lib/hosts.js";
 import { loadConfig } from "../lib/config.js";
 import { syncGrokCardAgents } from "../lib/grok-agents.js";
 import { syncCodexCardAgents } from "../lib/codex-agents.js";
+import { wireKimiAccountToGrok } from "../lib/kimi-account.js";
 
 export function initProject(cwd, { force = false, tools, env } = {}) {
   const dir = batonHomeDir(env);
@@ -40,6 +41,8 @@ export function initProject(cwd, { force = false, tools, env } = {}) {
   if (hosts.tools.includes("grok")) {
     const agents = syncGrokCardAgents(cwd, cards, { env });
     created.push(...agents.created);
+    const wired = wireKimiAccountToGrok({ env, cwd });
+    if (wired.wired) created.push(...wired.files);
   }
   if (hosts.tools.includes("codex")) {
     const agents = syncCodexCardAgents(cwd, cards, { env });

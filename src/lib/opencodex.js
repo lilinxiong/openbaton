@@ -1,7 +1,8 @@
 /**
  * Consume OpenCodex for account login. Resolve the engine; do not start a
- * local proxy and do not reimplement OAuth. Tokens stay in OpenCodex, never
- * in .baton. Never write openai_base_url or a catalog into ~/.codex or ~/.grok.
+ * local proxy and do not reimplement OAuth. After Kimi login, kimi-account.js
+ * copies the access token into ~/.baton/kimi-account.env for Grok env_key
+ * models. Never write openai_base_url or a catalog into ~/.codex.
  */
 import fs from "node:fs";
 import path from "node:path";

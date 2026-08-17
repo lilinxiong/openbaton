@@ -5,6 +5,7 @@
 import { loadConfig } from "../lib/config.js";
 import {
   resolveOcx,
+  resolveLoginProvider,
   engineMissingMessage,
   authProviderForCard,
   listOcxAccounts,
@@ -12,6 +13,7 @@ import {
   ocxFailureHint,
   MIMO_KEY_ONLY_MESSAGE,
 } from "../lib/opencodex.js";
+import { wireKimiAccountToGrok } from "../lib/kimi-account.js";
 
 export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve } = {}) {
   const resolved = (resolve || resolveOcx)({ env, cwd });
@@ -61,6 +63,13 @@ function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved
   if (result.status !== 0) {
     stdout.write(ocxFailureHint(result) + "\n");
     return 1;
+  }
+  if (String(resolveLoginProvider(provider)).toLowerCase() === "kimi") {
+    try {
+      wireKimiAccountToGrok({ env, cwd });
+    } catch {
+      // login already succeeded; wiring is best-effort and must not print the token
+    }
   }
   if (!inheritStdio && result.stdout) {
     stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
