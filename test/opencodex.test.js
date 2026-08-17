@@ -13,6 +13,10 @@ import {
   resolveOcx,
   engineMissingMessage,
   isProxyDown,
+  ocxFailureHint,
+  sanitizeEngineOutput,
+  ENGINE_START_FAILURE_MESSAGE,
+  ENGINE_UNREACHABLE_HINT,
   OCX_PACKAGE,
 } from "../src/lib/opencodex.js";
 
@@ -207,8 +211,96 @@ describe("opencodex account login consume", () => {
   it("isProxyDown detects refused proxy and not a generic failure", () => {
     assert.equal(isProxyDown({ status: 1, stderr: "proxy is down: connection refused" }), true);
     assert.equal(isProxyDown({ status: 1, error: { code: "ECONNREFUSED", message: "connect" } }), true);
+    assert.equal(isProxyDown({ status: 1, stderr: "Error: Proxy is not running. Start it with: ocx start" }), true);
+    assert.equal(isProxyDown({ status: 1, stderr: "Start it with: ocx start" }), true);
     assert.equal(isProxyDown({ status: 1, stderr: "unexpected: account foo" }), false);
     assert.equal(isProxyDown({ status: 0, stdout: "ok" }), false);
+  });
+
+  it("does not leak ocx when login fails because the proxy is down", async () => {
+    await withHome(async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
+    const resolve = () => ({ source: "path", command: "/tmp/ocx", prefixArgs: [] });
+    const runner = () => ({
+      status: 1,
+      stdout: "",
+      stderr: "Error: Proxy is not running. Start it with: ocx start",
+    });
+    const startProxy = () => ({ status: 0, started: true, method: "ensure" });
+    const out = capture();
+    const err = capture();
+    const code = await run(["login", "kimi"], {
+      cwd, stdout: out, stderr: err, env: noOcxEnv().env, resolve, runner, startProxy,
+      proxyWaitMs: 0, proxyPollMs: 0,
+    });
+    assert.equal(code, 1);
+    const visible = out.text() + err.text();
+    assert.doesNotMatch(visible, /ocx/i);
+    assert.match(visible, /login engine/i);
+    assert.match(visible, /baton login/);
+    assert.match(visible, /could not start|could not reach/i);
+    assert.equal(visible.trim(), ocxFailureHint({
+      status: 1,
+      stderr: "Error: Proxy is not running. Start it with: ocx start",
+    }));
+    });
+  });
+
+  it("starts the proxy and waits until a later list succeeds before login", async () => {
+    await withHome(async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
+    const calls = [];
+    let lists = 0;
+    const resolve = () => ({ source: "path", command: "/tmp/ocx", prefixArgs: [] });
+    const runner = ({ args, inheritStdio }) => {
+      calls.push({ args: args.slice(), inheritStdio: Boolean(inheritStdio) });
+      if (args[0] === "account" && args[1] === "list") {
+        lists += 1;
+        if (lists < 3) {
+          return { status: 1, stdout: "", stderr: "Error: Proxy is not running. Start it with: ocx start" };
+        }
+        return { status: 0, stdout: "PROVIDER TYPE ID\nkimi oauth acc-1\n", stderr: "" };
+      }
+      if (args[0] === "account" && args[1] === "login") {
+        return { status: 0, stdout: "login " + args[2] + "\n", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "unexpected " + args.join(" ") };
+    };
+    const starts = [];
+    const startProxy = () => {
+      starts.push(lists);
+      return { status: 0, started: true, method: "ensure" };
+    };
+    const code = await run(["login", "kimi"], {
+      cwd, stdout: capture(), stderr: capture(), env: noOcxEnv().env,
+      resolve, runner, startProxy, proxyWaitMs: 1000, proxyPollMs: 0,
+    });
+    assert.equal(code, 0);
+    assert.equal(starts.length, 1);
+    assert.ok(lists >= 3, "should poll list until the proxy is up");
+    const login = calls.find((c) => c.args[0] === "account" && c.args[1] === "login");
+    assert.ok(login);
+    assert.deepEqual(login.args, ["account", "login", "kimi"]);
+    const loginIdx = calls.indexOf(login);
+    const listsBeforeLogin = calls.slice(0, loginIdx).filter((c) => c.args[0] === "account" && c.args[1] === "list");
+    assert.ok(listsBeforeLogin.length >= 2);
+    assert.equal(listsBeforeLogin[0].inheritStdio, false);
+    assert.ok(listsBeforeLogin.every((c) => c.inheritStdio === false));
+    });
+  });
+
+  it("ocxFailureHint never passes through raw engine CLI names", () => {
+    const hint = ocxFailureHint({
+      status: 1,
+      stderr: "Error: Proxy is not running. Start it with: ocx start",
+    });
+    assert.doesNotMatch(hint, /ocx/i);
+    assert.match(hint, /login engine/);
+    assert.match(hint, /baton login/);
+    assert.equal(hint, ENGINE_START_FAILURE_MESSAGE + "\n" + ENGINE_UNREACHABLE_HINT);
+    const cleaned = sanitizeEngineOutput("Error: Proxy is not running. Start it with: ocx start");
+    assert.doesNotMatch(cleaned, /ocx/i);
+    assert.match(cleaned, /login engine/);
   });
 
   it("baton login kimi invokes ocx account login kimi", async () => {

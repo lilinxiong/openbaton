@@ -169,6 +169,32 @@ export function runOcx(args, opts = {}) {
   });
 }
 
+export const ENGINE_START_FAILURE_MESSAGE =
+  "Error: the login engine could not start.";
+
+export const ENGINE_UNREACHABLE_HINT =
+  "hint: baton could not reach the login engine. Try baton login again in a moment.";
+
+const ENGINE_CLI_RE = /\b(?:npx\s+(?:-y\s+)?)?(?:ocx|opencodex|@bitkyc08\/opencodex)\b/i;
+
+/** Rewrite engine CLI names so users never see or type ocx. */
+export function sanitizeEngineOutput(text) {
+  if (text == null) return "";
+  let out = String(text);
+  out = out.replace(/Start it with:\s*(?:npx\s+(?:-y\s+)?)?(?:ocx|opencodex|@bitkyc08\/opencodex)(?:\s+start)?/gi, "");
+  out = out.replace(/Proxy is not running\.?/gi, "the login engine could not start");
+  out = out.replace(/\b(?:npx\s+(?:-y\s+)?)?@bitkyc08\/opencodex\b/gi, "the login engine");
+  out = out.replace(/\bocx(?:\.[a-z]+)?\b/gi, "the login engine");
+  out = out.replace(/\bopencodex\b/gi, "the login engine");
+  out = out.replace(/(?:the login engine\s*){2,}/gi, "the login engine ");
+  out = out.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return out;
+}
+
+function mentionsEngineCli(text) {
+  return ENGINE_CLI_RE.test(String(text || ""));
+}
+
 export function isProxyDown(result) {
   if (!result) return false;
   const errCode = result.error && result.error.code;
@@ -178,29 +204,66 @@ export function isProxyDown(result) {
     .join("\n")
     .toLowerCase();
   if (!text) return false;
-  return /econnrefused|connection refused|econnreset|not running|proxy is down|unreachable proxy|connect failed/.test(text)
+  return /econnrefused|connection refused|econnreset|not running|proxy is down|unreachable proxy|connect failed|start it with/.test(text)
     || /proxy.*(not running|unreachable|refused|down)/.test(text);
 }
 
+function defaultSleep(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.ceil(ms));
+}
+
+function invokeResolved(resolved, args, opts, runner) {
+  return runner({
+    ocx: resolved.command,
+    command: resolved.command,
+    prefixArgs: resolved.prefixArgs || [],
+    args,
+    inheritStdio: false,
+    env: opts.env || process.env,
+    cwd: opts.cwd,
+    source: resolved.source,
+  });
+}
+
+function startProxyOnce(opts) {
+  try {
+    return (opts.startProxy || defaultStartProxy)(opts);
+  } catch {
+    return { status: 1, started: false };
+  }
+}
+
+/** Poll account list until the proxy is up or the timeout elapses. */
+export function waitUntilProxyUp(opts = {}) {
+  const timeoutMs = opts.proxyWaitMs ?? 12000;
+  const intervalMs = opts.proxyPollMs ?? 250;
+  const sleepFn = opts.sleep || defaultSleep;
+  const started = Date.now();
+  let last = runOcx(["account", "list"], { ...opts, inheritStdio: false });
+  if (!isProxyDown(last)) return last;
+  while (Date.now() - started < timeoutMs) {
+    sleepFn(intervalMs);
+    last = runOcx(["account", "list"], { ...opts, inheritStdio: false });
+    if (!isProxyDown(last)) return last;
+  }
+  return last;
+}
+
 /**
- * One start attempt. Prefer `service start` (returns), else detach `start`.
- * Not a service manager.
+ * One start attempt. Prefer `ensure`, then `service start`, else detach `start`.
+ * Not a service manager. Callers wait/poll after this returns.
  */
 export function defaultStartProxy(opts = {}) {
   const env = opts.env || process.env;
   const resolved = resolvedFrom({ ...opts, env });
   if (!resolved) return { status: 1, started: false };
   const runner = opts.runner || defaultOcxRunner;
-  const service = runner({
-    ocx: resolved.command,
-    command: resolved.command,
-    prefixArgs: resolved.prefixArgs || [],
-    args: ["service", "start"],
-    inheritStdio: false,
-    env,
-    cwd: opts.cwd,
-    source: resolved.source,
-  });
+
+  const ensure = invokeResolved(resolved, ["ensure"], { ...opts, env }, runner);
+  if (ensure.status === 0) return { ...ensure, started: true, method: "ensure" };
+
+  const service = invokeResolved(resolved, ["service", "start"], { ...opts, env }, runner);
   if (service.status === 0) return { ...service, started: true, method: "service" };
 
   try {
@@ -218,15 +281,13 @@ export function defaultStartProxy(opts = {}) {
   }
 }
 
-/** If list/login failed because the proxy is down, start once and retry. */
+/** If list/login failed because the proxy is down, start once, wait, and retry. */
 export function runOcxWithProxy(args, opts = {}) {
-  const first = runOcx(args, opts);
+  const first = runOcx(args, { ...opts, inheritStdio: false });
   if (first.status === 0 || !isProxyDown(first)) return first;
-  try {
-    (opts.startProxy || defaultStartProxy)(opts);
-  } catch {
-    // one attempt
-  }
+  startProxyOnce(opts);
+  const ready = waitUntilProxyUp(opts);
+  if (isProxyDown(ready)) return ready;
   return runOcx(args, opts);
 }
 
@@ -249,13 +310,13 @@ export function loginOcxProvider(provider, opts = {}) {
     err.code = "OCX_PROVIDER_REQUIRED";
     throw err;
   }
-  const probe = runOcx(["account", "list"], { ...opts, inheritStdio: false });
+  let probe = runOcx(["account", "list"], { ...opts, inheritStdio: false });
   if (isProxyDown(probe)) {
-    try {
-      (opts.startProxy || defaultStartProxy)(opts);
-    } catch {
-      // one attempt
-    }
+    startProxyOnce(opts);
+    probe = waitUntilProxyUp(opts);
+  }
+  if (isProxyDown(probe)) {
+    return probe;
   }
   return runOcx(["account", "login", id], {
     ...opts,
@@ -264,9 +325,13 @@ export function loginOcxProvider(provider, opts = {}) {
 }
 
 export function ocxFailureHint(result) {
-  const errText = String(result?.stderr || result?.error?.message || "").trim();
+  const raw = String(result?.stderr || result?.error?.message || "").trim();
+  if (isProxyDown(result) || mentionsEngineCli(raw)) {
+    return ENGINE_START_FAILURE_MESSAGE + "\n" + ENGINE_UNREACHABLE_HINT;
+  }
+  const errText = sanitizeEngineOutput(raw);
   const lines = [];
   if (errText) lines.push(errText);
-  lines.push("hint: baton could not reach the login engine. Try baton login again in a moment.");
+  lines.push(ENGINE_UNREACHABLE_HINT);
   return lines.join("\n");
 }
