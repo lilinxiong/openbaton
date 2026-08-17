@@ -234,8 +234,16 @@ export function listOcxAccounts(opts = {}) {
   return runOcxWithProxy(["account", "list"], { ...opts, inheritStdio: false });
 }
 
+export function resolveLoginProvider(name) {
+  const raw = String(name || "").trim();
+  const id = raw.toLowerCase();
+  if (!id) return "";
+  if (id === "xai" || id === "grok" || id.startsWith("grok-") || id === "grok.com") return "xai";
+  return raw;
+}
+
 export function loginOcxProvider(provider, opts = {}) {
-  const id = String(provider || "").trim();
+  const id = resolveLoginProvider(provider);
   if (!id) {
     const err = new Error("provider required");
     err.code = "OCX_PROVIDER_REQUIRED";

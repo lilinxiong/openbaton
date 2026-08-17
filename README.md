@@ -35,6 +35,7 @@ Account login is consumed from OpenCodex, not reimplemented — same idea as Ope
 ```
 baton login kimi      # Moonshot Kimi
 baton login cursor    # Cursor (experimental PKCE)
+baton login grok      # xAI Grok account
 ```
 
 Do not paste a base URL or API key. Do not paste Cursor keys.

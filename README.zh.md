@@ -35,6 +35,7 @@ baton init
 ```
 baton login kimi      # Moonshot Kimi
 baton login cursor    # Cursor（实验性 PKCE）
+baton login grok      # xAI Grok 账号
 ```
 
 不要粘贴 base URL 或 API key。不要粘贴 Cursor 密钥。

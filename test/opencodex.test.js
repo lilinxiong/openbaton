@@ -220,6 +220,14 @@ describe("opencodex account login consume", () => {
     assert.match(argvLog(fake.log), /account login cursor/);
   });
 
+  it("baton login grok aliases to ocx account login xai", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
+    const fake = fakeOcxEnv();
+    const code = await run(["login", "grok"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
+    assert.equal(code, 0);
+    assert.match(argvLog(fake.log), /account login xai/);
+  });
+
   it("--card k3 resolves to kimi", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
