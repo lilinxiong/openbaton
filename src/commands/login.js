@@ -13,7 +13,7 @@ import {
   MIMO_KEY_ONLY_MESSAGE,
 } from "../lib/opencodex.js";
 
-export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve, startProxy, proxyWaitMs, proxyPollMs, sleep } = {}) {
+export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve } = {}) {
   const resolved = (resolve || resolveOcx)({ env, cwd });
   if (!resolved) {
     stdout.write(`${engineMissingMessage()}\n`);
@@ -22,7 +22,7 @@ export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner,
 
   const flags = parseFlags(args);
   const provider = firstPositional(args);
-  const engine = { cwd, stdout, stderr, env, runner, resolve, resolved, startProxy, proxyWaitMs, proxyPollMs, sleep };
+  const engine = { cwd, stdout, stderr, env, runner, resolve, resolved };
 
   if (flags.card != null) {
     if (flags.card === true || String(flags.card).trim() === "") {
@@ -44,13 +44,12 @@ export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner,
   return doList(engine);
 }
 
-function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved, startProxy, proxyWaitMs, proxyPollMs, sleep }) {
+function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved }) {
   const inheritStdio = stdout === process.stdout && stderr === process.stderr;
   let result;
   try {
     result = loginOcxProvider(provider, {
-      cwd, env, runner, resolve, resolved, startProxy, inheritStdio,
-      proxyWaitMs, proxyPollMs, sleep,
+      cwd, env, runner, resolve, resolved, inheritStdio,
     });
   } catch (err) {
     if (err.code === "OCX_MISSING") {
@@ -69,10 +68,10 @@ function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved
   return 0;
 }
 
-function doList({ cwd, stdout, env, runner, resolve, resolved, startProxy, proxyWaitMs, proxyPollMs, sleep }) {
+function doList({ cwd, stdout, env, runner, resolve, resolved }) {
   let result;
   try {
-    result = listOcxAccounts({ cwd, env, runner, resolve, resolved, startProxy, proxyWaitMs, proxyPollMs, sleep });
+    result = listOcxAccounts({ cwd, env, runner, resolve, resolved });
   } catch (err) {
     if (err.code === "OCX_MISSING") {
       stdout.write(err.message + "\n");

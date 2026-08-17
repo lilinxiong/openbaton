@@ -36,7 +36,7 @@ Usage:
   baton version | --version | -v
 `;
 
-export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve, startProxy, proxyWaitMs, proxyPollMs, sleep } = {}) {
+export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve } = {}) {
   const args = argv.slice();
   const cmd = args.shift() || "help";
 
@@ -67,7 +67,7 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "login":
-        return runLogin(args, { cwd, stdout, stderr, env, runner, resolve, startProxy, proxyWaitMs, proxyPollMs, sleep });
+        return runLogin(args, { cwd, stdout, stderr, env, runner, resolve });
       case "status":
         return cmdStatus(cwd, stdout, env);
       default:

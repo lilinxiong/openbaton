@@ -167,22 +167,19 @@ describe("opencodex account login consume", () => {
     assert.equal(hit.command, bundled);
   });
 
-  it("starts the proxy once when list/login fails because it is down", async () => {
+  it("does not start a proxy when list/login fails because it is down", async () => {
     await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const starts = [];
-    let lists = 0;
+    const calls = [];
     const resolve = () => ({ source: "path", command: "/tmp/ocx", prefixArgs: [] });
     const runner = ({ args }) => {
+      calls.push(args.slice());
       if (args[0] === "account" && args[1] === "list") {
-        lists += 1;
-        if (lists === 1) {
-          return { status: 1, stdout: "", stderr: "proxy is down: connection refused" };
-        }
-        return { status: 0, stdout: "PROVIDER TYPE ID\nkimi oauth acc-1\n", stderr: "" };
+        return { status: 1, stdout: "", stderr: "proxy is down: connection refused" };
       }
       if (args[0] === "account" && args[1] === "login") {
-        return { status: 0, stdout: "login " + args[2] + "\n", stderr: "" };
+        return { status: 1, stdout: "", stderr: "proxy is down: connection refused" };
       }
       return { status: 1, stdout: "", stderr: "unexpected " + args.join(" ") };
     };
@@ -190,21 +187,28 @@ describe("opencodex account login consume", () => {
       starts.push(opts);
       return { status: 0, started: true, method: "service" };
     };
+    const loginOut = capture();
     const loginCode = await run(["login", "kimi"], {
-      cwd, stdout: capture(), stderr: capture(), env: noOcxEnv().env, resolve, runner, startProxy,
+      cwd, stdout: loginOut, stderr: capture(), env: noOcxEnv().env, resolve, runner, startProxy,
     });
-    assert.equal(loginCode, 0);
-    assert.equal(starts.length, 1);
+    assert.equal(loginCode, 1);
+    assert.equal(starts.length, 0);
+    assert.ok(calls.every((a) => a[0] === "account"));
+    assert.ok(!calls.some((a) => a[0] === "ensure" || a[0] === "start" || (a[0] === "service" && a[1] === "start")));
+    assert.doesNotMatch(loginOut.text(), /ocx/i);
+    assert.match(loginOut.text(), /should not require a local proxy|not used that way/i);
 
-    lists = 0;
     starts.length = 0;
+    calls.length = 0;
     const listOut = capture();
     const listCode = await run(["login"], {
       cwd, stdout: listOut, stderr: capture(), env: noOcxEnv().env, resolve, runner, startProxy,
     });
-    assert.equal(listCode, 0);
-    assert.equal(starts.length, 1);
-    assert.match(listOut.text(), /kimi/);
+    assert.equal(listCode, 1);
+    assert.equal(starts.length, 0);
+    assert.ok(!calls.some((a) => a[0] === "ensure" || a[0] === "start" || (a[0] === "service" && a[1] === "start")));
+    assert.doesNotMatch(listOut.text(), /ocx/i);
+    assert.match(listOut.text(), /should not require a local proxy|not used that way/i);
     });
   });
 
@@ -226,7 +230,11 @@ describe("opencodex account login consume", () => {
       stdout: "",
       stderr: "Error: Proxy is not running. Start it with: ocx start",
     });
-    const startProxy = () => ({ status: 0, started: true, method: "ensure" });
+    const starts = [];
+    const startProxy = () => {
+      starts.push(true);
+      return { status: 0, started: true, method: "ensure" };
+    };
     const out = capture();
     const err = capture();
     const code = await run(["login", "kimi"], {
@@ -234,11 +242,13 @@ describe("opencodex account login consume", () => {
       proxyWaitMs: 0, proxyPollMs: 0,
     });
     assert.equal(code, 1);
+    assert.equal(starts.length, 0);
     const visible = out.text() + err.text();
     assert.doesNotMatch(visible, /ocx/i);
     assert.match(visible, /login engine/i);
     assert.match(visible, /baton login/);
-    assert.match(visible, /could not start|could not reach/i);
+    assert.match(visible, /should not require a local proxy|not used that way/i);
+    assert.doesNotMatch(visible, /start (it|the proxy|a proxy)/i);
     assert.equal(visible.trim(), ocxFailureHint({
       status: 1,
       stderr: "Error: Proxy is not running. Start it with: ocx start",
@@ -246,7 +256,7 @@ describe("opencodex account login consume", () => {
     });
   });
 
-  it("starts the proxy and waits until a later list succeeds before login", async () => {
+  it("does not start a proxy or wait when list/login reports the proxy is down", async () => {
     await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const calls = [];
@@ -256,13 +266,10 @@ describe("opencodex account login consume", () => {
       calls.push({ args: args.slice(), inheritStdio: Boolean(inheritStdio) });
       if (args[0] === "account" && args[1] === "list") {
         lists += 1;
-        if (lists < 3) {
-          return { status: 1, stdout: "", stderr: "Error: Proxy is not running. Start it with: ocx start" };
-        }
-        return { status: 0, stdout: "PROVIDER TYPE ID\nkimi oauth acc-1\n", stderr: "" };
+        return { status: 1, stdout: "", stderr: "Error: Proxy is not running. Start it with: ocx start" };
       }
       if (args[0] === "account" && args[1] === "login") {
-        return { status: 0, stdout: "login " + args[2] + "\n", stderr: "" };
+        return { status: 1, stdout: "", stderr: "Error: Proxy is not running. Start it with: ocx start" };
       }
       return { status: 1, stdout: "", stderr: "unexpected " + args.join(" ") };
     };
@@ -271,21 +278,20 @@ describe("opencodex account login consume", () => {
       starts.push(lists);
       return { status: 0, started: true, method: "ensure" };
     };
+    const out = capture();
     const code = await run(["login", "kimi"], {
-      cwd, stdout: capture(), stderr: capture(), env: noOcxEnv().env,
+      cwd, stdout: out, stderr: capture(), env: noOcxEnv().env,
       resolve, runner, startProxy, proxyWaitMs: 1000, proxyPollMs: 0,
     });
-    assert.equal(code, 0);
-    assert.equal(starts.length, 1);
-    assert.ok(lists >= 3, "should poll list until the proxy is up");
+    assert.equal(code, 1);
+    assert.equal(starts.length, 0);
+    assert.ok(lists <= 1, "must not poll list until a proxy is up");
+    assert.ok(!calls.some((c) => c.args[0] === "ensure" || c.args[0] === "start" || (c.args[0] === "service" && c.args[1] === "start")));
     const login = calls.find((c) => c.args[0] === "account" && c.args[1] === "login");
     assert.ok(login);
     assert.deepEqual(login.args, ["account", "login", "kimi"]);
-    const loginIdx = calls.indexOf(login);
-    const listsBeforeLogin = calls.slice(0, loginIdx).filter((c) => c.args[0] === "account" && c.args[1] === "list");
-    assert.ok(listsBeforeLogin.length >= 2);
-    assert.equal(listsBeforeLogin[0].inheritStdio, false);
-    assert.ok(listsBeforeLogin.every((c) => c.inheritStdio === false));
+    assert.doesNotMatch(out.text(), /ocx/i);
+    assert.match(out.text(), /should not require a local proxy|not used that way/i);
     });
   });
 
@@ -300,7 +306,8 @@ describe("opencodex account login consume", () => {
     assert.equal(hint, ENGINE_START_FAILURE_MESSAGE + "\n" + ENGINE_UNREACHABLE_HINT);
     const cleaned = sanitizeEngineOutput("Error: Proxy is not running. Start it with: ocx start");
     assert.doesNotMatch(cleaned, /ocx/i);
-    assert.match(cleaned, /login engine/);
+    assert.doesNotMatch(cleaned, /Start it with/i);
+    assert.match(cleaned, /should not require a local proxy/);
   });
 
   it("baton login kimi invokes ocx account login kimi", async () => {
