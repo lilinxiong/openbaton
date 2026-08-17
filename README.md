@@ -16,7 +16,7 @@ baton init
 Not another coding CLI. A skill pack + `init` that sits in front of the host you already use (Claude Code, Cursor, Grok, Codex, …).
 
 - **Cards only.** Each model is `id` + strengths. The CLI picks per task. No subagent default. No inherit-parent-as-default. No match → blocked.
-- **Host-native workers.** Spawn in-process subagents. Do not shell out to `claude -p` / `cursor-agent -p` / `grok -p`. On Grok, init writes `.grok/agents/<card-id>.md` so spawn uses `subagent_type` = card id (official spawn has no `model` param).
+- **Host-native workers.** Spawn in-process subagents. Do not shell out to `claude -p` / `cursor-agent -p` / `grok -p`. Grok and Codex init install into `~/.grok` and `~/.codex` (not the project); cards live in `~/.baton`.
 - **Unlimited logical spawn.** Queue if the host has a hard cap. Never refuse. Depth 1.
 - **Hygiene.** Workers return a short conclusion. Tool dumps stay out of the main session.
 

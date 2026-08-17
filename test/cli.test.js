@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
+import { withHome, fakeEnv } from "./home.js";
 
 function capture() {
   const chunks = [];
@@ -20,31 +21,36 @@ function capture() {
 
 describe("cli run()", () => {
   it("init + match + spawn in a temp cwd; no-match is blocked", async () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-"));
-    const out = capture();
-    const err = capture();
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-"));
+      const env = fakeEnv(home);
+      const out = capture();
+      const err = capture();
 
-    const initCode = await run(["init", "--tools", "claude,grok"], { cwd, stdout: out, stderr: err });
-    assert.equal(initCode, 0);
-    assert.ok(fs.existsSync(path.join(cwd, ".baton", "config.toml")));
-    assert.ok(fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
-    assert.ok(fs.existsSync(path.join(cwd, ".grok/skills/baton/SKILL.md")));
+      const initCode = await run(["init", "--tools", "claude,grok"], { cwd, stdout: out, stderr: err, env });
+      assert.equal(initCode, 0);
+      assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
+      assert.ok(fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
+      assert.ok(fs.existsSync(path.join(home, ".grok/skills/baton/SKILL.md")));
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
+      assert.ok(!fs.existsSync(path.join(cwd, ".grok")));
 
-    const hitOut = capture();
-    const hit = await run(["match", "code completion routine feature development"], { cwd, stdout: hitOut, stderr: capture() });
-    assert.equal(hit, 0);
-    assert.match(hitOut.text(), /kimi-for-coding/);
+      const hitOut = capture();
+      const hit = await run(["match", "code completion routine feature development"], { cwd, stdout: hitOut, stderr: capture(), env });
+      assert.equal(hit, 0);
+      assert.match(hitOut.text(), /kimi-for-coding/);
 
-    const missOut = capture();
-    const miss = await run(["match", "paint the barn purple"], { cwd, stdout: missOut, stderr: capture() });
-    assert.equal(miss, 1);
-    assert.match(missOut.text(), /blocked:/);
+      const missOut = capture();
+      const miss = await run(["match", "paint the barn purple"], { cwd, stdout: missOut, stderr: capture(), env });
+      assert.equal(miss, 1);
+      assert.match(missOut.text(), /blocked:/);
 
-    const spawnOut = capture();
-    const spawned = await run(["spawn", "code completion routine feature development"], { cwd, stdout: spawnOut, stderr: capture() });
-    assert.equal(spawned, 0);
-    assert.match(spawnOut.text(), /spawn spn-0001/);
-    assert.match(spawnOut.text(), /kimi-for-coding/);
-    assert.ok(fs.existsSync(path.join(cwd, ".baton", "spawns", "spn-0001.json")));
+      const spawnOut = capture();
+      const spawned = await run(["spawn", "code completion routine feature development"], { cwd, stdout: spawnOut, stderr: capture(), env });
+      assert.equal(spawned, 0);
+      assert.match(spawnOut.text(), /spawn spn-0001/);
+      assert.match(spawnOut.text(), /kimi-for-coding/);
+      assert.ok(fs.existsSync(path.join(cwd, ".baton", "spawns", "spn-0001.json")));
+    });
   });
 });

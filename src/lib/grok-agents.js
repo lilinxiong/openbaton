@@ -1,10 +1,11 @@
 /**
- * Grok host adapter: one project agent per card.
+ * Grok host adapter: one user-home agent per card.
  * Official spawn_subagent has no model param; the agent definition pins it.
- * Project .grok/config.toml does not load [subagents], so agents/*.md is the pin.
+ * Never write Grok native models (grok-*) into ~/.grok agents or config.
  */
 import fs from "node:fs";
 import path from "node:path";
+import { hostHome, displayHomePath } from "./paths.js";
 import { HOST_SKILL_REL } from "./hosts.js";
 
 export const GROK_AGENTS_DIR = ".grok/agents";
@@ -12,12 +13,20 @@ export const BATON_CARD_MARK = "<!-- baton-card -->";
 
 const SAFE_CARD_ID = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
-export function grokSkillInstalled(cwd) {
-  return fs.existsSync(path.join(cwd, HOST_SKILL_REL.grok));
+/** Grok's own models must never be cards/agents under ~/.grok. */
+export function isGrokNativeModel(id) {
+  const s = String(id || "").trim().toLowerCase();
+  if (!s) return false;
+  if (s === "grok" || s === "grok-build") return true;
+  return s.startsWith("grok-") || s.startsWith("grok.");
 }
 
-export function grokAgentPath(cwd, id) {
-  return path.join(cwd, GROK_AGENTS_DIR, `${id}.md`);
+export function grokSkillInstalled(_cwd, { env } = {}) {
+  return fs.existsSync(path.join(hostHome(env), HOST_SKILL_REL.grok));
+}
+
+export function grokAgentPath(_cwd, id, { env } = {}) {
+  return path.join(hostHome(env), ".grok", "agents", `${id}.md`);
 }
 
 export function isSafeCardId(id) {
@@ -45,30 +54,30 @@ Complete the assigned task. Return a short conclusion only. Do not spawn child a
 `;
 }
 
-export function writeGrokCardAgent(cwd, card) {
+export function writeGrokCardAgent(cwd, card, { env } = {}) {
   const id = String(card.id || "").trim();
-  if (!isSafeCardId(id)) return null;
-  const dest = grokAgentPath(cwd, id);
+  if (!isSafeCardId(id) || isGrokNativeModel(id)) return null;
+  const dest = grokAgentPath(cwd, id, { env });
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, renderGrokCardAgent({ ...card, id }), "utf8");
-  return rel(cwd, dest);
+  return displayHomePath(dest, { cwd, env });
 }
 
-export function syncGrokCardAgents(cwd, cards) {
+export function syncGrokCardAgents(cwd, cards, { env } = {}) {
   const created = [];
   const keep = new Set();
   for (const card of cards || []) {
-    const written = writeGrokCardAgent(cwd, card);
+    const written = writeGrokCardAgent(cwd, card, { env });
     if (!written) continue;
     created.push(written);
     keep.add(String(card.id || "").trim());
   }
-  const pruned = pruneStaleGrokCardAgents(cwd, keep);
+  const pruned = pruneStaleGrokCardAgents(cwd, keep, { env });
   return { created, pruned };
 }
 
-function pruneStaleGrokCardAgents(cwd, keepIds) {
-  const dir = path.join(cwd, GROK_AGENTS_DIR);
+function pruneStaleGrokCardAgents(cwd, keepIds, { env } = {}) {
+  const dir = path.join(hostHome(env), ".grok", "agents");
   if (!fs.existsSync(dir)) return [];
   const pruned = [];
   for (const name of fs.readdirSync(dir)) {
@@ -79,11 +88,7 @@ function pruneStaleGrokCardAgents(cwd, keepIds) {
     const text = fs.readFileSync(file, "utf8");
     if (!text.includes(BATON_CARD_MARK)) continue;
     fs.unlinkSync(file);
-    pruned.push(rel(cwd, file));
+    pruned.push(displayHomePath(file, { cwd, env }));
   }
   return pruned;
-}
-
-function rel(cwd, p) {
-  return path.relative(cwd, p) || p;
 }

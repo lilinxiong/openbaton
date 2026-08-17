@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.js";
 import { initProject } from "../src/commands/init.js";
 import { loadConfig } from "../src/lib/config.js";
+import { withHome } from "./home.js";
 import {
   authProviderForCard,
   resolveOcx,
@@ -62,6 +63,7 @@ function secretLikeFiles(dir) {
 
 describe("opencodex account login consume", () => {
   it("missing PATH ocx is not a hard fail when resolver can resolve", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const calls = [];
     const resolve = () => ({ source: "npx", command: "npx", prefixArgs: ["-y", OCX_PACKAGE] });
@@ -78,9 +80,11 @@ describe("opencodex account login consume", () => {
     assert.deepEqual(login.args, ["account", "login", "kimi"]);
     assert.equal(login.command, "npx");
     assert.deepEqual(login.prefixArgs, ["-y", OCX_PACKAGE]);
+    });
   });
 
   it("when the engine cannot be resolved, does not tell the user to install ocx", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const out = capture();
     const code = await run(["login", "kimi"], {
@@ -96,6 +100,7 @@ describe("opencodex account login consume", () => {
     assert.doesNotMatch(t, /OpenCodex is not on PATH/);
     assert.doesNotMatch(t, /Install:/);
     assert.equal(t.trim(), engineMissingMessage());
+    });
   });
 
   it("resolver tries PATH then bundled then npx", () => {
@@ -159,6 +164,7 @@ describe("opencodex account login consume", () => {
   });
 
   it("starts the proxy once when list/login fails because it is down", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const starts = [];
     let lists = 0;
@@ -195,6 +201,7 @@ describe("opencodex account login consume", () => {
     assert.equal(listCode, 0);
     assert.equal(starts.length, 1);
     assert.match(listOut.text(), /kimi/);
+    });
   });
 
   it("isProxyDown detects refused proxy and not a generic failure", () => {
@@ -205,30 +212,37 @@ describe("opencodex account login consume", () => {
   });
 
   it("baton login kimi invokes ocx account login kimi", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const fake = fakeOcxEnv();
     const code = await run(["login", "kimi"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
     assert.match(argvLog(fake.log), /account login kimi/);
+    });
   });
 
   it("baton login cursor invokes ocx account login cursor", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const fake = fakeOcxEnv();
     const code = await run(["login", "cursor"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
     assert.match(argvLog(fake.log), /account login cursor/);
+    });
   });
 
   it("baton login grok aliases to ocx account login xai", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     const fake = fakeOcxEnv();
     const code = await run(["login", "grok"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
     assert.match(argvLog(fake.log), /account login xai/);
+    });
   });
 
   it("--card k3 resolves to kimi", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
     const cfg = loadConfig(cwd);
@@ -237,18 +251,22 @@ describe("opencodex account login consume", () => {
     const code = await run(["login", "--card", "k3"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
     assert.match(argvLog(fake.log), /account login kimi/);
+    });
   });
 
   it("--card kimi-for-coding resolves to kimi", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
     const fake = fakeOcxEnv();
     const code = await run(["login", "--card", "kimi-for-coding"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
     assert.match(argvLog(fake.log), /account login kimi/);
+    });
   });
 
   it("--card mimo-v2.5-pro is blocked as key-only", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
     const cfg = loadConfig(cwd);
@@ -261,9 +279,11 @@ describe("opencodex account login consume", () => {
     assert.match(out.text(), /API-key/);
     assert.match(out.text(), /Do not paste/);
     assert.equal(argvLog(fake.log), "");
+    });
   });
 
   it("unknown card is blocked", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
     const fake = fakeOcxEnv();
@@ -274,18 +294,22 @@ describe("opencodex account login consume", () => {
     assert.match(out.text(), /unknown card/);
     assert.match(out.text(), /auth_provider or pass provider/);
     assert.equal(argvLog(fake.log), "");
+    });
   });
 
   it("writes no token or key file under the temp cwd", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
     const fake = fakeOcxEnv();
     const code = await run(["login", "kimi"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
     assert.deepEqual(secretLikeFiles(cwd), []);
+    });
   });
 
   it("baton login lists ocx accounts when fake ocx is present", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
     const fake = fakeOcxEnv();
@@ -295,6 +319,7 @@ describe("opencodex account login consume", () => {
     assert.match(argvLog(fake.log), /account list/);
     assert.match(out.text(), /kimi/);
     assert.match(out.text(), /k3/);
+    });
   });
 
   it("maps grok ids to xai and does not invent a cursor card", () => {

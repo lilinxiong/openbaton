@@ -8,12 +8,14 @@ import { initProject } from "../src/commands/init.js";
 import { loadConfig } from "../src/lib/config.js";
 import { applyChange } from "../src/lib/apply.js";
 import { parseTasks } from "../src/lib/openspec.js";
+import { withHome } from "./home.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtureTasks = path.join(here, "fixtures/openspec/changes/demo/tasks.md");
 
 describe("applyChange", () => {
   it("does not stop at the 9th pending task — every pending gets a ticket, director-local, or blocked", () => {
+    withHome(() => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-"));
     fs.mkdirSync(path.join(cwd, "openspec", "changes", "demo"), { recursive: true });
     fs.copyFileSync(fixtureTasks, path.join(cwd, "openspec", "changes", "demo", "tasks.md"));
@@ -25,5 +27,6 @@ describe("applyChange", () => {
     const handled = result.tickets.length + result.local.length + result.blocked.length;
     assert.equal(handled, pending.length);
     assert.ok(handled > 9);
+    });
   });
 });

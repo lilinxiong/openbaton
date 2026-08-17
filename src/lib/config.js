@@ -43,8 +43,8 @@ export function normalizeConfig(raw) {
   return cfg;
 }
 
-export function loadConfig(cwd) {
-  const file = configPath(cwd);
+export function loadConfig(cwd, { env } = {}) {
+  const file = configPath(cwd, { env });
   if (!fs.existsSync(file)) {
     const err = new Error(`baton is not initialized here (missing ${file}). Run: baton init`);
     err.code = "BATON_NOT_INITIALIZED";
@@ -54,8 +54,8 @@ export function loadConfig(cwd) {
   return normalizeConfig(raw);
 }
 
-export function saveConfig(cwd, cfg) {
-  const file = configPath(cwd);
+export function saveConfig(cwd, cfg, { env } = {}) {
+  const file = configPath(cwd, { env });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const normalized = normalizeConfig(cfg);
   const out = {

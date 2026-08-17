@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-指挥棒。多模型协作的导演：一个入口对话，按能力卡分派原生 spawn，主上下文洁癖。
+指挥棒。多模型协作的 director：一个入口对话，按 card 分派原生 spawn，主上下文洁癖。
 
 既能独立，又能 1+1>2 — 单独可用；有 OpenSpec 时严格更好。
 
@@ -13,11 +13,11 @@ baton init
 
 ## 它是什么
 
-不是又一个 coding CLI。而是一套 skill pack + `init`，坐在你已经在用的宿主前面（Claude Code、Cursor、Grok、Codex、…）。
+不是又一个 coding CLI。而是一套 skill pack + `init`，坐在你已经在用的 host 前面（Claude Code、Cursor、Grok、Codex、…）。
 
-- **只认能力卡。** 每个模型是 `id` + strengths。CLI 按任务选人。没有 subagent 默认值。不继承父模型当默认。匹配不上就拦住。
-- **宿主原生 worker。** 进程内 spawn 子代理。不要 shell 出去跑 `claude -p` / `cursor-agent -p` / `grok -p`。Grok 上 init 会写 `.grok/agents/<card-id>.md`，spawn 用 `subagent_type` = 卡 id（官方 spawn 没有 `model` 参数）。
-- **逻辑上无限 spawn。** 宿主有硬上限就排队。永不拒绝。深度 1。
+- **只认 card。** 每个模型是 `id` + strengths。CLI 按任务选人。没有 subagent 默认值。不继承父模型当默认。匹配不上就拦住。
+- **host 原生 worker。** 进程内 spawn。不要 shell 出去跑 `claude -p` / `cursor-agent -p` / `grok -p`。Grok / Codex 的 init 装到 `~/.grok` 和 `~/.codex`，不写进项目；card 在 `~/.baton`。
+- **逻辑上无限 spawn。** host 有硬上限就排队。永不拒绝。深度 1。
 - **洁癖。** Worker 只回一句短结论。工具倾倒不进主会话。
 
 ## OpenSpec

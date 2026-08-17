@@ -11,13 +11,15 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `.baton/config.toml`.
+2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
    - No subagent default.
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
 
 3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `claude -p`, `cursor-agent -p`, `grok -p`, or any other CLI print mode.
    - **Grok:** spawn with `subagent_type` = card id. Never `general-purpose` / `explore` / `plan` for card-routed work. Missing agent type → blocked; do not inherit the parent model.
+   - **Codex:** spawn with `agent_type` = card id, `fork_turns` none. Never `default` / `worker` / `explorer`. Do not set `agents.default_subagent_model`. Missing agent type → blocked; do not inherit the parent model.
+   - **Grok / Codex init** installs into `~/.grok` and `~/.codex`. Cards and the director skill live in `~/.baton`, not the project.
 
 4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
 

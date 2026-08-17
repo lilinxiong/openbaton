@@ -53,23 +53,23 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
         stdout.write(`baton ${VERSION}\n`);
         return 0;
       case "init":
-        return cmdInit(args, cwd, stdout);
+        return cmdInit(args, cwd, stdout, env);
       case "update":
-        return cmdUpdate(cwd, stdout);
+        return cmdUpdate(cwd, stdout, env);
       case "cards":
-        return cmdCards(args, cwd, stdout);
+        return cmdCards(args, cwd, stdout, env);
       case "match":
-        return cmdMatch(args, cwd, stdout);
+        return cmdMatch(args, cwd, stdout, env);
       case "spawn":
-        return cmdSpawn(args, cwd, stdout);
+        return cmdSpawn(args, cwd, stdout, env);
       case "apply":
-        return cmdApply(args, cwd, stdout);
+        return cmdApply(args, cwd, stdout, env);
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "login":
         return runLogin(args, { cwd, stdout, stderr, env, runner, resolve, startProxy });
       case "status":
-        return cmdStatus(cwd, stdout);
+        return cmdStatus(cwd, stdout, env);
       default:
         stderr.write(`unknown command: ${cmd}\n\n${HELP}`);
         return 2;
@@ -80,11 +80,11 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
   }
 }
 
-function cmdInit(args, cwd, stdout) {
+function cmdInit(args, cwd, stdout, env) {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
   const tools = flags.tools ? String(flags.tools).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-  const result = initProject(cwd, { force, tools });
+  const result = initProject(cwd, { force, tools, env });
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
@@ -93,23 +93,23 @@ function cmdInit(args, cwd, stdout) {
   return 0;
 }
 
-function cmdUpdate(cwd, stdout) {
-  const result = updateProject(cwd);
+function cmdUpdate(cwd, stdout, env) {
+  const result = updateProject(cwd, { env });
   stdout.write("updated baton project files\n");
   for (const a of result.actions) stdout.write(`  ${a}\n`);
   return 0;
 }
 
-function cmdCards(args, cwd, stdout) {
+function cmdCards(args, cwd, stdout, env) {
   const sub = args[0];
   if (sub === "add") {
     const flags = parseFlags(args.slice(1));
-    const models = addCard(cwd, { id: flags.id, strengths: flags.strengths });
+    const models = addCard(cwd, { id: flags.id, strengths: flags.strengths, env });
     stdout.write(`cards: ${models.length}\n`);
     for (const m of models) stdout.write(`  ${m.id} — ${m.strengths}\n`);
     return 0;
   }
-  const models = listCards(cwd);
+  const models = listCards(cwd, { env });
   if (models.length === 0) {
     stdout.write("no cards. Add some: baton cards add --id NAME --strengths \"...\"\n");
     return 0;
@@ -119,12 +119,12 @@ function cmdCards(args, cwd, stdout) {
   return 0;
 }
 
-function cmdMatch(args, cwd, stdout) {
+function cmdMatch(args, cwd, stdout, env) {
   const text = positionalText(args);
   if (!text) {
     throw new Error("usage: baton match <text>");
   }
-  const cfg = loadConfig(cwd);
+  const cfg = loadConfig(cwd, { env });
   try {
     const hit = matchModelCard(text, cfg.models);
     stdout.write(`${hit.model_id}  (score ${hit.score})\n`);
@@ -138,11 +138,11 @@ function cmdMatch(args, cwd, stdout) {
   }
 }
 
-function cmdSpawn(args, cwd, stdout) {
+function cmdSpawn(args, cwd, stdout, env) {
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
-  const cfg = loadConfig(cwd);
+  const cfg = loadConfig(cwd, { env });
   const queue = DispatchQueue.fromConfig(cfg);
   // account for already-running tickets
   for (const s of listSpawns(cwd)) {
@@ -171,9 +171,9 @@ function cmdSpawn(args, cwd, stdout) {
   return 0;
 }
 
-function cmdApply(args, cwd, stdout) {
+function cmdApply(args, cwd, stdout, env) {
   const change = args.find((a) => !a.startsWith("-")) || null;
-  const cfg = loadConfig(cwd);
+  const cfg = loadConfig(cwd, { env });
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
     stdout.write("  baton spawn \"explore the auth module\"\n");
@@ -215,10 +215,10 @@ function cmdConclude(args, cwd, stdout) {
   return 0;
 }
 
-function cmdStatus(cwd, stdout) {
+function cmdStatus(cwd, stdout, env) {
   let cfg = null;
   try {
-    cfg = loadConfig(cwd);
+    cfg = loadConfig(cwd, { env });
   } catch (err) {
     if (err.code === "BATON_NOT_INITIALIZED") {
       stdout.write("baton is not initialized. Run: baton init\n");

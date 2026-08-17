@@ -11,7 +11,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `.baton/config.toml`.
+2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
    - No subagent default.
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
@@ -39,7 +39,7 @@ Official `spawn_subagent` has no `model` param. Children would inherit the paren
 
 - Match a card, then spawn with `subagent_type` = card id (for example `k3`).
 - Never spawn `general-purpose` / `explore` / `plan` for card-routed work.
-- Each card is a project agent at `.grok/agents/<id>.md` with `model` set to that id. `baton init`, `baton update`, and `baton cards add` refresh these files.
+- Each card is a user agent at `~/.grok/agents/<id>.md` with `model` set to that id. Cards live in `~/.baton`. `baton init`, `baton update`, and `baton cards add` refresh these files. Never use a Grok native model (grok-*) as the agent type.
 - If the agent type is missing, blocked — do not inherit the parent model.
 
 ## Commands

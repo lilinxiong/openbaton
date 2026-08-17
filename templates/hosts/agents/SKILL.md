@@ -11,7 +11,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `.baton/config.toml`.
+2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
    - No subagent default.
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.

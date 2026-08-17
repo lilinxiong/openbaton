@@ -29,7 +29,7 @@ export function runLogin(args, { cwd, stdout, stderr, env = process.env, runner,
       stdout.write("usage: baton login --card <id>\n");
       return 2;
     }
-    const mapped = resolveCardForLogin(cwd, String(flags.card).trim());
+    const mapped = resolveCardForLogin(cwd, String(flags.card).trim(), env);
     if (mapped.error) {
       stdout.write(mapped.error + "\n");
       return 1;
@@ -86,7 +86,7 @@ function doList({ cwd, stdout, env, runner, resolve, resolved, startProxy }) {
   if (result.stdout) {
     stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
   }
-  const cards = loadCards(cwd);
+  const cards = loadCards(cwd, env);
   if (cards.length) {
     stdout.write("\ncard -> provider\n");
     for (const card of cards) {
@@ -103,17 +103,17 @@ function doList({ cwd, stdout, env, runner, resolve, resolved, startProxy }) {
   return 0;
 }
 
-function loadCards(cwd) {
+function loadCards(cwd, env) {
   try {
-    return loadConfig(cwd).models;
+    return loadConfig(cwd, { env }).models;
   } catch (err) {
     if (err.code === "BATON_NOT_INITIALIZED") return [];
     throw err;
   }
 }
 
-export function resolveCardForLogin(cwd, cardId) {
-  const cards = loadCards(cwd);
+export function resolveCardForLogin(cwd, cardId, env) {
+  const cards = loadCards(cwd, env);
   const card = cards.find((c) => c.id === cardId);
   if (!card) {
     return { error: "blocked: unknown card \"" + cardId + "\". Set auth_provider or pass provider." };

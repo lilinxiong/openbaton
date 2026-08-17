@@ -11,7 +11,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `.baton/config.toml`.
+2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
    - No subagent default.
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
@@ -27,6 +27,18 @@ You are the director. This is a skill pack plus `init` that installs into the co
 7. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - If absent: still fully usable via `baton spawn`.
+
+## Codex spawn
+
+Official spawn has no `model` param. Children would inherit the parent unless the agent type pins the model.
+
+- Match a card, then spawn with `agent_type` = card id (for example `k3`).
+- Set `fork_turns` to none. Do not inherit the parent session.
+- Never spawn `default` / `worker` / `explorer` for card-routed work.
+- Do not set or rely on `agents.default_subagent_model`.
+- Each card is a user agent at `~/.codex/agents/<id>.toml` with `model` set to that id. Cards live in `~/.baton`. `baton init`, `baton update`, and `baton cards add` refresh these files.
+- Never use a ChatGPT / OpenAI native model (gpt-*, o1, o3, o4, chatgpt, codex-mini) as the agent type.
+- If the agent type is missing, blocked — do not inherit the parent model.
 
 ## Commands
 
