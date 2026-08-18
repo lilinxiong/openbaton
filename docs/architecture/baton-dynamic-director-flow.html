@@ -888,34 +888,35 @@
       <div class="section-head">
         <div>
           <p class="eyebrow">06 · Feasibility</p>
-          <h2 id="feasibility-title">整体高可行，可以分阶段实现</h2>
+          <h2 id="feasibility-title">整体实施可行性：CONDITIONAL / 待验证</h2>
         </div>
-        <p>控制面和 read-only 运行链已经具备基础；唯一必须先验证的是写入型 worker 的 diff 如何安全汇回父工作树。</p>
+        <p>已有底座证明架构方向成立，但必须通过机制、安全、控制面原型和三条端到端场景后，才能给出最终“可实施”结论。</p>
       </div>
       <div class="panel flow-panel">
         <div class="feasibility-summary">
-          <article class="feasibility-card" style="--status-color: var(--ok)"><strong>绿色 · 可直接开发</strong><p>Conversation-to-Goal、OpenSpec 分流、OpenCodex route、动态 spawn、Route Snapshot、Capability Cache、Receipt 和 read-only Goal。</p></article>
-          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>黄色 · 先验证</strong><p>Worker worktree/patch 汇合、文件级强授权、稳定 OpenSpec task identity 和其它 host adapter。</p></article>
-          <article class="feasibility-card" style="--status-color: var(--baton)"><strong>架构级阻塞 · 无</strong><p>不需要重做 OpenSpec、OpenCodex 或 host-native subagent；风险都是可隔离、可验证的工程问题。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--ok)"><strong>已证明的底座</strong><p>OpenSpec workflow 命令、OpenCodex provider/catalog、namespaced native spawn、7 个 route、跨轮 session 和并发 6。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>待验证的组合链路</strong><p>Conversation-to-Goal、snapshots/cache、Receipt、真实 queue、OpenSpec round-trip、worker 写入与文件授权。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--danger)"><strong>最终实施结论 · 尚未形成</strong><p>当前只能进入 Gate A 和验证性原型；不能用单项底座证据替代端到端可实施结论。</p></article>
         </div>
         <div class="table-responsive">
           <table class="feasibility-table">
             <thead><tr><th>能力</th><th>判断</th><th>关键依据</th></tr></thead>
             <tbody>
-              <tr><td>Conversation-to-Goal</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>主 agent 已持有当前 session，上下文可编译为 Goal Draft 与一次授权。</td></tr>
-              <tr><td>OpenSpec workflow</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>OpenSpec 1.9 已提供 change/spec/status/instructions/validate/archive。</td></tr>
-              <tr><td>OpenCodex + native spawn</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>Namespaced route、7 个模型、跨轮 session 和并发 6 已实测。</td></tr>
-              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>变化驱动的 Route Snapshot、可复用 Capability Cache 与 Receipt 语义明确。</td></tr>
-              <tr><td>写代码 worker</td><td><span class="status-label" style="--status-color: var(--worker)">黄色</span></td><td>需要确认 shared/forked worktree、patch 上传和 allowlist 外修改拒绝机制。</td></tr>
-              <tr><td>严格文件授权</td><td><span class="status-label" style="--status-color: var(--worker)">黄色</span></td><td>Prompt 不是安全隔离，需要 host 权限或 diff/import gate。</td></tr>
+              <tr><td>Conversation-to-Goal</td><td><span class="status-label" style="--status-color: var(--worker)">待验证</span></td><td>上下文基础存在；提升信号、忠实摘要和一次授权尚未实现。</td></tr>
+              <tr><td>OpenSpec workflow</td><td><span class="status-label" style="--status-color: var(--ok)">已有基础</span></td><td>OpenSpec 1.9 已提供 change/spec/status/instructions/validate/archive。</td></tr>
+              <tr><td>OpenCodex + native spawn</td><td><span class="status-label" style="--status-color: var(--ok)">已验证</span></td><td>Namespaced route、7 个模型、跨轮 session 和并发 6 已实测。</td></tr>
+              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--worker)">待验证</span></td><td>设计和缓存策略明确，但尚未形成真实运行闭环。</td></tr>
+              <tr><td>写代码 worker</td><td><span class="status-label" style="--status-color: var(--worker)">待验证</span></td><td>需要确认 shared/forked worktree、patch 上传和 allowlist 外修改拒绝机制。</td></tr>
+              <tr><td>最终方案</td><td><span class="status-label" style="--status-color: var(--danger)">尚未结论</span></td><td>必须通过 Gate A、Gate B 和 Gate C。</td></tr>
             </tbody>
           </table>
         </div>
         <div class="delivery-track">
-          <div class="delivery-phase"><b>Phase 1 · 可用闭环</b><p>Goal 提升、OpenSpec 分流、snapshots、Receipt、read-only subagent、queue 与短结论。</p></div>
-          <div class="delivery-phase"><b>Phase 2 · 写入闭环</b><p>Worktree/patch 验证、diff gate、allowlisted implementation、build/test/commit 授权。</p></div>
-          <div class="delivery-phase"><b>Phase 3 · 扩展</b><p>Grok、Cursor、Claude 等 host adapter 与更完整的运行恢复。</p></div>
+          <div class="delivery-phase"><b>Gate A · 机制与安全</b><p>Worktree/patch、diff/import gate、Git 隔离和 OpenCodex 版本基线。</p></div>
+          <div class="delivery-phase"><b>Gate B · 控制面原型</b><p>Goal 提升、snapshots/cache、Receipt、native dispatch、queue 与 no-fallback。</p></div>
+          <div class="delivery-phase"><b>Gate C · 端到端</b><p>简单任务、复杂无 OpenSpec、复杂 OpenSpec Goal 和写入闭环。</p></div>
         </div>
+        <div class="loop-back">当前：CONDITIONAL。Gate A～C 全部通过后才能判定 PASS；read-only 通过但写入失败则为 PARTIAL；关键接口不满足闭环则为 BLOCKED。</div>
       </div>
     </section>
 

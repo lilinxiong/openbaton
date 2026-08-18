@@ -732,27 +732,44 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 ### 11.1 总体结论
 
-该设计整体为**高可行，可以进入分阶段实现**。控制面、Conversation-to-Goal、OpenSpec 分流、模型快照、能力缓存、授权和 read-only subagent 已具备明确基础；唯一需要先做专项验证的是写入型 worker 的 diff 如何安全汇回父工作树。
+当前结论是：**架构方向具备现有基础，但整体实施可行性仍为 `CONDITIONAL / 待验证`。**
+
+已经证明 OpenSpec、OpenCodex 和 host-native subagent 可以提供所需底座；尚未证明 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 能作为一个完整系统稳定闭环。
+
+因此可以进入“验证性原型”阶段，但只有通过本节定义的 Gate A～C 后，才能给出“该方案可实施”的最终结论。
 
 ### 11.2 能力分级
 
 | 模块 | 判断 | 依据 |
 | --- | --- | --- |
-| Conversation-to-Goal | 绿色 | 主 agent 已有当前 session 上下文；Goal Draft 和一次授权是结构化编译 |
-| OpenSpec workflow | 绿色 | OpenSpec 1.9 已有 change/spec/status/instructions/templates/validate/archive |
-| OpenCodex route | 绿色 | provider/auth/catalog 和 namespaced model 已存在 |
-| 动态 subagent | 绿色 | 7 个模型、跨轮 session、并发 6 已实测 |
-| Route Snapshot | 绿色 | OpenCodex config/catalog fingerprint 可直接生成版本化快照 |
-| Capability Cache | 绿色 | Artificial Analysis Data API、cache key 和失效规则明确 |
-| Delegation Receipt | 绿色 | 现有 goal-preflight 已验证一次授权和 delta authorization 语义 |
-| Read-only 多模型 Goal | 绿色 | 不涉及代码 diff 汇合，现有执行面足够 |
-| OpenSpec task 调度 | 绿色偏黄 | 当前已有 parser/writeback；需要稳定 task identity 代替行号 |
-| 写代码的 subagent | 黄色 | 需要确认 shared/forked worktree 和 patch 上传行为 |
-| 文件级强授权 | 黄色 | prompt 不是安全隔离，需要 diff/import gate 或 host 权限约束 |
-| 多宿主兼容 | 黄色 | Codex 可先完成，其它 host 需要独立 adapter |
-| 架构级阻塞 | 无 | 不需要重做 OpenSpec、OpenCodex 或 host-native subagent |
+| Conversation-to-Goal | 设计可行，待验证 | 主 agent 有 session 上下文，但提升信号、忠实摘要和一次授权尚未实现 |
+| OpenSpec workflow | 已有基础 | OpenSpec 1.9 已有 change/spec/status/instructions/templates/validate/archive |
+| OpenCodex route | 已验证基础 | provider/auth/catalog 和 namespaced model 已存在 |
+| 动态 subagent | 已验证 | 7 个模型、跨轮 session、并发 6 已实测 |
+| Route Snapshot | 待实现验证 | 指纹和版本策略明确，但尚无生产实现 |
+| Capability Cache | 待实现验证 | API、cache key 和失效规则明确，但尚未验证缓存闭环 |
+| Delegation Receipt | 契约有先例，待集成验证 | goal-preflight 证明授权语义，但未与 native dispatch 集成 |
+| Read-only 多模型 Goal | 待端到端验证 | 底层能力存在，但完整 Goal 闭环尚未运行 |
+| OpenSpec task 调度 | 待验证 | parser/writeback 已有，但需要稳定 task identity 和 round-trip 测试 |
+| 写代码的 subagent | 待验证 | 需要确认 shared/forked worktree 和 patch 上传行为 |
+| 文件级强授权 | 待验证 | prompt 不是安全隔离，需要 diff/import gate 或 host 权限约束 |
+| 多宿主兼容 | 后续验证 | Codex 可先验证，其它 host 需要独立 adapter |
+| 最终实施结论 | 尚未形成 | 必须通过 Gate A～C |
 
-### 11.3 已证明的关键路径
+### 11.3 已证明的底座与待证明的闭环
+
+已证明：
+
+```text
+OpenSpec 1.9 提供业务 workflow 命令
+OpenCodex 提供 provider/auth/catalog
+Codex V1 支持 namespaced model 动态 spawn
+7 个 route 已执行
+同父 session 跨轮执行成立
+物理并发上限 6 已测得
+```
+
+待证明的完整闭环：
 
 ```text
 当前对话
@@ -767,17 +784,18 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 → 主 agent 验收
 ```
 
-除写入 diff 汇合外，这条链路不依赖尚不存在的底层能力。
+这条闭环中的每个设计点都有实现路径，但它目前仍是待验证组合，不能用单项底座证据替代端到端结论。
 
-### 11.4 唯一必须前置验证的写入问题
+### 11.4 Gate A：实现机制与安全边界
 
-正式开放 implementation worker 前，必须验证：
+正式实现完整系统前必须验证：
 
 1. Worker 使用共享工作树、forked worktree 还是 patch/upload 通道。
 2. 两个 worker 修改不重叠文件时如何合并。
 3. allowlist 外修改能否拒绝导入。
 4. Worker 的 staged index/commit 是否影响父仓。
 5. close/resume 后 diff 与 artifact 的生命周期。
+6. OpenCodex `^2.22.0` 仓库依赖与当前 `2.18.0` 运行时的兼容基线。
 
 验证结果决定写入集成：
 
@@ -787,7 +805,7 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 | 修改停留在 fork | 只选择性导入批准文件或 commit |
 | Host 提供 patch/upload | 将该通道作为唯一批准导入面 |
 
-该问题只阻塞“写代码的 subagent”，不阻塞 Conversation-to-Goal、read-only explore/review/fixplan、OpenSpec task 分配、能力选择、授权和队列。
+V-01～V-05 只阻塞写代码 worker；版本基线影响全部后续实现。Gate A 未通过时，不得给出完整方案可实施的结论。
 
 ### 11.5 现实工程风险
 
@@ -799,9 +817,9 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 6. Artificial Analysis 不覆盖或无法精确映射的 route 必须保留为 `unranked`。
 7. 超长对话发生 compaction 时，Goal Draft 必须区分 `explicit/inferred/unresolved/excluded` 并交给用户确认。
 
-### 11.6 推荐交付顺序
+### 11.6 Gate B：控制面原型
 
-第一阶段形成可用闭环：
+完成最小原型并验证：
 
 ```text
 Conversation-to-Goal
@@ -813,7 +831,22 @@ Conversation-to-Goal
 + Queue / close / short conclusion
 ```
 
-第二阶段完成写入闭环：
+通过标准：
+
+- 普通任务不重复查询 OpenCodex model list 或 Artificial Analysis；
+- Conversation-to-Goal 不误触发，Draft 可追溯且一次批准后才激活；
+- Ticket 状态与真实 agent ID、终态和槽位一致；
+- 未授权 fallback、操作或文件范围不会执行；
+- 无 OpenSpec 时不创建业务 ledger；有 OpenSpec 时不创建平行 Plan。
+
+### 11.7 Gate C：端到端场景
+
+必须依次通过：
+
+1. 简单任务，无 OpenSpec。
+2. 复杂任务，无 OpenSpec。
+3. 复杂 Goal，有 OpenSpec。
+4. 写入型 worker 闭环：
 
 ```text
 worker worktree/patch 验证
@@ -822,14 +855,18 @@ worker worktree/patch 验证
 → build/test/commit 授权链
 ```
 
-第三阶段扩展 Grok、Cursor、Claude 等其它 host adapter。
+其它 host adapter 不阻塞 Codex 首版最终结论，但必须单独标记为未验证。
 
-### 11.7 实施判断
+### 11.8 最终判定规则
 
-- 技术方向成立。
-- 第一阶段无实质阻塞，可直接开发。
-- 完整写入闭环有一个明确且可验证的工程前置，不是架构风险。
-- 适合按独立 commit batches 分阶段落地，不适合一次性整体重写。
+| 结论 | 条件 |
+| --- | --- |
+| `PASS / 可实施` | Gate A、B、C 全部通过；无静默 fallback；授权和业务 owner 边界成立 |
+| `PARTIAL / 部分可实施` | Conversation/read-only/OpenSpec 路径通过，但写入或强授权路径失败 |
+| `REVISE / 需修订` | 机制可替代但当前设计假设错误，例如 worktree/import 模式与预期不同 |
+| `BLOCKED / 不可实施` | Host 无法提供安全结果回收或 OpenSpec/OpenCodex 关键接口不满足闭环 |
+
+当前状态：`CONDITIONAL / 待验证`。可以开始 Gate A 和验证性原型，但尚不能宣称最终方案可实施。
 
 ## 12. 明确非目标
 
