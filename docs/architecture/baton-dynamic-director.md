@@ -81,17 +81,43 @@ Baton 的价值不是再造 Plan，而是让主 agent 可以安全、动态、�
 | Artificial Analysis | 独立模型能力、速度、成本评测 | 当前本机 route 可用性 |
 | Host-native subagent | 独立上下文中的实际执行 | 扩大授权、业务验收、创建后代 agent |
 
+### 0.5 从对话提升为 Goal
+
+用户通常不是一开始就提供完整 Goal，而是先在当前 session 中讨论、澄清和收敛方案；当用户认为方向已经明确，再进入正式执行。
+
+以前该转换由显式 `goal-preflight` skill 完成。OpenBaton需要把它变成内建的 Conversation-to-Goal 能力，用户不必说 skill 名，只需发出明确提升信号，例如：
+
+```text
+可以了，按这个执行
+就按上面的方案做
+转成 Goal
+开始进入实施流程
+```
+
+仅表达认可但没有执行意图的“看起来可以”“先这样讨论”不应自动创建 Goal。
+
+| 阶段 | 允许行为 | 状态 owner |
+| --- | --- | --- |
+| Discussion | 对话、只读调查、候选方案、约束澄清 | 主 agent session |
+| Goal Draft | Baton 从对话编译结构化草案，尚未执行副作用 | Baton 临时 compiler output |
+| Awaiting Approval | 主 agent向用户展示 Goal 摘要与一次授权单 | 当前前台对话 |
+| Active Goal，无 OpenSpec | 主 agent持有 Goal/Plan/Tasks/Replan/Status | 主 agent |
+| Active Goal，有 OpenSpec | Goal/Plan/Tasks/Replan/Status 落入 OpenSpec | OpenSpec |
+
+Baton在这里是 compiler 和 authorization gateway，不是 Goal 的长期 owner。
+
 ## 1. 核心定义
 
 Baton 是运行在主 agent 内的动态多模型 director 能力。用户始终只与主 agent 对话；Baton 不要求用户显式触发某个 workflow skill，也不成为第二套业务 workflow 或任务状态系统。
 
 Baton 的职责是：
 
-1. 维护由 OpenCodex 配置/catalog 变化驱动的本地 Route Snapshot。
-2. 为 canonical model 维护可复用的权威 Capability Cache，并与 cards、健康度、额度和运行时信息合并。
-3. 将候选能力证据交给主 agent 内的 Baton director 做模型决策。
-4. 为选定模型编译最小 delegation authorization。
-5. 使用 host-native subagent 执行任务，并负责并发、排队、重试、关闭和短结论回收。
+1. 在用户发出提升信号时，把当前对话编译成可确认的 Goal Draft 和一次授权单。
+2. 维护由 OpenCodex 配置/catalog 变化驱动的本地 Route Snapshot。
+3. 为 canonical model 维护可复用的权威 Capability Cache，并与 cards、健康度、额度和运行时信息合并。
+4. 将候选能力证据交给主 agent 内的 Baton director 做模型决策。
+5. 为选定模型编译最小 delegation authorization。
+6. 使用 host-native subagent 执行任务，并负责并发、排队、重试、关闭和短结论回收。
 
 Baton 不负责：
 
@@ -228,7 +254,64 @@ sequenceDiagram
 
 route health、quota 和近期执行证据可以由独立轻量 runtime monitor 更新，并与稳定的 Route Snapshot / Capability Cache 合并；不要求重拉 model list 或 benchmark。
 
-### 3.4 一次编码 / 简单任务
+### 3.4 Conversation-to-Goal
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant M as Main Agent
+    participant P as OpenSpec
+    participant B as OpenBaton
+
+    U->>M: 自由讨论、澄清、比较方案
+    M-->>U: 回答、约束、候选决策
+    U->>M: 明确提升信号：按这个执行 / 转 Goal
+    M->>B: 当前对话 snapshot + workspace baseline
+    B->>B: 提取 Goal Draft + Decision Ledger
+    B->>B: 读取本地 Candidate Snapshot
+    B-->>M: Goal / non-goals / acceptance / unresolved / manifest
+    M-->>U: 一次展示 Goal 摘要与完整授权单
+    U-->>M: 全部批准 / 批准但… / 取消
+    alt 取消
+        M-->>U: 保持 Discussion，不创建 Goal
+    else 批准且无 OpenSpec
+        M->>M: 主 agent 接受 Goal Envelope 并持有 workflow
+        M->>B: approved execution units + Receipt
+    else 批准且有 OpenSpec
+        M->>P: create/reuse proposal/spec/tasks from Goal Draft
+        P-->>M: OpenSpec Goal/Plan/Tasks reference
+        M->>B: ready task refs + Receipt
+    end
+```
+
+Goal Draft 至少包含：
+
+```text
+goal_objective
+decision_ledger
+explicit_constraints
+inferred_constraints
+unresolved_questions
+non_goals
+success_criteria
+workspace_baseline
+openspec_mode
+candidate_model_matrix_ref
+delegation_manifest
+validation_boundary
+commit_and_delivery_policy
+```
+
+每条内容必须标记来源：
+
+- `explicit`：用户在对话中明确表达；
+- `inferred`：主 agent/Baton 从上下文推导，必须在批准前展示；
+- `unresolved`：仍会实质影响实现的歧义，必须在 Goal 激活前解决；
+- `excluded`：明确不进入本次 Goal。
+
+Conversation-to-Goal 的输出只在用户一次批准后冻结。批准前不得以 Goal 名义写代码、创建 OpenSpec change、build/test、stage、commit 或 push。
+
+### 3.5 一次编码 / 简单任务
 
 简单任务不要求创建 OpenSpec。主 agent 理解目标并形成一个边界清晰的 execution unit；OpenBaton 补齐模型能力证据和最小授权，然后派生一个 worker。
 
@@ -259,7 +342,7 @@ sequenceDiagram
 - 简单任务通常只启一个实施 worker；必要时可增加独立 review worker。
 - 任一写入、build、test 或 Git 操作必须落在 Receipt 中。
 
-### 3.5 复杂任务，无 OpenSpec
+### 3.6 复杂任务，无 OpenSpec
 
 没有 OpenSpec 时，主 agent 是完整业务 workflow owner。主 agent 创建 Plan、拆分任务、维护依赖和状态，并在 worker 证据变化后动态重规划。OpenBaton只管理每个 execution unit 的模型与执行。
 
@@ -300,7 +383,7 @@ sequenceDiagram
 - 逻辑 ticket 数量不受物理并发限制；当前 Codex V1 最多同时运行 6 个，其余排队。
 - 已完成 worker 要及时关闭以释放槽位。
 
-### 3.6 复杂 Goal，有 OpenSpec
+### 3.7 复杂 Goal，有 OpenSpec
 
 有 OpenSpec 时，Goal、Plan、Tasks、Dependencies、Replan 和 Status 全部归 OpenSpec。主 agent 通过 OpenSpec 创建或更新业务计划；OpenBaton消费 ready task 并调度 worker。
 

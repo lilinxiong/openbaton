@@ -418,7 +418,7 @@
 
     .background-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 14px;
     }
 
@@ -645,6 +645,7 @@
           <article class="background-card"><span class="number">1</span><h3>只有原始 spawn 不够</h3><p>主 agent 能看到模型和 spawn 工具，却不知道每个模型的权威能力、route 差异、健康度、额度和适用任务。</p></article>
           <article class="background-card"><span class="number">2</span><h3>OpenSpec 不负责模型调度</h3><p>OpenSpec 持有 Goal、Plan、Tasks、Replan 和 Status，但不决定哪个模型执行、允许操作哪些文件、并发和 fallback。</p></article>
           <article class="background-card"><span class="number">3</span><h3>外部 CLI workflow 需要进化</h3><p>原工作流通过 Grok/Kimi/Cursor 外部 CLI 执行。现在 transport 改为 host-native subagent，但授权、分配、验收和上下文卫生仍然需要。</p></article>
+          <article class="background-card"><span class="number">4</span><h3>对话需要进入受控 Goal</h3><p>用户先自由讨论，确认方向后才开始执行。OpenBaton需要把当前对话编译成 Goal Draft 和一次授权单，不要求手动调用 goal-preflight skill。</p></article>
         </div>
         <div class="why-baton">
           <div><h3>业务 workflow owner</h3><p>无 OpenSpec 时是主 agent；有 OpenSpec 时是 OpenSpec。它们决定做什么、计划和业务状态。</p></div>
@@ -689,6 +690,7 @@
       <div class="panel flow-panel">
         <div class="scenario-controls" role="group" aria-label="选择任务复杂度和 OpenSpec 模式">
           <button type="button" data-scenario="refresh" aria-pressed="false">Catalog / 能力缓存刷新</button>
+          <button type="button" data-scenario="goal-promotion" aria-pressed="false">对话 → Goal</button>
           <button type="button" data-scenario="simple" aria-pressed="true">一次编码 / 简单任务</button>
           <button type="button" data-scenario="complex" aria-pressed="false">复杂任务 · 无 OpenSpec</button>
           <button type="button" data-scenario="openspec-goal" aria-pressed="false">复杂 Goal · 有 OpenSpec</button>
@@ -917,6 +919,32 @@
           ["baton", "capability", "仅查询 cache miss / stale models"],
           ["capability", "baton", "benchmark data + index version"],
           ["baton", "main", "发布 Candidate Snapshot|后续任务直接复用"]
+        ]
+      },
+      "goal-promotion": {
+        title: "Conversation-to-Goal",
+        description: "用户先在当前 session 中自由讨论；发出明确提升信号后，OpenBaton才将对话编译成 Goal Draft、决策清单、候选模型和一次授权单。",
+        heading: "从自由对话提升为受控 Goal",
+        summary: "OpenBaton只负责编译和授权转换。批准后，无 OpenSpec时 Goal由主 agent持有；有 OpenSpec时由主 agent把 Draft 落入 OpenSpec，随后 OpenSpec成为唯一事实源。",
+        rules: ["没有明确执行意图时保持 Discussion", "Goal Draft 中区分 explicit / inferred / unresolved / excluded", "一次批准后才冻结 Receipt 并进入执行"],
+        active: ["user", "main", "openspec", "baton", "subagents"],
+        steps: [
+          ["user", "main", "自由讨论 / 澄清 / 比较方案"],
+          ["main", "user", "回答 + constraints + candidate decisions"],
+          ["user", "main", "明确提升信号|按这个执行 / 转 Goal"],
+          ["main", "baton", "conversation snapshot + workspace baseline"],
+          ["baton", "main", "Goal Draft + Decision Ledger"],
+          ["baton", "main", "cached candidates + authorization manifest"],
+          ["main", "user", "Goal 摘要 + 一次完整授权单"],
+          ["user", "main", "批准 / 批准但… / 取消"],
+          ["main", "openspec", "有 OpenSpec：create / reuse from Draft"],
+          ["openspec", "main", "Goal / Plan / Tasks reference"],
+          ["main", "baton", "approved units / task refs + Receipt"],
+          ["baton", "subagents", "Goal 激活后才 spawn"],
+          ["subagents", "baton", "短结论 + artifacts"],
+          ["baton", "main", "执行证据"],
+          ["main", "openspec", "有 OpenSpec：写回 status / replan"],
+          ["main", "user", "里程碑 / 最终结果"]
         ]
       },
       simple: {
