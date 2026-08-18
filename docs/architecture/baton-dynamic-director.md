@@ -728,7 +728,110 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 7. 物理并发限制属于 host capability；逻辑 ticket 不因槽位不足被拒绝。
 8. 主 agent始终保留最终验收、范围控制和业务语义裁决。
 
-## 11. 明确非目标
+## 11. 整体可行性判断
+
+### 11.1 总体结论
+
+该设计整体为**高可行，可以进入分阶段实现**。控制面、Conversation-to-Goal、OpenSpec 分流、模型快照、能力缓存、授权和 read-only subagent 已具备明确基础；唯一需要先做专项验证的是写入型 worker 的 diff 如何安全汇回父工作树。
+
+### 11.2 能力分级
+
+| 模块 | 判断 | 依据 |
+| --- | --- | --- |
+| Conversation-to-Goal | 绿色 | 主 agent 已有当前 session 上下文；Goal Draft 和一次授权是结构化编译 |
+| OpenSpec workflow | 绿色 | OpenSpec 1.9 已有 change/spec/status/instructions/templates/validate/archive |
+| OpenCodex route | 绿色 | provider/auth/catalog 和 namespaced model 已存在 |
+| 动态 subagent | 绿色 | 7 个模型、跨轮 session、并发 6 已实测 |
+| Route Snapshot | 绿色 | OpenCodex config/catalog fingerprint 可直接生成版本化快照 |
+| Capability Cache | 绿色 | Artificial Analysis Data API、cache key 和失效规则明确 |
+| Delegation Receipt | 绿色 | 现有 goal-preflight 已验证一次授权和 delta authorization 语义 |
+| Read-only 多模型 Goal | 绿色 | 不涉及代码 diff 汇合，现有执行面足够 |
+| OpenSpec task 调度 | 绿色偏黄 | 当前已有 parser/writeback；需要稳定 task identity 代替行号 |
+| 写代码的 subagent | 黄色 | 需要确认 shared/forked worktree 和 patch 上传行为 |
+| 文件级强授权 | 黄色 | prompt 不是安全隔离，需要 diff/import gate 或 host 权限约束 |
+| 多宿主兼容 | 黄色 | Codex 可先完成，其它 host 需要独立 adapter |
+| 架构级阻塞 | 无 | 不需要重做 OpenSpec、OpenCodex 或 host-native subagent |
+
+### 11.3 已证明的关键路径
+
+```text
+当前对话
+→ 用户提升为 Goal
+→ Goal Draft + 一次授权
+→ 有/无 OpenSpec 分流
+→ 读取本地 Candidate Snapshot
+→ 主 agent 选择模型
+→ Baton 编译 Receipt
+→ host-native spawn
+→ 回收短结论
+→ 主 agent 验收
+```
+
+除写入 diff 汇合外，这条链路不依赖尚不存在的底层能力。
+
+### 11.4 唯一必须前置验证的写入问题
+
+正式开放 implementation worker 前，必须验证：
+
+1. Worker 使用共享工作树、forked worktree 还是 patch/upload 通道。
+2. 两个 worker 修改不重叠文件时如何合并。
+3. allowlist 外修改能否拒绝导入。
+4. Worker 的 staged index/commit 是否影响父仓。
+5. close/resume 后 diff 与 artifact 的生命周期。
+
+验证结果决定写入集成：
+
+| 观察结果 | 集成策略 |
+| --- | --- |
+| 修改直接进入父工作树 | 所有 worker 结束后执行严格 diff ownership/allowlist gate |
+| 修改停留在 fork | 只选择性导入批准文件或 commit |
+| Host 提供 patch/upload | 将该通道作为唯一批准导入面 |
+
+该问题只阻塞“写代码的 subagent”，不阻塞 Conversation-to-Goal、read-only explore/review/fixplan、OpenSpec task 分配、能力选择、授权和队列。
+
+### 11.5 现实工程风险
+
+1. 当前 Codex host skill 与 `codex-agents.js` 仍基于旧的 `agent_type/fork_turns` 假设，需要切换到已验证的运行时 `model/reasoning_effort/fork_context`。
+2. 当前 `baton spawn/apply` 只创建 ticket，没有真实调用 native spawn；ticket 还会在启动前被标成 `running`。
+3. 当前 queue 默认 4，没有 agent ID、真实终态和自动出队；Codex V1 实测物理上限为 6。
+4. 当前 OpenSpec conclusion 依赖行号，task 内容变化后可能漂移。
+5. 仓库依赖声明为 OpenCodex `^2.22.0`，当前全局运行版本为 `2.18.0`；实现前必须确定兼容基线。
+6. Artificial Analysis 不覆盖或无法精确映射的 route 必须保留为 `unranked`。
+7. 超长对话发生 compaction 时，Goal Draft 必须区分 `explicit/inferred/unresolved/excluded` 并交给用户确认。
+
+### 11.6 推荐交付顺序
+
+第一阶段形成可用闭环：
+
+```text
+Conversation-to-Goal
++ OpenSpec 可选分流
++ Route Snapshot
++ Capability Cache
++ Delegation Receipt
++ Read-only native subagent
++ Queue / close / short conclusion
+```
+
+第二阶段完成写入闭环：
+
+```text
+worker worktree/patch 验证
+→ diff/import gate
+→ allowlisted implementation
+→ build/test/commit 授权链
+```
+
+第三阶段扩展 Grok、Cursor、Claude 等其它 host adapter。
+
+### 11.7 实施判断
+
+- 技术方向成立。
+- 第一阶段无实质阻塞，可直接开发。
+- 完整写入闭环有一个明确且可验证的工程前置，不是架构风险。
+- 适合按独立 commit batches 分阶段落地，不适合一次性整体重写。
+
+## 12. 明确非目标
 
 - 重新实现 OpenSpec。
 - 在 Baton 内创建另一套 Goal/Plan/Task/Status。

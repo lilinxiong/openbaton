@@ -555,6 +555,81 @@
     .interaction-row .direction { color: var(--muted); text-align: center; }
     .interaction-row .message { color: var(--muted); }
 
+    .feasibility-summary {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .feasibility-card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-top: 4px solid var(--status-color);
+      border-radius: 12px;
+      background: var(--surface-2);
+    }
+
+    .feasibility-card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+    }
+
+    .feasibility-card p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .feasibility-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .table-responsive { overflow-x: auto; }
+
+    .feasibility-table th,
+    .feasibility-table td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .feasibility-table th { color: var(--text); font-weight: 700; }
+    .feasibility-table td { color: var(--muted); }
+
+    .status-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    .status-label::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--status-color);
+    }
+
+    .delivery-track {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .delivery-phase {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface-2);
+    }
+
+    .delivery-phase b { color: var(--baton); }
+    .delivery-phase p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+
     .footer {
       display: flex;
       justify-content: space-between;
@@ -584,6 +659,7 @@
       .step:nth-child(4)::after { display: none; }
       .background-grid { grid-template-columns: 1fr; }
       .scenario-detail { grid-template-columns: 1fr; }
+      .feasibility-summary, .delivery-track { grid-template-columns: 1fr; }
       .sequence-frame, .participant-strip { display: none; }
       .interaction-list { display: grid; }
     }
@@ -808,10 +884,45 @@
       </div>
     </section>
 
+    <section class="section" aria-labelledby="feasibility-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">06 · Feasibility</p>
+          <h2 id="feasibility-title">整体高可行，可以分阶段实现</h2>
+        </div>
+        <p>控制面和 read-only 运行链已经具备基础；唯一必须先验证的是写入型 worker 的 diff 如何安全汇回父工作树。</p>
+      </div>
+      <div class="panel flow-panel">
+        <div class="feasibility-summary">
+          <article class="feasibility-card" style="--status-color: var(--ok)"><strong>绿色 · 可直接开发</strong><p>Conversation-to-Goal、OpenSpec 分流、OpenCodex route、动态 spawn、Route Snapshot、Capability Cache、Receipt 和 read-only Goal。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>黄色 · 先验证</strong><p>Worker worktree/patch 汇合、文件级强授权、稳定 OpenSpec task identity 和其它 host adapter。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--baton)"><strong>架构级阻塞 · 无</strong><p>不需要重做 OpenSpec、OpenCodex 或 host-native subagent；风险都是可隔离、可验证的工程问题。</p></article>
+        </div>
+        <div class="table-responsive">
+          <table class="feasibility-table">
+            <thead><tr><th>能力</th><th>判断</th><th>关键依据</th></tr></thead>
+            <tbody>
+              <tr><td>Conversation-to-Goal</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>主 agent 已持有当前 session，上下文可编译为 Goal Draft 与一次授权。</td></tr>
+              <tr><td>OpenSpec workflow</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>OpenSpec 1.9 已提供 change/spec/status/instructions/validate/archive。</td></tr>
+              <tr><td>OpenCodex + native spawn</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>Namespaced route、7 个模型、跨轮 session 和并发 6 已实测。</td></tr>
+              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--ok)">绿色</span></td><td>变化驱动的 Route Snapshot、可复用 Capability Cache 与 Receipt 语义明确。</td></tr>
+              <tr><td>写代码 worker</td><td><span class="status-label" style="--status-color: var(--worker)">黄色</span></td><td>需要确认 shared/forked worktree、patch 上传和 allowlist 外修改拒绝机制。</td></tr>
+              <tr><td>严格文件授权</td><td><span class="status-label" style="--status-color: var(--worker)">黄色</span></td><td>Prompt 不是安全隔离，需要 host 权限或 diff/import gate。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="delivery-track">
+          <div class="delivery-phase"><b>Phase 1 · 可用闭环</b><p>Goal 提升、OpenSpec 分流、snapshots、Receipt、read-only subagent、queue 与短结论。</p></div>
+          <div class="delivery-phase"><b>Phase 2 · 写入闭环</b><p>Worktree/patch 验证、diff gate、allowlisted implementation、build/test/commit 授权。</p></div>
+          <div class="delivery-phase"><b>Phase 3 · 扩展</b><p>Grok、Cursor、Claude 等 host adapter 与更完整的运行恢复。</p></div>
+        </div>
+      </div>
+    </section>
+
     <section class="section" aria-labelledby="boundary-title">
       <div class="section-head">
         <div>
-          <p class="eyebrow">06 · Hard Boundary</p>
+          <p class="eyebrow">07 · Hard Boundary</p>
           <h2 id="boundary-title">Baton 不跨越的边界</h2>
         </div>
       </div>
