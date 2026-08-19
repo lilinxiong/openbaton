@@ -2,11 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import type { AaNumericObject, NormalizedAaModel } from "./aa.js";
+import { packageRoot } from "../paths.js";
 
-const SCHEMA_PATH = fileURLToPath(new URL("../../../data/capabilities/artificial-analysis/schema.sql", import.meta.url));
-const DEFAULT_MAPPINGS_PATH = fileURLToPath(new URL("../../../data/capabilities/artificial-analysis/route-mappings.json", import.meta.url));
+const SCHEMA_PATH = path.join(packageRoot(), "data", "capabilities", "artificial-analysis", "schema.sql");
+const DEFAULT_MAPPINGS_PATH = path.join(packageRoot(), "data", "capabilities", "artificial-analysis", "route-mappings.json");
 
 const require = createRequire(import.meta.url);
 

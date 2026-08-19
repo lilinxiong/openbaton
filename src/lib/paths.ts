@@ -1,5 +1,7 @@
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const BATON_DIR = ".baton";
 export const CONFIG_NAME = "config.toml";
@@ -58,7 +60,12 @@ export function artificialAnalysisManifestPath(cwd: string): string {
 }
 
 export function packageRoot(): string {
-  return path.resolve(new URL("../..", import.meta.url).pathname);
+  const candidate = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  if (path.basename(candidate) === "dist") {
+    const parent = path.dirname(candidate);
+    if (fs.existsSync(path.join(parent, "package.json"))) return parent;
+  }
+  return candidate;
 }
 
 export function displayHomePath(dest: string, { cwd, env }: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): string {
