@@ -1,0 +1,95 @@
+# OpenBaton Dynamic Director 实现总结
+
+完成日期：2026-08-19
+
+## 结论
+
+OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环。原验证报告中的 V-03～V-09 已逐批修复；默认只读，写 worker 必须持有不可变 Receipt，并在接受结论前通过 parent Git safety gate。
+
+## 已实现能力
+
+### TypeScript 基线
+
+- `src/`、`test/`、`bin/` 无 JavaScript 源文件。
+- NodeNext TypeScript build，生产源码执行 `tsc --noEmit`。
+- 测试使用 TypeScript + `tsx`。
+- npm 发布只包含编译后的 `dist` 和必要 templates/data。
+
+### Host-native 多 subagent
+
+- `queued → dispatching → running → completed/errored/timed_out/closed`。
+- ticket 保存真实 `agent_id`、route/profile、attempt、timestamps、history 和短结论。
+- 持久化 FIFO，逻辑 ticket 不限；Codex capacity 6 时严格 `6 running + 2 queued`。
+- 完成后只补位最早 queued ticket；新 ticket 不插队。
+- restart recovery 保留 running agent ID，stale unbound dispatch 标记 `DISPATCH_LEASE_EXPIRED`。
+- 缺 route/Receipt、context 不符合、attempt 超限均 fail-closed；无静默 fallback。
+
+### Delegation Receipt 与写入安全
+
+- 每个 ticket 引用独立、`0600`、不可变 Receipt。
+- Receipt 固化 card、exact route、reasoning effort、mode、allowlist、operations、retry、fallback=none、Git policy 和 baseline。
+- 默认 read-only；write mode 必须显式 `--write-path`/`--write-ops`。
+- Parent safety gate 审计 tracked、untracked、create、delete、rename、chmod、symlink、dirty baseline、Git index 和 HEAD。
+- 越界写入转为 `errored/WRITE_SCOPE_VIOLATION`，拒绝 worker conclusion 并释放槽位。
+- Worker 永不拥有 stage/commit/branch/rebase/push。
+
+### Route Snapshot 与能力数据
+
+- `baton routes refresh` 消费 OpenCodex `models live --json`。
+- 稳定 SHA-256 fingerprint；catalog 不变不增加 generation。
+- card 与 executable route、profile、AA SQLite capability 合流。
+- 无 executable route 为 blocked；无 AA mapping 为 `unranked`，不猜分。
+- `baton update` 只补内置 card 缺失 route/profile，不覆盖用户值或自定义 card。
+
+### Conversation-to-Goal
+
+- Host skill 在普通对话中识别显式提升语句，不要求用户手动调用 skill。
+- promotion draft 保留 `explicit/inferred/unresolved/excluded` 和 source hash。
+- unresolved 阻止激活；任何副作用前需要一次用户批准。
+- 有 OpenSpec 时业务 breakdown/plan 归 OpenSpec；无 OpenSpec 时归主 agent；Baton 不建立平行 ledger。
+
+### OpenSpec
+
+- Ticket 保存稳定 task number。
+- completion 时重新解析当前 `tasks.md`，按 number 精确定位。
+- task 缺失或重复时 fail-closed。
+- 插行后不会再把 task `2.1` 的结论写到 `1.2`。
+
+## 真实验收证据
+
+### 8-ticket 只读闭环
+
+```text
+initial: 6 active + 2 queued
+bind:    6 个真实 Codex agent_id
+finish:  前 6 completed 并 close
+refill:  只补位 ticket 7、8
+final:   completed=8, active=0, available=6
+```
+
+### V-06 写入负向测试
+
+真实 Kimi worker 同时修改 `allowed.txt` 和越界 `denied.txt`：
+
+```text
+ticket.status       = errored
+ticket.error.code   = WRITE_SCOPE_VIOLATION
+ticket.conclusion   = null
+violation           = E_OUT_OF_SCOPE_PATH:denied.txt
+slot                = released
+```
+
+### OpenCodex catalog
+
+真实 `routes refresh`：66 条 executable route，generation 1，fingerprint 已持久化。
+
+## 提交拆分
+
+实现没有压成单个大提交；主要提交包括 capability cache、dispatch lifecycle、TS cutover、host protocol、类型收紧、Receipt、safety audit、write completion、Route Snapshot、Conversation promotion、OpenSpec stable writeback 和最终审计修复。
+
+## 边界
+
+- 当前最终 PASS 针对 Codex host adapter；其它 host 必须独立验证。
+- AA Free 数据库只保存在本机并由 Git 忽略。
+- Benchmark 是主 agent 的证据，不是自动决策器。
+- Parent 始终拥有业务裁决、验收、测试与 Git。
