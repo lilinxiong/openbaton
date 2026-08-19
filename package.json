@@ -16,6 +16,8 @@
   "files": [
     "bin",
     "src",
+    "data",
+    "docs/data-sources",
     "templates",
     "SKILL.md",
     "LICENSE",

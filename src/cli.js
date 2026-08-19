@@ -2,6 +2,7 @@ import { initProject } from "./commands/init.js";
 import { updateProject } from "./commands/update.js";
 import { listCards, addCard } from "./commands/cards.js";
 import { runLogin } from "./commands/login.js";
+import { runCapabilities } from "./commands/capabilities.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
@@ -32,12 +33,15 @@ Usage:
   baton login                       list accounts + card->provider
   baton login <provider>            sign in with a browser (kimi, xai, cursor)
   baton login --card <id>           resolve card then login
+  baton capabilities refresh --provider aa --key-file PATH
+  baton capabilities status
+  baton capabilities show ROUTE [--profile PROFILE]
   baton status                      director queue + OpenSpec status if present
   baton help | --help | -h
   baton version | --version | -v
 `;
 
-export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve } = {}) {
+export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve, fetchImpl } = {}) {
   const args = argv.slice();
   const cmd = args.shift() || "help";
 
@@ -69,6 +73,8 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
         return cmdConclude(args, cwd, stdout);
       case "login":
         return await runLogin(args, { cwd, stdout, stderr, env, runner, resolve });
+      case "capabilities":
+        return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
       case "status":
         return cmdStatus(cwd, stdout, env);
       default:

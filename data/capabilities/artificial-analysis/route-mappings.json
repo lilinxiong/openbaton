@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "mappings": [
+    {
+      "routeId": "gpt-5.6-luna",
+      "profile": "",
+      "aaSlug": "gpt-5-6-luna-medium",
+      "note": "Codex host default effort is medium."
+    },
+    { "routeId": "gpt-5.6-luna", "profile": "low", "aaSlug": "gpt-5-6-luna-low" },
+    { "routeId": "gpt-5.6-luna", "profile": "medium", "aaSlug": "gpt-5-6-luna-medium" },
+    { "routeId": "gpt-5.6-luna", "profile": "high", "aaSlug": "gpt-5-6-luna-high" },
+    { "routeId": "gpt-5.6-luna", "profile": "xhigh", "aaSlug": "gpt-5-6-luna-xhigh" },
+    { "routeId": "gpt-5.6-luna", "profile": "max", "aaSlug": "gpt-5-6-luna" },
+    {
+      "routeId": "gpt-5.6-sol",
+      "profile": "",
+      "aaSlug": "gpt-5-6-sol-low",
+      "note": "Codex host default effort is low."
+    },
+    { "routeId": "gpt-5.6-sol", "profile": "low", "aaSlug": "gpt-5-6-sol-low" },
+    { "routeId": "gpt-5.6-sol", "profile": "medium", "aaSlug": "gpt-5-6-sol-medium" },
+    { "routeId": "gpt-5.6-sol", "profile": "high", "aaSlug": "gpt-5-6-sol-high" },
+    { "routeId": "gpt-5.6-sol", "profile": "xhigh", "aaSlug": "gpt-5-6-sol-xhigh" },
+    { "routeId": "gpt-5.6-sol", "profile": "max", "aaSlug": "gpt-5-6-sol" },
+    {
+      "routeId": "gpt-5.6-terra",
+      "profile": "",
+      "aaSlug": "gpt-5-6-terra-medium",
+      "note": "Codex host default effort is medium."
+    },
+    { "routeId": "gpt-5.6-terra", "profile": "low", "aaSlug": "gpt-5-6-terra-low" },
+    { "routeId": "gpt-5.6-terra", "profile": "medium", "aaSlug": "gpt-5-6-terra-medium" },
+    { "routeId": "gpt-5.6-terra", "profile": "high", "aaSlug": "gpt-5-6-terra-high" },
+    { "routeId": "gpt-5.6-terra", "profile": "xhigh", "aaSlug": "gpt-5-6-terra-xhigh" },
+    { "routeId": "gpt-5.6-terra", "profile": "max", "aaSlug": "gpt-5-6-terra" },
+    { "routeId": "xai/grok-4.6", "profile": "high", "aaSlug": "grok-4-6" },
+    { "routeId": "kimi/k3", "profile": "low", "aaSlug": "kimi-k3-low" },
+    { "routeId": "kimi/k3", "profile": "max", "aaSlug": "kimi-k3" },
+    {
+      "routeId": "kimi/k3-256k",
+      "profile": "low",
+      "aaSlug": "kimi-k3-low",
+      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+    },
+    {
+      "routeId": "kimi/k3-256k",
+      "profile": "max",
+      "aaSlug": "kimi-k3",
+      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+    },
+    {
+      "routeId": "kimi/k3[1m]",
+      "profile": "low",
+      "aaSlug": "kimi-k3-low",
+      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+    },
+    {
+      "routeId": "kimi/k3[1m]",
+      "profile": "max",
+      "aaSlug": "kimi-k3",
+      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+    },
+    {
+      "routeId": "kimi/kimi-k2.7-code-highspeed",
+      "aaSlug": "kimi-k2-7-code",
+      "note": "Highspeed is a serving route for the same Kimi K2.7 Code model."
+    },
+    { "routeId": "k3", "aaSlug": "kimi-k3", "note": "Baton card alias for Kimi K3 max." },
+    { "routeId": "k3-256k", "aaSlug": "kimi-k3", "note": "Baton card alias for Kimi K3 max with a 256k route." },
+    { "routeId": "kimi-for-coding", "aaSlug": "kimi-k2-7-code" },
+    {
+      "routeId": "kimi-for-coding-highspeed",
+      "aaSlug": "kimi-k2-7-code",
+      "note": "Serving-speed alias; no separate AA model entry."
+    },
+    { "routeId": "mimo-v2.5", "aaSlug": "mimo-v2-5-0424" },
+    { "routeId": "mimo-v2.5-pro", "aaSlug": "mimo-v2-5-pro" }
+  ]
+}

@@ -48,11 +48,25 @@ Do not paste a base URL or API key. Do not paste Cursor keys.
 
 既能独立，又能 1+1>2 — baton routes; OpenCodex holds the account.
 
+## Capability cache
+
+Artificial Analysis is an optional, replaceable capability source. Refresh it explicitly with a secure temporary key file; ordinary routing reads only the project-local, Git-ignored SQLite snapshot.
+
+```
+baton capabilities refresh --provider aa --key-file /private/tmp/openbaton-aa-api-key
+baton capabilities status
+baton capabilities show gpt-5.6-luna --profile high
+```
+
+No fuzzy model matching. Routes without an exact canonical mapping stay `unranked`, not blocked and not assigned an invented score. See [Artificial Analysis capability cache](docs/data-sources/artificial-analysis.md).
+
 ## Commands
 
 ```
 baton init [--force] [--tools claude,cursor,grok,codex,agents]
 baton login kimi
+baton capabilities status
+baton capabilities show MODEL [--profile PROFILE]
 baton cards
 baton cards add --id opus --strengths "hard reasoning, long refactors"
 baton match "fix the flaky auth tests"

@@ -27,7 +27,7 @@
 3. Worker 执行 `git add/commit` 会直接改变父仓；Git stage/commit 必须由父 agent 串行持有。
 4. 当前 Codex host 的真实参数是 `model`、`reasoning_effort`、`fork_context`；仓库旧的 `agent_type/fork_turns` 假设需要替换。
 5. OpenSpec 写回不能依赖历史行号；必须按稳定 task number 重新定位，并把结论写成 task 的缩进子项。
-6. 仓库声明 OpenCodex `^2.22.0`，当前全局运行时为 `2.18.0`，版本基线尚未闭合。
+6. OpenCodex 不需要锁死版本；兼容性应由 model catalog、spawn schema、route probe 和错误分类能力动态判断。
 7. 第三方 route 能稳定完成小型、只读或单文件任务，但较大的结构化编码任务出现长时间无产出；路由必须纳入 task shape、超时和 route health。
 8. Artificial Analysis 可作为默认能力源，但自动化 API 需要 key；不能精确映射的 route 必须是 `unranked`。
 
@@ -46,11 +46,11 @@
 
 | Gate | 判定 | 核心证据 |
 | --- | --- | --- |
-| Gate A：机制与安全 | `REVISE` | shared worktree/index/HEAD 已实测；父 diff gate 可接受 allowlist 内改动并拒绝越界文件；OpenCodex 版本基线未闭合 |
+| Gate A：机制与安全 | `REVISE` | shared worktree/index/HEAD 已实测；父 diff gate 可接受 allowlist 内改动并拒绝越界文件，但当前产品尚未集成该安全闭环 |
 | Gate B：控制面原型 | `PASS (prototype)` | Route Snapshot、Capability Cache、Conversation-to-Goal、Receipt、queue、OpenSpec number writeback 共 24/24 单测通过 |
 | Gate C：端到端 | `PASS (prototype)` | 简单任务、复杂无 OpenSpec、复杂 OpenSpec、写入 worker + parent diff gate 均完成 |
 | 生产集成 | `NOT YET` | 当前 `baton spawn/apply` 尚未接入真实 native spawn，ticket lifecycle 和持久化仍需实现 |
-| 总体 | `REVISE` | 技术闭环可实现，但必须先按实测修订 host adapter、安全模型和版本基线 |
+| 总体 | `REVISE` | 技术闭环可实现，但必须先按实测修订 host adapter、安全模型和 native ticket lifecycle |
 
 ## 4. Gate A：机制与安全边界
 
@@ -84,7 +84,7 @@ Luna worker 在 fixture 内执行 commit 后，父 fixture 的 HEAD 立即变成
 
 结论：worker 禁止 `git add`、`git commit`、切分支和改写 index。父 agent 只有在 diff gate、测试和用户授权均通过后才能提交。
 
-### 4.4 版本基线
+### 4.4 OpenCodex 兼容策略
 
 ```text
 package.json: @bitkyc08/opencodex ^2.22.0
@@ -92,7 +92,7 @@ npm ls:       dependency empty
 global ocx:   2.18.0
 ```
 
-当前测试能通过不等于 OpenCodex 集成版本兼容。生产实现前必须选择并锁定一个受支持基线，再复跑 route discovery、account、spawn 和错误分类测试。
+这组版本差异不再作为 Gate 阻塞。Baton 应支持多个 OpenCodex 版本和 fork，并在运行时检查 model catalog、namespaced route、`reasoning_effort`、最小上下文派生以及可分类终态。capability probe 通过即可使用；失败时明确 blocked，不按版本号猜测，也不静默 fallback。CI 可以保留测试基线，但运行时不锁死该版本。
 
 ## 5. Gate B：控制面原型
 
@@ -116,7 +116,9 @@ global ocx:   2.18.0
 {"error":"API key is required"}
 ```
 
-[Kimi K3](https://artificialanalysis.ai/models/kimi-k3/) 和 [GPT-5.6 Luna high](https://artificialanalysis.ai/models/gpt-5-6-luna-high/) 有可识别的能力数据。OpenCodex route 与 AA model 只有在 canonical mapping 精确、可审计时才能关联；`xai/grok-4.6` 等当前未证明精确映射的 route 必须保留为 `unranked`。
+[Kimi K3](https://artificialanalysis.ai/models/kimi-k3/) 和 [GPT-5.6 Luna high](https://artificialanalysis.ai/models/gpt-5-6-luna-high/) 有可识别的能力数据。OpenCodex route 与 AA model 只有在 canonical mapping 精确、可审计时才能关联；没有精确对应的 route 必须保留为 `unranked`。
+
+2026-08-19 已完成真实 Free tier 接入：API 四页返回 610 行，经身份去重后写入 608 个唯一模型、32 条显式 route/profile mapping；SQLite 与 manifest 均为本机权限 `0600` 并由 Git 忽略。`gpt-5.6-luna + high`、`xai/grok-4.6 + high`、`kimi/k3 + max` 和 Kimi K2.7 Code 可精确查询；`cursor/grok-4.6-fast` 与未指定 effort 的 `kimi/k3-256k` 保持 `unranked`。仓库完整测试为 91/91。
 
 普通 dispatch 只读取本地 snapshot/cache。只有 OpenCodex catalog fingerprint、AA 数据版本/TTL 或管理员刷新信号变化时才访问外部源。
 
@@ -184,7 +186,7 @@ git diff ownership check
 6. OpenSpec adapter 用 change + 稳定 task number 重新定位；结论子项必须兼容 OpenSpec parser，写回后必须再次调用 validate/status/instructions 验证。
 7. CapabilityProvider 引入 API key、canonical mapping、TTL/version、last-known-good、`unranked` 和 attribution；普通 dispatch 不访问远端。
 8. Route health 按任务形状记录；超时不得静默 fallback，只有 Receipt 允许的模型集合和重试预算可以重调度。
-9. 锁定 OpenCodex 兼容版本并在该版本上复跑本记录全部场景。
+9. 为 OpenCodex/host 实现 capability probe，并在至少一个 CI 基线和当前运行时上复跑本记录全部场景；不锁死生产版本。
 
 ## 8. 最终判定规则的落点
 

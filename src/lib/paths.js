@@ -6,6 +6,10 @@ export const CONFIG_NAME = "config.toml";
 export const SKILL_NAME = "SKILL.md";
 export const SPAWNS_DIR = "spawns";
 export const RUNS_DIR = "runs";
+export const CACHE_DIR = "cache";
+export const CAPABILITIES_DIR = "capabilities";
+export const AA_DB_NAME = "artificial-analysis.sqlite3";
+export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
 
 /**
  * User home for host + director files.
@@ -39,6 +43,18 @@ export function spawnsDir(cwd) {
 
 export function runsDir(cwd) {
   return path.join(cwd, BATON_DIR, RUNS_DIR);
+}
+
+export function capabilitiesCacheDir(cwd) {
+  return path.join(cwd, BATON_DIR, CACHE_DIR, CAPABILITIES_DIR);
+}
+
+export function artificialAnalysisDbPath(cwd) {
+  return path.join(capabilitiesCacheDir(cwd), AA_DB_NAME);
+}
+
+export function artificialAnalysisManifestPath(cwd) {
+  return path.join(capabilitiesCacheDir(cwd), AA_MANIFEST_NAME);
 }
 
 export function packageRoot() {

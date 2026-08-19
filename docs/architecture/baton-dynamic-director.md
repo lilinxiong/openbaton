@@ -734,7 +734,7 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 当前结论是：**`REVISE / 技术可行，需按实测修订后实施`。**
 
-2026-08-18 的验证性原型已经跑通 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 的组合闭环；但实测确认 Codex worker 共享父工作树、Git index 和 HEAD，prompt allowlist 也不是 host 强隔离。当前仓库尚未集成这些机制，OpenCodex `^2.22.0` 与运行时 `2.18.0` 的版本基线也未闭合。
+2026-08-18 的验证性原型已经跑通 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 的组合闭环；但实测确认 Codex worker 共享父工作树、Git index 和 HEAD，prompt allowlist 也不是 host 强隔离。2026-08-19 已实现并实测 Artificial Analysis 本地 SQLite capability cache。OpenCodex 不锁死版本号，兼容性由运行时 capability probe 决定。
 
 因此方案不是 `BLOCKED`，可以进入正式实现；实现必须采用 parent diff gate、父 agent Git ownership、稳定 OpenSpec task number 和真实 native ticket lifecycle。完整证据见 [OpenBaton Dynamic Director 可行性验证记录](./baton-dynamic-director-feasibility-validation.md)。
 
@@ -747,14 +747,14 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 | OpenCodex route | 已验证基础 | provider/auth/catalog 和 namespaced model 已存在 |
 | 动态 subagent | 已验证 | 7 个模型、跨轮 session、并发 6 已实测 |
 | Route Snapshot | 原型通过，待产品集成 | 稳定 hash 和 generation 已验证 |
-| Capability Cache | 原型通过，真实 API 凭据待接入 | hit/TTL/version/stale LKG/unranked 已验证；AA API 要求 key |
+| Capability Cache | 已实现并实测 | AA Free API 拉取 608 个唯一模型；本地 SQLite、原子替换、显式 mapping、unranked 和 secret gate 已通过 |
 | Delegation Receipt | 原型通过，待 native dispatch 集成 | model/path/operation/retry 已验证 fail-closed |
 | Read-only 多模型 Goal | 端到端原型通过 | 简单任务和三 route 并发复杂任务已运行 |
 | OpenSpec task 调度 | 端到端原型通过 | task number 插行稳定性和 OpenSpec 1.9 completion round-trip 已通过 |
 | 写代码的 subagent | 机制通过，集成需修订 | 已确认 shared worktree；Kimi write worker + parent diff gate 通过 |
 | 文件级强授权 | parent gate 原型通过 | host 不执行 prompt allowlist；越界 diff 由父 gate 拒绝 |
 | 多宿主兼容 | 后续验证 | Codex 可先验证，其它 host 需要独立 adapter |
-| 最终实施结论 | `REVISE` | 技术闭环可实现；需修订 host adapter、安全边界、版本基线后再提升为 PASS |
+| 最终实施结论 | `REVISE` | 技术闭环可实现；需完成 host-native ticket lifecycle 和 parent safety gate 后再提升为 PASS |
 
 ### 11.3 已证明的底座与待证明的闭环
 
@@ -795,7 +795,7 @@ Codex V1 支持 namespaced model 动态 spawn
 3. allowlist 外修改能否拒绝导入。
 4. Worker 的 staged index/commit 是否影响父仓。
 5. close/resume 后 diff 与 artifact 的生命周期。
-6. OpenCodex `^2.22.0` 仓库依赖与当前 `2.18.0` 运行时的兼容基线。
+6. OpenCodex/host 运行时是否提供 model catalog、namespaced route、`reasoning_effort`、最小上下文派生和可分类终态；按 capability probe 判断，不锁死版本号。
 
 验证结果决定写入集成：
 
@@ -805,7 +805,7 @@ Codex V1 支持 namespaced model 动态 spawn
 | 修改停留在 fork | 只选择性导入批准文件或 commit |
 | Host 提供 patch/upload | 将该通道作为唯一批准导入面 |
 
-V-01～V-05 的实测结论是 shared worktree/index/HEAD；parent diff gate 可以承接写入安全边界。版本基线仍影响全部后续实现，因此 Gate A 判为 `REVISE`。
+V-01～V-05 的实测结论是 shared worktree/index/HEAD；parent diff gate 可以承接写入安全边界。Gate A 因当前产品尚未集成该安全闭环而判为 `REVISE`，不再由 OpenCodex 版本号阻塞。
 
 ### 11.5 现实工程风险
 
@@ -813,7 +813,7 @@ V-01～V-05 的实测结论是 shared worktree/index/HEAD；parent diff gate 可
 2. 当前 `baton spawn/apply` 只创建 ticket，没有真实调用 native spawn；ticket 还会在启动前被标成 `running`。
 3. 当前 queue 默认 4，没有 agent ID、真实终态和自动出队；Codex V1 实测物理上限为 6。
 4. 当前 OpenSpec conclusion 依赖行号，task 内容变化后可能漂移。
-5. 仓库依赖声明为 OpenCodex `^2.22.0`，当前全局运行版本为 `2.18.0`；实现前必须确定兼容基线。
+5. OpenCodex/host 兼容性必须由 capability probe 判断；catalog 可见但 spawn schema 或 route probe 不成立时明确 blocked，不能按版本号猜测。
 6. Artificial Analysis 不覆盖或无法精确映射的 route 必须保留为 `unranked`。
 7. 超长对话发生 compaction 时，Goal Draft 必须区分 `explicit/inferred/unresolved/excluded` 并交给用户确认。
 
@@ -866,7 +866,7 @@ worker worktree/patch 验证
 | `REVISE / 需修订` | 机制可替代但当前设计假设错误，例如 worktree/import 模式与预期不同 |
 | `BLOCKED / 不可实施` | Host 无法提供安全结果回收或 OpenSpec/OpenCodex 关键接口不满足闭环 |
 
-当前状态：`REVISE / 技术可行，需按实测修订后实施`。Gate B、Gate C 的验证性原型通过；Gate A 因 shared Git 状态和 OpenCodex 版本基线要求修订。完成修订并在锁定版本上复跑后，才可宣称 `PASS / 可实施`。
+当前状态：`REVISE / 技术可行，需按实测修订后实施`。Gate B、Gate C 的验证性原型通过，Capability Cache 已进入产品实现；Gate A 仍需把 shared Git 状态纳入 parent safety gate，并接入真实 native ticket lifecycle。OpenCodex 以 capability probe 兼容，不要求锁定版本。完成这些修订并复跑后，才可宣称 `PASS / 可实施`。
 
 ## 12. 明确非目标
 

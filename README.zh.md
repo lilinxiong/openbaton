@@ -48,11 +48,25 @@ baton login grok      # xAI Grok 账号
 
 既能独立，又能 1+1>2 — baton 负责分派；账号由 OpenCodex 持有。
 
+## 能力缓存
+
+Artificial Analysis 是可选、可替换的能力数据源。只在显式刷新时通过安全的临时 key 文件访问远端；普通调度只读项目内、被 Git 忽略的 SQLite snapshot。
+
+```
+baton capabilities refresh --provider aa --key-file /private/tmp/openbaton-aa-api-key
+baton capabilities status
+baton capabilities show gpt-5.6-luna --profile high
+```
+
+不做模糊模型匹配。没有精确 canonical mapping 的 route 保持 `unranked`：不阻塞使用，也不编造分数。详见 [Artificial Analysis 能力缓存](docs/data-sources/artificial-analysis.md)。
+
 ## 命令
 
 ```
 baton init [--force] [--tools claude,cursor,grok,codex,agents]
 baton login kimi
+baton capabilities status
+baton capabilities show MODEL [--profile PROFILE]
 baton cards
 baton cards add --id opus --strengths "hard reasoning, long refactors"
 baton match "fix the flaky auth tests"

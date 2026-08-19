@@ -36,12 +36,21 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - Account-login providers: kimi, xai, cursor. Cursor login is experimental (PKCE). Do not enable nativeLocalExec. Do not paste Cursor keys.
    - Never ask the user to paste a base URL or API key. The user only types `baton login kimi`. Do not tell them to install ocx.
 
+9. **Capability data is local-first and replaceable.** Artificial Analysis is the first `CapabilityProvider`, not a routing oracle.
+   - Ordinary dispatch reads `.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
+   - Remote refresh is explicit and uses a mode-0600 temporary key file. The key is never pasted into chat, stored, logged, or sent to workers.
+   - Join route + profile only through explicit canonical mappings. Missing or uncertain mappings remain `unranked`; never fuzzy-match or invent a score.
+   - Capability evidence informs the host's decision. It does not replace cards, route health, quota, authorization, or final acceptance.
+
 ## Commands
 
 ```
 baton login
 baton login <provider>
 baton login --card <id>
+baton capabilities refresh --provider aa --key-file PATH
+baton capabilities status
+baton capabilities show ROUTE [--profile PROFILE]
 baton cards
 baton cards add --id ID --strengths "..."
 baton match <text>

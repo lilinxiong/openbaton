@@ -890,13 +890,13 @@
           <p class="eyebrow">06 · Feasibility</p>
           <h2 id="feasibility-title">整体实施可行性：REVISE / 技术可行</h2>
         </div>
-        <p>验证性原型已跑通控制面和端到端闭环；实测同时确认 shared worktree、父 Git ownership、稳定 task number 与版本基线是正式实现必须修订的边界。</p>
+        <p>验证性原型已跑通控制面和端到端闭环；AA 本地 SQLite cache 已实现。正式实现仍需收口 shared worktree、父 Git ownership、稳定 task number 和 native ticket lifecycle。</p>
       </div>
       <div class="panel flow-panel">
         <div class="feasibility-summary">
           <article class="feasibility-card" style="--status-color: var(--ok)"><strong>已证明的底座</strong><p>OpenSpec workflow 命令、OpenCodex provider/catalog、namespaced native spawn、7 个 route、跨轮 session 和并发 6。</p></article>
           <article class="feasibility-card" style="--status-color: var(--ok)"><strong>原型闭环已通过</strong><p>Conversation-to-Goal、snapshots/cache、Receipt、queue、OpenSpec round-trip、worker 写入与 parent diff gate。</p></article>
-          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>最终实施结论 · REVISE</strong><p>技术路径成立；当前产品需按 shared worktree、安全 gate、native ticket lifecycle 和版本基线修订后实施。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>最终实施结论 · REVISE</strong><p>技术路径成立；当前产品需按 shared worktree、parent safety gate 和 native ticket lifecycle 修订后实施。</p></article>
         </div>
         <div class="table-responsive">
           <table class="feasibility-table">
@@ -905,18 +905,18 @@
               <tr><td>Conversation-to-Goal</td><td><span class="status-label" style="--status-color: var(--ok)">原型通过</span></td><td>显式提升、讨论态拒绝、excluded 和 Receipt fail-closed 已通过验证。</td></tr>
               <tr><td>OpenSpec workflow</td><td><span class="status-label" style="--status-color: var(--ok)">已有基础</span></td><td>OpenSpec 1.9 已提供 change/spec/status/instructions/validate/archive。</td></tr>
               <tr><td>OpenCodex + native spawn</td><td><span class="status-label" style="--status-color: var(--ok)">已验证</span></td><td>Namespaced route、7 个模型、跨轮 session 和并发 6 已实测。</td></tr>
-              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--ok)">原型通过</span></td><td>24/24 控制面测试通过；Artificial Analysis 自动化 API 仍需 key 和 canonical mapping。</td></tr>
+              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--ok)">已实现</span></td><td>AA Free API 实测写入 608 个唯一模型、32 条显式 mapping；普通调度只读本地 SQLite。</td></tr>
               <tr><td>写代码 worker</td><td><span class="status-label" style="--status-color: var(--ok)">机制通过</span></td><td>shared worktree 已确认；parent diff gate 接受 allowlist 内改动并拒绝越界文件。</td></tr>
-              <tr><td>最终方案</td><td><span class="status-label" style="--status-color: var(--worker)">REVISE</span></td><td>不是 BLOCKED；完成 host adapter、安全边界和版本基线修订后可提升为 PASS。</td></tr>
+              <tr><td>最终方案</td><td><span class="status-label" style="--status-color: var(--worker)">REVISE</span></td><td>不是 BLOCKED；完成 host adapter、parent safety gate 和 native ticket lifecycle 后可提升为 PASS。</td></tr>
             </tbody>
           </table>
         </div>
         <div class="delivery-track">
-          <div class="delivery-phase"><b>Gate A · 机制与安全</b><p>Worktree/patch、diff/import gate、Git 隔离和 OpenCodex 版本基线。</p></div>
+          <div class="delivery-phase"><b>Gate A · 机制与安全</b><p>Shared worktree、diff/import gate、父 Git ownership 和 host capability probe。</p></div>
           <div class="delivery-phase"><b>Gate B · 控制面原型</b><p>Goal 提升、snapshots/cache、Receipt、native dispatch、queue 与 no-fallback。</p></div>
           <div class="delivery-phase"><b>Gate C · 端到端</b><p>简单任务、复杂无 OpenSpec、复杂 OpenSpec Goal 和写入闭环。</p></div>
         </div>
-        <div class="loop-back">当前：REVISE。Gate B/C 原型通过；Gate A 的 shared Git 状态和 OpenCodex 版本基线要求修订。完整证据见 baton-dynamic-director-feasibility-validation.md。</div>
+        <div class="loop-back">当前：REVISE。Capability Cache 已实现，Gate B/C 原型通过；Gate A 仍需集成 shared Git safety 与真实 native ticket lifecycle。OpenCodex 按 capability probe 兼容，不锁版本。</div>
       </div>
     </section>
 
