@@ -9,12 +9,15 @@ import { runConversation } from "./commands/conversation.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
-import { applyChange, concludeSpawn } from "./lib/apply.js";
-import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
+import { applyChange, concludeSpawn, planApply, resolveApplyChange } from "./lib/apply.js";
+import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
 import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
 import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
+import { buildRouteCandidates } from "./lib/routes.js";
+import { artificialAnalysisDbPath } from "./lib/paths.js";
+import type { DirectorConfig, ModelCard } from "./types.js";
 import type { OcxResolver, OcxRunner } from "./lib/opencodex.js";
 import type { CodedError, WritableLike } from "./types.js";
 
@@ -33,6 +36,10 @@ type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
 export const VERSION = "0.1.0";
 
+function resolvedCards(cwd: string, cfg: DirectorConfig): ModelCard[] {
+  return buildRouteCandidates(cwd, cfg.models, artificialAnalysisDbPath(cwd)).map((candidate) => candidate.card);
+}
+
 const HELP = `baton — director for multi-model work
 既能独立，又能 1+1>2
 
@@ -44,8 +51,8 @@ of OpenSpec tasks, with conclusions written back. Not a thin adapter.
 Usage:
   baton init [--force] [--tools a,b]  initialize .baton/ and host skill paths
   baton update                        refresh SKILL + director defaults; keep cards
-  baton cards                       list model cards
-  baton cards add --id ID --strengths "..." [--route MODEL] [--reasoning-effort EFFORT]
+  baton cards [--ranked|--unranked] [--provider ID] [--json]
+  baton cards add --id ID [--strengths "..."] [--route MODEL] [--reasoning-effort EFFORT] [--enabled true|false]
   baton match <text>                show which card would run
   baton spawn <text> [--model ID]   card-route a standalone unit
   baton apply [change]              execute an OpenSpec change (consume, do not invent)
@@ -127,7 +134,8 @@ async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: N
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
-  stdout.write("\nNext: add real model cards, then `baton spawn` or `baton apply`.\n");
+  stdout.write("\nNext: run `baton routes refresh`, inspect `baton cards --ranked`, then `baton spawn` or `baton apply`.\n");
+  stdout.write("Aliases, policy hints, and exclusions in ~/.baton/config.toml are optional.\n");
   stdout.write("OpenSpec is optional. baton is complete without it.\n");
   return 0;
 }
@@ -148,19 +156,29 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
       strengths: stringFlag(flags, "strengths"),
       routeId: stringFlag(flags, "route"),
       reasoningEffort: stringFlag(flags, "reasoning-effort"),
+      enabled: stringFlag(flags, "enabled") == null ? undefined : stringFlag(flags, "enabled") !== "false",
       env,
     });
     stdout.write(`cards: ${models.length}\n`);
-    for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""} — ${m.strengths}\n`);
+    for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""}${m.reasoning_effort ? ` @${m.reasoning_effort}` : ""}  [${m.executable ? (m.capability?.ranked ? "ranked" : "unranked") : "unavailable"}] — ${m.strengths}\n`);
     return 0;
   }
-  const models = listCards(cwd, { env });
+  const flags = parseFlags(args);
+  let models = listCards(cwd, { env });
+  if (flags.ranked) models = models.filter((card) => card.capability?.ranked);
+  if (flags.unranked) models = models.filter((card) => !card.capability?.ranked);
+  const provider = stringFlag(flags, "provider");
+  if (provider) models = models.filter((card) => card.provider === provider || card.auth_provider === provider);
+  if (flags.json) {
+    stdout.write(`${JSON.stringify(models, null, 2)}\n`);
+    return 0;
+  }
   if (models.length === 0) {
     stdout.write("no cards. Add some: baton cards add --id NAME --strengths \"...\"\n");
     return 0;
   }
   stdout.write(`cards: ${models.length}\n`);
-  for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""} — ${m.strengths}\n`);
+  for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""}${m.reasoning_effort ? ` @${m.reasoning_effort}` : ""}  [${m.executable ? (m.capability?.ranked ? "ranked" : "unranked") : "unavailable"}] — ${m.strengths}\n`);
   return 0;
 }
 
@@ -171,8 +189,15 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   }
   const cfg = loadConfig(cwd, { env });
   try {
-    const hit = matchModelCard(text, cfg.models);
-    stdout.write(`${hit.model_id}  (score ${hit.score})\n`);
+    const hit = matchModelCard(text, resolvedCards(cwd, cfg));
+    const flags = parseFlags(args);
+    if (flags.json) stdout.write(`${JSON.stringify({ ...hit, evidence: hit.card.capability || null }, null, 2)}\n`);
+    else {
+      stdout.write(`${hit.model_id}  (score ${hit.score})\n`);
+      stdout.write(`  route: ${hit.card.route_id}${hit.card.reasoning_effort ? ` @${hit.card.reasoning_effort}` : ""}\n`);
+      stdout.write(`  positioning: ${(hit.card.positioning || []).join(", ") || "unranked"}\n`);
+      if (hit.card.capability?.aa_slug) stdout.write(`  AA: ${hit.card.capability.aa_slug}\n`);
+    }
     return 0;
   } catch (err) {
     if (err instanceof CardMatchError) {
@@ -188,7 +213,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
   const cfg = loadConfig(cwd, { env });
-  await ensureFreshKimiAccount({ env, cwd });
+  const cards = resolvedCards(cwd, cfg);
   const queue = DispatchQueue.fromConfig(cfg);
   // account for already-running tickets
   for (const s of listSpawns(cwd)) {
@@ -197,7 +222,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   }
   const planned = planStandaloneSpawn({
     description: text,
-    cards: cfg.models,
+    cards,
     explicitModel: stringFlag(flags, "model"),
     queue,
     cwd,
@@ -207,6 +232,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`unit: ${planned.description}\n`);
     return 0;
   }
+  if (planned.receipt.route.auth_provider === "kimi") await ensureFreshKimiAccount({ env, cwd });
   const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (writePaths.length) {
     const allowed = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
@@ -233,14 +259,19 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const change = args.find((a) => !a.startsWith("-")) || null;
   const cfg = loadConfig(cwd, { env });
-  await ensureFreshKimiAccount({ env, cwd });
+  const cards = resolvedCards(cwd, cfg);
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
     stdout.write("  baton spawn \"explore the auth module\"\n");
     stdout.write("Create a change with OpenSpec when you want 1+1>2 apply.\n");
     return 2;
   }
-  const result = applyChange({ cwd, change, cfg });
+  const previewDir = resolveApplyChange(cwd, change);
+  const preview = planApply({ tasks: loadTasksFromChangeDir(previewDir).tasks, cards });
+  if (preview.units.some((unit) => !unit.director_local && unit.auth_provider === "kimi")) {
+    await ensureFreshKimiAccount({ env, cwd });
+  }
+  const result = applyChange({ cwd, change, cfg: { ...cfg, models: cards } });
   stdout.write(`apply ${result.changeDir}\n`);
   if (result.error) {
     stdout.write(`blocked: ${result.error}\n`);
@@ -289,7 +320,10 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
     throw err;
   }
   stdout.write("baton status\n");
-  stdout.write(`  cards: ${cfg.models.map((m) => m.id).join(", ") || "(none)"}\n`);
+  const cards = resolvedCards(cwd, cfg);
+  const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
+  const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
+  stdout.write(`  cards: ${cards.length} dynamic/override (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
   stdout.write(`  max_concurrent: ${cfg.director.max_concurrent} (queue beyond this; never refuse)\n`);
   const spawns = listSpawns(cwd);
   const running = spawns.filter((s) => s.status === "running").length;

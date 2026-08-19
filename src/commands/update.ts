@@ -44,15 +44,18 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
     actions.push(`wrote ${displayHomePath(destConfig, { cwd, env })} (was missing)`);
   } else {
     const current = loadConfig(cwd, { env });
-    const enrichedCards = current.models.map((card) => {
+    const enrichedCards = current.models.flatMap((card) => {
       const builtin = templateCards.find((item) => item.id === card.id);
-      if (!builtin) return card;
-      return {
+      const legacyGenerated = /^AA Terminal-Bench\b/.test(card.strengths);
+      if (!builtin && legacyGenerated && ["mimo-v2.5", "mimo-v2.5-pro"].includes(card.id)) return [];
+      if (!builtin) return [card];
+      return [{
         ...card,
+        strengths: legacyGenerated ? builtin.strengths : card.strengths,
         auth_provider: card.auth_provider || builtin.auth_provider,
         route_id: card.route_id || builtin.route_id,
         reasoning_effort: card.reasoning_effort || builtin.reasoning_effort,
-      };
+      }];
     });
     const merged = normalizeConfig({
       director: { ...tmplDirector, ...current.director },

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.js";
 import { initProject } from "../src/commands/init.js";
 import { loadConfig } from "../src/lib/config.js";
+import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome } from "./home.js";
 import {
   authProviderForCard,
@@ -365,6 +366,7 @@ describe("opencodex account login consume", () => {
     await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
+    publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
     const cfg = loadConfig(cwd);
     assert.equal(cfg.models.find((m) => m.id === "k3").auth_provider, "kimi");
     const fake = fakeOcxEnv();
@@ -378,6 +380,7 @@ describe("opencodex account login consume", () => {
     await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
+    publishRouteSnapshot(cwd, { models: [{ id: "kimi-k2.7-code-highspeed", provider: "kimi" }] });
     const fake = fakeOcxEnv();
     const code = await run(["login", "--card", "kimi-for-coding"], { cwd, stdout: capture(), stderr: capture(), env: fake.env });
     assert.equal(code, 0);
@@ -389,8 +392,7 @@ describe("opencodex account login consume", () => {
     await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ocx-"));
     initProject(cwd, { tools: ["claude"] });
-    const cfg = loadConfig(cwd);
-    assert.equal(cfg.models.find((m) => m.id === "mimo-v2.5-pro").auth_provider, undefined);
+    publishRouteSnapshot(cwd, { models: [{ id: "mimo-v2.5-pro", provider: "mimo" }] });
     const fake = fakeOcxEnv();
     const out = capture();
     const code = await run(["login", "--card", "mimo-v2.5-pro"], { cwd, stdout: out, stderr: capture(), env: fake.env });

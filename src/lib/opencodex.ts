@@ -181,7 +181,9 @@ export function resolveOcx(options: OcxResolveOptions = {}): OcxResolution | nul
 export function authProviderForCard(card: unknown): AuthProviderMapping {
   if (!isRecord(card)) return { provider: null, keyOnly: false };
   const id = stringValue(card.id).trim();
-  if (MIMO_KEY_CARDS.has(id)) return { provider: null, keyOnly: true };
+  const routeId = stringValue(card.route_id).trim();
+  const routeModel = routeId.split("/").at(-1) || "";
+  if (MIMO_KEY_CARDS.has(id) || MIMO_KEY_CARDS.has(routeModel)) return { provider: null, keyOnly: true };
   const authProvider = stringValue(card.auth_provider).trim();
   if (authProvider) return { provider: authProvider, keyOnly: false };
   if (KIMI_OAUTH_CARDS.has(id)) return { provider: "kimi", keyOnly: false };

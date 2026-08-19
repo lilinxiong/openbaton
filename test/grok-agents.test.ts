@@ -10,8 +10,6 @@ import { loadConfig } from "../src/lib/config.js";
 import { withHome, fakeEnv } from "./home.js";
 
 const DEFAULT_IDS = [
-  "mimo-v2.5",
-  "mimo-v2.5-pro",
   "kimi-for-coding",
   "kimi-for-coding-highspeed",
   "k3",
@@ -27,7 +25,7 @@ function readAgent(home, id) {
 }
 
 describe("Grok card agents", () => {
-  it("init with grok writes ~/.grok/agents/<id>.md with model: <id> for the six default cards", () => {
+  it("init with grok writes ~/.grok/agents/<id>.md for the four default aliases", () => {
     withHome((home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
@@ -72,6 +70,8 @@ describe("Grok card agents", () => {
       const text = readAgent(home, "opus-card");
       assert.match(text, /^name: opus-card$/m);
       assert.match(text, /^model: opus-card$/m);
+      addCard(cwd, { id: "opus-card", enabled: false, env });
+      assert.ok(!fs.existsSync(path.join(home, ".grok", "agents", "opus-card.md")));
       addCard(cwd, { id: "k3", strengths: "updated k3 strengths", env });
       const k3 = readAgent(home, "k3");
       assert.match(k3, /^model: k3$/m);

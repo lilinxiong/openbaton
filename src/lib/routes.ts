@@ -2,8 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { routeSnapshotPath } from "./paths.js";
-import { queryRouteCapability, type RouteCapabilityResult } from "./capabilities/store.js";
-import type { ModelCard } from "../types.js";
+import {
+  listStoredRouteMappings,
+  queryRouteCapability,
+  type RouteCapabilityResult,
+  type StoredRouteMapping,
+} from "./capabilities/store.js";
+import type { CardCapabilityEvidence, ModelCard } from "../types.js";
 
 export interface ExecutableRoute {
   id: string;
@@ -20,7 +25,7 @@ export interface RouteSnapshot {
 }
 
 function stableRoutes(routes: ExecutableRoute[]): string {
-  return JSON.stringify(routes.slice().sort((a, b) => a.id.localeCompare(b.id)));
+  return JSON.stringify(routes.slice().sort((a, b) => `${a.provider || ""}/${a.id}`.localeCompare(`${b.provider || ""}/${b.id}`)));
 }
 
 export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
@@ -36,9 +41,9 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
     const id = String(record?.id ?? record?.model ?? record?.name ?? item ?? "").trim();
     if (!id) continue;
     const provider = typeof record?.provider === "string" ? record.provider : id.includes("/") ? id.split("/", 1)[0] : null;
-    byId.set(id, { id, provider });
+    byId.set(`${provider || ""}\0${id}`, { id, provider });
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...byId.values()].sort((a, b) => `${a.provider || ""}/${a.id}`.localeCompare(`${b.provider || ""}/${b.id}`));
 }
 
 export function publishRouteSnapshot(cwd: string, catalog: unknown, now: Date = new Date()): { changed: boolean; snapshot: RouteSnapshot } {
@@ -69,18 +74,188 @@ export interface RouteCandidate {
   capability: RouteCapabilityResult | null;
 }
 
-export function buildRouteCandidates(cwd: string, cards: ModelCard[], capabilityDbPath: string): RouteCandidate[] {
-  const snapshot = readRouteSnapshot(cwd);
-  const available = new Set<string>();
-  for (const route of snapshot?.routes || []) {
-    available.add(route.id);
-    if (route.provider) available.add(`${route.provider}/${route.id}`);
+export function canonicalRouteId(route: ExecutableRoute): string {
+  if (route.id.includes("/") || !route.provider) return route.id;
+  return `${route.provider}/${route.id}`;
+}
+
+function routeVariants(route: ExecutableRoute, includeBare = true): string[] {
+  return [...new Set([canonicalRouteId(route), ...(includeBare ? [route.id] : [])])];
+}
+
+function numberAt(value: unknown, ...path: string[]): number | null {
+  let current = value;
+  for (const key of path) current = current && typeof current === "object" ? (current as Record<string, unknown>)[key] : null;
+  return typeof current === "number" && Number.isFinite(current) ? current : null;
+}
+
+function evidence(result: RouteCapabilityResult, mappingRouteId?: string): CardCapabilityEvidence {
+  const model = "model" in result ? result.model : undefined;
+  return {
+    source: "artificial-analysis",
+    ranked: result.ranked,
+    unranked: result.unranked,
+    reason: result.reason,
+    ...(result.aaSlug ? { aa_slug: result.aaSlug } : {}),
+    ...(mappingRouteId ? { mapping_route_id: mappingRouteId } : {}),
+    ...(result.ranked && "mappingSource" in result ? { mapping_source: result.mappingSource } : {}),
+    intelligence_index: model?.intelligence_index ?? null,
+    coding_index: model?.coding_index ?? null,
+    agentic_index: model?.agentic_index ?? null,
+    cost_per_task: numberAt(model?.cost, "cost_per_task", "total_cost"),
+    output_tokens_per_second: numberAt(model?.performance, "median_output_tokens_per_second"),
+    time_to_first_answer_seconds: numberAt(model?.performance, "median_time_to_first_answer_token_seconds"),
+  };
+}
+
+function percentile(value: number | null, values: number[], lowerIsBetter = false): number | undefined {
+  if (value == null || values.length === 0) return undefined;
+  const rank = values.filter((item) => item <= value).length / values.length;
+  return lowerIsBetter ? 1 - rank + (1 / values.length) : rank;
+}
+
+function applyPositioning(candidates: RouteCandidate[]): void {
+  const unique = new Map<string, CardCapabilityEvidence>();
+  for (const candidate of candidates) {
+    const capability = candidate.card.capability;
+    if (capability?.ranked && capability.aa_slug && !unique.has(capability.aa_slug)) unique.set(capability.aa_slug, capability);
   }
-  return cards.map((card) => {
-    let capability = card.route_id ? queryRouteCapability({ dbPath: capabilityDbPath, routeId: card.route_id, profile: card.reasoning_effort || "" }) : null;
-    if (capability?.unranked && capability.reason === "no_canonical_mapping") {
-      capability = queryRouteCapability({ dbPath: capabilityDbPath, routeId: card.id, profile: card.reasoning_effort || "" });
+  const values = [...unique.values()];
+  const metric = (key: keyof CardCapabilityEvidence) => values.map((item) => item[key]).filter((item): item is number => typeof item === "number");
+  const intelligence = metric("intelligence_index");
+  const coding = metric("coding_index");
+  const agentic = metric("agentic_index");
+  const cost = metric("cost_per_task");
+  const throughput = metric("output_tokens_per_second");
+  const latency = metric("time_to_first_answer_seconds");
+
+  for (const candidate of candidates) {
+    const cap = candidate.card.capability;
+    if (!cap?.ranked) {
+      candidate.card.positioning = ["unranked"];
+      candidate.card.strengths = `unranked; ${cap?.reason || "no capability evidence"}`;
+      continue;
     }
-    return { card, executable: Boolean(card.route_id && available.has(card.route_id)), capability };
-  });
+    cap.relative = {
+      intelligence: percentile(cap.intelligence_index, intelligence),
+      coding: percentile(cap.coding_index, coding),
+      agentic: percentile(cap.agentic_index, agentic),
+      cost_efficiency: percentile(cap.cost_per_task, cost, true),
+      throughput: percentile(cap.output_tokens_per_second, throughput),
+      latency: percentile(cap.time_to_first_answer_seconds, latency, true),
+    };
+    const tags: string[] = [];
+    if ((cap.relative.coding || 0) >= 0.75) tags.push("strong-coding");
+    if ((cap.relative.agentic || 0) >= 0.75) tags.push("strong-agentic");
+    if ((cap.relative.intelligence || 0) >= 0.75) tags.push("strong-reasoning");
+    if ((cap.relative.cost_efficiency || 0) >= 0.75) tags.push("cost-efficient");
+    if ((cap.relative.throughput || 0) >= 0.75) tags.push("high-throughput");
+    if ((cap.relative.latency || 0) >= 0.75) tags.push("low-latency");
+    if (tags.length === 0) tags.push("balanced");
+    candidate.card.positioning = tags;
+    const fields = [
+      cap.coding_index == null ? null : `coding=${cap.coding_index}`,
+      cap.agentic_index == null ? null : `agentic=${cap.agentic_index}`,
+      cap.intelligence_index == null ? null : `intelligence=${cap.intelligence_index}`,
+      cap.cost_per_task == null ? null : `cost/task=${cap.cost_per_task}`,
+      cap.output_tokens_per_second == null ? null : `tok/s=${cap.output_tokens_per_second}`,
+    ].filter(Boolean);
+    candidate.card.strengths = `AA-derived inference: ${tags.join(", ")}${fields.length ? `; ${fields.join(", ")}` : ""}`;
+  }
+}
+
+function matchesOverride(card: ModelCard, override: ModelCard): boolean {
+  const target = override.route_id || override.id;
+  const route = card.route_id || "";
+  const routeMatches = card.id === target || route === target || route.endsWith(`/${target}`);
+  if (!routeMatches) return false;
+  return override.reasoning_effort ? card.reasoning_effort === override.reasoning_effort : true;
+}
+
+function applyOverrides(candidates: RouteCandidate[], overrides: ModelCard[], snapshot: RouteSnapshot | null): RouteCandidate[] {
+  const removed = new Set<RouteCandidate>();
+  const aliases: RouteCandidate[] = [];
+  for (const override of overrides) {
+    const matches = candidates.filter((candidate) => matchesOverride(candidate.card, override));
+    if (override.enabled === false) {
+      for (const match of matches) removed.add(match);
+      continue;
+    }
+    const matchedRoutes = new Set(matches.map((candidate) => candidate.card.route_id).filter(Boolean));
+    const target = override.route_id || override.id;
+    if (matchedRoutes.size > 1 && !target.includes("/")) {
+      aliases.push({
+        card: { ...override, strengths: override.strengths || "ambiguous provider route override", source: "override", executable: false },
+        executable: false,
+        capability: null,
+      });
+      continue;
+    }
+    const base = override.reasoning_effort
+      ? matches.find((candidate) => candidate.card.reasoning_effort === override.reasoning_effort)
+      : matches.find((candidate) => !candidate.card.reasoning_effort) || matches[0];
+    if (base) {
+      removed.add(base);
+      aliases.push({
+        ...base,
+        card: {
+          ...base.card,
+          ...override,
+          id: override.id,
+          strengths: [base.card.strengths, override.strengths ? `User override: ${override.strengths}` : ""].filter(Boolean).join(". "),
+          route_id: base.card.route_id,
+          reasoning_effort: override.reasoning_effort || base.card.reasoning_effort,
+          auth_provider: override.auth_provider || base.card.auth_provider,
+          source: "override",
+          enabled: true,
+        },
+      });
+      continue;
+    }
+    const matchingSnapshotRoutes = snapshot?.routes.filter((route) => routeVariants(route).includes(target)) || [];
+    const executable = matchingSnapshotRoutes.length === 1;
+    aliases.push({
+      card: { ...override, strengths: override.strengths || "unranked user override", source: "override", executable },
+      executable,
+      capability: null,
+    });
+  }
+  return [...candidates.filter((candidate) => !removed.has(candidate)), ...aliases]
+    .sort((a, b) => a.card.id.localeCompare(b.card.id));
+}
+
+export function buildRouteCandidates(cwd: string, overrides: ModelCard[], capabilityDbPath: string): RouteCandidate[] {
+  const snapshot = readRouteSnapshot(cwd);
+  const mappings = listStoredRouteMappings({ dbPath: capabilityDbPath });
+  const candidates: RouteCandidate[] = [];
+  const idCounts = new Map<string, number>();
+  for (const route of snapshot?.routes || []) idCounts.set(route.id, (idCounts.get(route.id) || 0) + 1);
+  for (const route of snapshot?.routes || []) {
+    const canonical = canonicalRouteId(route);
+    const variants = routeVariants(route, idCounts.get(route.id) === 1);
+    const routeMappings = mappings
+      .filter((mapping) => variants.includes(mapping.routeId))
+      .sort((a, b) => Number(b.routeId === canonical) - Number(a.routeId === canonical));
+    const byProfile = new Map<string, StoredRouteMapping>();
+    for (const mapping of routeMappings) if (!byProfile.has(mapping.profile)) byProfile.set(mapping.profile, mapping);
+    if (!byProfile.has("")) byProfile.set("", { routeId: canonical, profile: "", aaSlug: "", mappingSource: "explicit", note: null });
+    for (const [profile, mapping] of byProfile) {
+      const result = queryRouteCapability({ dbPath: capabilityDbPath, routeId: mapping.routeId, profile });
+      const id = profile ? `${canonical}@${profile}` : canonical;
+      const card: ModelCard = {
+        id,
+        strengths: "",
+        auth_provider: route.provider || undefined,
+        route_id: canonical,
+        reasoning_effort: profile || undefined,
+        source: "dynamic",
+        provider: route.provider,
+        executable: true,
+        capability: evidence(result, mapping.routeId),
+      };
+      candidates.push({ card, executable: true, capability: result });
+    }
+  }
+  applyPositioning(candidates);
+  return applyOverrides(candidates, overrides, snapshot);
 }

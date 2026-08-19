@@ -83,6 +83,7 @@ export function syncGrokCardAgents(
   const created: string[] = [];
   const keep = new Set<string>();
   for (const card of cards || []) {
+    if (card.enabled === false) continue;
     const written = writeGrokCardAgent(cwd, card, options);
     if (!written) continue;
     created.push(written);

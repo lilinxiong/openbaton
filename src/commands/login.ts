@@ -3,6 +3,9 @@
  * Do not ask anyone to paste a base URL or API key.
  */
 import { loadConfig } from "../lib/config.js";
+import { buildRouteCandidates } from "../lib/routes.js";
+import { artificialAnalysisDbPath } from "../lib/paths.js";
+import { requireCardId, CardMatchError } from "../lib/cards.js";
 import {
   resolveOcx,
   resolveLoginProvider,
@@ -169,7 +172,8 @@ function doList(engine: LoginEngine): number {
 
 function loadCards(cwd: string, env: NodeJS.ProcessEnv): ModelCard[] {
   try {
-    return loadConfig(cwd, { env }).models;
+    const cfg = loadConfig(cwd, { env });
+    return buildRouteCandidates(cwd, cfg.models, artificialAnalysisDbPath(cwd)).map((candidate) => candidate.card);
   } catch (error: unknown) {
     if (isCodedError(error) && error.code === "BATON_NOT_INITIALIZED") return [];
     throw error;
@@ -178,9 +182,11 @@ function loadCards(cwd: string, env: NodeJS.ProcessEnv): ModelCard[] {
 
 export function resolveCardForLogin(cwd: string, cardId: string, env: NodeJS.ProcessEnv): CardLoginResolution {
   const cards = loadCards(cwd, env);
-  const card = cards.find((candidate) => candidate.id === cardId);
-  if (!card) {
-    return { error: `blocked: unknown card "${cardId}". Set auth_provider or pass provider.` };
+  let card: ModelCard;
+  try { card = requireCardId(cardId, cards); }
+  catch (error) {
+    const detail = error instanceof CardMatchError && error.code !== "UNKNOWN_CARD" ? error.message : `unknown card "${cardId}"`;
+    return { error: `blocked: ${detail} Set auth_provider or pass provider.` };
   }
   const mapped = authProviderForCard(card);
   if (mapped.keyOnly) return { error: "blocked: " + MIMO_KEY_ONLY_MESSAGE };

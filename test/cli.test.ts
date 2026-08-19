@@ -6,6 +6,9 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
+import { artificialAnalysisDbPath } from "../src/lib/paths.js";
+import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function git(cwd: string, ...args: string[]): string {
@@ -41,10 +44,38 @@ describe("cli run()", () => {
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
       assert.ok(!fs.existsSync(path.join(cwd, ".grok")));
 
+      publishRouteSnapshot(cwd, { models: [{ id: "kimi-k2.7-code-highspeed", provider: "kimi" }] });
+      writeCapabilitySnapshot({
+        dbPath: artificialAnalysisDbPath(cwd),
+        metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
+        models: [{
+          id: "aa-k2", slug: "kimi-k2-7-code", name: "Kimi K2.7 Code",
+          evaluations: {
+            artificial_analysis_intelligence_index: 43,
+            artificial_analysis_coding_index: 60.8,
+            artificial_analysis_agentic_index: 30.3,
+          },
+          pricing: {}, performance: {}, cost: {},
+        }],
+        mappings: [{ routeId: "kimi/kimi-k2.7-code-highspeed", aaSlug: "kimi-k2-7-code" }],
+      });
+
       const hitOut = capture();
       const hit = await run(["match", "code completion routine feature development"], { cwd, stdout: hitOut, stderr: capture(), env });
       assert.equal(hit, 0);
       assert.match(hitOut.text(), /kimi-for-coding/);
+
+      const matchJson = capture();
+      assert.equal(await run(["match", "code completion routine feature development", "--json"], { cwd, stdout: matchJson, stderr: capture(), env }), 0);
+      const matched = JSON.parse(matchJson.text());
+      assert.equal(matched.card.capability.ranked, true);
+      assert.equal(matched.card.capability.source, "artificial-analysis");
+
+      const cardsJson = capture();
+      assert.equal(await run(["cards", "--ranked", "--json"], { cwd, stdout: cardsJson, stderr: capture(), env }), 0);
+      const rankedCards = JSON.parse(cardsJson.text());
+      assert.ok(rankedCards.length >= 1);
+      assert.ok(rankedCards.every((card) => card.capability.ranked));
 
       const missOut = capture();
       const miss = await run(["match", "paint the barn purple"], { cwd, stdout: missOut, stderr: capture(), env });
@@ -83,6 +114,7 @@ describe("cli run()", () => {
       git(cwd, "commit", "-q", "-m", "baseline");
 
       assert.equal(await run(["init", "--tools", "codex"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const out = capture();
       const code = await run([
         "spawn", "implement the multi file unit", "--model", "k3",

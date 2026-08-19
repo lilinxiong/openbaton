@@ -34,6 +34,8 @@ describe("initProject", () => {
       assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.grok)));
       assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.codex)));
       const cfg = loadConfig(cwd, { env });
+      assert.equal(cfg.models.length, 4);
+      assert.equal(cfg.models.some((model) => /AA Terminal-Bench/.test(model.strengths)), false);
       const k3 = cfg.models.find((model) => model.id === "k3");
       assert.equal(k3.route_id, "kimi/k3[1m]");
       assert.equal(k3.reasoning_effort, "max");
@@ -123,6 +125,38 @@ describe("initProject", () => {
 });
 
 describe("updateProject", () => {
+  it("migrates legacy generated benchmark cards into aliases and preserves custom cards", async () => {
+    await withHome(async (home) => {
+      const cwd = tmp();
+      const env = fakeEnv(home);
+      await initProject(cwd, { tools: ["codex"], env });
+      fs.writeFileSync(path.join(home, ".baton", "config.toml"), `[director]
+max_concurrent = 4
+max_depth = 1
+
+[[models]]
+id = "mimo-v2.5"
+strengths = "AA Terminal-Bench v2.1 legacy"
+
+[[models]]
+id = "k3"
+route_id = "kimi/k3[1m]"
+reasoning_effort = "max"
+strengths = "AA Terminal-Bench v2.1 legacy"
+
+[[models]]
+id = "my-reviewer"
+route_id = "xai/grok-4.6"
+strengths = "my custom review policy"
+`);
+      updateProject(cwd, { env });
+      const cfg = loadConfig(cwd, { env });
+      assert.equal(cfg.models.some((card) => card.id === "mimo-v2.5"), false);
+      assert.equal(cfg.models.find((card) => card.id === "k3")?.strengths, "large-context complex repository work");
+      assert.equal(cfg.models.find((card) => card.id === "my-reviewer")?.strengths, "my custom review policy");
+    });
+  });
+
   it("fills missing builtin routes without overwriting user card values", async () => {
     await withHome(async (home) => {
       const cwd = tmp();

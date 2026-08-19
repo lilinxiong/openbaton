@@ -7,6 +7,7 @@ import { buildRouteCandidates, normalizeRouteCatalog, publishRouteSnapshot, read
 import { runRoutes } from "../src/commands/routes.js";
 import { routeSnapshotPath } from "../src/lib/paths.js";
 import { isolatedHome } from "./home.js";
+import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
 
 isolatedHome("baton-routes-home-");
 
@@ -44,9 +45,9 @@ describe("OpenCodex Route Snapshot", () => {
       { id: "k3", strengths: "", route_id: "kimi/k3-256k" },
       { id: "grok", strengths: "", route_id: "xai/grok-4.6" },
     ], path.join(root, "missing.sqlite3"));
-    assert.equal(candidates[0].executable, true);
-    assert.equal(candidates[1].executable, false);
-    assert.equal(candidates[0].capability?.unranked, true);
+    assert.equal(candidates.find((item) => item.card.id === "k3")?.executable, true);
+    assert.equal(candidates.find((item) => item.card.id === "grok")?.executable, false);
+    assert.equal(candidates.find((item) => item.card.id === "k3")?.capability?.unranked, true);
   });
 
   it("rejects malformed catalogs", () => {
@@ -58,5 +59,67 @@ describe("OpenCodex Route Snapshot", () => {
     publishRouteSnapshot(root, { models: [{ id: "k3[1m]", provider: "kimi" }] });
     const [candidate] = buildRouteCandidates(root, [{ id: "k3", strengths: "", route_id: "kimi/k3[1m]", reasoning_effort: "max" }], path.join(root, "missing.sqlite3"));
     assert.equal(candidate.executable, true);
+  });
+
+  it("generates ranked profile cards from AA and keeps unmapped live routes visible", () => {
+    const root = cwd();
+    const dbPath = path.join(root, "aa.sqlite3");
+    publishRouteSnapshot(root, { models: [
+      { id: "model-a", provider: "provider-a" },
+      { id: "model-a", provider: "provider-b" },
+      { id: "unmapped", provider: "provider-c" },
+    ] });
+    writeCapabilitySnapshot({
+      dbPath,
+      metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
+      models: [{
+        id: "aa-a", slug: "aa-model-a", name: "AA Model A",
+        evaluations: {
+          artificial_analysis_intelligence_index: 70,
+          artificial_analysis_coding_index: 80,
+          artificial_analysis_agentic_index: 60,
+        },
+        pricing: {}, performance: {}, cost: {},
+      }],
+      mappings: [
+        { routeId: "provider-a/model-a", profile: "high", aaSlug: "aa-model-a" },
+        { routeId: "provider-b/model-a", profile: "low", aaSlug: "aa-model-a" },
+        { routeId: "model-a", profile: "max", aaSlug: "aa-model-a" },
+      ],
+    });
+    const candidates = buildRouteCandidates(root, [], dbPath);
+    assert.equal(candidates.some((item) => item.card.id === "provider-a/model-a@high" && item.card.capability?.ranked), true);
+    assert.equal(candidates.some((item) => item.card.id === "provider-b/model-a@low" && item.card.capability?.ranked), true);
+    assert.equal(candidates.some((item) => item.card.id.endsWith("model-a@max")), false);
+    assert.equal(candidates.some((item) => item.card.id === "provider-c/unmapped" && item.card.capability?.unranked), true);
+    assert.equal(candidates.filter((item) => item.card.route_id?.endsWith("/model-a")).length, 4);
+  });
+
+  it("layers aliases and exclusions over generated cards", () => {
+    const root = cwd();
+    publishRouteSnapshot(root, { models: [
+      { id: "one", provider: "provider" },
+      { id: "two", provider: "provider" },
+    ] });
+    const candidates = buildRouteCandidates(root, [
+      { id: "friendly", strengths: "user hint", route_id: "provider/one" },
+      { id: "provider/two", strengths: "", route_id: "provider/two", enabled: false },
+    ], path.join(root, "missing.sqlite3"));
+    assert.equal(candidates.some((item) => item.card.id === "friendly" && item.card.source === "override"), true);
+    assert.equal(candidates.some((item) => item.card.route_id === "provider/two"), false);
+  });
+
+  it("rejects an unnamespaced alias when the same id exists behind multiple providers", () => {
+    const root = cwd();
+    publishRouteSnapshot(root, { models: [
+      { id: "shared", provider: "provider-a" },
+      { id: "shared", provider: "provider-b" },
+    ] });
+    const candidates = buildRouteCandidates(root, [
+      { id: "friendly", strengths: "", route_id: "shared" },
+    ], path.join(root, "missing.sqlite3"));
+    const friendly = candidates.find((item) => item.card.id === "friendly");
+    assert.equal(friendly?.executable, false);
+    assert.match(friendly?.card.strengths || "", /ambiguous provider/);
   });
 });

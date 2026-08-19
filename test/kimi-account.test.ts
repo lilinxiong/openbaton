@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { initProject } from "../src/commands/init.js";
+import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
 import http from "node:http";
 import {
@@ -307,6 +308,7 @@ describe("baton login kimi wires Grok to the account token", () => {
       const cwd = tmp();
       const env = fakeEnv(home);
       initProject(cwd, { tools: ["claude"], env });
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const out = capture();
       const resolve = () => ({ source: "path", command: "/tmp/ocx", prefixArgs: [] });
       const runner = ({ args }) => {
@@ -507,6 +509,7 @@ describe("kimi OIDC refresh", () => {
         const env = fakeEnv(home, { BATON_KIMI_TOKEN_URL: server.url });
         writeAuth(home, TOKEN, { expires: now + 3_600_000 });
         await initProject(cwd, { tools: ["grok"], env });
+        publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
         writeAuth(home, TOKEN, { expires: now - 1_000 });
         const out = capture();
         const err = capture();
@@ -519,6 +522,33 @@ describe("kimi OIDC refresh", () => {
         assert.equal(readKimiAccountToken({ home }), NEXT_ACCESS);
         assert.equal(fs.readFileSync(path.join(home, ".baton", "kimi-account.env"), "utf8"), `${KIMI_ACCOUNT_TOKEN_KEY}=${NEXT_ACCESS}\n`);
         assertNoSecrets(out.text() + err.text());
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("does not refresh an expired Kimi token for an explicit non-Kimi dynamic route", async () => {
+    const now = Date.now();
+    const server = await startTokenServer(() => ({
+      status: 200,
+      body: { access_token: NEXT_ACCESS, refresh_token: NEXT_REFRESH, expires_in: 900 },
+    }));
+    try {
+      await withHome(async (home) => {
+        const cwd = tmp();
+        const env = fakeEnv(home, { BATON_KIMI_TOKEN_URL: server.url });
+        writeAuth(home, TOKEN, { expires: now - 1_000 });
+        await initProject(cwd, { tools: ["codex"], env });
+        publishRouteSnapshot(cwd, { models: [{ id: "grok-4.6", provider: "xai" }] });
+        const out = capture();
+        const err = capture();
+        const code = await run(["spawn", "explicit xai validation", "--model", "xai/grok-4.6"], {
+          cwd, stdout: out, stderr: err, env,
+        });
+        assert.equal(code, 0, out.text() + err.text());
+        assert.equal(server.requests.length, 0);
+        assert.equal(readKimiAccountToken({ home }), TOKEN);
       });
     } finally {
       await server.close();

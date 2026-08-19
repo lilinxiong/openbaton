@@ -67,6 +67,7 @@ function normalizeCard(raw: unknown): Card | null {
   if (authProvider) card.auth_provider = authProvider;
   if (routeId) card.route_id = routeId;
   if (reasoningEffort) card.reasoning_effort = reasoningEffort;
+  if (typeof raw.enabled === "boolean") card.enabled = raw.enabled;
   return card;
 }
 
@@ -81,6 +82,7 @@ function serializeConfig(cfg: Config): UnknownRecord {
       if (card.auth_provider) row.auth_provider = card.auth_provider;
       if (card.route_id) row.route_id = card.route_id;
       if (card.reasoning_effort) row.reasoning_effort = card.reasoning_effort;
+      if (card.enabled !== undefined) row.enabled = card.enabled;
       return row;
     }),
   };

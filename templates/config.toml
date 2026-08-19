@@ -1,8 +1,8 @@
 # baton director config
-# Cards are the only routing input. No default model. No parent-model inherit.
-# Strength scores are model-level AA coding evals (Terminal-Bench v2.1 + SciCode).
-# Not Intelligence Index. Not Coding Agent Index (harness + model).
-# Aliases reuse the parent model's AA entry — they do not invent a new number.
+# OpenCodex live routes generate the visible card set dynamically.
+# AA capability data generates ranked evidence and inferred positioning.
+# [[models]] entries below are optional user aliases/policy hints only; they do
+# not copy benchmark truth and never make an unavailable route executable.
 
 [director]
 # Concurrent workers. Beyond this, queue — never refuse a logical spawn.
@@ -11,34 +11,26 @@ max_concurrent = 4
 max_depth = 1
 
 [[models]]
-id = "mimo-v2.5"
-strengths = "AA Terminal-Bench v2.1 63.7, SciCode 43.1. omnimodal, image, video, audio, vision, speech, everyday understanding, not heavy SWE"
-
-[[models]]
-id = "mimo-v2.5-pro"
-strengths = "AA Terminal-Bench v2.1 65.2, SciCode 50.2. long-horizon agent, complex software engineering, thousands of tool calls, SWE, token-efficient coding agent"
-
-[[models]]
 id = "kimi-for-coding"
 auth_provider = "kimi"
 route_id = "kimi/kimi-k2.7-code-highspeed"
-strengths = "AA Terminal-Bench v2.1 67.4, SciCode 47.5. Kimi K2.7 Code. code completion, routine feature development, everyday coding"
+strengths = "routine coding"
 
 [[models]]
 id = "kimi-for-coding-highspeed"
 auth_provider = "kimi"
 route_id = "kimi/kimi-k2.7-code-highspeed"
-strengths = "AA Terminal-Bench v2.1 67.4, SciCode 47.5 (same as kimi-for-coding / K2.7 Code; no separate AA entry). same coding but fast output, low latency, 5-6x speed"
+strengths = "latency-sensitive interactive work"
 
 [[models]]
 id = "k3"
 auth_provider = "kimi"
 route_id = "kimi/k3[1m]"
 reasoning_effort = "max"
-strengths = "AA Terminal-Bench v2.1 85.0, SciCode 58.7. flagship Kimi K3, 1M context, large repo, multi-file refactor, architecture, video"
+strengths = "large-context complex repository work"
 
 [[models]]
 id = "k3-256k"
 auth_provider = "kimi"
 route_id = "kimi/k3-256k"
-strengths = "AA Terminal-Bench v2.1 85.0, SciCode 58.7 (same K3 AA entry). same K3 quality, 256k context, cheaper daily, single-file edits, small fixes, no video"
+strengths = "smaller-context focused coding"

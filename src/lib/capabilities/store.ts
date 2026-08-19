@@ -17,6 +17,7 @@ interface CodedError extends Error {
 export interface SqliteStatement {
   run(...params: unknown[]): unknown;
   get(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown[];
 }
 
 export interface SqliteDatabase {
@@ -315,6 +316,32 @@ export interface RouteMappingRow {
   aa_slug: string;
   mapping_source: string;
   note: string | null;
+}
+
+export interface StoredRouteMapping {
+  routeId: string;
+  profile: string;
+  aaSlug: string;
+  mappingSource: string;
+  note: string | null;
+}
+
+export function listStoredRouteMappings({ dbPath }: { dbPath: string }): StoredRouteMapping[] {
+  if (!fs.existsSync(dbPath)) return [];
+  const { DatabaseSync } = sqliteModule();
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const rows = db.prepare("SELECT * FROM route_mappings ORDER BY route_id, profile").all() as unknown as RouteMappingRow[];
+    return rows.map((row) => ({
+      routeId: row.route_id,
+      profile: row.profile,
+      aaSlug: row.aa_slug,
+      mappingSource: row.mapping_source,
+      note: row.note,
+    }));
+  } finally {
+    db.close();
+  }
 }
 
 export interface QueriedCapabilityModel {

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { matchModelCard, CardMatchError } from "../src/lib/cards.js";
+import { matchModelCard, requireCardId, CardMatchError } from "../src/lib/cards.js";
 
 const cards = [
   { id: "example-coder", strengths: "write code, implement, fix tests, grind on a repo" },
@@ -41,5 +41,46 @@ describe("matchModelCard", () => {
       assert.deepEqual(err.candidates, ["alpha", "beta"]);
       return true;
     });
+  });
+
+  it("uses structured AA capability dimensions as the primary dynamic signal", () => {
+    const dynamic = [
+      {
+        id: "provider/strong-coder@high", strengths: "", route_id: "provider/strong-coder", reasoning_effort: "high",
+        source: "dynamic", executable: true,
+        capability: {
+          source: "artificial-analysis", ranked: true, unranked: false, reason: null,
+          intelligence_index: 70, coding_index: 90, agentic_index: 85,
+          cost_per_task: 1, output_tokens_per_second: 50, time_to_first_answer_seconds: 20,
+          relative: { intelligence: 0.8, coding: 1, agentic: 1, cost_efficiency: 0.1, throughput: 0.4, latency: 0.4 },
+        },
+      },
+      {
+        id: "provider/fast-cheap", strengths: "", route_id: "provider/fast-cheap",
+        source: "dynamic", executable: true,
+        capability: {
+          source: "artificial-analysis", ranked: true, unranked: false, reason: null,
+          intelligence_index: 40, coding_index: 55, agentic_index: 30,
+          cost_per_task: 0.01, output_tokens_per_second: 180, time_to_first_answer_seconds: 2,
+          relative: { intelligence: 0.3, coding: 0.4, agentic: 0.2, cost_efficiency: 1, throughput: 1, latency: 1 },
+        },
+      },
+    ];
+    assert.equal(matchModelCard("implement a complex multi-file repository migration", dynamic).model_id, "provider/strong-coder@high");
+    assert.equal(matchModelCard("quick cheap routine batch fix", dynamic).model_id, "provider/fast-cheap");
+  });
+
+  it("keeps unranked routes visible for explicit selection but excludes them from automatic matching", () => {
+    const unranked = {
+      id: "provider/unmapped", strengths: "unranked", route_id: "provider/unmapped",
+      source: "dynamic", executable: true,
+      capability: {
+        source: "artificial-analysis", ranked: false, unranked: true, reason: "no_canonical_mapping",
+        intelligence_index: null, coding_index: null, agentic_index: null,
+        cost_per_task: null, output_tokens_per_second: null, time_to_first_answer_seconds: null,
+      },
+    };
+    assert.throws(() => matchModelCard("implement code", [unranked]), (err) => err instanceof CardMatchError && err.code === "NO_CARDS");
+    assert.equal(requireCardId("provider/unmapped", [unranked]).route_id, "provider/unmapped");
   });
 });

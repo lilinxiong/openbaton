@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { dispatchStatePath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
+import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function capture() {
@@ -25,6 +26,7 @@ describe("dispatch CLI", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
       assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
       const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
@@ -56,21 +58,22 @@ describe("dispatch CLI", () => {
     });
   });
 
-  it("blocks a card with no executable route and forbids manual conclude on schema v2", async () => {
+  it("blocks unavailable explicit routes before ticket creation and forbids manual conclude on schema v2", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
       await command(["init", "--tools", "codex"], { cwd, env });
-      await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
-      const blocked = await command(["dispatch", "next", "--host", "codex", "--capacity", "6", "--json"], { cwd, env });
-      assert.equal(blocked.code, 1);
-      assert.equal(JSON.parse(blocked.stdout).blocked[0].code, "NO_EXECUTABLE_ROUTE");
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      const unavailable = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
+      assert.equal(unavailable.code, 1);
+      assert.match(unavailable.stderr, /not a configured card|no executable route/);
+      assert.equal((await command(["spawn", "implement complex unit", "--model", "k3"], { cwd, env })).code, 0);
 
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });
       assert.equal(conclude.code, 1);
       assert.match(conclude.stderr, /bound host agent/);
       const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
-      assert.equal(ticket.status, "errored");
+      assert.equal(ticket.status, "queued");
       assert.equal(ticket.conclusion, null);
     });
   });
@@ -80,6 +83,7 @@ describe("dispatch CLI", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
       assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement third unit", "--model", "k3"], { cwd, env })).code, 0);

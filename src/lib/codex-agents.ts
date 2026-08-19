@@ -105,6 +105,7 @@ export function syncCodexCardAgents(
   const created: string[] = [];
   const keep = new Set<string>();
   for (const card of cards || []) {
+    if (card.enabled === false) continue;
     const written = writeCodexCardAgent(cwd, card, options);
     if (!written) continue;
     created.push(written);
