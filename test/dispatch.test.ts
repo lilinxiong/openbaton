@@ -12,6 +12,7 @@ import {
   recoverDispatches,
   reserveNext,
 } from "../src/lib/dispatch.js";
+import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 
 const T0 = Date.parse("2026-08-19T00:00:00.000Z");
 
@@ -55,6 +56,16 @@ function makeTicket(id, overrides = {}) {
 }
 
 function writeTicket(cwd, ticket) {
+  if (!ticket.receipt_id) {
+    const receipt = buildReadOnlyReceipt({
+      ticketId: ticket.id,
+      card: { id: ticket.model_id, strengths: "", route_id: ticket.route_id || undefined, reasoning_effort: ticket.reasoning_effort || undefined },
+      issuedAt: ticket.created_at,
+      maxAttempts: ticket.max_attempts,
+    });
+    ticket.receipt_id = receipt.receipt_id;
+    writeReceipt(cwd, receipt);
+  }
   const file = path.join(cwd, ".baton", "spawns", ticket.id + ".json");
   fs.writeFileSync(file, JSON.stringify(ticket, null, 2) + "\n", "utf8");
   return ticket;
@@ -170,7 +181,7 @@ describe("reserveNext", () => {
     assert.equal(ticket.agent_id, null);
   });
 
-  it("blocks a queued ticket that is not read_only or uses fork_context=true", () => {
+  it("blocks a ticket whose mode mismatches its Receipt or uses fork_context=true", () => {
     const cwd = makeProject();
     writeTicket(cwd, makeTicket("t-writer", { read_only: false, mode: "write" }));
     writeTicket(cwd, makeTicket("t-forker", { created_at: at(2), updated_at: at(2), fork_context: true }));
@@ -179,7 +190,7 @@ describe("reserveNext", () => {
 
     assert.deepEqual(result.reserved, []);
     const codes = result.blocked.map((b) => [b.ticket_id, b.code]);
-    assert.deepEqual(codes, [["t-writer", "WRITE_MODE_NOT_ENABLED"], ["t-forker", "FULL_CONTEXT_NOT_ALLOWED"]]);
+    assert.deepEqual(codes, [["t-writer", "RECEIPT_MISMATCH"], ["t-forker", "FULL_CONTEXT_NOT_ALLOWED"]]);
   });
 });
 

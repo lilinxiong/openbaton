@@ -3,6 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { receiptsDir } from "./paths.js";
 import type { ModelCard } from "../types.js";
+import type { GitBaseline, SafetyOperation } from "./safety.js";
+
+export type ReceiptOperation = "read" | SafetyOperation;
 
 export interface DelegationReceipt {
   schema_version: 1;
@@ -16,14 +19,14 @@ export interface DelegationReceipt {
     auth_provider: string | null;
   };
   execution: {
-    mode: "read-only";
+    mode: "read-only" | "write";
     fork_context: false;
     max_depth: 1;
   };
   scope: {
-    write_allowlist: [];
-    allowed_operations: ["read"];
-    side_effects: [];
+    write_allowlist: string[];
+    allowed_operations: ReceiptOperation[];
+    side_effects: string[];
   };
   retry: {
     max_attempts: number;
@@ -36,6 +39,7 @@ export interface DelegationReceipt {
     worker_may_rebase: false;
     staging_owner: "parent";
   };
+  baseline: GitBaseline | null;
 }
 
 export class ReceiptError extends Error {
@@ -81,6 +85,33 @@ export function buildReadOnlyReceipt({
       worker_may_rebase: false,
       staging_owner: "parent",
     },
+    baseline: null,
+  };
+}
+
+export function buildWriteReceipt({
+  base,
+  baseline,
+  writeAllowlist,
+  allowedOperations,
+}: {
+  base: DelegationReceipt;
+  baseline: GitBaseline;
+  writeAllowlist: string[];
+  allowedOperations: SafetyOperation[];
+}): DelegationReceipt {
+  if (!writeAllowlist.length) throw new ReceiptError("write Receipt requires a non-empty allowlist", "WRITE_ALLOWLIST_REQUIRED");
+  if (!allowedOperations.length) throw new ReceiptError("write Receipt requires allowed operations", "WRITE_OPERATIONS_REQUIRED");
+  if (baseline.dirty_entries.length) throw new ReceiptError("write Receipt requires a clean Git baseline", "DIRTY_BASELINE");
+  return {
+    ...structuredClone(base),
+    execution: { ...base.execution, mode: "write" },
+    scope: {
+      write_allowlist: [...writeAllowlist],
+      allowed_operations: [...allowedOperations],
+      side_effects: ["filesystem-write"],
+    },
+    baseline,
   };
 }
 

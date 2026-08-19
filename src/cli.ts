@@ -11,7 +11,8 @@ import { applyChange, concludeSpawn } from "./lib/apply.js";
 import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
 import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
-import { writeReceipt } from "./lib/receipt.js";
+import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
+import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
 import type { CodedError, WritableLike } from "./types.js";
 
 interface RunOptions {
@@ -197,6 +198,15 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`director-local: ${planned.reason}\n`);
     stdout.write(`unit: ${planned.description}\n`);
     return 0;
+  }
+  const writePaths = (stringFlag(flags, "write-path") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  if (writePaths.length) {
+    const allowed = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
+    const operations = (stringFlag(flags, "write-ops") || "write,create").split(",").map((item) => item.trim()) as SafetyOperation[];
+    if (!operations.length || operations.some((item) => !allowed.has(item))) throw new Error("--write-ops must contain write,create,delete,rename,chmod");
+    planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline: captureBaseline(cwd), writeAllowlist: writePaths, allowedOperations: operations });
+    planned.ticket.mode = "write";
+    planned.ticket.read_only = false;
   }
   writeReceipt(cwd, planned.receipt);
   writeSpawn(cwd, planned.ticket);

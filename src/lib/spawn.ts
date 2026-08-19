@@ -28,8 +28,8 @@ export interface SpawnTicket extends UnknownRecord {
   route_id: string | null;
   reasoning_effort: string | null;
   fork_context: false;
-  mode: "read-only";
-  read_only: true;
+  mode: "read-only" | "write";
+  read_only: boolean;
   source: string;
   openspec: UnknownRecord | null;
   queue: string;
@@ -48,6 +48,7 @@ export interface SpawnTicket extends UnknownRecord {
   dispatch_requested_at?: string;
   started_at?: string;
   finished_at?: string;
+  safety_verdict?: UnknownRecord;
 }
 
 export function listSpawns(cwd: string): SpawnTicket[] {

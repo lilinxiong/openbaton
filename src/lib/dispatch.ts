@@ -4,6 +4,8 @@ import { sanitizeConclusion } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn } from "./spawn.js";
 import type { SpawnTicket, TicketStatus } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
+import { readReceipt, type DelegationReceipt } from "./receipt.js";
+import { auditWorktree, type SafetyOperation } from "./safety.js";
 
 export const ACTIVE_TICKET_STATUSES = new Set<TicketStatus>(["dispatching", "running"]);
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
@@ -107,20 +109,28 @@ export interface DispatchSpec {
   model: string;
   reasoning_effort: string | null;
   fork_context: false;
-  read_only: true;
+  read_only: boolean;
+  mode: "read-only" | "write";
+  receipt_id: string;
+  write_allowlist: string[];
+  allowed_operations: string[];
   prompt: string;
   attempt: number;
   max_attempts: number;
 }
 
-function publicDispatchSpec(ticket: SpawnTicket & { route_id: string }): DispatchSpec {
+function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id: string }, receipt: DelegationReceipt): DispatchSpec {
   return {
     ticket_id: ticket.id,
     route_id: ticket.route_id,
     model: ticket.route_id,
     reasoning_effort: ticket.reasoning_effort || null,
     fork_context: false,
-    read_only: true,
+    read_only: ticket.read_only,
+    mode: ticket.mode,
+    receipt_id: ticket.receipt_id,
+    write_allowlist: receipt.scope.write_allowlist,
+    allowed_operations: receipt.scope.allowed_operations,
     prompt: ticket.prompt,
     attempt: ticket.attempt,
     max_attempts: ticket.max_attempts,
@@ -133,15 +143,26 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
   if (!ticket.route_id) {
     code = "NO_EXECUTABLE_ROUTE";
     message = `ticket ${ticket.id} has no executable route for this host`;
-  } else if (ticket.read_only !== true || ticket.mode !== "read-only") {
-    code = "WRITE_MODE_NOT_ENABLED";
-    message = `ticket ${ticket.id} is not read-only`;
   } else if (ticket.fork_context !== false) {
     code = "FULL_CONTEXT_NOT_ALLOWED";
     message = `ticket ${ticket.id} must use fork_context=false`;
   } else if (Number(ticket.attempt || 0) >= Number(ticket.max_attempts || 1)) {
     code = "ATTEMPT_BUDGET_EXHAUSTED";
     message = `ticket ${ticket.id} exhausted its attempt budget`;
+  } else if (!ticket.receipt_id) {
+    code = "RECEIPT_REQUIRED";
+    message = `ticket ${ticket.id} has no Delegation Receipt`;
+  } else {
+    try {
+      const receipt = readReceipt(cwd, ticket.receipt_id);
+      if (receipt.ticket_id !== ticket.id || receipt.route.route_id !== ticket.route_id || receipt.execution.mode !== ticket.mode) {
+        code = "RECEIPT_MISMATCH";
+        message = `ticket ${ticket.id} does not match its Delegation Receipt`;
+      }
+    } catch (error) {
+      code = "RECEIPT_INVALID";
+      message = error instanceof Error ? error.message : String(error);
+    }
   }
   if (!code) return null;
   transition(ticket, "queued", "errored", { at, event: "dispatch_blocked", detail: { error_code: code } });
@@ -181,7 +202,8 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
       ticket.attempt = Number(ticket.attempt || 0) + 1;
       ticket.error = null;
       writeSpawn(cwd, ticket);
-      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string }));
+      const receipt = readReceipt(cwd, ticket.receipt_id!);
+      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string }, receipt));
       available -= 1;
     }
     return { reserved, blocked, snapshot: dispatchSnapshot(cwd, { capacity: max }) };
@@ -228,6 +250,25 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
     const expected: TicketStatus | TicketStatus[] = terminal === "completed" ? "running" : ["dispatching", "running"];
     if (terminal === "completed") {
       if (!ticket.agent_id) throw new DispatchError(`ticket ${id} has no bound agent`, "AGENT_NOT_BOUND", { ticketId: id });
+      if (ticket.mode === "write") {
+        if (!ticket.receipt_id) throw new DispatchError(`ticket ${id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: id });
+        const receipt = readReceipt(cwd, ticket.receipt_id);
+        if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
+        const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation => item !== "read");
+        const verdict = auditWorktree(cwd, receipt.baseline, { write_allowlist: receipt.scope.write_allowlist, allowed_operations: allowedOperations });
+        ticket.safety_verdict = verdict as unknown as UnknownRecord;
+        if (!verdict.accepted) {
+          transition(ticket, expected, "errored", { at, event: "safety_gate_rejected", detail: { error_code: "WRITE_SCOPE_VIOLATION" } });
+          ticket.error = {
+            code: "WRITE_SCOPE_VIOLATION",
+            message: verdict.violations.map((item) => item.code + ":" + (item.path || "repository")).join(", "),
+          };
+          ticket.conclusion = null;
+          ticket.finished_at = at;
+          writeSpawn(cwd, ticket);
+          return ticket;
+        }
+      }
       const clean = sanitizeConclusion(conclusion);
       if (!clean.ok) throw new DispatchError("error" in clean ? clean.error : "invalid conclusion", "HYGIENE", { ticketId: id });
       transition(ticket, expected, terminal as TicketStatus, { at, event: "agent_completed" });

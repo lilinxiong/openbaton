@@ -131,7 +131,8 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   if (head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
   if (checksumFile(baseline.index_path) !== baseline.index_checksum) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the Git index" });
 
-  const entries = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
+  const entries = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
+    .filter((entry) => !entry.path.startsWith(".baton/") && !entry.original_path?.startsWith(".baton/"));
   const changes = entries.map((entry) => ({ ...entry, operation: operationOf(entry) }));
   for (const change of changes) {
     if (!pathAllowed(change.path, policy.write_allowlist) || (change.original_path && !pathAllowed(change.original_path, policy.write_allowlist))) {
