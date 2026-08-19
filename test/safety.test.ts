@@ -69,4 +69,14 @@ describe("parent shared-worktree safety gate", () => {
     assert.equal(pathAllowed("../outside", ["**"]), false);
     assert.throws(() => pathAllowed("allowed.txt", ["../**"]), /invalid write allowlist/);
   });
+
+  it("classifies executable mode changes as chmod rather than write", () => {
+    const cwd = fixture();
+    const baseline = captureBaseline(cwd);
+    fs.chmodSync(path.join(cwd, "allowed.txt"), 0o755);
+    const rejected = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
+    assert.ok(rejected.violations.some((item) => item.code === "E_OUT_OF_SCOPE_OP" && item.operation === "chmod"));
+    const accepted = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["chmod"] });
+    assert.equal(accepted.accepted, true);
+  });
 });

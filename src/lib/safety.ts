@@ -133,7 +133,12 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
 
   const entries = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
     .filter((entry) => !entry.path.startsWith(".baton/") && !entry.original_path?.startsWith(".baton/"));
-  const changes = entries.map((entry) => ({ ...entry, operation: operationOf(entry) }));
+  const modeChanged = new Set(
+    git(root, ["diff", "--summary", "HEAD"]).split("\n")
+      .map((line) => line.match(/^ mode change \d+ => \d+ (.+)$/)?.[1])
+      .filter((item): item is string => Boolean(item)),
+  );
+  const changes = entries.map((entry) => ({ ...entry, operation: modeChanged.has(entry.path) ? "chmod" as const : operationOf(entry) }));
   for (const change of changes) {
     if (!pathAllowed(change.path, policy.write_allowlist) || (change.original_path && !pathAllowed(change.original_path, policy.write_allowlist))) {
       violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: change.path, original_path: change.original_path, operation: change.operation, message: "changed path is outside the Receipt allowlist" });
