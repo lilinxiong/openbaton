@@ -33,7 +33,8 @@ describe("Codex card agents", () => {
       assert.match(skill, /Tickets before dispatch/);
       assert.match(skill, /spawn_agent\(model=<route_id>/);
       assert.match(skill, /fork_context=false/);
-      assert.match(skill, /strictly read-only/);
+      assert.match(skill, /Read-only by default; writes require a Receipt/);
+      assert.match(skill, /WRITE_SCOPE_VIOLATION/);
       assert.match(skill, /No fallback across routes or providers/i);
       assert.match(skill, /NO_EXECUTABLE_ROUTE/);
       assert.doesNotMatch(skill, /director-only/i);

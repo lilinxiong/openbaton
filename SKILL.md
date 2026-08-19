@@ -11,21 +11,21 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
+2. **Cards only.** Route each unit by model cards (`id` + strengths + explicit host route/profile) in `~/.baton/config.toml`.
    - No subagent default.
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
 
-3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `claude -p`, `cursor-agent -p`, `grok -p`, or any other CLI print mode.
-   - **Grok:** spawn with `subagent_type` = card id. Never `general-purpose` / `explore` / `plan` for card-routed work. Missing agent type → blocked; do not inherit the parent model.
-   - **Codex:** spawn with `agent_type` = card id, `fork_turns` none. Never `default` / `worker` / `explorer`. Do not set `agents.default_subagent_model`. Missing agent type → blocked; do not inherit the parent model.
-   - **Grok / Codex init** installs into `~/.grok` and `~/.codex`. Cards and the director skill live in `~/.baton`, not the project.
+3. **Tickets before host-native dispatch.** `baton spawn/apply` writes a queued ticket plus immutable Delegation Receipt. The host reserves with `baton dispatch next`, calls its real in-process `spawn_agent`, then binds the returned agent ID. The CLI never claims it can call host tools. Do **not** shell out to coding CLI print mode.
+   - No route or Receipt → blocked. Never inherit the parent model or fallback.
+   - Use `fork_context=false`; nesting depth is 1.
+   - Read-only is default. Writes require an explicit allowlist/operations Receipt and pass the parent Git safety gate before completion.
 
 4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
 
 5. **Unlimited logical spawn.** If the host has a hard concurrency cap, queue the rest. Never refuse a unit because the cap is full. Nesting depth is 1 — children do not spawn children.
 
-6. **Main-context hygiene.** Children return a short conclusion only. Tool dumps, traces, and transcripts stay in the child. Write the conclusion back with `baton conclude`.
+6. **Main-context hygiene.** Children return a short conclusion only. Tool dumps, traces, and transcripts stay in the child. Host lifecycle writes success through `baton dispatch complete`; write conclusions are accepted only after the parent safety gate passes.
 
 7. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
@@ -52,17 +52,23 @@ baton capabilities refresh --provider aa --key-file PATH
 baton capabilities status
 baton capabilities show ROUTE [--profile PROFILE]
 baton cards
-baton cards add --id ID --strengths "..."
+baton cards add --id ID --strengths "..." --route MODEL [--reasoning-effort EFFORT]
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]
-baton conclude <id> --text "short outcome"
+baton dispatch next --host codex --capacity 6 --json
+baton dispatch bind TICKET --agent-id ID --host codex --json
+baton dispatch complete TICKET --text "short outcome" --json
+baton dispatch fail|timeout|close TICKET --json
+baton dispatch recover|status --json
 baton status
 ```
 
 ## Red lines
 
 - Do not invent a default model.
+- Do not fallback across routes/providers or inherit the parent model.
+- Workers never own Git index, HEAD, branch, commit, push, or rebase.
 - Do not reimplement OpenSpec.
 - Do not reimplement OpenCodex OAuth, account pool, dashboard, or proxy.
 - Do not ask the user to paste a base URL or API key.

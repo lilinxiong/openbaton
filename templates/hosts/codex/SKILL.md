@@ -20,7 +20,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 4. **Workers are host-native subagents.** The host spawns in-process with the real Codex runtime tool: `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode. The baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`. Never claim otherwise.
 
-5. **Milestone 1 is strictly read-only.** Workers inspect, search, and analyze only: no file writes, no builds, no installs, no network, no Git stage/commit. The dispatch gate rejects non-read-only tickets (`WRITE_MODE_NOT_ENABLED`).
+5. **Read-only by default; writes require a Receipt.** A write worker is allowed only when the dispatch spec says `mode=write` and carries an immutable `receipt_id`, non-empty `write_allowlist`, explicit `allowed_operations`, and a captured Git baseline. The worker prompt must repeat the scope and forbid all Git mutations. Missing/mismatched Receipt means blocked; never upgrade a read-only ticket in place.
 
 6. **Unlimited logical queue, physical cap 6.** Codex V1 holds 6 concurrent subagents; the 7th gets `AgentLimitReached`. Queue the rest — never refuse a unit because the cap is full. After every terminal ticket, run `dispatch next` again so freed slots refill FIFO.
 
@@ -34,11 +34,11 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 Lifecycle per ticket:
 
-1. **Reserve.** `baton dispatch next --host codex --capacity 6 --json` → `{ reserved, blocked, snapshot }`. Each reserved spec has `ticket_id`, `route_id` (=`model`), `reasoning_effort` (nullable), `fork_context: false`, `read_only: true`, `prompt`, `attempt`, `max_attempts`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
+1. **Reserve.** `baton dispatch next --host codex --capacity 6 --json` → `{ reserved, blocked, snapshot }`. Each reserved spec has `ticket_id`, `route_id` (=`model`), `reasoning_effort` (nullable), `fork_context: false`, `mode`, `receipt_id`, `write_allowlist`, `allowed_operations`, `prompt`, `attempt`, `max_attempts`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
 2. **Spawn.** For each reserved spec, call `spawn_agent` with `model=<route_id>`, `reasoning_effort` only when present, and `fork_context=false`. The prompt is self-contained; the worker does not inherit this conversation.
 3. **Bind.** On successful spawn: `baton dispatch bind <ticket_id> --agent-id <agent_id> --host codex --json`. The ticket is now `running`.
 4. **Wait.** `wait_agent` until the worker finishes. Expect a short conclusion only.
-5. **Finish.** Exactly one terminal write per ticket:
+5. **Finish.** Exactly one terminal write per ticket. For write mode, `complete` first runs the parent Git safety gate; violations turn the ticket into `errored/WRITE_SCOPE_VIOLATION` and the conclusion is rejected:
    - success → `baton dispatch complete <ticket> --text "short conclusion" --json`
    - error → `baton dispatch fail <ticket> --code CODE --message MSG --json`
    - timeout → `baton dispatch timeout <ticket> [--message MSG] --json`
@@ -76,6 +76,6 @@ baton status
 - Do not invent a default model. Do not inherit the parent/host model. No fallback across routes or providers.
 - Do not use `cursor/claude-*` or any other Claude route.
 - The baton CLI never calls `spawn_agent`; only the Codex host runtime spawns, waits, and closes agents.
-- Milestone 1: workers are strictly read-only.
+- Read-only is the default. Write workers require an exact immutable Receipt and must never touch Git index/HEAD/branch/commit/rebase.
 - Do not reimplement OpenSpec.
 - Do not dump worker tool output into this conversation.
