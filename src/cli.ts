@@ -5,6 +5,7 @@ import { runLogin } from "./commands/login.js";
 import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { runRoutes } from "./commands/routes.js";
+import { runConversation } from "./commands/conversation.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
@@ -102,6 +103,8 @@ export async function run(argv: string[], { cwd = process.cwd(), stdout = proces
         return runDispatch(args, { cwd, stdout, env });
       case "routes":
         return runRoutes(args, { cwd, stdout, env, runner, resolve });
+      case "conversation":
+        return runConversation(args, { stdout });
       case "status":
         return cmdStatus(cwd, stdout, env);
       default:
