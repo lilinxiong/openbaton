@@ -67,12 +67,19 @@ baton init [--force] [--tools claude,cursor,grok,codex,agents]
 baton login kimi
 baton capabilities status
 baton capabilities show MODEL [--profile PROFILE]
+baton routes refresh
+baton routes status
+baton routes candidates
+baton conversation promote --from-file PATH
 baton cards
-baton cards add --id opus --strengths "hard reasoning, long refactors"
+baton cards add --id opus --strengths "hard reasoning, long refactors" --route MODEL
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
+baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write
 baton apply
-baton conclude spn-0001 --text "short outcome"
+baton dispatch next --host codex --capacity 6 --json
+baton dispatch bind TICKET --agent-id ID --host codex --json
+baton dispatch complete TICKET --text "short outcome" --json
 baton status
 ```
 
