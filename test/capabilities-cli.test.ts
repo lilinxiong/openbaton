@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
+import { fakeEnv, withHome } from "./home.js";
 
 function capture() {
   const chunks = [];
@@ -44,14 +45,14 @@ function fixture() {
 }
 
 describe("capabilities CLI", () => {
-  it("refreshes an ignored local SQLite snapshot and queries an exact route", async () => {
+  it("refreshes a user-global SQLite snapshot and queries an exact route", async () => withHome(async (home) => {
     const { cwd, keyFile, mappings, fetchImpl } = fixture();
     const out = capture();
     const err = capture();
     const refresh = await run([
       "capabilities", "refresh", "--provider", "aa", "--key-file", keyFile,
       "--mappings", mappings, "--json",
-    ], { cwd, stdout: out, stderr: err, fetchImpl, env: {} });
+    ], { cwd, stdout: out, stderr: err, fetchImpl, env: fakeEnv(home) });
     assert.equal(refresh, 0, err.text());
     const summary = JSON.parse(out.text());
     assert.equal(summary.tier, "free");
@@ -63,15 +64,17 @@ describe("capabilities CLI", () => {
 
     const showOut = capture();
     const show = await run(["capabilities", "show", "kimi/k3", "--json"], {
-      cwd, stdout: showOut, stderr: capture(), env: {}, fetchImpl,
+      cwd, stdout: showOut, stderr: capture(), env: fakeEnv(home), fetchImpl,
     });
     assert.equal(show, 0);
     const capability = JSON.parse(showOut.text());
     assert.equal(capability.ranked, true);
     assert.equal(capability.model.coding_index, 76.2);
-  });
+    assert.ok(summary.dbPath.startsWith(path.join(home, ".baton", "cache")));
+    assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
+  }));
 
-  it("rejects a group-readable key file before making a request", async () => {
+  it("rejects a group-readable key file before making a request", async () => withHome(async (home) => {
     const { cwd, keyFile, mappings } = fixture();
     fs.chmodSync(keyFile, 0o644);
     let called = false;
@@ -82,12 +85,12 @@ describe("capabilities CLI", () => {
       cwd,
       stdout: capture(),
       stderr,
-      env: {},
+      env: fakeEnv(home),
       fetchImpl: async () => { called = true; throw new Error("must not run"); },
     });
     assert.equal(code, 1);
     assert.equal(called, false);
     assert.match(stderr.text(), /0600/);
     assert.doesNotMatch(stderr.text(), /test-secret-key/);
-  });
+  }));
 });

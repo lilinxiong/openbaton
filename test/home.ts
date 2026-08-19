@@ -24,3 +24,10 @@ export function withHome(fn) {
 export function fakeEnv(home, extra = {}) {
   return { ...process.env, HOME: home, ...extra };
 }
+
+/** Isolate direct library tests whose runtime paths resolve through process.env.HOME. */
+export function isolatedHome(prefix = "baton-test-home-") {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  process.env.HOME = home;
+  return home;
+}

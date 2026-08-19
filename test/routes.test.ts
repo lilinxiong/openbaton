@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { buildRouteCandidates, normalizeRouteCatalog, publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { runRoutes } from "../src/commands/routes.js";
+import { routeSnapshotPath } from "../src/lib/paths.js";
+import { isolatedHome } from "./home.js";
+
+isolatedHome("baton-routes-home-");
 
 function cwd(): string { return fs.mkdtempSync(path.join(os.tmpdir(), "baton-routes-")); }
 function sink() { const chunks: string[] = []; return { write(value: string) { chunks.push(value); }, text() { return chunks.join(""); } }; }
@@ -21,6 +25,8 @@ describe("OpenCodex Route Snapshot", () => {
     const changed = publishRouteSnapshot(root, { models: ["kimi/k3-256k"] });
     assert.equal(changed.snapshot.generation, 2);
     assert.equal(readRouteSnapshot(root)?.routes.length, 1);
+    assert.ok(routeSnapshotPath(root).includes(path.join(".baton", "cache")));
+    assert.ok(!fs.existsSync(path.join(root, ".baton")));
   });
 
   it("refreshes from injectable OpenCodex and keeps unavailable cards non-executable", () => {

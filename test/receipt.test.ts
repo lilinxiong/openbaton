@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildReadOnlyReceipt, readReceipt, ReceiptError, writeReceipt } from "../src/lib/receipt.js";
+import { receiptsDir } from "../src/lib/paths.js";
+import { withHome } from "./home.js";
 
 describe("Delegation Receipt", () => {
   it("builds a fail-closed immutable read-only authorization snapshot", () => {
@@ -22,16 +24,16 @@ describe("Delegation Receipt", () => {
     assert.equal(receipt.git_policy.worker_may_commit, false);
   });
 
-  it("persists mode 0600 and rejects mutation of an existing receipt", () => {
+  it("persists mode 0600 and rejects mutation of an existing receipt", () => withHome(() => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-receipt-"));
     const receipt = buildReadOnlyReceipt({ ticketId: "spn-0001", card: { id: "k3", strengths: "", route_id: "kimi/k3[1m]" } });
     writeReceipt(cwd, receipt);
     assert.deepEqual(readReceipt(cwd, receipt.receipt_id), receipt);
-    const file = path.join(cwd, ".baton", "receipts", `${receipt.receipt_id}.json`);
+    const file = path.join(receiptsDir(cwd), `${receipt.receipt_id}.json`);
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     writeReceipt(cwd, receipt);
     const changed = structuredClone(receipt);
     changed.route.route_id = "xai/grok-4.6";
     assert.throws(() => writeReceipt(cwd, changed), (error) => error instanceof ReceiptError && error.code === "RECEIPT_IMMUTABLE");
-  });
+  }));
 });

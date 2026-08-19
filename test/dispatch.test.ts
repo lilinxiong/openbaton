@@ -14,6 +14,10 @@ import {
   reserveNext,
 } from "../src/lib/dispatch.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
+import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
+import { isolatedHome } from "./home.js";
+
+isolatedHome("baton-dispatch-home-");
 
 const T0 = Date.parse("2026-08-19T00:00:00.000Z");
 
@@ -23,7 +27,6 @@ function at(offsetMs) {
 
 function makeProject() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-"));
-  fs.mkdirSync(path.join(cwd, ".baton", "spawns"), { recursive: true });
   return cwd;
 }
 
@@ -67,13 +70,15 @@ function writeTicket(cwd, ticket) {
     ticket.receipt_id = receipt.receipt_id;
     writeReceipt(cwd, receipt);
   }
-  const file = path.join(cwd, ".baton", "spawns", ticket.id + ".json");
+  const dir = spawnsDir(cwd);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, ticket.id + ".json");
   fs.writeFileSync(file, JSON.stringify(ticket, null, 2) + "\n", "utf8");
   return ticket;
 }
 
 function readTicket(cwd, id) {
-  const file = path.join(cwd, ".baton", "spawns", id + ".json");
+  const file = path.join(spawnsDir(cwd), id + ".json");
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
@@ -384,7 +389,7 @@ describe("restart: state reloads from disk", () => {
     reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
     bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
 
-    // Simulate a dispatcher restart: all knowledge comes from .baton/spawns on disk.
+    // Simulate a dispatcher restart: all knowledge comes from the global workspace spawns directory.
     const snap = dispatchSnapshot(cwd, { capacity: 2 });
     assert.equal(snap.counts.running, 1);
     assert.equal(snap.counts.dispatching, 1);
@@ -410,8 +415,8 @@ describe("dispatch capacity persistence", () => {
     seedQueued(cwd, 3);
     reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
 
-    // Capacity is persisted under ignored Baton runtime state (.baton/runs/).
-    const stateFile = path.join(cwd, ".baton", "runs", "dispatch.json");
+    // Capacity is persisted under the user-global workspace runtime state.
+    const stateFile = dispatchStatePath(cwd);
     assert.ok(fs.existsSync(stateFile));
     assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).capacity, 2);
     assert.equal(persistedCapacity(cwd), 2);

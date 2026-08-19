@@ -2,14 +2,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { BATON_DIR } from "./paths.js";
-
-/** Project-local Baton runtime artifacts (.baton/...) are never worker changes or baseline dirt. */
-export function isBatonRuntimePath(candidate: string | null | undefined): boolean {
-  if (!candidate) return false;
-  const normalized = candidate.replaceAll("\\", "/").replace(/^\.\//, "");
-  return normalized === BATON_DIR || normalized.startsWith(BATON_DIR + "/");
-}
 
 export type SafetyOperation = "write" | "create" | "delete" | "rename" | "chmod";
 
@@ -88,8 +80,7 @@ export function captureBaseline(worktree: string, now: Date = new Date()): GitBa
   const branch = git(repoRoot, ["branch", "--show-current"]).trim();
   const indexRelative = git(repoRoot, ["rev-parse", "--git-path", "index"]).trim();
   const indexPath = path.isAbsolute(indexRelative) ? indexRelative : path.join(repoRoot, indexRelative);
-  const dirtyEntries = parsePorcelainV1Z(git(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
-    .filter((entry) => !isBatonRuntimePath(entry.path) && !isBatonRuntimePath(entry.original_path));
+  const dirtyEntries = parsePorcelainV1Z(git(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
   return {
     repo_root: fs.realpathSync(repoRoot),
     head,
@@ -140,8 +131,7 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   if (head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
   if (checksumFile(baseline.index_path) !== baseline.index_checksum) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the Git index" });
 
-  const entries = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
-    .filter((entry) => !isBatonRuntimePath(entry.path) && !isBatonRuntimePath(entry.original_path));
+  const entries = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
   const modeChanged = new Set(
     git(root, ["diff", "--summary", "HEAD"]).split("\n")
       .map((line) => line.match(/^ mode change \d+ => \d+ (.+)$/)?.[1])

@@ -19,7 +19,7 @@ const USAGE = `usage:
   baton dispatch recover [--stale-ms N] --json
   baton dispatch status [--capacity N] --json
 
-dispatch next remembers --capacity under .baton/runs/; later bind/complete/status/recover
+dispatch next remembers --capacity under ~/.baton/workspaces/<id>/runs/; later bind/complete/status/recover
 calls inherit it without repeating the flag.
 `;
 

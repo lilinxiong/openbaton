@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
+import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function git(cwd: string, ...args: string[]): string {
@@ -55,7 +56,8 @@ describe("cli run()", () => {
       assert.equal(spawned, 0);
       assert.match(spawnOut.text(), /spawn spn-0001/);
       assert.match(spawnOut.text(), /kimi-for-coding/);
-      assert.ok(fs.existsSync(path.join(cwd, ".baton", "spawns", "spn-0001.json")));
+      assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")));
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
       const addRoute = await run([
         "cards", "add", "--id", "reviewer", "--strengths", "review code",
@@ -88,7 +90,7 @@ describe("cli run()", () => {
         "--write-ops", "write", "--write-ops", "delete,rename",
       ], { cwd, stdout: out, stderr: out, env });
       assert.equal(code, 0, out.text());
-      const receipt = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "receipts", "rcpt-spn-0001-a1.json"), "utf8"));
+      const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), "rcpt-spn-0001-a1.json"), "utf8"));
       assert.deepEqual(receipt.scope.write_allowlist, ["a.txt", "b.txt", "c.txt"]);
       assert.deepEqual(receipt.scope.allowed_operations, ["write", "delete", "rename"]);
     });

@@ -5,7 +5,7 @@ import { sanitizeConclusion } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn } from "./spawn.js";
 import type { SpawnTicket, TicketError, TicketStatus } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
-import { dispatchStatePath } from "./paths.js";
+import { dispatchLockPath, dispatchStatePath } from "./paths.js";
 import { readReceipt, type DelegationReceipt } from "./receipt.js";
 import { auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
@@ -87,7 +87,7 @@ function fifoTickets(cwd: string): SpawnTicket[] {
 }
 
 function lockPath(cwd: string): string {
-  return path.join(cwd, ".baton", "tmp", "dispatch.lock");
+  return dispatchLockPath(cwd);
 }
 
 function withLock<T>(cwd: string, fn: () => T): T {

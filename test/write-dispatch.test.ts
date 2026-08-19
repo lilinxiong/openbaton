@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
+import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function sink() { return { write() { return true; } }; }
@@ -29,7 +30,7 @@ function fixture(): string {
 }
 
 function readTicket(cwd: string, id: string) {
-  return JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "spawns", id + ".json"), "utf8"));
+  return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), id + ".json"), "utf8"));
 }
 
 async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
@@ -50,7 +51,7 @@ describe("write dispatch safety integration", () => {
       await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       await run(["dispatch", "complete", "spn-0001", "--text", "write accepted", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      const ticket = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "utf8"));
+      const ticket = readTicket(cwd, "spn-0001");
       assert.equal(ticket.status, "completed");
       assert.equal(ticket.safety_verdict.accepted, true);
       assert.equal(ticket.conclusion, "write accepted");
@@ -68,7 +69,7 @@ describe("write dispatch safety integration", () => {
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       fs.appendFileSync(path.join(cwd, "denied.txt"), "WORKER_OUT_OF_SCOPE\n");
       await run(["dispatch", "complete", "spn-0001", "--text", "must be rejected", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      const ticket = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "utf8"));
+      const ticket = readTicket(cwd, "spn-0001");
       assert.equal(ticket.status, "errored");
       assert.equal(ticket.error.code, "WRITE_SCOPE_VIOLATION");
       assert.equal(ticket.conclusion, null);
@@ -76,7 +77,7 @@ describe("write dispatch safety integration", () => {
     });
   });
 
-  it("keeps .baton runtime artifacts out of a later write baseline (read-only ticket, then write ticket)", async () => {
+  it("keeps global Baton runtime out of a later write baseline (read-only ticket, then write ticket)", async () => {
     await withHome(async (home) => {
       const cwd = fixture();
       const env = fakeEnv(home);
@@ -84,12 +85,13 @@ describe("write dispatch safety integration", () => {
       const survey = capture();
       const surveyCode = await run(["spawn", "survey the repository structure", "--model", "k3"], { cwd, env, stdout: survey, stderr: survey });
       assert.equal(surveyCode, 0, survey.text());
-      assert.ok(fs.existsSync(path.join(cwd, ".baton", "receipts", "rcpt-spn-0001-a1.json")));
+      assert.ok(fs.existsSync(path.join(receiptsDir(cwd), "rcpt-spn-0001-a1.json")));
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
       const write = capture();
       const writeCode = await run(["spawn", "implement allowed file", "--model", "k3", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: write, stderr: write });
       assert.equal(writeCode, 0, write.text());
-      const receipt = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "receipts", "rcpt-spn-0002-a1.json"), "utf8"));
+      const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), "rcpt-spn-0002-a1.json"), "utf8"));
       assert.deepEqual(receipt.baseline.dirty_entries, []);
 
       await run(["dispatch", "next", "--capacity", "2", "--json"], { cwd, env, stdout: sink(), stderr: sink() });

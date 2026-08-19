@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
+import { dispatchStatePath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function capture() {
@@ -26,9 +27,9 @@ describe("dispatch CLI", () => {
       assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
-      const ticket = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "utf8"));
+      const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(ticket.receipt_id, "rcpt-spn-0001-a1");
-      const receipt = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "receipts", `${ticket.receipt_id}.json`), "utf8"));
+      const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
       assert.equal(receipt.route.route_id, "kimi/k3[1m]");
       assert.equal(receipt.retry.fallback, "none");
 
@@ -68,7 +69,7 @@ describe("dispatch CLI", () => {
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });
       assert.equal(conclude.code, 1);
       assert.match(conclude.stderr, /bound host agent/);
-      const ticket = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "utf8"));
+      const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(ticket.status, "errored");
       assert.equal(ticket.conclusion, null);
     });
@@ -88,7 +89,7 @@ describe("dispatch CLI", () => {
       assert.deepEqual(JSON.parse(next.stdout).reserved.map((item) => item.ticket_id), ["spn-0001", "spn-0002"]);
 
       // Capacity is persisted under ignored Baton runtime state.
-      const stateFile = path.join(cwd, ".baton", "runs", "dispatch.json");
+      const stateFile = dispatchStatePath(cwd);
       assert.ok(fs.existsSync(stateFile));
       assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).capacity, 2);
 
