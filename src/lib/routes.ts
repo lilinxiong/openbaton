@@ -71,10 +71,16 @@ export interface RouteCandidate {
 
 export function buildRouteCandidates(cwd: string, cards: ModelCard[], capabilityDbPath: string): RouteCandidate[] {
   const snapshot = readRouteSnapshot(cwd);
-  const available = new Set(snapshot?.routes.map((route) => route.id) || []);
-  return cards.map((card) => ({
-    card,
-    executable: Boolean(card.route_id && available.has(card.route_id)),
-    capability: card.route_id ? queryRouteCapability({ dbPath: capabilityDbPath, routeId: card.route_id, profile: card.reasoning_effort || "" }) : null,
-  }));
+  const available = new Set<string>();
+  for (const route of snapshot?.routes || []) {
+    available.add(route.id);
+    if (route.provider) available.add(`${route.provider}/${route.id}`);
+  }
+  return cards.map((card) => {
+    let capability = card.route_id ? queryRouteCapability({ dbPath: capabilityDbPath, routeId: card.route_id, profile: card.reasoning_effort || "" }) : null;
+    if (capability?.unranked && capability.reason === "no_canonical_mapping") {
+      capability = queryRouteCapability({ dbPath: capabilityDbPath, routeId: card.id, profile: card.reasoning_effort || "" });
+    }
+    return { card, executable: Boolean(card.route_id && available.has(card.route_id)), capability };
+  });
 }

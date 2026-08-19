@@ -46,4 +46,11 @@ describe("OpenCodex Route Snapshot", () => {
   it("rejects malformed catalogs", () => {
     assert.throws(() => normalizeRouteCatalog({ nope: true }), /model catalog/);
   });
+
+  it("joins provider plus bare catalog id to a namespaced spawn route", () => {
+    const root = cwd();
+    publishRouteSnapshot(root, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+    const [candidate] = buildRouteCandidates(root, [{ id: "k3", strengths: "", route_id: "kimi/k3[1m]", reasoning_effort: "max" }], path.join(root, "missing.sqlite3"));
+    assert.equal(candidate.executable, true);
+  });
 });
