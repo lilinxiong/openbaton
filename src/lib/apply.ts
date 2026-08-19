@@ -14,6 +14,7 @@ import {
   resolveChangeDir,
   listChangeNames,
   writeTaskConclusion,
+  writeTaskConclusionByNumber,
   OpenSpecError,
 } from "./openspec.js";
 import { buildSpawnTicket, nextSpawnId, writeSpawn, readSpawn } from "./spawn.js";
@@ -156,9 +157,10 @@ function openSpecWriteback(value: unknown): OpenSpecTicketBinding | null {
   if (!isRecord(value)) return null;
   const tasksPath = value.tasks_path;
   const lineIndex = value.line_index;
-  if (typeof tasksPath !== "string" || typeof lineIndex !== "number" || !Number.isInteger(lineIndex)) {
-    return null;
-  }
+  const number = value.number;
+  if (typeof tasksPath !== "string") return null;
+  if (typeof number === "string" && number) return { tasks_path: tasksPath, number, line_index: typeof lineIndex === "number" ? lineIndex : undefined };
+  if (typeof lineIndex !== "number" || !Number.isInteger(lineIndex)) return null;
   return { tasks_path: tasksPath, line_index: lineIndex };
 }
 
@@ -332,7 +334,9 @@ export function concludeSpawn(cwd: string, id: string, text: OpenSpecConclusion)
     const tasksPath = writeback.tasks_path;
     if (fs.existsSync(tasksPath)) {
       const current = fs.readFileSync(tasksPath, "utf8");
-      const updated = writeTaskConclusion(current, writeback.line_index, clean.conclusion);
+      const updated = writeback.number
+        ? writeTaskConclusionByNumber(current, writeback.number, clean.conclusion)
+        : writeTaskConclusion(current, writeback.line_index!, clean.conclusion);
       if (updated) {
         fs.writeFileSync(tasksPath, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8");
         openspecWritten = true;

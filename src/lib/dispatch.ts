@@ -6,6 +6,7 @@ import type { SpawnTicket, TicketStatus } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
 import { readReceipt, type DelegationReceipt } from "./receipt.js";
 import { auditWorktree, type SafetyOperation } from "./safety.js";
+import { writeTaskConclusionByNumber } from "./openspec.js";
 
 export const ACTIVE_TICKET_STATUSES = new Set<TicketStatus>(["dispatching", "running"]);
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
@@ -271,6 +272,11 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
       }
       const clean = sanitizeConclusion(conclusion);
       if (!clean.ok) throw new DispatchError("error" in clean ? clean.error : "invalid conclusion", "HYGIENE", { ticketId: id });
+      if (ticket.openspec && typeof ticket.openspec.tasks_path === "string" && typeof ticket.openspec.number === "string") {
+        const current = fs.readFileSync(ticket.openspec.tasks_path, "utf8");
+        const updated = writeTaskConclusionByNumber(current, ticket.openspec.number, clean.conclusion);
+        fs.writeFileSync(ticket.openspec.tasks_path, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8");
+      }
       transition(ticket, expected, terminal as TicketStatus, { at, event: "agent_completed" });
       ticket.conclusion = clean.conclusion;
       ticket.error = null;

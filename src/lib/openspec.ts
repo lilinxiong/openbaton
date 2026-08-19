@@ -17,7 +17,10 @@ export type OpenSpecErrorCode =
   | "TASKS_MISSING"
   | "EMPTY"
   | "NO_CHANGE"
-  | "AMBIGUOUS_CHANGE";
+  | "AMBIGUOUS_CHANGE"
+  | "TASK_ID_NOT_FOUND"
+  | "TASK_ID_AMBIGUOUS"
+  | "TASK_WRITEBACK_FAILED";
 
 export type OpenSpecConclusion = string;
 
@@ -166,6 +169,15 @@ export function writeTaskConclusion(
   if (already) lines[lineIndex + 1] = indent;
   else lines.splice(lineIndex + 1, 0, indent);
   return lines.join("\n");
+}
+
+export function writeTaskConclusionByNumber(tasksMd: string, number: string, conclusion: OpenSpecConclusion): string {
+  const matches = parseTasks(tasksMd).filter((task) => task.number === number);
+  if (matches.length === 0) throw new OpenSpecError(`OpenSpec task number not found: ${number}`, "TASK_ID_NOT_FOUND");
+  if (matches.length > 1) throw new OpenSpecError(`OpenSpec task number is ambiguous: ${number}`, "TASK_ID_AMBIGUOUS");
+  const updated = writeTaskConclusion(tasksMd, matches[0].line_index, conclusion);
+  if (updated == null) throw new OpenSpecError(`OpenSpec task writeback failed: ${number}`, "TASK_WRITEBACK_FAILED");
+  return updated;
 }
 
 function leadingWhitespace(line: string): string {
