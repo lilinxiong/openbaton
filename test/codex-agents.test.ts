@@ -30,12 +30,16 @@ describe("Codex card agents", () => {
       initProject(cwd, { tools: ["codex"], env });
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       const skill = fs.readFileSync(path.join(home, ".codex", "skills", "baton", "SKILL.md"), "utf8");
-      assert.match(skill, /director-only/i);
-      assert.match(skill, /spawn `k3`/);
-      assert.match(skill, /not inherit/i);
-      assert.match(skill, /No match on this host → blocked/);
-      assert.match(skill, /agents\.default_subagent_model/);
+      assert.match(skill, /Tickets before dispatch/);
+      assert.match(skill, /spawn_agent\(model=<route_id>/);
+      assert.match(skill, /fork_context=false/);
+      assert.match(skill, /strictly read-only/);
+      assert.match(skill, /No fallback across routes or providers/i);
+      assert.match(skill, /NO_EXECUTABLE_ROUTE/);
+      assert.doesNotMatch(skill, /director-only/i);
       assert.doesNotMatch(skill, /spawn with `agent_type` = card id/);
+      assert.doesNotMatch(skill, /fork_turns/);
+      assert.doesNotMatch(skill, /agents\.default_subagent_model/);
       for (const id of DEFAULT_IDS) {
         assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", `${id}.toml`)), id);
       }

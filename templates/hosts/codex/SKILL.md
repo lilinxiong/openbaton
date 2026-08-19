@@ -9,50 +9,73 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 ## Contract
 
-1. **One front conversation.** The host (you) is the director. The user talks here only.
+1. **One front conversation.** The host (you) is the director. The user talks here only. Nesting depth is 1 — workers never spawn children.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
-   - No subagent default.
-   - Do not inherit the parent/host model as a default.
-   - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
+2. **Tickets before dispatch.** Units become dispatch tickets (`baton spawn`, `baton apply`), queued FIFO. Queued is not running: the host reserves runnable tickets with `baton dispatch next --host codex --capacity 6 --json` and executes each reserved spec itself.
 
-3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode.
+3. **Route or blocked.** Every dispatch spec carries `route_id`/`model`, optional `reasoning_effort`, `fork_context=false`, `prompt`, and the ticket id. Routes resolve through OpenCodex provider/auth config and the card that stamped the ticket.
+   - No route on the spec → blocked (`NO_EXECUTABLE_ROUTE`). Ask the user to add or narrow a card/route.
+   - Never inherit the parent/host model. Never fall back to another route or provider. Never silently pick.
+   - Never use `cursor/claude-*` or any other Claude route. Other explicitly mapped Cursor routes are not excluded by this rule.
 
-4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
+4. **Workers are host-native subagents.** The host spawns in-process with the real Codex runtime tool: `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode. The baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`. Never claim otherwise.
 
-5. **Unlimited logical spawn.** If the host has a hard concurrency cap, queue the rest. Never refuse a unit because the cap is full. Nesting depth is 1 — children do not spawn children.
+5. **Milestone 1 is strictly read-only.** Workers inspect, search, and analyze only: no file writes, no builds, no installs, no network, no Git stage/commit. The dispatch gate rejects non-read-only tickets (`WRITE_MODE_NOT_ENABLED`).
 
-6. **Main-context hygiene.** Children return a short conclusion only. Tool dumps, traces, and transcripts stay in the child. Write the conclusion back with `baton conclude`.
+6. **Unlimited logical queue, physical cap 6.** Codex V1 holds 6 concurrent subagents; the 7th gets `AgentLimitReached`. Queue the rest — never refuse a unit because the cap is full. After every terminal ticket, run `dispatch next` again so freed slots refill FIFO.
 
-7. **OpenSpec is optional and not reimplemented.**
+7. **Main-context hygiene.** Workers return a short conclusion only. Tool dumps, traces, and transcripts stay in the worker. Conclusions come back through `baton dispatch complete <ticket> --text "..."`.
+
+8. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
-   - If absent: still fully usable via `baton spawn`.
+   - If absent: still fully usable via `baton spawn` + dispatch.
 
-## Codex spawn
+## Codex runtime protocol
 
-On Codex you are **director-only**. This ChatGPT account cannot run card workers (`k3`, `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`, `mimo-v2.5`, `mimo-v2.5-pro`, or any other non-ChatGPT card).
+Lifecycle per ticket:
 
-- Do **not** spawn `k3` or other card workers this ChatGPT account cannot run.
-- Do **not** inherit the parent/host model. Do not spawn `default` / `worker` / `explorer` as a stand-in.
-- Do **not** fall back to a ChatGPT / OpenAI native model (gpt-*, o1, o3, o4, chatgpt, codex-mini) as a stand-in for a card.
-- Do not set or rely on `agents.default_subagent_model`.
-- No match on this host → blocked. Ask the user to add or narrow a card, or use a host that can run it. Never silently pick.
-- `baton init` / `update` / `cards add` do not write card agents under `~/.codex/agents` for non-Codex-native cards. Stale `# baton-card` agent files are pruned.
+1. **Reserve.** `baton dispatch next --host codex --capacity 6 --json` → `{ reserved, blocked, snapshot }`. Each reserved spec has `ticket_id`, `route_id` (=`model`), `reasoning_effort` (nullable), `fork_context: false`, `read_only: true`, `prompt`, `attempt`, `max_attempts`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
+2. **Spawn.** For each reserved spec, call `spawn_agent` with `model=<route_id>`, `reasoning_effort` only when present, and `fork_context=false`. The prompt is self-contained; the worker does not inherit this conversation.
+3. **Bind.** On successful spawn: `baton dispatch bind <ticket_id> --agent-id <agent_id> --host codex --json`. The ticket is now `running`.
+4. **Wait.** `wait_agent` until the worker finishes. Expect a short conclusion only.
+5. **Finish.** Exactly one terminal write per ticket:
+   - success → `baton dispatch complete <ticket> --text "short conclusion" --json`
+   - error → `baton dispatch fail <ticket> --code CODE --message MSG --json`
+   - timeout → `baton dispatch timeout <ticket> [--message MSG] --json`
+   - closed/aborted → `baton dispatch close <ticket> [--message MSG] --json`
+6. **Close.** Always `close_agent` after a terminal state to release the physical slot.
+7. **Refill.** After every terminal ticket, run `baton dispatch next --host codex --capacity 6 --json` again — queued tickets auto-fill freed capacity FIFO.
+
+Restart / resume:
+
+- Run `baton dispatch recover --json` first. It returns `resumable` (running tickets with their `agent_id` and host) and `expired` (reserved-but-never-bound tickets, marked errored `DISPATCH_LEASE_EXPIRED`).
+- Resume waiting on the `resumable` agent ids. Do **not** re-spawn them.
+- Then continue the normal loop; only new reservations spawn new agents.
 
 ## Commands
 
 ```
+baton dispatch next --host codex --capacity 6 --json
+baton dispatch bind TICKET --agent-id ID --host codex --json
+baton dispatch complete TICKET --text "short conclusion" --json
+baton dispatch fail TICKET --code CODE --message MSG --json
+baton dispatch timeout TICKET [--message MSG] --json
+baton dispatch close TICKET [--message MSG] --json
+baton dispatch recover [--stale-ms N] --json
+baton dispatch status --json
 baton cards
 baton cards add --id ID --strengths "..."
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]
-baton conclude <id> --text "short outcome"
 baton status
 ```
 
 ## Red lines
 
-- Do not invent a default model.
+- Do not invent a default model. Do not inherit the parent/host model. No fallback across routes or providers.
+- Do not use `cursor/claude-*` or any other Claude route.
+- The baton CLI never calls `spawn_agent`; only the Codex host runtime spawns, waits, and closes agents.
+- Milestone 1: workers are strictly read-only.
 - Do not reimplement OpenSpec.
 - Do not dump worker tool output into this conversation.
