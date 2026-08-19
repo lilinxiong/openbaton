@@ -11,6 +11,19 @@ import { applyChange, concludeSpawn } from "./lib/apply.js";
 import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
 import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
+import type { CodedError, WritableLike } from "./types.js";
+
+interface RunOptions {
+  cwd?: string;
+  stdout?: WritableLike;
+  stderr?: WritableLike;
+  env?: NodeJS.ProcessEnv;
+  runner?: unknown;
+  resolve?: unknown;
+  fetchImpl?: typeof fetch;
+}
+
+type FlagMap = Record<string, string | boolean>;
 
 export const VERSION = "0.1.0";
 
@@ -47,7 +60,7 @@ Usage:
   baton version | --version | -v
 `;
 
-export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve, fetchImpl } = {}) {
+export async function run(argv: string[], { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve, fetchImpl }: RunOptions = {}): Promise<number> {
   const args = argv.slice();
   const cmd = args.shift() || "help";
 
@@ -89,13 +102,14 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
         stderr.write(`unknown command: ${cmd}\n\n${HELP}`);
         return 2;
     }
-  } catch (err) {
+  } catch (cause: unknown) {
+    const err = cause instanceof Error ? cause as CodedError : new Error(String(cause)) as CodedError;
     stderr.write(`${err.message}\n`);
     return err.code === "BATON_NOT_INITIALIZED" ? 2 : 1;
   }
 }
 
-async function cmdInit(args, cwd, stdout, env) {
+async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
   const tools = flags.tools ? String(flags.tools).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
@@ -108,22 +122,22 @@ async function cmdInit(args, cwd, stdout, env) {
   return 0;
 }
 
-function cmdUpdate(cwd, stdout, env) {
+function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   const result = updateProject(cwd, { env });
   stdout.write("updated baton project files\n");
   for (const a of result.actions) stdout.write(`  ${a}\n`);
   return 0;
 }
 
-function cmdCards(args, cwd, stdout, env) {
+function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   const sub = args[0];
   if (sub === "add") {
     const flags = parseFlags(args.slice(1));
     const models = addCard(cwd, {
-      id: flags.id,
-      strengths: flags.strengths,
-      routeId: flags.route,
-      reasoningEffort: flags["reasoning-effort"],
+      id: stringFlag(flags, "id"),
+      strengths: stringFlag(flags, "strengths"),
+      routeId: stringFlag(flags, "route"),
+      reasoningEffort: stringFlag(flags, "reasoning-effort"),
       env,
     });
     stdout.write(`cards: ${models.length}\n`);
@@ -140,7 +154,7 @@ function cmdCards(args, cwd, stdout, env) {
   return 0;
 }
 
-function cmdMatch(args, cwd, stdout, env) {
+function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   const text = positionalText(args);
   if (!text) {
     throw new Error("usage: baton match <text>");
@@ -159,7 +173,7 @@ function cmdMatch(args, cwd, stdout, env) {
   }
 }
 
-async function cmdSpawn(args, cwd, stdout, env) {
+async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
@@ -174,11 +188,11 @@ async function cmdSpawn(args, cwd, stdout, env) {
   const planned = planStandaloneSpawn({
     description: text,
     cards: cfg.models,
-    explicitModel: flags.model,
+    explicitModel: stringFlag(flags, "model"),
     queue,
     cwd,
   });
-  if (planned.director_local) {
+  if (planned.director_local === true) {
     stdout.write(`director-local: ${planned.reason}\n`);
     stdout.write(`unit: ${planned.description}\n`);
     return 0;
@@ -195,7 +209,7 @@ async function cmdSpawn(args, cwd, stdout, env) {
   return 0;
 }
 
-async function cmdApply(args, cwd, stdout, env) {
+async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const change = args.find((a) => !a.startsWith("-")) || null;
   const cfg = loadConfig(cwd, { env });
   await ensureFreshKimiAccount({ env, cwd });
@@ -227,11 +241,12 @@ async function cmdApply(args, cwd, stdout, env) {
   return result.blocked.length ? 1 : 0;
 }
 
-function cmdConclude(args, cwd, stdout) {
+function cmdConclude(args: string[], cwd: string, stdout: WritableLike): number {
   const flags = parseFlags(args);
-  const id = args.find((a) => !a.startsWith("-") && a !== flags.text);
-  if (!id || !flags.text) throw new Error("usage: baton conclude <id> --text \"...\"");
-  const result = concludeSpawn(cwd, id, flags.text);
+  const conclusion = stringFlag(flags, "text");
+  const id = args.find((a) => !a.startsWith("-") && a !== conclusion);
+  if (!id || !conclusion) throw new Error("usage: baton conclude <id> --text \"...\"");
+  const result = concludeSpawn(cwd, id, conclusion);
   stdout.write(`concluded ${result.ticket.id}\n`);
   stdout.write(`  ${result.ticket.conclusion}\n`);
   if (result.openspecWritten) {
@@ -240,11 +255,12 @@ function cmdConclude(args, cwd, stdout) {
   return 0;
 }
 
-function cmdStatus(cwd, stdout, env) {
+function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   let cfg = null;
   try {
     cfg = loadConfig(cwd, { env });
-  } catch (err) {
+  } catch (cause: unknown) {
+    const err = cause instanceof Error ? cause as CodedError : new Error(String(cause)) as CodedError;
     if (err.code === "BATON_NOT_INITIALIZED") {
       stdout.write("baton is not initialized. Run: baton init\n");
       return 2;
@@ -270,8 +286,8 @@ function cmdStatus(cwd, stdout, env) {
   return 0;
 }
 
-function parseFlags(args) {
-  const flags = {};
+function parseFlags(args: string[]): FlagMap {
+  const flags: FlagMap = {};
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     if (!a.startsWith("--")) continue;
@@ -287,8 +303,13 @@ function parseFlags(args) {
   return flags;
 }
 
-function positionalText(args) {
-  const parts = [];
+function stringFlag(flags: FlagMap, key: string): string | undefined {
+  const value = flags[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function positionalText(args: string[]): string {
+  const parts: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     if (args[i].startsWith("--")) {
       if (args[i + 1] && !args[i + 1].startsWith("--")) i += 1;

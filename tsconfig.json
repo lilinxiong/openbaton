@@ -10,7 +10,6 @@
     "sourceMap": true,
     "allowJs": false,
     "strict": false,
-    "noCheck": true,
     "noEmitOnError": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

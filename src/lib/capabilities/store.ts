@@ -3,43 +3,81 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import type { AaNumericObject, NormalizedAaModel } from "./aa.js";
 
 const SCHEMA_PATH = fileURLToPath(new URL("../../../data/capabilities/artificial-analysis/schema.sql", import.meta.url));
 const DEFAULT_MAPPINGS_PATH = fileURLToPath(new URL("../../../data/capabilities/artificial-analysis/route-mappings.json", import.meta.url));
 
 const require = createRequire(import.meta.url);
 
-function sqliteModule() {
+interface CodedError extends Error {
+  code?: string;
+}
+
+export interface SqliteStatement {
+  run(...params: unknown[]): unknown;
+  get(...params: unknown[]): unknown;
+}
+
+export interface SqliteDatabase {
+  exec(sql: string): unknown;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+type SqliteDatabaseOptions = { readOnly?: boolean };
+type SqliteDatabaseCtor = new (path: string, options?: SqliteDatabaseOptions) => SqliteDatabase;
+
+function sqliteModule(): { DatabaseSync: SqliteDatabaseCtor } {
   try {
-    return require("node:sqlite");
+    return require("node:sqlite") as { DatabaseSync: SqliteDatabaseCtor };
   } catch {
-    const err = new Error("capability cache requires a Node.js runtime with node:sqlite support");
+    const err: CodedError = new Error("capability cache requires a Node.js runtime with node:sqlite support");
     err.code = "BATON_SQLITE_UNAVAILABLE";
     throw err;
   }
 }
 
-function stable(value) {
+function stable(value: unknown): string | undefined {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
 }
 
-function checksum(value) {
-  return crypto.createHash("sha256").update(stable(value)).digest("hex");
+function checksum(value: unknown): string {
+  return crypto.createHash("sha256").update(stable(value) ?? "").digest("hex");
 }
 
-function numberOrNull(value) {
+function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function nestedNumber(value, ...keys) {
-  let current = value;
-  for (const key of keys) current = current && typeof current === "object" ? current[key] : null;
+function nestedNumber(value: unknown, ...keys: string[]): number | null {
+  let current: unknown = value;
+  for (const key of keys) current = current && typeof current === "object" ? (current as Record<string, unknown>)[key] : null;
   return numberOrNull(current);
 }
 
-function normalizeMapping(mapping) {
+export interface RouteMappingInput {
+  routeId?: unknown;
+  route_id?: unknown;
+  aaSlug?: unknown;
+  aa_slug?: unknown;
+  profile?: unknown;
+  source?: unknown;
+  mapping_source?: unknown;
+  note?: unknown;
+}
+
+export interface RouteMapping {
+  routeId: string;
+  profile: string;
+  aaSlug: string;
+  source: string;
+  note: string | null;
+}
+
+function normalizeMapping(mapping: RouteMappingInput): RouteMapping {
   const routeId = String(mapping?.routeId || mapping?.route_id || "").trim();
   const aaSlug = String(mapping?.aaSlug || mapping?.aa_slug || "").trim();
   const profile = String(mapping?.profile || "").trim();
@@ -53,12 +91,12 @@ function normalizeMapping(mapping) {
   };
 }
 
-export function loadRouteMappings(file = DEFAULT_MAPPINGS_PATH) {
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  const mappings = Array.isArray(parsed) ? parsed : parsed.mappings;
+export function loadRouteMappings(file: string = DEFAULT_MAPPINGS_PATH): RouteMapping[] {
+  const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+  const mappings = Array.isArray(parsed) ? parsed : (parsed as { mappings?: unknown }).mappings;
   if (!Array.isArray(mappings)) throw new Error("route mappings file must contain a mappings array");
-  const seen = new Set();
-  return mappings.map((item) => {
+  const seen = new Set<string>();
+  return mappings.map((item: RouteMappingInput) => {
     const mapping = normalizeMapping(item);
     const key = `${mapping.routeId}\0${mapping.profile}`;
     if (seen.has(key)) throw new Error(`duplicate route mapping: ${mapping.routeId} profile=${mapping.profile || "default"}`);
@@ -67,7 +105,28 @@ export function loadRouteMappings(file = DEFAULT_MAPPINGS_PATH) {
   });
 }
 
-function modelForStorage(model) {
+export interface StorageModelInput {
+  id?: unknown;
+  slug?: unknown;
+  name?: unknown;
+  release_date?: unknown;
+  releaseDate?: unknown;
+  model_creator?: Record<string, unknown> | null;
+  creator?: Record<string, unknown> | null;
+  evaluations?: Record<string, unknown>;
+  pricing?: Record<string, unknown>;
+  performance?: Record<string, unknown>;
+  cost?: Record<string, unknown>;
+  intelligence_index?: unknown;
+  coding_index?: unknown;
+  agentic_index?: unknown;
+  blended_cost_1m?: unknown;
+  intelligenceIndexCost?: Record<string, unknown>;
+}
+
+export type StoredCapabilityModel = Omit<NormalizedAaModel, "id"> & { id: string };
+
+function modelForStorage(model: StorageModelInput): StoredCapabilityModel {
   const evaluations = model.evaluations && typeof model.evaluations === "object"
     ? model.evaluations
     : {
@@ -78,21 +137,22 @@ function modelForStorage(model) {
   const pricing = model.pricing && typeof model.pricing === "object"
     ? model.pricing
     : { blended_cost_1m: numberOrNull(model.blended_cost_1m) };
+  const creator: Record<string, unknown> | null = model.model_creator ?? model.creator ?? null;
   return {
     id: model.id == null ? `local:${model.slug}` : String(model.id),
     slug: String(model.slug || "").trim(),
     name: String(model.name || "").trim(),
-    release_date: model.release_date ?? model.releaseDate ?? null,
-    model_creator: model.model_creator ?? model.creator ?? null,
-    evaluations,
-    pricing,
-    performance: model.performance && typeof model.performance === "object" ? model.performance : {},
-    cost: model.cost ?? model.intelligenceIndexCost ?? {},
+    release_date: (model.release_date ?? model.releaseDate ?? null) as string | null,
+    model_creator: creator == null ? null : creator as NormalizedAaModel["model_creator"],
+    evaluations: evaluations as AaNumericObject,
+    pricing: pricing as AaNumericObject,
+    performance: (model.performance && typeof model.performance === "object" ? model.performance : {}) as AaNumericObject,
+    cost: (model.cost ?? model.intelligenceIndexCost ?? {}) as AaNumericObject,
   };
 }
 
-function deduplicateModels(models) {
-  const bySlug = new Map();
+function deduplicateModels(models: StorageModelInput[]): { models: StoredCapabilityModel[]; duplicateRecords: number } {
+  const bySlug = new Map<string, StoredCapabilityModel>();
   let duplicateRecords = 0;
   for (const item of models) {
     const model = modelForStorage(item);
@@ -109,7 +169,7 @@ function deduplicateModels(models) {
   return { models: [...bySlug.values()], duplicateRecords };
 }
 
-function atomicWriteJson(file, value) {
+function atomicWriteJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
@@ -120,7 +180,39 @@ function atomicWriteJson(file, value) {
   }
 }
 
-export function writeCapabilitySnapshot({ dbPath, manifestPath = null, models, metadata, mappings = [] }) {
+export interface CapabilitySnapshotMetadata {
+  provider?: unknown;
+  tier?: unknown;
+  indexVersion?: unknown;
+  fetchedAt?: unknown;
+  source?: unknown;
+  endpoint?: unknown;
+  duplicateRecords?: unknown;
+}
+
+export interface WriteCapabilitySnapshotOptions {
+  dbPath: string;
+  manifestPath?: string | null;
+  models: StorageModelInput[];
+  metadata: CapabilitySnapshotMetadata;
+  mappings?: RouteMappingInput[];
+}
+
+export interface CapabilitySnapshotManifest {
+  schemaVersion: number;
+  provider: string;
+  tier: string;
+  indexVersion: unknown;
+  fetchedAt: string;
+  source: string;
+  endpoint: string | null;
+  modelCount: number;
+  mappingCount: number;
+  duplicateRecords: number;
+  snapshotChecksum: string;
+}
+
+export function writeCapabilitySnapshot({ dbPath, manifestPath = null, models, metadata, mappings = [] }: WriteCapabilitySnapshotOptions): CapabilitySnapshotManifest {
   if (!dbPath) throw new Error("dbPath is required");
   if (!Array.isArray(models)) throw new Error("models must be an array");
   const normalizedMappings = mappings.map(normalizeMapping);
@@ -144,7 +236,7 @@ export function writeCapabilitySnapshot({ dbPath, manifestPath = null, models, m
 
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const tempPath = `${dbPath}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  let db = null;
+  let db: SqliteDatabase | null = null;
   try {
     const { DatabaseSync } = sqliteModule();
     db = new DatabaseSync(tempPath);
@@ -201,12 +293,52 @@ export function writeCapabilitySnapshot({ dbPath, manifestPath = null, models, m
   }
 }
 
-function modelFromRow(row) {
+export interface ModelRow {
+  aa_id: string;
+  slug: string;
+  name: string;
+  release_date: string | null;
+  creator_id: string | null;
+  creator_name: string | null;
+  intelligence_index: number | null;
+  coding_index: number | null;
+  agentic_index: number | null;
+  evaluations_json: string;
+  pricing_json: string;
+  performance_json: string;
+  cost_json: string;
+}
+
+export interface RouteMappingRow {
+  route_id: string;
+  profile: string;
+  aa_slug: string;
+  mapping_source: string;
+  note: string | null;
+}
+
+export interface QueriedCapabilityModel {
+  id: string;
+  slug: string;
+  name: string;
+  release_date: string | null;
+  model_creator: { id: string | null; name: string | null } | null;
+  intelligence_index: number | null;
+  coding_index: number | null;
+  agentic_index: number | null;
+  blended_cost_1m: number | null;
+  evaluations: Record<string, unknown>;
+  pricing: Record<string, unknown>;
+  performance: Record<string, unknown>;
+  cost: Record<string, unknown>;
+}
+
+function modelFromRow(row: ModelRow | null | undefined): QueriedCapabilityModel | null {
   if (!row) return null;
-  const evaluations = JSON.parse(row.evaluations_json);
-  const pricing = JSON.parse(row.pricing_json);
-  const performance = JSON.parse(row.performance_json);
-  const cost = JSON.parse(row.cost_json);
+  const evaluations = JSON.parse(row.evaluations_json) as Record<string, unknown>;
+  const pricing = JSON.parse(row.pricing_json) as Record<string, unknown>;
+  const performance = JSON.parse(row.performance_json) as Record<string, unknown>;
+  const cost = JSON.parse(row.cost_json) as Record<string, unknown>;
   return {
     id: row.aa_id,
     slug: row.slug,
@@ -224,7 +356,20 @@ function modelFromRow(row) {
   };
 }
 
-export function queryRouteCapability({ dbPath, routeId, profile = "" }) {
+export type RouteCapabilityResult =
+  | { routeId: string; profile: string; aaSlug?: string; ranked: false; unranked: true; reason: string }
+  | {
+      routeId: string;
+      profile: string;
+      aaSlug: string;
+      mappingSource: string;
+      ranked: boolean;
+      unranked: boolean;
+      reason: string | null;
+      model?: QueriedCapabilityModel;
+    };
+
+export function queryRouteCapability({ dbPath, routeId, profile = "" }: { dbPath: string; routeId: string; profile?: string }): RouteCapabilityResult {
   const route = String(routeId || "").trim();
   const requestedProfile = String(profile || "").trim();
   if (!route) throw new Error("routeId is required");
@@ -232,13 +377,13 @@ export function queryRouteCapability({ dbPath, routeId, profile = "" }) {
   const { DatabaseSync } = sqliteModule();
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    let mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ?").get(route, requestedProfile);
-    if (!mapping && requestedProfile) mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ''").get(route);
+    let mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ?").get(route, requestedProfile) as RouteMappingRow | undefined;
+    if (!mapping && requestedProfile) mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ''").get(route) as RouteMappingRow | undefined;
     if (!mapping) return { routeId: route, profile: requestedProfile, ranked: false, unranked: true, reason: "no_canonical_mapping" };
-    const row = db.prepare("SELECT * FROM models WHERE slug = ?").get(mapping.aa_slug);
+    const row = db.prepare("SELECT * FROM models WHERE slug = ?").get(mapping.aa_slug) as ModelRow | undefined;
     if (!row) return { routeId: route, profile: requestedProfile, aaSlug: mapping.aa_slug, ranked: false, unranked: true, reason: "aa_model_not_in_snapshot" };
     const model = modelFromRow(row);
-    const values = Object.values(model.evaluations).filter((value) => typeof value === "number");
+    const values = Object.values(model?.evaluations ?? {}).filter((value) => typeof value === "number");
     return {
       routeId: route,
       profile: requestedProfile,
@@ -247,20 +392,59 @@ export function queryRouteCapability({ dbPath, routeId, profile = "" }) {
       ranked: values.length > 0,
       unranked: values.length === 0,
       reason: values.length > 0 ? null : "aa_model_has_no_ranked_metrics",
-      model,
+      model: model ?? undefined,
     };
   } finally {
     db.close();
   }
 }
 
-export function readCapabilityStatus({ dbPath }) {
+export type CapabilityStatusResult =
+  | { exists: false; modelCount: number; mappingCount: number }
+  | {
+      exists: true;
+      provider: string;
+      tier: string;
+      indexVersion: string;
+      fetchedAt: string;
+      source: string;
+      endpoint: string | null;
+      modelCount: number;
+      duplicateRecords: number;
+      snapshotChecksum: string;
+      metadata: {
+        provider: string;
+        tier: string;
+        indexVersion: string;
+        fetchedAt: string;
+        source: string;
+        endpoint: string | null;
+        modelCount: number;
+        duplicateRecords: number;
+        snapshotChecksum: string;
+      };
+      mappingCount: number;
+    };
+
+interface SnapshotMetadataRow {
+  provider: string;
+  tier: string;
+  index_version: string;
+  fetched_at: string;
+  source: string;
+  endpoint: string | null;
+  model_count: number;
+  duplicate_records: number;
+  snapshot_checksum: string;
+}
+
+export function readCapabilityStatus({ dbPath }: { dbPath: string }): CapabilityStatusResult {
   if (!fs.existsSync(dbPath)) return { exists: false, modelCount: 0, mappingCount: 0 };
   const { DatabaseSync } = sqliteModule();
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const meta = db.prepare("SELECT * FROM snapshot_metadata WHERE singleton = 1").get();
-    const mappingCount = db.prepare("SELECT COUNT(*) AS count FROM route_mappings").get().count;
+    const meta = db.prepare("SELECT * FROM snapshot_metadata WHERE singleton = 1").get() as SnapshotMetadataRow;
+    const mappingCount = (db.prepare("SELECT COUNT(*) AS count FROM route_mappings").get() as { count: number }).count;
     const metadata = {
       provider: meta.provider,
       tier: meta.tier,

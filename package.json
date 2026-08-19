@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.test.json --noEmit --noCheck",
+    "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && tsx --test test/*.test.ts",
     "baton": "tsx bin/baton.ts",
     "prepack": "npm run build"

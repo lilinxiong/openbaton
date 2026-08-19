@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fetchArtificialAnalysisModels } from "../lib/capabilities/aa.js";
+import type { AaFetchImpl } from "../lib/capabilities/aa.js";
 import {
   loadRouteMappings,
   queryRouteCapability,
@@ -15,8 +16,10 @@ const USAGE = `usage:
   baton capabilities show ROUTE [--profile PROFILE] [--json]
 `;
 
-function flags(args) {
-  const out = {};
+type FlagValue = string | true;
+
+function flags(args: string[]): Record<string, FlagValue> {
+  const out: Record<string, FlagValue> = {};
   for (let i = 0; i < args.length; i += 1) {
     const current = args[i];
     if (!current.startsWith("--")) continue;
@@ -30,8 +33,8 @@ function flags(args) {
   return out;
 }
 
-function positionals(args) {
-  const out = [];
+function positionals(args: string[]): string[] {
+  const out: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     if (args[i].startsWith("--")) {
       if (args[i + 1] && !args[i + 1].startsWith("--")) i += 1;
@@ -40,12 +43,13 @@ function positionals(args) {
   return out;
 }
 
-function readKey(file, env) {
+function readKey(file: FlagValue | undefined, env: NodeJS.ProcessEnv): string {
   if (!file) {
     const key = String(env.AA_API_KEY || "").trim();
     if (!key) throw new Error("Artificial Analysis key is required; use --key-file PATH or AA_API_KEY");
     return key;
   }
+  if (file === true) throw new Error("--key-file requires a path");
   const stat = fs.statSync(file);
   if (!stat.isFile()) throw new Error("Artificial Analysis key path is not a regular file");
   if ((stat.mode & 0o077) !== 0) throw new Error("Artificial Analysis key file must not be readable by group or others (use mode 0600)");
@@ -54,11 +58,22 @@ function readKey(file, env) {
   return key;
 }
 
-function printJson(stdout, value) {
+interface StdoutLike {
+  write(value: string): unknown;
+}
+
+export interface RunCapabilitiesOptions {
+  cwd: string;
+  stdout: StdoutLike;
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: AaFetchImpl;
+}
+
+function printJson(stdout: StdoutLike, value: unknown): void {
   stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-export async function runCapabilities(args, { cwd, stdout, env = process.env, fetchImpl = globalThis.fetch } = {}) {
+export async function runCapabilities(args: string[], { cwd, stdout, env = process.env, fetchImpl = globalThis.fetch }: RunCapabilitiesOptions): Promise<number> {
   const sub = args[0] || "status";
   const rest = args.slice(1);
   const opts = flags(rest);
@@ -102,14 +117,16 @@ export async function runCapabilities(args, { cwd, stdout, env = process.env, fe
   if (sub === "show") {
     const routeId = positionals(rest)[0];
     if (!routeId) throw new Error(USAGE.trim());
-    const capability = await queryRouteCapability({ dbPath, routeId, profile: opts.profile || "" });
+    const profile = opts.profile === true ? "" : opts.profile || "";
+    const capability = await queryRouteCapability({ dbPath, routeId, profile });
     if (opts.json) printJson(stdout, capability);
     else if (capability.unranked) stdout.write(`${routeId}: unranked (${capability.reason})\n`);
-    else {
-      stdout.write(`${routeId}: ${capability.model.name} [${capability.aaSlug}]\n`);
-      stdout.write(`  intelligence: ${capability.model.evaluations.artificial_analysis_intelligence_index ?? "n/a"}\n`);
-      stdout.write(`  coding: ${capability.model.evaluations.artificial_analysis_coding_index ?? "n/a"}\n`);
-      stdout.write(`  agentic: ${capability.model.evaluations.artificial_analysis_agentic_index ?? "n/a"}\n`);
+    else if ("model" in capability && capability.model) {
+      const model = capability.model;
+      stdout.write(`${routeId}: ${model.name} [${capability.aaSlug}]\n`);
+      stdout.write(`  intelligence: ${model.evaluations.artificial_analysis_intelligence_index ?? "n/a"}\n`);
+      stdout.write(`  coding: ${model.evaluations.artificial_analysis_coding_index ?? "n/a"}\n`);
+      stdout.write(`  agentic: ${model.evaluations.artificial_analysis_agentic_index ?? "n/a"}\n`);
     }
     return 0;
   }

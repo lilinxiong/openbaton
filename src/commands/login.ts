@@ -13,10 +13,62 @@ import {
   ocxFailureHint,
   MIMO_KEY_ONLY_MESSAGE,
 } from "../lib/opencodex.js";
+import type {
+  OcxResolution,
+  OcxResolver,
+  OcxRunner,
+  OcxRunResult,
+} from "../lib/opencodex.js";
 import { wireKimiAccountToGrok } from "../lib/kimi-account.js";
+import type { CodedError, ModelCard, WritableLike } from "../types.js";
 
-export async function runLogin(args, { cwd, stdout, stderr, env = process.env, runner, resolve } = {}) {
-  const resolved = (resolve || resolveOcx)({ env, cwd });
+export interface RunLoginOptions {
+  cwd?: string;
+  stdout?: WritableLike;
+  stderr?: WritableLike;
+  env?: NodeJS.ProcessEnv;
+  runner?: unknown;
+  resolve?: unknown;
+}
+
+interface LoginEngine {
+  cwd: string;
+  stdout: WritableLike;
+  stderr: WritableLike;
+  env: NodeJS.ProcessEnv;
+  runner?: OcxRunner;
+  resolve?: OcxResolver;
+  resolved: OcxResolution;
+}
+
+type FlagValue = string | boolean;
+type FlagMap = Record<string, FlagValue>;
+
+interface CardLoginResolution {
+  provider?: string;
+  error?: string;
+}
+
+function isResolver(value: unknown): value is OcxResolver {
+  return typeof value === "function";
+}
+
+function isRunner(value: unknown): value is OcxRunner {
+  return typeof value === "function";
+}
+
+function isCodedError(value: unknown): value is CodedError {
+  return value instanceof Error;
+}
+
+export async function runLogin(args: string[], options: RunLoginOptions = {}): Promise<number> {
+  const cwd = options.cwd || process.cwd();
+  const stdout = options.stdout || process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const env = options.env || process.env;
+  const resolver = isResolver(options.resolve) ? options.resolve : resolveOcx;
+  const runner = isRunner(options.runner) ? options.runner : undefined;
+  const resolved = resolver({ env, cwd });
   if (!resolved) {
     stdout.write(`${engineMissingMessage()}\n`);
     return 2;
@@ -24,7 +76,7 @@ export async function runLogin(args, { cwd, stdout, stderr, env = process.env, r
 
   const flags = parseFlags(args);
   const provider = firstPositional(args);
-  const engine = { cwd, stdout, stderr, env, runner, resolve, resolved };
+  const engine: LoginEngine = { cwd, stdout, stderr, env, runner, resolve: resolver, resolved };
 
   if (flags.card != null) {
     if (flags.card === true || String(flags.card).trim() === "") {
@@ -36,39 +88,42 @@ export async function runLogin(args, { cwd, stdout, stderr, env = process.env, r
       stdout.write(mapped.error + "\n");
       return 1;
     }
-    return await doLogin(mapped.provider, engine);
+    return doLogin(mapped.provider || "", engine);
   }
 
-  if (provider) {
-    return await doLogin(provider, engine);
-  }
-
+  if (provider) return doLogin(provider, engine);
   return doList(engine);
 }
 
-async function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, resolved }) {
+async function doLogin(provider: string, engine: LoginEngine): Promise<number> {
+  const { cwd, stdout, stderr, env, runner, resolve, resolved } = engine;
   const inheritStdio = stdout === process.stdout && stderr === process.stderr;
-  let result;
+  let result: OcxRunResult;
   try {
     result = loginOcxProvider(provider, {
-      cwd, env, runner, resolve, resolved, inheritStdio,
+      cwd,
+      env,
+      runner,
+      resolve,
+      resolved,
+      inheritStdio,
     });
-  } catch (err) {
-    if (err.code === "OCX_MISSING") {
-      stdout.write(err.message + "\n");
+  } catch (error: unknown) {
+    if (isCodedError(error) && error.code === "OCX_MISSING") {
+      stdout.write(error.message + "\n");
       return 2;
     }
-    throw err;
+    throw error;
   }
   if (result.status !== 0) {
     stdout.write(ocxFailureHint(result) + "\n");
     return 1;
   }
-  if (String(resolveLoginProvider(provider)).toLowerCase() === "kimi") {
+  if (resolveLoginProvider(provider).toLowerCase() === "kimi") {
     try {
       await wireKimiAccountToGrok({ env, cwd });
     } catch {
-      // login already succeeded; wiring is best-effort and must not print the token
+      // Login already succeeded; wiring is best-effort and must not print the token.
     }
   }
   if (!inheritStdio && result.stdout) {
@@ -77,24 +132,24 @@ async function doLogin(provider, { cwd, stdout, stderr, env, runner, resolve, re
   return 0;
 }
 
-function doList({ cwd, stdout, env, runner, resolve, resolved }) {
-  let result;
+function doList(engine: LoginEngine): number {
+  const { cwd, stdout, env, runner, resolve, resolved } = engine;
+  let result: OcxRunResult;
   try {
     result = listOcxAccounts({ cwd, env, runner, resolve, resolved });
-  } catch (err) {
-    if (err.code === "OCX_MISSING") {
-      stdout.write(err.message + "\n");
+  } catch (error: unknown) {
+    if (isCodedError(error) && error.code === "OCX_MISSING") {
+      stdout.write(error.message + "\n");
       return 2;
     }
-    throw err;
+    throw error;
   }
   if (result.status !== 0) {
     stdout.write(ocxFailureHint(result) + "\n");
     return 1;
   }
-  if (result.stdout) {
-    stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
-  }
+  if (result.stdout) stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
+
   const cards = loadCards(cwd, env);
   if (cards.length) {
     stdout.write("\ncard -> provider\n");
@@ -112,41 +167,39 @@ function doList({ cwd, stdout, env, runner, resolve, resolved }) {
   return 0;
 }
 
-function loadCards(cwd, env) {
+function loadCards(cwd: string, env: NodeJS.ProcessEnv): ModelCard[] {
   try {
     return loadConfig(cwd, { env }).models;
-  } catch (err) {
-    if (err.code === "BATON_NOT_INITIALIZED") return [];
-    throw err;
+  } catch (error: unknown) {
+    if (isCodedError(error) && error.code === "BATON_NOT_INITIALIZED") return [];
+    throw error;
   }
 }
 
-export function resolveCardForLogin(cwd, cardId, env) {
+export function resolveCardForLogin(cwd: string, cardId: string, env: NodeJS.ProcessEnv): CardLoginResolution {
   const cards = loadCards(cwd, env);
-  const card = cards.find((c) => c.id === cardId);
+  const card = cards.find((candidate) => candidate.id === cardId);
   if (!card) {
-    return { error: "blocked: unknown card \"" + cardId + "\". Set auth_provider or pass provider." };
+    return { error: `blocked: unknown card "${cardId}". Set auth_provider or pass provider.` };
   }
   const mapped = authProviderForCard(card);
-  if (mapped.keyOnly) {
-    return { error: "blocked: " + MIMO_KEY_ONLY_MESSAGE };
-  }
+  if (mapped.keyOnly) return { error: "blocked: " + MIMO_KEY_ONLY_MESSAGE };
   if (!mapped.provider) {
-    return { error: "blocked: card \"" + cardId + "\" has no account-login provider. Set auth_provider or pass provider." };
+    return { error: `blocked: card "${cardId}" has no account-login provider. Set auth_provider or pass provider.` };
   }
   return { provider: mapped.provider };
 }
 
-function parseFlags(args) {
-  const flags = {};
-  for (let i = 0; i < args.length; i += 1) {
-    const a = args[i];
-    if (!a.startsWith("--")) continue;
-    const key = a.slice(2);
-    const next = args[i + 1];
+function parseFlags(args: string[]): FlagMap {
+  const flags: FlagMap = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const next = args[index + 1];
     if (next && !next.startsWith("--")) {
       flags[key] = next;
-      i += 1;
+      index += 1;
     } else {
       flags[key] = true;
     }
@@ -154,13 +207,13 @@ function parseFlags(args) {
   return flags;
 }
 
-function firstPositional(args) {
-  for (let i = 0; i < args.length; i += 1) {
-    if (args[i].startsWith("--")) {
-      if (args[i + 1] && !args[i + 1].startsWith("--")) i += 1;
+function firstPositional(args: string[]): string {
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index].startsWith("--")) {
+      if (args[index + 1] && !args[index + 1].startsWith("--")) index += 1;
       continue;
     }
-    return args[i];
+    return args[index];
   }
   return "";
 }
