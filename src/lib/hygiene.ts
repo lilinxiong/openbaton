@@ -13,13 +13,15 @@ const TOOL_DUMP_MARKERS = [
   /```tool/,
 ];
 
-export function looksLikeToolDump(text) {
+export function looksLikeToolDump(text: unknown): boolean {
   const s = String(text || "");
   if (s.length > 4000) return true;
   return TOOL_DUMP_MARKERS.some((re) => re.test(s));
 }
 
-export function sanitizeConclusion(text) {
+export type ConclusionResult = { ok: true; conclusion: string } | { ok: false; error: string };
+
+export function sanitizeConclusion(text: unknown): ConclusionResult {
   let s = String(text || "").trim();
   if (!s) {
     return { ok: false, error: "empty conclusion" };
@@ -40,7 +42,7 @@ export function sanitizeConclusion(text) {
  * Dynamic per-unit choice: tiny local edits MAY stay on the director.
  * Not a static L1/L3 table. Implementation/explore work always leaves.
  */
-export function directorMayRun(description) {
+export function directorMayRun(description: unknown): boolean {
   const text = String(description || "").trim();
   if (!text) return false;
   if (text.length > 80) return false;

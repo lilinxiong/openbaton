@@ -3,8 +3,18 @@
  * No default model. No parent-session inherit. No match → blocked.
  */
 
+import type { ModelCard } from "../types.js";
+
+interface CardMatchExtras {
+  code?: string;
+  candidates?: string[];
+}
+
 export class CardMatchError extends Error {
-  constructor(message, extras = {}) {
+  readonly code: string;
+  readonly candidates: string[];
+
+  constructor(message: string, extras: CardMatchExtras = {}) {
     super(message);
     this.name = "CardMatchError";
     this.code = extras.code || "NO_CARD_MATCH";
@@ -12,14 +22,14 @@ export class CardMatchError extends Error {
   }
 }
 
-export function tokenize(text) {
+export function tokenize(text: unknown): string[] {
   return String(text || "")
     .toLowerCase()
     .split(/[^a-z0-9+>]+/i)
     .filter((t) => t.length > 1);
 }
 
-export function scoreCard(text, card) {
+export function scoreCard(text: unknown, card: ModelCard): number {
   const hayTokens = new Set(tokenize(`${card.strengths} ${card.id}`));
   const needles = tokenize(text);
   let score = 0;
@@ -42,7 +52,7 @@ export function scoreCard(text, card) {
 /**
  * Pick exactly one card. Ties and zeros are blocked — never a silent default.
  */
-export function matchModelCard(text, cards) {
+export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: string; score: number; card: ModelCard } {
   if (!cards || cards.length === 0) {
     throw new CardMatchError(
       "no model cards configured. Add cards with `baton cards add` or edit .baton/config.toml. baton will not invent a default model.",
@@ -70,7 +80,7 @@ export function matchModelCard(text, cards) {
   return { model_id: best.card.id, score: best.score, card: best.card };
 }
 
-export function requireCardId(modelId, cards) {
+export function requireCardId(modelId: string, cards: ModelCard[]): ModelCard {
   const found = cards.find((c) => c.id === modelId);
   if (!found) {
     throw new CardMatchError(

@@ -1,16 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
-import { installHostSkills } from "../lib/hosts.js";
+import { installHostSkills, type HostId } from "../lib/hosts.js";
 import { loadConfig } from "../lib/config.js";
 import { syncGrokCardAgents } from "../lib/grok-agents.js";
 import { syncCodexCardAgents } from "../lib/codex-agents.js";
 import { wireKimiAccountToGrok } from "../lib/kimi-account.js";
 
-export async function initProject(cwd, { force = false, tools, env } = {}) {
+export interface InitProjectOptions {
+  force?: boolean;
+  tools?: string | readonly string[];
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface InitProjectResult {
+  dir: string;
+  created: string[];
+  skipped: string[];
+  tools: HostId[];
+}
+
+export async function initProject(cwd: string, options: InitProjectOptions = {}): Promise<InitProjectResult> {
+  const { force = false, tools, env } = options;
   const dir = batonHomeDir(env);
-  const created = [];
-  const skipped = [];
+  const created: string[] = [];
+  const skipped: string[] = [];
   fs.mkdirSync(dir, { recursive: true });
 
   const tmplRoot = packageRoot();

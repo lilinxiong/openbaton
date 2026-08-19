@@ -15,53 +15,53 @@ export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
  * User home for host + director files.
  * HOME = env.HOME || env.USERPROFILE || os.homedir()
  */
-export function hostHome(env) {
+export function hostHome(env?: NodeJS.ProcessEnv): string {
   const e = env || process.env || {};
   return e.HOME || e.USERPROFILE || os.homedir();
 }
 
-export function batonHomeDir(env) {
+export function batonHomeDir(env?: NodeJS.ProcessEnv): string {
   return path.join(hostHome(env), BATON_DIR);
 }
 
 /** Project-local runtime dir (spawns/runs). Init never creates this. */
-export function batonDir(cwd) {
+export function batonDir(cwd: string): string {
   return path.join(cwd, BATON_DIR);
 }
 
-export function configPath(_cwd, { env } = {}) {
+export function configPath(_cwd: string, { env }: { env?: NodeJS.ProcessEnv } = {}): string {
   return path.join(batonHomeDir(env), CONFIG_NAME);
 }
 
-export function skillPath(_cwd, { env } = {}) {
+export function skillPath(_cwd: string, { env }: { env?: NodeJS.ProcessEnv } = {}): string {
   return path.join(batonHomeDir(env), SKILL_NAME);
 }
 
-export function spawnsDir(cwd) {
+export function spawnsDir(cwd: string): string {
   return path.join(cwd, BATON_DIR, SPAWNS_DIR);
 }
 
-export function runsDir(cwd) {
+export function runsDir(cwd: string): string {
   return path.join(cwd, BATON_DIR, RUNS_DIR);
 }
 
-export function capabilitiesCacheDir(cwd) {
+export function capabilitiesCacheDir(cwd: string): string {
   return path.join(cwd, BATON_DIR, CACHE_DIR, CAPABILITIES_DIR);
 }
 
-export function artificialAnalysisDbPath(cwd) {
+export function artificialAnalysisDbPath(cwd: string): string {
   return path.join(capabilitiesCacheDir(cwd), AA_DB_NAME);
 }
 
-export function artificialAnalysisManifestPath(cwd) {
+export function artificialAnalysisManifestPath(cwd: string): string {
   return path.join(capabilitiesCacheDir(cwd), AA_MANIFEST_NAME);
 }
 
-export function packageRoot() {
+export function packageRoot(): string {
   return path.resolve(new URL("../..", import.meta.url).pathname);
 }
 
-export function displayHomePath(dest, { cwd, env } = {}) {
+export function displayHomePath(dest: string, { cwd, env }: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): string {
   const home = hostHome(env);
   if (home) {
     const fromHome = path.relative(home, dest);

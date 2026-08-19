@@ -1,12 +1,30 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { CodedError, DirectorConfig, ModelCard, UnknownRecord } from "../types.js";
 import { parseToml, stringifyToml } from "./toml.js";
 import { configPath } from "./paths.js";
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 export const DEFAULT_MAX_DEPTH = 1;
 
-export function emptyConfig() {
+export type Config = DirectorConfig;
+export type Card = ModelCard;
+
+export interface DirectorSettings {
+  max_concurrent: number;
+  max_depth: number;
+  runner?: string;
+}
+
+export interface ConfigEnvOptions {
+  env?: NodeJS.ProcessEnv;
+}
+
+export function isUnknownRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function emptyConfig(): Config {
   return {
     director: {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -16,62 +34,85 @@ export function emptyConfig() {
   };
 }
 
-export function normalizeConfig(raw) {
-  const cfg = emptyConfig();
-  const director = raw.director && typeof raw.director === "object" ? raw.director : {};
-  const max = Number(director.max_concurrent);
-  cfg.director.max_concurrent = Number.isFinite(max) && max > 0 ? Math.floor(max) : DEFAULT_MAX_CONCURRENT;
-  const depth = Number(director.max_depth);
-  cfg.director.max_depth = Number.isFinite(depth) && depth >= 1 ? Math.floor(depth) : DEFAULT_MAX_DEPTH;
-  if (typeof director.runner === "string" && director.runner.trim()) {
-    cfg.director.runner = director.runner.trim();
-  }
-  const models = Array.isArray(raw.models) ? raw.models : [];
-  cfg.models = models
-    .filter((m) => m && typeof m === "object")
-    .map((m) => {
-      const card = {
-        id: String(m.id || "").trim(),
-        strengths: String(m.strengths || "").trim(),
-      };
-      if (typeof m.auth_provider === "string" && m.auth_provider.trim()) {
-        card.auth_provider = m.auth_provider.trim();
-      }
-      if (typeof m.route_id === "string" && m.route_id.trim()) {
-        card.route_id = m.route_id.trim();
-      }
-      if (typeof m.reasoning_effort === "string" && m.reasoning_effort.trim()) {
-        card.reasoning_effort = m.reasoning_effort.trim();
-      }
-      return card;
-    })
-    .filter((m) => m.id);
-  return cfg;
+function optionalTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
-export function loadConfig(cwd, { env } = {}) {
-  const file = configPath(cwd, { env });
+function normalizeDirector(raw: unknown): DirectorSettings {
+  const director = isUnknownRecord(raw) ? raw : {};
+  const max = Number(director.max_concurrent);
+  const depth = Number(director.max_depth);
+  const settings: DirectorSettings = {
+    max_concurrent: Number.isFinite(max) && max > 0 ? Math.floor(max) : DEFAULT_MAX_CONCURRENT,
+    max_depth: Number.isFinite(depth) && depth >= 1 ? Math.floor(depth) : DEFAULT_MAX_DEPTH,
+  };
+  const runner = optionalTrimmedString(director.runner);
+  if (runner) settings.runner = runner;
+  return settings;
+}
+
+function normalizeCard(raw: unknown): Card | null {
+  if (!isUnknownRecord(raw)) return null;
+  const id = String(raw.id || "").trim();
+  if (!id) return null;
+  const card: Card = {
+    id,
+    strengths: String(raw.strengths || "").trim(),
+  };
+  const authProvider = optionalTrimmedString(raw.auth_provider);
+  const routeId = optionalTrimmedString(raw.route_id);
+  const reasoningEffort = optionalTrimmedString(raw.reasoning_effort);
+  if (authProvider) card.auth_provider = authProvider;
+  if (routeId) card.route_id = routeId;
+  if (reasoningEffort) card.reasoning_effort = reasoningEffort;
+  return card;
+}
+
+function serializeConfig(cfg: Config): UnknownRecord {
+  return {
+    director: { ...cfg.director },
+    models: cfg.models.map((card) => {
+      const row: UnknownRecord = {
+        id: card.id,
+        strengths: card.strengths,
+      };
+      if (card.auth_provider) row.auth_provider = card.auth_provider;
+      if (card.route_id) row.route_id = card.route_id;
+      if (card.reasoning_effort) row.reasoning_effort = card.reasoning_effort;
+      return row;
+    }),
+  };
+}
+
+export function normalizeConfig(raw: unknown): Config {
+  const source = isUnknownRecord(raw) ? raw : {};
+  return {
+    director: normalizeDirector(source.director),
+    models: Array.isArray(source.models)
+      ? source.models.map(normalizeCard).filter((card): card is Card => card !== null)
+      : [],
+  };
+}
+
+export function loadConfig(cwd: string, options: ConfigEnvOptions = {}): Config {
+  const file = configPath(cwd, { env: options.env });
   if (!fs.existsSync(file)) {
-    const err = new Error(`baton is not initialized here (missing ${file}). Run: baton init`);
+    const err = new Error(`baton is not initialized here (missing ${file}). Run: baton init`) as CodedError;
     err.code = "BATON_NOT_INITIALIZED";
     throw err;
   }
-  const raw = parseToml(fs.readFileSync(file, "utf8"));
-  return normalizeConfig(raw);
+  return normalizeConfig(parseToml(fs.readFileSync(file, "utf8")));
 }
 
-export function saveConfig(cwd, cfg, { env } = {}) {
-  const file = configPath(cwd, { env });
+export function saveConfig(cwd: string, cfg: unknown, options: ConfigEnvOptions = {}): string {
+  const file = configPath(cwd, { env: options.env });
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const normalized = normalizeConfig(cfg);
-  const out = {
-    director: normalized.director,
-    models: normalized.models,
-  };
-  fs.writeFileSync(file, stringifyToml(out), "utf8");
+  fs.writeFileSync(file, stringifyToml(serializeConfig(normalizeConfig(cfg))), "utf8");
   return file;
 }
 
-export function effectiveMaxConcurrent(cfg) {
+export function effectiveMaxConcurrent(cfg: Config): number {
   return cfg.director.max_concurrent;
 }

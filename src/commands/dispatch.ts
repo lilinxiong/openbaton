@@ -6,6 +6,7 @@ import {
   recoverDispatches,
   reserveNext,
 } from "../lib/dispatch.js";
+import type { WritableLike } from "../types.js";
 
 const USAGE = `usage:
   baton dispatch next --host codex [--capacity N] [--limit N] --json
@@ -18,8 +19,10 @@ const USAGE = `usage:
   baton dispatch status [--capacity N] --json
 `;
 
-function parseFlags(args) {
-  const flags = {};
+type FlagMap = Record<string, string | boolean>;
+
+function parseFlags(args: string[]): FlagMap {
+  const flags: FlagMap = {};
   for (let i = 0; i < args.length; i += 1) {
     const value = args[i];
     if (!value.startsWith("--")) continue;
@@ -33,8 +36,8 @@ function parseFlags(args) {
   return flags;
 }
 
-function positional(args) {
-  const out = [];
+function positional(args: string[]): string[] {
+  const out: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
     if (args[i].startsWith("--")) {
       if (args[i + 1] && !args[i + 1].startsWith("--")) i += 1;
@@ -43,17 +46,28 @@ function positional(args) {
   return out;
 }
 
-function print(stdout, value, json = true) {
+function stringFlag(flags: FlagMap, key: string): string | undefined {
+  const value = flags[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function print(stdout: WritableLike, value: unknown, json = true): void {
   if (json || (value && typeof value === "object")) stdout.write(`${JSON.stringify(value, null, 2)}\n`);
   else stdout.write(`${String(value)}\n`);
 }
 
-function capacity(cwd, env, value) {
+function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean | undefined): number {
   if (value != null) return Number(value);
   return loadConfig(cwd, { env }).director.max_concurrent;
 }
 
-export function runDispatch(args, { cwd, stdout, env = process.env } = {}) {
+interface DispatchCommandOptions {
+  cwd: string;
+  stdout: WritableLike;
+  env?: NodeJS.ProcessEnv;
+}
+
+export function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): number {
   const sub = args[0] || "status";
   const rest = args.slice(1);
   const flags = parseFlags(rest);
@@ -73,7 +87,7 @@ export function runDispatch(args, { cwd, stdout, env = process.env } = {}) {
   if (sub === "bind") {
     const id = values[0];
     if (!id || !flags["agent-id"]) throw new Error(USAGE.trim());
-    const ticket = bindAgent(cwd, id, { agentId: flags["agent-id"], host: String(flags.host || "codex") });
+    const ticket = bindAgent(cwd, id, { agentId: stringFlag(flags, "agent-id")!, host: String(flags.host || "codex") });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;
   }
@@ -81,7 +95,7 @@ export function runDispatch(args, { cwd, stdout, env = process.env } = {}) {
   if (sub === "complete") {
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
-    const ticket = finishAgent(cwd, id, { status: "completed", conclusion: flags.text });
+    const ticket = finishAgent(cwd, id, { status: "completed", conclusion: stringFlag(flags, "text")! });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;
   }
@@ -92,9 +106,9 @@ export function runDispatch(args, { cwd, stdout, env = process.env } = {}) {
     const status = sub === "fail" ? "errored" : sub === "timeout" ? "timed_out" : "closed";
     const ticket = finishAgent(cwd, id, {
       status,
-      conclusion: flags.text || null,
-      errorCode: flags.code || null,
-      errorMessage: flags.message || null,
+      conclusion: stringFlag(flags, "text") || null,
+      errorCode: stringFlag(flags, "code") || null,
+      errorMessage: stringFlag(flags, "message") || null,
     });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;

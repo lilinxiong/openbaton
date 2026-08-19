@@ -2,9 +2,9 @@
  * Minimal TOML subset: comments, [tables], [[arrays]], string/number/bool.
  * Enough for baton config. Not a general TOML implementation.
  */
-export function parseToml(text) {
-  const root = {};
-  let current = root;
+export function parseToml(text: string): Record<string, unknown> {
+  const root: Record<string, unknown> = {};
+  let current: Record<string, unknown> = root;
   let arrayKey = null;
 
   for (const raw of text.split(/\r?\n/)) {
@@ -15,8 +15,9 @@ export function parseToml(text) {
     if (array) {
       const key = array[1].trim();
       if (!Array.isArray(root[key])) root[key] = [];
+      const items = root[key] as unknown[];
       current = {};
-      root[key].push(current);
+      items.push(current);
       arrayKey = key;
       continue;
     }
@@ -27,7 +28,7 @@ export function parseToml(text) {
       if (!root[key] || typeof root[key] !== "object" || Array.isArray(root[key])) {
         root[key] = {};
       }
-      current = root[key];
+      current = root[key] as Record<string, unknown>;
       arrayKey = null;
       continue;
     }
@@ -43,7 +44,7 @@ export function parseToml(text) {
   return root;
 }
 
-function parseValue(raw) {
+function parseValue(raw: string): unknown {
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (/^-?\d+$/.test(raw)) return Number(raw);
@@ -57,16 +58,16 @@ function parseValue(raw) {
   return raw;
 }
 
-export function stringifyToml(obj) {
-  const lines = [];
-  const tables = [];
-  const arrays = [];
+export function stringifyToml(obj: Record<string, unknown>): string {
+  const lines: string[] = [];
+  const tables: Array<[string, Record<string, unknown>]> = [];
+  const arrays: Array<[string, unknown[]]> = [];
 
   for (const [key, value] of Object.entries(obj)) {
     if (Array.isArray(value)) {
       arrays.push([key, value]);
     } else if (value && typeof value === "object") {
-      tables.push([key, value]);
+      tables.push([key, value as Record<string, unknown>]);
     } else {
       lines.push(`${key} = ${formatValue(value)}`);
     }
@@ -84,7 +85,7 @@ export function stringifyToml(obj) {
     for (const item of items) {
       lines.push("");
       lines.push(`[[${key}]]`);
-      for (const [k, v] of Object.entries(item)) {
+      for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
         lines.push(`${k} = ${formatValue(v)}`);
       }
     }
@@ -93,7 +94,7 @@ export function stringifyToml(obj) {
   return lines.join("\n") + "\n";
 }
 
-function formatValue(value) {
+function formatValue(value: unknown): string {
   if (typeof value === "string") return JSON.stringify(value);
   if (typeof value === "boolean" || typeof value === "number") return String(value);
   throw new Error(`cannot serialize ${typeof value}`);

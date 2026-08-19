@@ -7,38 +7,42 @@ export const START = "start";
 export const ENQUEUE = "enqueue";
 
 export class DispatchQueue {
+  readonly maxConcurrent: number;
+  running: number;
+  queued: number;
+
   constructor(maxConcurrent = 4) {
     this.maxConcurrent = Math.max(1, maxConcurrent);
     this.running = 0;
     this.queued = 0;
   }
 
-  static fromConfig(cfg) {
+  static fromConfig(cfg: { director?: { max_concurrent?: number } } | null | undefined): DispatchQueue {
     return new DispatchQueue(cfg?.director?.max_concurrent ?? 4);
   }
 
-  admit() {
+  admit(): typeof START | typeof ENQUEUE {
     return this.running < this.maxConcurrent ? START : ENQUEUE;
   }
 
-  noteStarted() {
+  noteStarted(): void {
     if (this.queued > 0) this.queued -= 1;
     this.running += 1;
   }
 
-  noteEnqueued() {
+  noteEnqueued(): void {
     this.queued += 1;
   }
 
-  noteFinished() {
+  noteFinished(): void {
     this.running = Math.max(0, this.running - 1);
   }
 
   /**
    * Plan N units. Always admits all of them (start or queue). Never rejects.
    */
-  plan(count) {
-    const decisions = [];
+  plan(count: number): Array<typeof START | typeof ENQUEUE> {
+    const decisions: Array<typeof START | typeof ENQUEUE> = [];
     for (let i = 0; i < count; i += 1) {
       const decision = this.admit();
       if (decision === START) this.noteStarted();
@@ -48,7 +52,7 @@ export class DispatchQueue {
     return decisions;
   }
 
-  snapshot() {
+  snapshot(): { max_concurrent: number; running: number; queued: number } {
     return {
       max_concurrent: this.maxConcurrent,
       running: this.running,

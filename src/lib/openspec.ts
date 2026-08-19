@@ -9,15 +9,53 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+export type OpenSpecTaskStatus = "pending" | "done" | "skipped";
+
+export type OpenSpecErrorCode =
+  | "OPENSPEC"
+  | "NOT_FOUND"
+  | "TASKS_MISSING"
+  | "EMPTY"
+  | "NO_CHANGE"
+  | "AMBIGUOUS_CHANGE";
+
+export type OpenSpecConclusion = string;
+
+export interface OpenSpecTask {
+  section: string;
+  number: string;
+  description: string;
+  status: OpenSpecTaskStatus;
+  line_index: number;
+}
+
+export interface OpenSpecChange {
+  tasksPath: string;
+  text: string;
+  tasks: OpenSpecTask[];
+}
+
+export type OpenSpecWritebackResult = string | null;
+
+export type OpenSpecSource = "openspec-cli" | "artifacts" | "none";
+
+export interface OpenSpecStatus {
+  source: OpenSpecSource;
+  ok: boolean;
+  text: string;
+}
+
 export class OpenSpecError extends Error {
-  constructor(message, code = "OPENSPEC") {
+  readonly code: OpenSpecErrorCode;
+
+  constructor(message: string, code: OpenSpecErrorCode = "OPENSPEC") {
     super(message);
     this.name = "OpenSpecError";
     this.code = code;
   }
 }
 
-export function openspecCliAvailable(env = process.env) {
+export function openspecCliAvailable(env: NodeJS.ProcessEnv = process.env): string | null {
   const pathEnv = env.PATH || env.Path || "";
   const parts = pathEnv.split(path.delimiter).filter(Boolean);
   const names = process.platform === "win32" ? ["openspec.cmd", "openspec.exe", "openspec"] : ["openspec"];
@@ -34,7 +72,7 @@ export function openspecCliAvailable(env = process.env) {
   return null;
 }
 
-export function detectOpenSpecRoot(cwd) {
+export function detectOpenSpecRoot(cwd: string): string | null {
   const config = path.join(cwd, "openspec", "config.yaml");
   const changes = path.join(cwd, "openspec", "changes");
   if (fs.existsSync(config) || fs.existsSync(changes)) {
@@ -43,7 +81,7 @@ export function detectOpenSpecRoot(cwd) {
   return null;
 }
 
-export function resolveChangeDir(cwd, change) {
+export function resolveChangeDir(cwd: string, change: string | null | undefined): string | null {
   if (!change) return null;
   if (path.isAbsolute(change)) return change;
   if (change.startsWith("openspec/") || change.startsWith("openspec\\")) {
@@ -52,8 +90,8 @@ export function resolveChangeDir(cwd, change) {
   return path.join(cwd, "openspec", "changes", change);
 }
 
-export function parseTasks(tasksMd) {
-  const tasks = [];
+export function parseTasks(tasksMd: string): OpenSpecTask[] {
+  const tasks: OpenSpecTask[] = [];
   let section = "";
   const lines = String(tasksMd || "").split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
@@ -78,7 +116,7 @@ export function parseTasks(tasksMd) {
   return tasks;
 }
 
-function splitTaskNumber(body) {
+function splitTaskNumber(body: string): Pick<OpenSpecTask, "number" | "description"> {
   const text = body.trim();
   const space = text.indexOf(" ");
   if (space > 0) {
@@ -90,7 +128,7 @@ function splitTaskNumber(body) {
   return { number: "", description: text };
 }
 
-export function loadTasksFromChangeDir(changeDir) {
+export function loadTasksFromChangeDir(changeDir: string): OpenSpecChange {
   if (!fs.existsSync(changeDir) || !fs.statSync(changeDir).isDirectory()) {
     throw new OpenSpecError(`OpenSpec change directory not found: ${changeDir}`, "NOT_FOUND");
   }
@@ -113,7 +151,11 @@ export function loadTasksFromChangeDir(changeDir) {
  * Flip a checkbox and append a short conclusion as a child bullet.
  * Status remains the OpenSpec checkbox — baton does not keep a parallel ledger.
  */
-export function writeTaskConclusion(tasksMd, lineIndex, conclusion) {
+export function writeTaskConclusion(
+  tasksMd: string,
+  lineIndex: number,
+  conclusion: OpenSpecConclusion,
+): OpenSpecWritebackResult {
   const lines = String(tasksMd).split(/\r?\n/);
   if (lineIndex < 0 || lineIndex >= lines.length) return null;
   const line = lines[lineIndex];
@@ -126,16 +168,16 @@ export function writeTaskConclusion(tasksMd, lineIndex, conclusion) {
   return lines.join("\n");
 }
 
-function leadingWhitespace(line) {
+function leadingWhitespace(line: string): string {
   const m = line.match(/^\s*/);
   return m ? m[0] : "";
 }
 
-function singleLine(text) {
+function singleLine(text: OpenSpecConclusion): string {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
-export function listChangeNames(cwd) {
+export function listChangeNames(cwd: string): string[] {
   const dir = path.join(cwd, "openspec", "changes");
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -147,7 +189,7 @@ export function listChangeNames(cwd) {
  * Prefer the OpenSpec CLI for status. Fall back to artifact presence only.
  * Never pretend baton is the status source of truth.
  */
-export function readOpenSpecStatus(cwd) {
+export function readOpenSpecStatus(cwd: string): OpenSpecStatus {
   const cli = openspecCliAvailable();
   if (cli) {
     const result = spawnSync(cli, ["status"], { cwd, encoding: "utf8" });

@@ -2,12 +2,25 @@ import fs from "node:fs";
 import path from "node:path";
 import { sanitizeConclusion } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn } from "./spawn.js";
+import type { SpawnTicket, TicketStatus } from "./spawn.js";
+import type { UnknownRecord } from "../types.js";
 
-export const ACTIVE_TICKET_STATUSES = new Set(["dispatching", "running"]);
-export const TERMINAL_TICKET_STATUSES = new Set(["completed", "errored", "timed_out", "closed"]);
+export const ACTIVE_TICKET_STATUSES = new Set<TicketStatus>(["dispatching", "running"]);
+export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
+
+interface DispatchErrorExtras extends UnknownRecord {
+  ticketId?: string;
+  currentStatus?: TicketStatus;
+  nextStatus?: TicketStatus;
+}
 
 export class DispatchError extends Error {
-  constructor(message, code = "DISPATCH_ERROR", extras = {}) {
+  readonly code: string;
+  readonly ticketId?: string;
+  readonly currentStatus?: TicketStatus;
+  readonly nextStatus?: TicketStatus;
+
+  constructor(message: string, code = "DISPATCH_ERROR", extras: DispatchErrorExtras = {}) {
     super(message);
     this.name = "DispatchError";
     this.code = code;
@@ -15,20 +28,28 @@ export class DispatchError extends Error {
   }
 }
 
-function instant(now) {
+type TimeInput = Date | string | number | (() => Date | string | number) | undefined;
+
+function instant(now?: TimeInput): Date {
   const value = typeof now === "function" ? now() : now;
   const date = value == null ? new Date() : value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) throw new DispatchError("invalid dispatch timestamp", "INVALID_TIME");
   return date;
 }
 
-function history(ticket, event, at, detail = {}) {
+function history(ticket: SpawnTicket, event: string, at: string, detail: UnknownRecord = {}): void {
   if (!Array.isArray(ticket.history)) ticket.history = [];
   ticket.history.push({ event, at, ...detail });
   ticket.updated_at = at;
 }
 
-function transition(ticket, expected, next, { at, event = next, detail = {} } = {}) {
+interface TransitionOptions {
+  at: string;
+  event?: string;
+  detail?: UnknownRecord;
+}
+
+function transition(ticket: SpawnTicket, expected: TicketStatus | TicketStatus[], next: TicketStatus, { at, event = next, detail = {} }: TransitionOptions): SpawnTicket {
   const allowed = Array.isArray(expected) ? expected : [expected];
   if (!allowed.includes(ticket.status)) {
     throw new DispatchError(
@@ -42,43 +63,57 @@ function transition(ticket, expected, next, { at, event = next, detail = {} } = 
   return ticket;
 }
 
-function fifoTickets(cwd) {
+function fifoTickets(cwd: string): SpawnTicket[] {
   return listSpawns(cwd).sort((a, b) => {
     const time = String(a.created_at || "").localeCompare(String(b.created_at || ""));
     return time || String(a.id).localeCompare(String(b.id));
   });
 }
 
-function lockPath(cwd) {
+function lockPath(cwd: string): string {
   return path.join(cwd, ".baton", "tmp", "dispatch.lock");
 }
 
-function withLock(cwd, fn) {
+function withLock<T>(cwd: string, fn: () => T): T {
   const file = lockPath(cwd);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  let handle;
+  let handle: number | undefined;
   try {
     handle = fs.openSync(file, "wx", 0o600);
     fs.writeFileSync(handle, `${JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() })}\n`);
-  } catch (error) {
-    if (error?.code === "EEXIST") throw new DispatchError("another dispatcher holds the project lock", "DISPATCH_LOCKED");
+  } catch (error: unknown) {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new DispatchError("another dispatcher holds the project lock", "DISPATCH_LOCKED");
     throw error;
   }
   try {
     return fn();
   } finally {
-    try { fs.closeSync(handle); } catch {}
+    if (handle !== undefined) {
+      try { fs.closeSync(handle); } catch {}
+    }
     try { fs.unlinkSync(file); } catch {}
   }
 }
 
-function capacityValue(capacity) {
+function capacityValue(capacity: unknown): number {
   const value = Number(capacity);
   if (!Number.isInteger(value) || value < 1) throw new DispatchError("capacity must be a positive integer", "INVALID_CAPACITY");
   return value;
 }
 
-function publicDispatchSpec(ticket) {
+export interface DispatchSpec {
+  ticket_id: string;
+  route_id: string;
+  model: string;
+  reasoning_effort: string | null;
+  fork_context: false;
+  read_only: true;
+  prompt: string;
+  attempt: number;
+  max_attempts: number;
+}
+
+function publicDispatchSpec(ticket: SpawnTicket & { route_id: string }): DispatchSpec {
   return {
     ticket_id: ticket.id,
     route_id: ticket.route_id,
@@ -92,7 +127,7 @@ function publicDispatchSpec(ticket) {
   };
 }
 
-function rejectUndispatchable(cwd, ticket, at) {
+function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { ticket_id: string; code: string; message: string } | null {
   let code = null;
   let message = null;
   if (!ticket.route_id) {
@@ -116,7 +151,14 @@ function rejectUndispatchable(cwd, ticket, at) {
   return { ticket_id: ticket.id, code, message };
 }
 
-export function reserveNext(cwd, { capacity, limit = Number.MAX_SAFE_INTEGER, host = "codex", now } = {}) {
+interface ReserveOptions {
+  capacity: number;
+  limit?: number;
+  host?: string;
+  now?: TimeInput;
+}
+
+export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host = "codex", now }: ReserveOptions) {
   const max = capacityValue(capacity);
   const maxTake = Math.max(0, Math.floor(Number(limit) || 0));
   return withLock(cwd, () => {
@@ -124,8 +166,8 @@ export function reserveNext(cwd, { capacity, limit = Number.MAX_SAFE_INTEGER, ho
     const tickets = fifoTickets(cwd);
     const active = tickets.filter((ticket) => ACTIVE_TICKET_STATUSES.has(ticket.status)).length;
     let available = Math.max(0, max - active);
-    const reserved = [];
-    const blocked = [];
+    const reserved: DispatchSpec[] = [];
+    const blocked: Array<{ ticket_id: string; code: string; message: string }> = [];
     for (const ticket of tickets) {
       if (ticket.status !== "queued" || available <= 0 || reserved.length >= maxTake) continue;
       const rejected = rejectUndispatchable(cwd, ticket, at);
@@ -139,14 +181,16 @@ export function reserveNext(cwd, { capacity, limit = Number.MAX_SAFE_INTEGER, ho
       ticket.attempt = Number(ticket.attempt || 0) + 1;
       ticket.error = null;
       writeSpawn(cwd, ticket);
-      reserved.push(publicDispatchSpec(ticket));
+      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string }));
       available -= 1;
     }
     return { reserved, blocked, snapshot: dispatchSnapshot(cwd, { capacity: max }) };
   });
 }
 
-export function bindAgent(cwd, id, { agentId, host = "codex", now } = {}) {
+interface BindOptions { agentId: string; host?: string; now?: TimeInput }
+
+export function bindAgent(cwd: string, id: string, { agentId, host = "codex", now }: BindOptions): SpawnTicket {
   const workerId = String(agentId || "").trim();
   if (!workerId) throw new DispatchError("agentId is required", "AGENT_ID_REQUIRED", { ticketId: id });
   return withLock(cwd, () => {
@@ -164,27 +208,35 @@ export function bindAgent(cwd, id, { agentId, host = "codex", now } = {}) {
   });
 }
 
-export function finishAgent(cwd, id, { status, conclusion = null, errorCode = null, errorMessage = null, now } = {}) {
+interface FinishOptions {
+  status: "completed" | "errored" | "timed_out" | "closed";
+  conclusion?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  now?: TimeInput;
+}
+
+export function finishAgent(cwd: string, id: string, { status, conclusion = null, errorCode = null, errorMessage = null, now }: FinishOptions): SpawnTicket {
   const terminal = String(status || "").trim();
-  if (!TERMINAL_TICKET_STATUSES.has(terminal)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
+  if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = readSpawn(cwd, id);
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
-    const expected = terminal === "completed" ? "running" : ["dispatching", "running"];
+    const expected: TicketStatus | TicketStatus[] = terminal === "completed" ? "running" : ["dispatching", "running"];
     if (terminal === "completed") {
       if (!ticket.agent_id) throw new DispatchError(`ticket ${id} has no bound agent`, "AGENT_NOT_BOUND", { ticketId: id });
       const clean = sanitizeConclusion(conclusion);
-      if (!clean.ok) throw new DispatchError(clean.error, "HYGIENE", { ticketId: id });
-      transition(ticket, expected, terminal, { at, event: "agent_completed" });
+      if (!clean.ok) throw new DispatchError("error" in clean ? clean.error : "invalid conclusion", "HYGIENE", { ticketId: id });
+      transition(ticket, expected, terminal as TicketStatus, { at, event: "agent_completed" });
       ticket.conclusion = clean.conclusion;
       ticket.error = null;
     } else {
       const code = String(errorCode || (terminal === "timed_out" ? "AGENT_TIMEOUT" : terminal === "closed" ? "AGENT_CLOSED" : "AGENT_ERROR"));
       const message = String(errorMessage || code);
-      transition(ticket, expected, terminal, { at, event: `agent_${terminal}`, detail: { error_code: code } });
+      transition(ticket, expected, terminal as TicketStatus, { at, event: `agent_${terminal}`, detail: { error_code: code } });
       ticket.error = { code, message };
       if (conclusion) {
         const clean = sanitizeConclusion(conclusion);
@@ -197,14 +249,16 @@ export function finishAgent(cwd, id, { status, conclusion = null, errorCode = nu
   });
 }
 
-export function recoverDispatches(cwd, { staleMs = 60_000, now } = {}) {
+interface RecoverOptions { staleMs?: number; now?: TimeInput }
+
+export function recoverDispatches(cwd: string, { staleMs = 60_000, now }: RecoverOptions = {}) {
   const threshold = Number(staleMs);
   if (!Number.isFinite(threshold) || threshold < 0) throw new DispatchError("staleMs must be non-negative", "INVALID_STALE_MS");
   return withLock(cwd, () => {
     const current = instant(now);
     const at = current.toISOString();
-    const expired = [];
-    const resumable = [];
+    const expired: string[] = [];
+    const resumable: Array<{ ticket_id: string; agent_id: string; host: string | null }> = [];
     for (const ticket of fifoTickets(cwd)) {
       if (ticket.status === "running" && ticket.agent_id) {
         resumable.push({ ticket_id: ticket.id, agent_id: ticket.agent_id, host: ticket.host || ticket.dispatch_host || null });
@@ -223,10 +277,10 @@ export function recoverDispatches(cwd, { staleMs = 60_000, now } = {}) {
   });
 }
 
-export function dispatchSnapshot(cwd, { capacity = 1 } = {}) {
+export function dispatchSnapshot(cwd: string, { capacity = 1 }: { capacity?: number } = {}) {
   const max = capacityValue(capacity);
   const tickets = fifoTickets(cwd);
-  const counts = {};
+  const counts: Partial<Record<TicketStatus, number>> = {};
   for (const ticket of tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;
   const active = tickets.filter((ticket) => ACTIVE_TICKET_STATUSES.has(ticket.status));
   return {
