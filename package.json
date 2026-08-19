@@ -10,7 +10,7 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && tsx --test test/*.test.ts",
     "baton": "tsx bin/baton.ts",
@@ -20,6 +20,7 @@
     "dist",
     "data",
     "docs/data-sources",
+    "samples",
     "templates",
     "SKILL.md",
     "LICENSE",

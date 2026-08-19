@@ -6,10 +6,10 @@ import { runDispatch } from "./commands/dispatch.js";
 import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { loadConfig } from "./lib/config.js";
-import { matchModelCard, CardMatchError } from "./lib/cards.js";
+import { matchModelCard, requireCardId, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
-import { applyChange, concludeSpawn } from "./lib/apply.js";
-import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
+import { applyChange, concludeSpawn, resolveApplyChange } from "./lib/apply.js";
+import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
 import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
@@ -55,7 +55,7 @@ Usage:
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton match <text>                show which card would run
   baton spawn <text> [--model ID] [--task-kind concrete|deliberative]
-  baton apply [change]              execute an OpenSpec change (consume, do not invent)
+  baton apply [change] [--route TASK=EXACT_ROUTE]  execute OpenSpec tasks
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -250,7 +250,8 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
 }
 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
-  const change = args.find((a) => !a.startsWith("-")) || null;
+  const flags = parseFlags(args);
+  const change = firstPositionalArg(args);
   const cfg = loadConfig(cwd, { env });
   const cards = resolvedCards(cwd, env, runner, resolve);
   if (!detectOpenSpecRoot(cwd) && !change) {
@@ -259,8 +260,18 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write("Create a change with OpenSpec when you want 1+1>2 apply.\n");
     return 2;
   }
+  const routeAssignments = parseTaskRoutes(multiFlag(flags, "route"));
+  const changeDir = resolveApplyChange(cwd, change);
+  const pendingNumbers = new Set(loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending").map((task) => task.number));
+  for (const number of routeAssignments.keys()) {
+    if (!pendingNumbers.has(number)) throw new Error(`--route task is not pending in this change: ${number}`);
+  }
+  const selectCard = (task: { number: string }, available: ModelCard[]) => {
+    const exact = routeAssignments.get(task.number);
+    return exact ? requireCardId(exact, available) : undefined;
+  };
   const selectCards = (prompt: string, available: ModelCard[]) => cardsForAutomaticSelection(cwd, available, prompt);
-  const result = applyChange({ cwd, change, cfg, cards, selectCards });
+  const result = applyChange({ cwd, change, cfg, cards, selectCard, selectCards });
   stdout.write(`apply ${result.changeDir}\n`);
   if (result.error) {
     stdout.write(`blocked: ${result.error}\n`);
@@ -372,6 +383,30 @@ function multiFlag(flags: FlagMap, key: string): string[] {
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
   return [];
+}
+
+function parseTaskRoutes(values: string[]): Map<string, string> {
+  const routes = new Map<string, string>();
+  for (const value of values) {
+    const index = value.indexOf("=");
+    const number = index > 0 ? value.slice(0, index).trim() : "";
+    const route = index > 0 ? value.slice(index + 1).trim() : "";
+    if (!number || !route) throw new Error("--route must use TASK=EXACT_ROUTE[@PROFILE]");
+    if (routes.has(number)) throw new Error(`duplicate --route assignment: ${number}`);
+    routes.set(number, route);
+  }
+  return routes;
+}
+
+function firstPositionalArg(args: string[]): string | null {
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i].startsWith("--")) {
+      if (args[i + 1] && !args[i + 1].startsWith("--")) i += 1;
+      continue;
+    }
+    return args[i];
+  }
+  return null;
 }
 
 function positionalText(args: string[]): string {

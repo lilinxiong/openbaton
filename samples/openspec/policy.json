@@ -1,0 +1,9 @@
+{
+  "severity_sla_minutes": {
+    "sev1": { "acknowledge": 5, "resolve": 60 },
+    "sev2": { "acknowledge": 15, "resolve": 120 },
+    "sev3": { "acknowledge": 30, "resolve": 240 }
+  },
+  "allowed_statuses": ["open", "resolved"],
+  "required_fields": ["id", "severity", "status", "service", "owner", "opened_at", "acknowledged_at", "resolved_at"]
+}

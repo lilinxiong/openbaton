@@ -120,6 +120,7 @@ export class ApplyError extends Error {
 interface PlanApplyInput {
   tasks: OpenSpecTask[];
   cards: ApplyModelCard[];
+  selectCard?: (task: OpenSpecTask, cards: ApplyModelCard[]) => ApplyModelCard | undefined;
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
 }
 
@@ -133,6 +134,7 @@ interface ApplyChangeInput {
   change?: string | null;
   cfg: ApplyConfig;
   cards: ApplyModelCard[];
+  selectCard?: (task: OpenSpecTask, cards: ApplyModelCard[]) => ApplyModelCard | undefined;
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
 }
 
@@ -180,7 +182,7 @@ export function resolveApplyChange(cwd: string, change?: string | null): string 
   );
 }
 
-export function planApply({ tasks, cards, selectCards }: PlanApplyInput): PlanApplyResult {
+export function planApply({ tasks, cards, selectCard, selectCards }: PlanApplyInput): PlanApplyResult {
   const units: ApplyUnit[] = [];
   const blocked: BlockedApplyTask[] = [];
   for (const task of tasks) {
@@ -199,7 +201,10 @@ export function planApply({ tasks, cards, selectCards }: PlanApplyInput): PlanAp
       continue;
     }
     try {
-      const matched = matchModelCard(prompt, selectCards ? selectCards(prompt, cards) : cards);
+      const explicit = selectCard?.(task, cards);
+      const matched = explicit
+        ? { model_id: explicit.id, card: explicit }
+        : matchModelCard(prompt, selectCards ? selectCards(prompt, cards) : cards);
       units.push({
         id: task.number || `line-${task.line_index}`,
         description: task.description,
@@ -230,11 +235,11 @@ function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, cards, selectCards }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, cards, selectCard, selectCards }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
-  const { units, blocked } = planApply({ tasks, cards, selectCards });
+  const { units, blocked } = planApply({ tasks, cards, selectCard, selectCards });
   if (blocked.length && units.length === 0) {
     return {
       changeDir,

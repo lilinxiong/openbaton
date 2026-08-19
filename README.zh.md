@@ -92,6 +92,15 @@ baton dispatch release TICKET --agent-id ID --json
 baton status
 ```
 
+## Samples
+
+[`samples/`](samples/README.md) 内置了两条使用同一事故审计数据的可重复验收路径：
+
+- 无 OpenSpec 的 standalone；
+- strict-valid OpenSpec tasks 与稳定 conclusion writeback。
+
+两条用户请求均为无感触发文本，不出现 Baton 或 subagent。
+
 English: [README.md](README.md).
 
 ## License

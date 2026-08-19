@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const samplesDir = path.dirname(fileURLToPath(import.meta.url));
+const mode = process.argv[2];
+if (!new Set(["standalone", "openspec"]).has(mode)) {
+  fail("usage: node samples/bootstrap.mjs standalone|openspec [--output PATH]");
+}
+
+const outputIndex = process.argv.indexOf("--output");
+const requestedOutput = outputIndex >= 0 ? process.argv[outputIndex + 1] : null;
+if (outputIndex >= 0 && !requestedOutput) fail("--output requires a path");
+
+requireCommand("baton", ["version"], "Run `npm run build && npm link` from the OpenBaton checkout first.");
+if (mode === "openspec") requireCommand("openspec", ["--version"], "Install OpenSpec before running the OpenSpec sample.");
+
+const workspace = requestedOutput
+  ? path.resolve(requestedOutput)
+  : fs.mkdtempSync(path.join(os.tmpdir(), `openbaton-${mode}-`));
+if (requestedOutput && fs.existsSync(workspace) && fs.readdirSync(workspace).length > 0) {
+  fail(`output directory is not empty: ${workspace}`);
+}
+fs.mkdirSync(workspace, { recursive: true });
+copyContents(path.join(samplesDir, mode), workspace);
+
+git(workspace, "init", "-q");
+git(workspace, "config", "user.email", "baton-sample@example.invalid");
+git(workspace, "config", "user.name", "Baton Sample");
+git(workspace, "add", ".");
+git(workspace, "commit", "-q", "-m", `baseline: ${mode} incident audit`);
+
+if (mode === "openspec") {
+  const validation = spawnSync("openspec", ["validate", "incident-audit", "--strict", "--no-interactive"], {
+    cwd: workspace,
+    encoding: "utf8",
+  });
+  if (validation.status !== 0) fail(validation.stderr || validation.stdout || "OpenSpec validation failed");
+}
+
+const request = fs.readFileSync(path.join(samplesDir, mode, "REQUEST.txt"), "utf8").trim();
+const verifyCommand = `node ${JSON.stringify(path.join(samplesDir, "verify.mjs"))} ${JSON.stringify(workspace)} ${mode}`;
+
+process.stdout.write([
+  `mode: ${mode}`,
+  `workspace: ${workspace}`,
+  "",
+  "Open a NEW Codex task at that workspace and paste this request unchanged:",
+  "---",
+  request,
+  "---",
+  "",
+  "After the task finishes, run:",
+  verifyCommand,
+  "",
+].join("\n"));
+
+function copyContents(source, destination) {
+  for (const entry of fs.readdirSync(source)) {
+    fs.cpSync(path.join(source, entry), path.join(destination, entry), { recursive: true });
+  }
+}
+
+function git(cwd, ...args) {
+  execFileSync("git", args, { cwd, stdio: "ignore" });
+}
+
+function requireCommand(command, args, hint) {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  if (result.error || result.status !== 0) fail(`${command} is unavailable. ${hint}`);
+}
+
+function fail(message) {
+  process.stderr.write(`${String(message).trim()}\n`);
+  process.exit(1);
+}

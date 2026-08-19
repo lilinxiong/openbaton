@@ -92,6 +92,15 @@ baton dispatch release TICKET --agent-id ID --json
 baton status
 ```
 
+## Samples
+
+[`samples/`](samples/README.md) contains two built-in, repeatable capability paths over the same incident-audit data:
+
+- standalone, with no OpenSpec artifacts;
+- strict-valid OpenSpec tasks with stable conclusion writeback.
+
+Both user requests are trigger-neutral and do not name Baton or subagents.
+
 中文说明见 [README.zh.md](README.zh.md).
 
 ## License

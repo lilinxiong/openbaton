@@ -34,6 +34,7 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 
 7. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
+   - The director selects an exact route/profile per ready task and passes repeated `--route TASK=EXACT_ROUTE[@PROFILE]`; task routing is never stored in config.
    - If absent: still fully usable via `baton spawn`.
 
 8. **OpenCodex is consumed, not reimplemented.** It is resolved from Baton's package/runtime environment and owns provider auth, model discovery, and route execution. baton only schedules.
@@ -62,7 +63,7 @@ baton capabilities show ROUTE [--profile PROFILE]
 baton cards [--ranked|--unranked] [--provider ID] [--json]
 baton match <text>
 baton spawn <text> [--model ID]
-baton apply [change]
+baton apply [change] [--route TASK=EXACT_ROUTE[@PROFILE]]
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json

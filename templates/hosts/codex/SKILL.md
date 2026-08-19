@@ -32,6 +32,7 @@ You are the director. Baton supports Codex only. It consumes exact OpenCodex rou
 
 9. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
+   - Select an exact route/profile per ready task and pass repeated `--route TASK=EXACT_ROUTE[@PROFILE]`; never persist this routing choice.
    - If absent: still fully usable via `baton spawn` + dispatch.
 
 10. **Conversation-to-Goal is automatic host policy.** During ordinary dialogue, keep discussing without side effects. When the user explicitly says phrases such as “按这个执行”, “转成 Goal”, or “开始进入实施流程”, compile the current conversation into `explicit/inferred/unresolved/excluded`, show a faithful Goal Draft, and request one approval. Do not require the user to invoke this skill manually. Unresolved items block activation. With OpenSpec, hand the approved business breakdown/plan to OpenSpec; without OpenSpec, the main agent owns Goal/Plan/Tasks. Baton owns only delegation/execution.
@@ -85,7 +86,7 @@ baton conversation promote --from-file PATH
 baton cards [--ranked|--unranked] [--provider ID] [--json]
 baton match <text>
 baton spawn <text> [--model ID]
-baton apply [change]
+baton apply [change] [--route TASK=EXACT_ROUTE[@PROFILE]]
 baton status
 ```
 

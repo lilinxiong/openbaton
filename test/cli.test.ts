@@ -167,8 +167,9 @@ describe("cli run()", () => {
 
       const out = capture();
       const err = capture();
-      const code = await run(["apply", "demo"], { cwd, stdout: out, stderr: err, env });
+      const code = await run(["apply", "demo", "--route", "1.1=xai/grok-4.6@high"], { cwd, stdout: out, stderr: err, env });
       assert.equal(code, 0, err.text());
+      assert.match(out.text(), /xai\/grok-4\.6@high/);
       assert.match(out.text(), /Schema-v3 tickets require the host lifecycle/);
       assert.match(out.text(), /baton dispatch next/);
       assert.doesNotMatch(out.text(), /baton conclude/);
