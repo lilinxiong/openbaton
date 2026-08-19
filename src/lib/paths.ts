@@ -13,6 +13,7 @@ export const CACHE_DIR = "cache";
 export const CAPABILITIES_DIR = "capabilities";
 export const AA_DB_NAME = "artificial-analysis.sqlite3";
 export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
+export const ROUTE_SNAPSHOT_NAME = "routes.json";
 
 /**
  * User home for host + director files.
@@ -62,6 +63,10 @@ export function artificialAnalysisDbPath(cwd: string): string {
 
 export function artificialAnalysisManifestPath(cwd: string): string {
   return path.join(capabilitiesCacheDir(cwd), AA_MANIFEST_NAME);
+}
+
+export function routeSnapshotPath(cwd: string): string {
+  return path.join(cwd, BATON_DIR, CACHE_DIR, ROUTE_SNAPSHOT_NAME);
 }
 
 export function packageRoot(): string {

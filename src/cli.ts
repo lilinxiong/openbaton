@@ -4,6 +4,7 @@ import { listCards, addCard } from "./commands/cards.js";
 import { runLogin } from "./commands/login.js";
 import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
+import { runRoutes } from "./commands/routes.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
@@ -13,6 +14,7 @@ import { DispatchQueue } from "./lib/queue.js";
 import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
 import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
+import type { OcxResolver, OcxRunner } from "./lib/opencodex.js";
 import type { CodedError, WritableLike } from "./types.js";
 
 interface RunOptions {
@@ -20,8 +22,8 @@ interface RunOptions {
   stdout?: WritableLike;
   stderr?: WritableLike;
   env?: NodeJS.ProcessEnv;
-  runner?: unknown;
-  resolve?: unknown;
+  runner?: OcxRunner;
+  resolve?: OcxResolver;
   fetchImpl?: typeof fetch;
 }
 
@@ -98,6 +100,8 @@ export async function run(argv: string[], { cwd = process.cwd(), stdout = proces
         return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
       case "dispatch":
         return runDispatch(args, { cwd, stdout, env });
+      case "routes":
+        return runRoutes(args, { cwd, stdout, env, runner, resolve });
       case "status":
         return cmdStatus(cwd, stdout, env);
       default:
