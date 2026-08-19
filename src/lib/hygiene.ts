@@ -4,6 +4,7 @@
  */
 
 export const MAX_CONCLUSION_CHARS = 800;
+export const MAX_PROGRESS_CHARS = 400;
 
 const TOOL_DUMP_MARKERS = [
   /tool[_ ]?(call|result|output)/i,
@@ -36,6 +37,16 @@ export function sanitizeConclusion(text: unknown): ConclusionResult {
     s = s.slice(0, MAX_CONCLUSION_CHARS - 1).trimEnd() + "…";
   }
   return { ok: true, conclusion: s };
+}
+
+export function sanitizeProgress(text: unknown): ConclusionResult {
+  const cleaned = sanitizeConclusion(text);
+  if (!cleaned.ok) return cleaned;
+  if (cleaned.conclusion.length <= MAX_PROGRESS_CHARS) return cleaned;
+  return {
+    ok: true,
+    conclusion: cleaned.conclusion.slice(0, MAX_PROGRESS_CHARS - 1).trimEnd() + "…",
+  };
 }
 
 /**

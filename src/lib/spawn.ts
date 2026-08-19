@@ -6,6 +6,14 @@ import { matchModelCard, requireCardId } from "./cards.js";
 import { directorMayRun } from "./hygiene.js";
 import { buildReadOnlyReceipt, type DelegationReceipt } from "./receipt.js";
 import type { CodedError, ModelCard, UnknownRecord } from "../types.js";
+import {
+  buildWorkerPrompt,
+  compileWorkUnit,
+  coordinationFor,
+  type CoordinationPolicy,
+  type WorkUnitContract,
+  type WorkUnitKind,
+} from "./work-unit.js";
 
 export type TicketStatus = "queued" | "dispatching" | "running" | "completed" | "errored" | "timed_out" | "closed" | "done";
 
@@ -19,11 +27,26 @@ export interface TicketHistoryEntry extends UnknownRecord {
   at: string;
 }
 
+export type TicketProgressPhase = "starting" | "working" | "waiting" | "blocked" | "checkpoint";
+
+export interface TicketProgress {
+  sequence: number;
+  phase: TicketProgressPhase;
+  summary: string;
+  next_step: string | null;
+  blocker: string | null;
+  needs_director: boolean;
+  reported_at: string;
+}
+
 export interface SpawnTicket extends UnknownRecord {
   schema_version: number;
   id: string;
   description: string;
   prompt: string;
+  work_unit: WorkUnitContract;
+  coordination: CoordinationPolicy;
+  progress: TicketProgress | null;
   model_id: string;
   route_id: string | null;
   reasoning_effort: string | null;
@@ -48,6 +71,7 @@ export interface SpawnTicket extends UnknownRecord {
   dispatch_requested_at?: string;
   started_at?: string;
   finished_at?: string;
+  slot_released_at?: string;
   safety_verdict?: UnknownRecord;
 }
 
@@ -104,6 +128,9 @@ interface BuildSpawnTicketOptions {
   reasoningEffort?: string | null;
   source?: string;
   openspec?: UnknownRecord | null;
+  taskKind?: WorkUnitKind | null;
+  deliverable?: string | null;
+  doneWhen?: string | null;
   now?: Date | string | number;
 }
 
@@ -116,14 +143,22 @@ export function buildSpawnTicket({
   reasoningEffort = null,
   source = "standalone",
   openspec = null,
+  taskKind = null,
+  deliverable = null,
+  doneWhen = null,
   now = new Date(),
 }: BuildSpawnTicketOptions): SpawnTicket {
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
+  const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
+  const coordination = coordinationFor(workUnit);
   return {
-    schema_version: 2,
+    schema_version: 3,
     id,
     description,
-    prompt,
+    prompt: buildWorkerPrompt(prompt, workUnit, coordination),
+    work_unit: workUnit,
+    coordination,
+    progress: null,
     model_id: modelId,
     route_id: routeId,
     reasoning_effort: reasoningEffort,
@@ -156,13 +191,16 @@ interface PlanStandaloneOptions {
   explicitModel?: string | null;
   queue?: unknown;
   cwd: string;
+  taskKind?: WorkUnitKind | null;
+  deliverable?: string | null;
+  doneWhen?: string | null;
 }
 
 export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
   | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
-export function planStandaloneSpawn({ description, cards, explicitModel, queue, cwd }: PlanStandaloneOptions): StandalonePlan {
+export function planStandaloneSpawn({ description, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen }: PlanStandaloneOptions): StandalonePlan {
   if (directorMayRun(description)) {
     return {
       director_local: true,
@@ -183,6 +221,9 @@ export function planStandaloneSpawn({ description, cards, explicitModel, queue, 
     routeId: card.route_id || null,
     reasoningEffort: card.reasoning_effort || null,
     source: "standalone",
+    taskKind,
+    deliverable,
+    doneWhen,
   });
   const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at });
   ticket.receipt_id = receipt.receipt_id;

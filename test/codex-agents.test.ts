@@ -30,7 +30,7 @@ describe("Codex card agents", () => {
       initProject(cwd, { tools: ["codex"], env });
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       const skill = fs.readFileSync(path.join(home, ".codex", "skills", "baton", "SKILL.md"), "utf8");
-      assert.match(skill, /Tickets before dispatch/);
+      assert.match(skill, /Concrete tickets before dispatch/);
       assert.match(skill, /spawn_agent\(model=<route_id>/);
       assert.match(skill, /fork_context=false/);
       assert.match(skill, /Read-only by default; writes require a Receipt/);

@@ -5,7 +5,8 @@
 # not copy benchmark truth and never make an unavailable route executable.
 
 [director]
-# Concurrent workers. Beyond this, queue — never refuse a logical spawn.
+# Desired Baton concurrency ceiling. The host/session limit can be lower;
+# AgentLimitReached tightens the observed capacity and returns tickets to FIFO.
 max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1

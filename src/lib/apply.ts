@@ -316,7 +316,7 @@ export function concludeSpawn(cwd: string, id: string, text: OpenSpecConclusion)
   const ticket: OpenSpecTicket = readSpawn(cwd, id);
   if (Number(ticket.schema_version || 1) >= 2) {
     throw new ApplyError(
-      "schema v2 tickets require a bound host agent; use `baton dispatch complete` after wait_agent succeeds",
+      "schema v2+ tickets require a bound host agent; use the dispatch lifecycle after the host agent completes",
       "LIFECYCLE_REQUIRED",
     );
   }

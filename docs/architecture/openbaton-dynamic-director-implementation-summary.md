@@ -13,17 +13,26 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 - `src/`、`test/`、`bin/` 无 JavaScript 源文件。
 - NodeNext TypeScript build，生产源码执行 `tsc --noEmit`。
 - 测试使用 TypeScript + `tsx`。
-- 当前完整回归为 144 passed、0 failed。
+- 当前完整回归覆盖 concrete/deliberative work unit、checkpoint progress、host backpressure 与 slot release；以当次 `npm test` 输出为准。
 - npm 发布只包含编译后的 `dist` 和必要 templates/data。
 
 ### Host-native 多 subagent
 
 - `queued → dispatching → running → completed/errored/timed_out/closed`。
 - ticket 保存真实 `agent_id`、route/profile、attempt、timestamps、history 和短结论。
-- 持久化 FIFO，逻辑 ticket 不限；Codex capacity 6 时严格 `6 running + 2 queued`。
+- 持久化 FIFO，逻辑 ticket 不限；capacity 6 的验收场景严格 `6 running + 2 queued`，但 6 不是产品常量。
 - 完成后只补位最早 queued ticket；新 ticket 不插队。
-- restart recovery 保留 running agent ID，stale unbound dispatch 标记 `DISPATCH_LEASE_EXPIRED`。
+- `AgentLimitReached` 作为 backpressure 将原 ticket 放回 FIFO，不消耗 attempt、不污染 route health，并可收紧观测 capacity。
+- terminal ticket 与物理 slot release 分离；只有 `close_agent` 成功并执行 `dispatch release` 后才补位。
+- restart recovery 保留 running agent ID，返回 terminal-but-unreleased 的 `needs_close`，stale unbound dispatch 标记 `DISPATCH_LEASE_EXPIRED`。
 - 缺 route/Receipt、context 不符合、attempt 超限均 fail-closed；无静默 fallback。
+
+### Concrete-first 与进度同步
+
+- Ticket schema v3 固化 `work_unit.kind=concrete|deliberative`、objective、deliverable、done condition 与 coordination policy。
+- 具体执行任务默认 `terminal-only`；开放式或无法确定的任务按 `deliberative/checkpointed` 处理。
+- checkpoint 只保存 phase、current result、next step、blocker/decision needed；拒绝 tool dump，并限制长度。
+- director 优先把思考型工作留在主 agent 或拆成具体 unit；必须并行委派时使用 bounded fan-in wait，并把有意义的 phase change 写入 `dispatch progress`。
 
 ### Delegation Receipt 与写入安全
 

@@ -27,8 +27,9 @@ Not another coding CLI. A skill pack + `init` that sits in front of the host you
 - **Config is policy only.** `~/.baton/config.toml` stores aliases, optional policy hints, and exclusions—not copied benchmark scores. No subagent default, parent inherit, or silent fallback.
 - **All routes stay visible.** OpenCodex discovery is the executable catalog. Cards opt routes into scheduling; session/Goal exclusions apply only to that session and never become global route-family bans.
 - **Host-native workers.** Spawn in-process subagents. Do not shell out to `claude -p` / `cursor-agent -p` / `grok -p`. Grok and Codex init install into `~/.grok` and `~/.codex` (not the project); cards live in `~/.baton`.
-- **Unlimited logical spawn.** Queue if the host has a hard cap. Never refuse. Depth 1.
-- **Hygiene.** Workers return a short conclusion. Tool dumps stay out of the main session.
+- **Unlimited logical spawn.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns tickets to FIFO without consuming attempts, and slots release only after the host confirms `close_agent`. Depth 1.
+- **Concrete work first.** Tickets distinguish `concrete` from `deliberative` work. Prefer bounded objective/deliverable/done-condition units; necessary reasoning workers use checkpointed state sync.
+- **Hygiene.** Normal workers return one short conclusion. Checkpoints contain only phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay out of the main conversation.
 
 ## OpenSpec
 
@@ -95,9 +96,12 @@ baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write
 baton apply
-baton dispatch next --host codex --capacity 6 --json
+baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
+baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
+baton dispatch progress TICKET --phase working --text "mapped the state machine" --next "check recovery" --json
 baton dispatch complete TICKET --text "short outcome" --json
+baton dispatch release TICKET --agent-id ID --json
 baton status
 ```
 

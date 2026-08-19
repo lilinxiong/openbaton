@@ -107,7 +107,7 @@ describe("write dispatch safety integration", () => {
     });
   });
 
-  it("audits a failed write ticket: WRITE_SCOPE_VIOLATION, rejected conclusion, released slot, host error evidence", async () => {
+  it("audits a failed write ticket and keeps its slot until host close is confirmed", async () => {
     await withHome(async (home) => {
       const cwd = fixture();
       const env = fakeEnv(home);
@@ -124,10 +124,16 @@ describe("write dispatch safety integration", () => {
       assert.equal(ticket.conclusion, null);
       assert.ok(ticket.safety_verdict.violations.some((item) => item.path === "denied.txt"));
       assert.ok(ticket.history.some((entry) => entry.event === "safety_gate_rejected" && entry.host_error_code === "WORKER_CRASHED"));
-      // The slot is released back to the parent.
+      // Terminal business state does not prove that close_agent released the host thread.
       const status = capture();
       await run(["dispatch", "status", "--json"], { cwd, env, stdout: status, stderr: status });
-      const snap = JSON.parse(status.text());
+      let snap = JSON.parse(status.text());
+      assert.equal(snap.active, 1);
+      assert.deepEqual(snap.awaiting_release, [{ ticket_id: "spn-0001", agent_id: "agent-write", status: "errored" }]);
+      await run(["dispatch", "release", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      const released = capture();
+      await run(["dispatch", "status", "--json"], { cwd, env, stdout: released, stderr: released });
+      snap = JSON.parse(released.text());
       assert.equal(snap.active, 0);
       assert.equal(snap.counts.errored, 1);
     });

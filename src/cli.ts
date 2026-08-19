@@ -21,6 +21,7 @@ import { cardsForAutomaticSelection } from "./lib/route-health.js";
 import type { DirectorConfig, ModelCard } from "./types.js";
 import type { OcxResolver, OcxRunner } from "./lib/opencodex.js";
 import type { CodedError, WritableLike } from "./types.js";
+import type { WorkUnitKind } from "./lib/work-unit.js";
 
 interface RunOptions {
   cwd?: string;
@@ -56,7 +57,7 @@ Usage:
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton cards add --id ID [--strengths "..."] [--route MODEL] [--reasoning-effort EFFORT] [--enabled true|false]
   baton match <text>                show which card would run
-  baton spawn <text> [--model ID]   card-route a standalone unit
+  baton spawn <text> [--model ID] [--task-kind concrete|deliberative]
   baton apply [change]              execute an OpenSpec change (consume, do not invent)
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton login                       list accounts + card->provider
@@ -67,7 +68,10 @@ Usage:
   baton capabilities show ROUTE [--profile PROFILE]
   baton dispatch next --host codex --capacity N --json
   baton dispatch bind TICKET --agent-id ID --host codex --json
+  baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+  baton dispatch progress TICKET --phase PHASE --text "short status" --json
   baton dispatch complete TICKET --text "short conclusion" --json
+  baton dispatch release TICKET --agent-id ID --json
   baton dispatch fail|timeout|close TICKET --json
   baton dispatch recover|status --json
   baton status                      director queue + OpenSpec status if present
@@ -219,6 +223,10 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const cfg = loadConfig(cwd, { env });
   const allCards = resolvedCards(cwd, cfg, env, runner, resolve);
   const cards = stringFlag(flags, "model") ? allCards : cardsForAutomaticSelection(cwd, allCards, text);
+  const kindFlag = stringFlag(flags, "task-kind");
+  if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
+    throw new Error("--task-kind must be concrete or deliberative");
+  }
   const queue = DispatchQueue.fromConfig(cfg);
   // account for already-running tickets
   for (const s of listSpawns(cwd)) {
@@ -231,6 +239,9 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     explicitModel: stringFlag(flags, "model"),
     queue,
     cwd,
+    taskKind: kindFlag as WorkUnitKind | undefined,
+    deliverable: stringFlag(flags, "deliverable"),
+    doneWhen: stringFlag(flags, "done-when"),
   });
   if (planned.director_local === true) {
     stdout.write(`director-local: ${planned.reason}\n`);
@@ -256,6 +267,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   stdout.write(`  route:  ${t.route_id || "blocked until an executable route is configured"}\n`);
   stdout.write(`  queue:  ${t.status}\n`);
   stdout.write(`  mode:   ${t.mode}\n`);
+  stdout.write(`  kind:   ${t.work_unit.kind} (${t.coordination.mode})\n`);
   stdout.write(`  source: ${t.source}\n`);
   stdout.write("host director must reserve it with `baton dispatch next --json`; queued is not running.\n");
   return 0;
@@ -294,8 +306,8 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   for (const b of result.blocked) {
     stdout.write(`  blocked ${b.id}: ${b.error}\n`);
   }
-  stdout.write("OpenSpec remains the status source of truth. Schema-v2 tickets require the host lifecycle:\n");
-  stdout.write("  reserve with `baton dispatch next --host codex --json`, bind the host agent, then use `baton dispatch complete|fail|timeout|close`.\n");
+  stdout.write("OpenSpec remains the status source of truth. Schema-v3 tickets require the host lifecycle:\n");
+  stdout.write("  `baton dispatch next`, bind, sync checkpoint progress when required, finish, close the host agent, then `dispatch release`.\n");
   return result.blocked.length ? 1 : 0;
 }
 
@@ -338,9 +350,10 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, ru
   const terminal = spawns.filter((s) => ["completed", "errored", "timed_out", "closed", "done"].includes(s.status)).length;
   stdout.write(`  spawns: ${spawns.length}  dispatching ${dispatching}  running ${running}  queued ${queued}  terminal ${terminal}\n`);
   for (const s of spawns) {
-    const extra = s.conclusion ? ` → ${s.conclusion}` : "";
+    const extra = s.conclusion ? ` → ${s.conclusion}` : s.progress ? ` → ${s.progress.phase}: ${s.progress.summary}` : "";
     const worker = s.agent_id ? ` agent=${s.agent_id}` : "";
-    stdout.write(`    ${s.id}  ${s.status}  ${s.model_id || "director"}${worker}  ${s.description}${extra}\n`);
+    const kind = s.work_unit?.kind ? ` ${s.work_unit.kind}` : "";
+    stdout.write(`    ${s.id}  ${s.status}${kind}  ${s.model_id || "director"}${worker}  ${s.description}${extra}\n`);
   }
   const os = readOpenSpecStatus(cwd);
   stdout.write(`  openspec (${os.source}): ${os.text}\n`);

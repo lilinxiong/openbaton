@@ -7,10 +7,13 @@ import path from "node:path";
 import {
   DispatchError,
   bindAgent,
+  deferDispatch,
   dispatchSnapshot,
   finishAgent,
   persistedCapacity,
   recoverDispatches,
+  releaseAgent,
+  reportAgentProgress,
   reserveNext,
 } from "../src/lib/dispatch.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
@@ -148,6 +151,7 @@ describe("reserveNext", () => {
     writeTicket(cwd, makeTicket("t-0003", { created_at: at(20), updated_at: at(20) }));
 
     finishAgent(cwd, "t-0000", { status: "completed", conclusion: "done", now: at(30) });
+    releaseAgent(cwd, "t-0000", { agentId: "agent-old", now: at(35) });
     const second = reserveNext(cwd, { capacity: 2, host: "codex", now: at(40) });
     assert.deepEqual(second.reserved.map((r) => r.ticket_id), ["t-0002"]);
 
@@ -163,6 +167,7 @@ describe("reserveNext", () => {
     assert.deepEqual(first.reserved.map((r) => r.ticket_id), ["t-0001", "t-0002"]);
     bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "shipped", now: at(30) });
+    releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(35) });
 
     const second = reserveNext(cwd, { capacity: 2, host: "codex", now: at(40) });
     assert.deepEqual(second.reserved.map((r) => r.ticket_id), ["t-0003"]);
@@ -275,6 +280,11 @@ describe("finishAgent", () => {
     assert.equal(done.status, "completed");
     assert.equal(done.conclusion, "implemented and tested");
     assert.equal(done.finished_at, at(40));
+    assert.equal(dispatchSnapshot(cwd, { capacity: 1, now: at(41) }).available, 0);
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(41) }).awaiting_release, [
+      { ticket_id: "t-0001", agent_id: "agent-1", status: "completed" },
+    ]);
+    releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(50) });
     assert.equal(dispatchSnapshot(cwd, { capacity: 1 }).available, 1);
   });
 
@@ -317,6 +327,7 @@ describe("finishAgent", () => {
     const timeoutHealth = readRouteHealth(cwd).records.find((record) => record.error_code === "AGENT_TIMEOUT");
     assert.equal(timeoutHealth?.route_id, "codex/default");
     assert.equal(timeoutHealth?.status, "degraded");
+    releaseAgent(cwd, "t-0002", { agentId: "agent-2", now: at(45) });
 
     // Closed from dispatching with a default structured code.
     const closed = finishAgent(cwd, "t-0003", { status: "closed", now: at(50) });
@@ -375,6 +386,7 @@ describe("recoverDispatches", () => {
 
     assert.deepEqual(recovered.expired, ["t-stale"]);
     assert.deepEqual(recovered.resumable, [{ ticket_id: "t-runner", agent_id: "agent-live", host: "codex" }]);
+    assert.deepEqual(recovered.needs_close, []);
 
     const stale = readTicket(cwd, "t-stale");
     assert.equal(stale.status, "errored");
@@ -408,6 +420,10 @@ describe("restart: state reloads from disk", () => {
     assert.deepEqual(recovered.resumable, [{ ticket_id: "t-0001", agent_id: "agent-1", host: "codex" }]);
 
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "resumed and done", now: at(40) });
+    assert.deepEqual(recoverDispatches(cwd, { staleMs: 60_000, now: at(45) }).needs_close, [
+      { ticket_id: "t-0001", agent_id: "agent-1", host: "codex" },
+    ]);
+    releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(46) });
     const next = reserveNext(cwd, { capacity: 2, host: "codex", now: at(50) });
     assert.deepEqual(next.reserved.map((r) => r.ticket_id), ["t-0003"]);
   });
@@ -436,8 +452,65 @@ describe("dispatch capacity persistence", () => {
 
     bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "done", now: at(30) });
+    releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(40) });
     const after = dispatchSnapshot(cwd);
     assert.equal(after.capacity, 2);
     assert.equal(after.available, 1);
+  });
+});
+
+describe("host backpressure and progress", () => {
+  it("blocks deliberative work that attempts terminal-only coordination", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1, {
+      work_unit: {
+        schema_version: 1,
+        kind: "deliberative",
+        objective: "analyze the lifecycle",
+        deliverable: "recommendation",
+        done_when: "tradeoffs resolved",
+        classification: "explicit",
+      },
+      coordination: { mode: "terminal-only", progress_interval_ms: null },
+      progress: null,
+    });
+    const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    assert.equal(result.reserved.length, 0);
+    assert.equal(result.blocked[0].code, "COORDINATION_REQUIRED");
+  });
+
+  it("defers AgentLimitReached back to FIFO without consuming an attempt and remembers observed capacity", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 2, { max_attempts: 1 });
+    reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
+
+    const deferred = deferDispatch(cwd, "t-0001", { observedCapacity: 1, now: at(20) });
+    assert.equal(deferred.status, "queued");
+    assert.equal(deferred.attempt, 0);
+    assert.equal(deferred.error, null);
+    assert.equal(persistedCapacity(cwd), 1);
+    assert.deepEqual(dispatchSnapshot(cwd, { now: at(21) }).queued, ["t-0001"]);
+  });
+
+  it("persists concise deliberative checkpoints and marks overdue progress", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1, { description: "analyze the lifecycle tradeoffs", prompt: "analyze the lifecycle tradeoffs" });
+    const [spec] = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) }).reserved;
+    assert.equal(spec.work_unit.kind, "deliberative");
+    assert.equal(spec.coordination.mode, "checkpointed");
+    assert.match(spec.prompt, /\[Baton work unit\]/);
+    assert.match(spec.prompt, /Send a brief progress update/);
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+
+    const progress = reportAgentProgress(cwd, "t-0001", {
+      phase: "working",
+      summary: "mapped the lifecycle states",
+      nextStep: "check restart behavior",
+      now: at(30),
+    });
+    assert.equal(progress.progress?.sequence, 1);
+    assert.equal(progress.progress?.summary, "mapped the lifecycle states");
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(60_029) }).progress_due, []);
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(60_030) }).progress_due, ["t-0001"]);
   });
 });

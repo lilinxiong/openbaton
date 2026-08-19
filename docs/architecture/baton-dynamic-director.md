@@ -380,8 +380,8 @@ sequenceDiagram
 
 - Baton 不保存一套平行业务 Task/Status。
 - 主 agent 可以根据 worker 结果调整 Plan；Baton只重新调度执行。
-- 逻辑 ticket 数量不受物理并发限制；当前 Codex V1 最多同时运行 6 个，其余排队。
-- 已完成 worker 要及时关闭以释放槽位。
+- 逻辑 ticket 数量不受物理并发限制；物理 capacity 来自当前 host/session，历史 Codex V1 验收值 6 只是一条观测证据，不是产品常量。
+- 已完成 worker 要及时关闭；terminal ticket 只有在 host 确认 `close_agent` 并记录 release 后才释放槽位。
 
 ### 3.7 复杂 Goal，有 OpenSpec
 
@@ -454,7 +454,7 @@ Baton 不以手动 skill 调用启动。它作为主 agent 的常驻 director po
 - 主 agent 或 OpenSpec 更新业务 Plan；
 - authorization 失效或发生 delta approval。
 
-Baton 逻辑上可持有任意数量 dispatch ticket；物理运行数受 host 限制。当前 Codex V1 实测上限为 6 个 subagent，第 7 个返回 `AgentLimitReached`，其余 ticket 必须排队而不是失败。
+Baton 逻辑上可持有任意数量 dispatch ticket；物理运行数受 host/session 限制。历史 Codex V1 实测上限为 6 个 subagent，第 7 个返回 `AgentLimitReached`；当前实现不写死该值，并把超限作为 backpressure 放回 FIFO，而不是 ticket/route 失败。
 
 ## 5. Delegation Authorization
 
@@ -683,18 +683,21 @@ ticket_id
 requested_model / effective_model
 host_agent_id
 receipt_id
+work_unit.kind / deliverable / done_when
+coordination.mode / latest_progress
 queued/running/final status
 attempt
 timestamps
 short_conclusion
 artifact_paths
+slot_released_at
 ```
 
 它不是业务 task ledger。业务完成状态由主 agent 或 OpenSpec 持有。
 
-Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 evidence 路径。父 agent上下文只接收任务输入、spawn/wait 记录和短结论；worker 的中间推理、文件读取和工具输出留在独立上下文。
+Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 evidence 路径。`concrete` unit 只返回短结论；必要的 `deliberative` unit 使用 checkpointed 协调，只同步 phase、current result、next step 和 blocker/decision needed。中间推理、文件读取和工具输出留在独立上下文。
 
-完成后 Baton 必须及时 `close_agent` 释放物理槽位，并根据最新业务状态、授权和 route health 重新调度。
+完成后 Baton 必须及时 `close_agent`，再用 `dispatch release` 确认物理槽位已释放，然后根据最新业务状态、授权和 route health 重新调度。
 
 ## 8. 失败、Fallback 与证据
 

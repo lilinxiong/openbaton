@@ -51,6 +51,11 @@ describe("dispatch CLI", () => {
       const completed = await command(["dispatch", "complete", "spn-0001", "--text", "first done", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(completed.code, 0, completed.stderr);
       assert.equal(JSON.parse(completed.stdout).ticket.status, "completed");
+      assert.equal(JSON.parse(completed.stdout).snapshot.available, 0);
+
+      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "agent-real-1", "--json"], { cwd, env });
+      assert.equal(released.code, 0, released.stderr);
+      assert.equal(JSON.parse(released.stdout).snapshot.available, 1);
 
       const second = await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(second.code, 0, second.stderr);
@@ -58,7 +63,7 @@ describe("dispatch CLI", () => {
     });
   });
 
-  it("blocks unavailable explicit routes before ticket creation and forbids manual conclude on schema v2", async () => {
+  it("blocks unavailable explicit routes before ticket creation and forbids manual conclude on schema v2+", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
@@ -112,11 +117,43 @@ describe("dispatch CLI", () => {
       const completed = await command(["dispatch", "complete", "spn-0001", "--text", "done", "--json"], { cwd, env });
       assert.equal(completed.code, 0, completed.stderr);
       assert.equal(JSON.parse(completed.stdout).snapshot.capacity, 2);
-      assert.equal(JSON.parse(completed.stdout).snapshot.available, 1);
+      assert.equal(JSON.parse(completed.stdout).snapshot.available, 0);
+
+      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "agent-1", "--json"], { cwd, env });
+      assert.equal(released.code, 0, released.stderr);
+      assert.equal(JSON.parse(released.stdout).snapshot.available, 1);
 
       const recovered = await command(["dispatch", "recover", "--json"], { cwd, env });
       assert.equal(recovered.code, 0, recovered.stderr);
       assert.equal(JSON.parse(recovered.stdout).snapshot.capacity, 2);
+    });
+  });
+
+  it("records checkpoint progress and treats host saturation as FIFO backpressure", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
+      const env = fakeEnv(home);
+      await command(["init", "--tools", "codex"], { cwd, env });
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      assert.equal((await command(["spawn", "analyze the lifecycle", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env })).code, 0);
+
+      const deferred = await command(["dispatch", "defer", "spn-0001", "--code", "AGENT_LIMIT_REACHED", "--observed-capacity", "1", "--json"], { cwd, env });
+      assert.equal(deferred.code, 0, deferred.stderr);
+      assert.equal(JSON.parse(deferred.stdout).ticket.status, "queued");
+      assert.equal(JSON.parse(fs.readFileSync(dispatchStatePath(cwd), "utf8")).capacity, 1);
+
+      await command(["dispatch", "next", "--host", "codex", "--json"], { cwd, env });
+      await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-thinking", "--json"], { cwd, env });
+      const progress = await command([
+        "dispatch", "progress", "spn-0001", "--phase", "working", "--text", "mapped current states",
+        "--next", "check restart recovery", "--needs-input", "--json",
+      ], { cwd, env });
+      assert.equal(progress.code, 0, progress.stderr);
+      const body = JSON.parse(progress.stdout);
+      assert.equal(body.ticket.work_unit.kind, "deliberative");
+      assert.equal(body.ticket.coordination.mode, "checkpointed");
+      assert.equal(body.ticket.progress.needs_director, true);
     });
   });
 });

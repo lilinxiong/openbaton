@@ -27,8 +27,9 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 - **Config 只保存策略。** `~/.baton/config.toml` 只放 alias、可选 policy hint 和 exclusion，不复制 benchmark 分数；没有默认 subagent、父模型继承或静默 fallback。
 - **所有 route 保持可见。** OpenCodex discovery 是可执行 catalog；card 决定哪些 route 进入调度。当前 session/Goal 的 exclusions 只影响本次调度，不会变成全局 route-family 禁令。
 - **host 原生 worker。** 进程内 spawn。不要 shell 出去跑 `claude -p` / `cursor-agent -p` / `grok -p`。Grok / Codex 的 init 装到 `~/.grok` 和 `~/.codex`，不写进项目；card 在 `~/.baton`。
-- **逻辑上无限 spawn。** host 有硬上限就排队。永不拒绝。深度 1。
-- **洁癖。** Worker 只回一句短结论。工具倾倒不进主会话。
+- **逻辑上无限 spawn。** host/session 的并发上限是运行时能力，不写死为 6；超限作为 backpressure 回到 FIFO，不消耗 attempt。真实 `close_agent` 后才释放 slot。深度 1。
+- **具体任务优先。** Ticket 区分 `concrete` 与 `deliberative`。优先把工作拆成有 objective/deliverable/done condition 的具体单元；必须委派思考任务时使用 checkpoint 状态同步。
+- **洁癖。** 普通 worker 只回短结论；checkpoint 也只包含 phase、current result、next step、blocker。工具倾倒和隐藏推理不进主会话。
 
 ## OpenSpec
 
@@ -95,9 +96,12 @@ baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write
 baton apply
-baton dispatch next --host codex --capacity 6 --json
+baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
+baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
+baton dispatch progress TICKET --phase working --text "已定位状态机" --next "检查恢复路径" --json
 baton dispatch complete TICKET --text "short outcome" --json
+baton dispatch release TICKET --agent-id ID --json
 baton status
 ```
 

@@ -1,9 +1,12 @@
 import { loadConfig } from "../lib/config.js";
 import {
   bindAgent,
+  deferDispatch,
   dispatchSnapshot,
   finishAgent,
   persistedCapacity,
+  releaseAgent,
+  reportAgentProgress,
   recoverDispatches,
   reserveNext,
 } from "../lib/dispatch.js";
@@ -12,10 +15,13 @@ import type { WritableLike } from "../types.js";
 const USAGE = `usage:
   baton dispatch next --host codex [--capacity N] [--limit N] --json
   baton dispatch bind TICKET --agent-id ID --host codex --json
+  baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+  baton dispatch progress TICKET --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
   baton dispatch complete TICKET --text "short conclusion" --json
   baton dispatch fail TICKET --code CODE --message MESSAGE --json
   baton dispatch timeout TICKET [--message MESSAGE] --json
   baton dispatch close TICKET [--message MESSAGE] --json
+  baton dispatch release TICKET [--agent-id ID] --json
   baton dispatch recover [--stale-ms N] --json
   baton dispatch status [--capacity N] --json
 
@@ -98,6 +104,34 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
     return 0;
   }
 
+  if (sub === "defer") {
+    const id = values[0];
+    if (!id) throw new Error(USAGE.trim());
+    const ticket = deferDispatch(cwd, id, {
+      code: stringFlag(flags, "code"),
+      message: stringFlag(flags, "message"),
+      observedCapacity: flags["observed-capacity"] == null ? null : Number(flags["observed-capacity"]),
+    });
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    return 0;
+  }
+
+  if (sub === "progress") {
+    const id = values[0];
+    const phase = stringFlag(flags, "phase");
+    const summary = stringFlag(flags, "text");
+    if (!id || !phase || !summary) throw new Error(USAGE.trim());
+    const ticket = reportAgentProgress(cwd, id, {
+      phase: phase as Parameters<typeof reportAgentProgress>[2]["phase"],
+      summary,
+      nextStep: stringFlag(flags, "next") || null,
+      blocker: stringFlag(flags, "blocker") || null,
+      needsDirector: Boolean(flags["needs-input"]),
+    });
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    return 0;
+  }
+
   if (sub === "complete") {
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
@@ -116,6 +150,14 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
       errorCode: stringFlag(flags, "code") || null,
       errorMessage: stringFlag(flags, "message") || null,
     });
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    return 0;
+  }
+
+  if (sub === "release") {
+    const id = values[0];
+    if (!id) throw new Error(USAGE.trim());
+    const ticket = releaseAgent(cwd, id, { agentId: stringFlag(flags, "agent-id") || null });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;
   }

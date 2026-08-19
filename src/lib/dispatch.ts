@@ -1,18 +1,40 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { sanitizeConclusion } from "./hygiene.js";
+import { sanitizeConclusion, sanitizeProgress } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn } from "./spawn.js";
-import type { SpawnTicket, TicketError, TicketStatus } from "./spawn.js";
+import type { SpawnTicket, TicketError, TicketProgressPhase, TicketStatus } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
 import { dispatchLockPath, dispatchStatePath } from "./paths.js";
 import { readReceipt, type DelegationReceipt } from "./receipt.js";
 import { auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
+import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
 
-export const ACTIVE_TICKET_STATUSES = new Set<TicketStatus>(["dispatching", "running"]);
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
+
+function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
+  const needsContract = !ticket.work_unit;
+  if (needsContract) ticket.work_unit = compileWorkUnit(ticket.description || ticket.prompt);
+  if (!ticket.coordination) ticket.coordination = coordinationFor(ticket.work_unit);
+  if (needsContract && !ticket.prompt.includes("[Baton work unit]")) {
+    ticket.prompt = buildWorkerPrompt(ticket.prompt, ticket.work_unit, ticket.coordination);
+  }
+  if (ticket.progress === undefined) ticket.progress = null;
+  if (Number(ticket.schema_version || 1) < 3) ticket.schema_version = 3;
+  return ticket;
+}
+
+/** A bound agent keeps consuming a host thread until close_agent is confirmed. */
+function holdsHostSlot(ticket: SpawnTicket): boolean {
+  if (ticket.status === "dispatching") return true;
+  if (!ticket.agent_id) return false;
+  if (ticket.status === "running") return true;
+  return Number(ticket.schema_version || 1) >= 3
+    && TERMINAL_TICKET_STATUSES.has(ticket.status)
+    && !ticket.slot_released_at;
+}
 
 interface DispatchErrorExtras extends UnknownRecord {
   ticketId?: string;
@@ -181,6 +203,8 @@ export interface DispatchSpec {
   write_allowlist: string[];
   allowed_operations: string[];
   prompt: string;
+  work_unit: SpawnTicket["work_unit"];
+  coordination: SpawnTicket["coordination"];
   attempt: number;
   max_attempts: number;
 }
@@ -198,6 +222,8 @@ function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id
     write_allowlist: receipt.scope.write_allowlist,
     allowed_operations: receipt.scope.allowed_operations,
     prompt: ticket.prompt,
+    work_unit: ticket.work_unit,
+    coordination: ticket.coordination,
     attempt: ticket.attempt,
     max_attempts: ticket.max_attempts,
   };
@@ -212,6 +238,9 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
   } else if (ticket.fork_context !== false) {
     code = "FULL_CONTEXT_NOT_ALLOWED";
     message = `ticket ${ticket.id} must use fork_context=false`;
+  } else if (ticket.work_unit.kind === "deliberative" && ticket.coordination.mode !== "checkpointed") {
+    code = "COORDINATION_REQUIRED";
+    message = `ticket ${ticket.id} is deliberative and requires checkpointed coordination`;
   } else if (Number(ticket.attempt || 0) >= Number(ticket.max_attempts || 1)) {
     code = "ATTEMPT_BUDGET_EXHAUSTED";
     message = `ticket ${ticket.id} exhausted its attempt budget`;
@@ -251,12 +280,13 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const tickets = fifoTickets(cwd);
-    const active = tickets.filter((ticket) => ACTIVE_TICKET_STATUSES.has(ticket.status)).length;
+    const active = tickets.filter(holdsHostSlot).length;
     let available = Math.max(0, max - active);
     const reserved: DispatchSpec[] = [];
     const blocked: Array<{ ticket_id: string; code: string; message: string }> = [];
     for (const ticket of tickets) {
       if (ticket.status !== "queued" || available <= 0 || reserved.length >= maxTake) continue;
+      normalizeTicketContract(ticket);
       const rejected = rejectUndispatchable(cwd, ticket, at);
       if (rejected) {
         blocked.push(rejected);
@@ -268,7 +298,7 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
       ticket.attempt = Number(ticket.attempt || 0) + 1;
       ticket.error = null;
       writeSpawn(cwd, ticket);
-    const receipt = readReceipt(cwd, ticket.receipt_id!);
+      const receipt = readReceipt(cwd, ticket.receipt_id!);
       reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string }, receipt));
       available -= 1;
     }
@@ -284,7 +314,7 @@ export function bindAgent(cwd: string, id: string, { agentId, host = "codex", no
   if (!workerId) throw new DispatchError("agentId is required", "AGENT_ID_REQUIRED", { ticketId: id });
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = readSpawn(cwd, id);
+    const ticket = normalizeTicketContract(readSpawn(cwd, id));
     if (ticket.dispatch_host && ticket.dispatch_host !== host) {
       throw new DispatchError(`ticket ${id} was reserved for ${ticket.dispatch_host}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -292,6 +322,95 @@ export function bindAgent(cwd: string, id: string, { agentId, host = "codex", no
     ticket.agent_id = workerId;
     ticket.host = host;
     ticket.started_at = at;
+    writeSpawn(cwd, ticket);
+    return ticket;
+  });
+}
+
+interface DeferOptions {
+  code?: string;
+  message?: string;
+  observedCapacity?: number | null;
+  now?: TimeInput;
+}
+
+/**
+ * Host concurrency rejection is backpressure, not a worker/route failure.
+ * Return the same ticket to FIFO without consuming an attempt.
+ */
+export function deferDispatch(cwd: string, id: string, {
+  code = "AGENT_LIMIT_REACHED",
+  message = "host has no free subagent thread",
+  observedCapacity = null,
+  now,
+}: DeferOptions = {}): SpawnTicket {
+  return withLock(cwd, () => {
+    const at = instant(now).toISOString();
+    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    if (ticket.agent_id) throw new DispatchError(`ticket ${id} is already bound`, "AGENT_ALREADY_BOUND", { ticketId: id });
+    transition(ticket, "dispatching", "queued", {
+      at,
+      event: "dispatch_deferred",
+      detail: { error_code: String(code), message: String(message) },
+    });
+    ticket.attempt = Math.max(0, Number(ticket.attempt || 0) - 1);
+    ticket.error = null;
+    delete ticket.dispatch_host;
+    delete ticket.dispatch_requested_at;
+    writeSpawn(cwd, ticket);
+    if (observedCapacity != null) rememberDispatchCapacity(cwd, observedCapacity);
+    return ticket;
+  });
+}
+
+const PROGRESS_PHASES = new Set<TicketProgressPhase>(["starting", "working", "waiting", "blocked", "checkpoint"]);
+
+interface ProgressOptions {
+  phase: TicketProgressPhase;
+  summary: string;
+  nextStep?: string | null;
+  blocker?: string | null;
+  needsDirector?: boolean;
+  now?: TimeInput;
+}
+
+export function reportAgentProgress(cwd: string, id: string, {
+  phase,
+  summary,
+  nextStep = null,
+  blocker = null,
+  needsDirector = false,
+  now,
+}: ProgressOptions): SpawnTicket {
+  if (!PROGRESS_PHASES.has(phase)) throw new DispatchError(`invalid progress phase: ${phase}`, "INVALID_PROGRESS_PHASE", { ticketId: id });
+  return withLock(cwd, () => {
+    const at = instant(now).toISOString();
+    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    if (ticket.status !== "running") {
+      throw new DispatchError(`ticket ${id} is not running`, "PROGRESS_REQUIRES_RUNNING", { ticketId: id, currentStatus: ticket.status });
+    }
+    const clean = sanitizeProgress(summary);
+    if (!clean.ok) throw new DispatchError("error" in clean ? clean.error : "invalid progress", "HYGIENE", { ticketId: id });
+    const cleanOptional = (value: string | null): string | null => {
+      if (!value) return null;
+      const result = sanitizeProgress(value);
+      if (!result.ok) throw new DispatchError("error" in result ? result.error : "invalid progress", "HYGIENE", { ticketId: id });
+      return result.conclusion;
+    };
+    ticket.progress = {
+      sequence: Number(ticket.progress?.sequence || 0) + 1,
+      phase,
+      summary: clean.conclusion,
+      next_step: cleanOptional(nextStep),
+      blocker: cleanOptional(blocker),
+      needs_director: Boolean(needsDirector),
+      reported_at: at,
+    };
+    history(ticket, "agent_progress", at, {
+      sequence: ticket.progress.sequence,
+      phase,
+      needs_director: ticket.progress.needs_director,
+    });
     writeSpawn(cwd, ticket);
     return ticket;
   });
@@ -310,7 +429,7 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
   if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = readSpawn(cwd, id);
+    const ticket = normalizeTicketContract(readSpawn(cwd, id));
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
@@ -378,6 +497,32 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
   });
 }
 
+interface ReleaseOptions { agentId?: string | null; now?: TimeInput }
+
+/** Confirm that the host has closed the bound agent thread and released its slot. */
+export function releaseAgent(cwd: string, id: string, { agentId = null, now }: ReleaseOptions = {}): SpawnTicket {
+  return withLock(cwd, () => {
+    const at = instant(now).toISOString();
+    const ticket = readSpawn(cwd, id);
+    if (!TERMINAL_TICKET_STATUSES.has(ticket.status)) {
+      throw new DispatchError(`ticket ${id} is not terminal`, "RELEASE_REQUIRES_TERMINAL", { ticketId: id, currentStatus: ticket.status });
+    }
+    if (!ticket.agent_id) {
+      throw new DispatchError(`ticket ${id} has no bound agent`, "AGENT_NOT_BOUND", { ticketId: id });
+    }
+    if (agentId && ticket.agent_id !== agentId) {
+      throw new DispatchError(`ticket ${id} is bound to ${ticket.agent_id}, not ${agentId}`, "AGENT_ID_MISMATCH", { ticketId: id });
+    }
+    if (ticket.slot_released_at) {
+      throw new DispatchError(`ticket ${id} slot is already released`, "SLOT_ALREADY_RELEASED", { ticketId: id });
+    }
+    ticket.slot_released_at = at;
+    history(ticket, "agent_slot_released", at, { agent_id: ticket.agent_id });
+    writeSpawn(cwd, ticket);
+    return ticket;
+  });
+}
+
 interface RecoverOptions { staleMs?: number; now?: TimeInput }
 
 export function recoverDispatches(cwd: string, { staleMs = 60_000, now }: RecoverOptions = {}) {
@@ -388,9 +533,14 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, now }: Recove
     const at = current.toISOString();
     const expired: string[] = [];
     const resumable: Array<{ ticket_id: string; agent_id: string; host: string | null }> = [];
+    const needs_close: Array<{ ticket_id: string; agent_id: string; host: string | null }> = [];
     for (const ticket of fifoTickets(cwd)) {
       if (ticket.status === "running" && ticket.agent_id) {
         resumable.push({ ticket_id: ticket.id, agent_id: ticket.agent_id, host: ticket.host || ticket.dispatch_host || null });
+        continue;
+      }
+      if (TERMINAL_TICKET_STATUSES.has(ticket.status) && holdsHostSlot(ticket) && ticket.agent_id) {
+        needs_close.push({ ticket_id: ticket.id, agent_id: ticket.agent_id, host: ticket.host || ticket.dispatch_host || null });
         continue;
       }
       if (ticket.status !== "dispatching" || ticket.agent_id) continue;
@@ -402,16 +552,24 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, now }: Recove
       writeSpawn(cwd, ticket);
       expired.push(ticket.id);
     }
-    return { expired, resumable };
+    return { expired, resumable, needs_close };
   });
 }
 
-export function dispatchSnapshot(cwd: string, { capacity }: { capacity?: number } = {}) {
+export function dispatchSnapshot(cwd: string, { capacity, now }: { capacity?: number; now?: TimeInput } = {}) {
   const max = capacity == null ? (persistedCapacity(cwd) ?? 1) : capacityValue(capacity);
   const tickets = fifoTickets(cwd);
   const counts: Partial<Record<TicketStatus, number>> = {};
   for (const ticket of tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;
-  const active = tickets.filter((ticket) => ACTIVE_TICKET_STATUSES.has(ticket.status));
+  const active = tickets.filter(holdsHostSlot);
+  const currentMs = instant(now).getTime();
+  const progressDue = tickets.filter((ticket) => {
+    if (ticket.status !== "running" || ticket.coordination?.mode !== "checkpointed") return false;
+    const interval = Number(ticket.coordination.progress_interval_ms || 0);
+    if (interval <= 0) return false;
+    const last = Date.parse(ticket.progress?.reported_at || ticket.started_at || ticket.updated_at || ticket.created_at || "");
+    return Number.isFinite(last) && currentMs - last >= interval;
+  }).map((ticket) => ticket.id);
   return {
     capacity: max,
     active: active.length,
@@ -420,6 +578,15 @@ export function dispatchSnapshot(cwd: string, { capacity }: { capacity?: number 
     queued: tickets.filter((ticket) => ticket.status === "queued").map((ticket) => ticket.id),
     dispatching: tickets.filter((ticket) => ticket.status === "dispatching").map((ticket) => ticket.id),
     running: tickets.filter((ticket) => ticket.status === "running").map((ticket) => ({ ticket_id: ticket.id, agent_id: ticket.agent_id, host: ticket.host || ticket.dispatch_host || null })),
+    running_progress: tickets.filter((ticket) => ticket.status === "running").map((ticket) => ({
+      ticket_id: ticket.id,
+      task_kind: ticket.work_unit?.kind || null,
+      coordination: ticket.coordination?.mode || null,
+      progress: ticket.progress || null,
+    })),
+    progress_due: progressDue,
+    awaiting_release: tickets.filter((ticket) => TERMINAL_TICKET_STATUSES.has(ticket.status) && holdsHostSlot(ticket))
+      .map((ticket) => ({ ticket_id: ticket.id, agent_id: ticket.agent_id, status: ticket.status })),
     terminal: tickets.filter((ticket) => TERMINAL_TICKET_STATUSES.has(ticket.status)).map((ticket) => ({ ticket_id: ticket.id, status: ticket.status, error: ticket.error || null })),
   };
 }
