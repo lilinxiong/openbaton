@@ -122,6 +122,21 @@ describe("initProject", () => {
 });
 
 describe("updateProject", () => {
+  it("fills missing builtin routes without overwriting user card values", async () => {
+    await withHome(async (home) => {
+      const cwd = tmp();
+      const env = fakeEnv(home);
+      await initProject(cwd, { tools: ["codex"], env });
+      const cfgPath = path.join(home, ".baton", "config.toml");
+      const old = fs.readFileSync(cfgPath, "utf8").replace(/\nroute_id = "kimi\/k3\[1m\]"\nreasoning_effort = "max"/, "");
+      fs.writeFileSync(cfgPath, old);
+      updateProject(cwd, { env });
+      const cfg = loadConfig(cwd, { env });
+      assert.equal(cfg.models.find((card) => card.id === "k3")?.route_id, "kimi/k3[1m]");
+      assert.equal(cfg.models.find((card) => card.id === "k3")?.reasoning_effort, "max");
+    });
+  });
+
   it("refreshes SKILL and director defaults but never clobbers user cards", async () => {
     await withHome(async (home) => {
       const cwd = tmp();
