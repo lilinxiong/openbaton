@@ -11,6 +11,14 @@ npm i -g baton   # or: node bin/baton.js
 baton init
 ```
 
+## 为什么需要 OpenBaton
+
+能够 spawn 不同模型，只是有了执行原语。真实工作还需要决定每个 task 应该交给哪条准确 route、worker 被允许做什么、超过 host 并发上限时如何排队，以及怎样只把主 agent 真正需要的证据带回前台。
+
+OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 agent director 按 task 从显式 card 和当前可执行的 OpenCodex routes 中选择。不同 worker 可以并行承担分析、实施或 review，但始终保持 depth 1，不形成递归 agent 树，也不成为第二个前台对话。
+
+目标不只是“开更多 agent”，而是在一个对结果负责的 workflow 中，安全、可解释、无静默 fallback 地使用多个模型。
+
 ## 它是什么
 
 不是又一个 coding CLI。而是一套 skill pack + `init`，坐在你已经在用的 host 前面（Claude Code、Cursor、Grok、Codex、…）。

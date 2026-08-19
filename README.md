@@ -11,6 +11,14 @@ npm i -g baton   # or: node bin/baton.js
 baton init
 ```
 
+## Why OpenBaton
+
+Being able to spawn different models is only the execution primitive. Real work still needs to decide which exact route should handle each task, bound what that worker may do, queue work beyond host limits, and return only the evidence the main agent needs.
+
+OpenBaton turns each execution unit into a routed, auditable ticket. The main-agent director chooses per task from explicit cards and currently executable OpenCodex routes. Workers can analyze, implement, or review in parallel, but remain depth 1 and never become a recursive agent tree or a second front conversation.
+
+The goal is not simply “more agents.” It is one accountable workflow that can use multiple models safely, explainably, and without silent fallback.
+
 ## What it is
 
 Not another coding CLI. A skill pack + `init` that sits in front of the host you already use (Claude Code, Cursor, Grok, Codex, …).
