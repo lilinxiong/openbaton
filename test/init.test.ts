@@ -25,6 +25,7 @@ describe("initProject", () => {
       const cwd = tmp();
       const env = fakeEnv(home);
       const result = await initProject(cwd, { env });
+      assert.equal(result.dir, "~/.baton");
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(home, ".baton", "SKILL.md")));
       assert.ok(fs.existsSync(path.join(cwd, HOST_SKILL_REL.claude)));

@@ -1,6 +1,6 @@
 /**
- * Consume OpenCodex (git submodule at opencodex/). It owns Claude / Codex /
- * Grok model integration. baton only schedules. Resolve the vendored engine;
+ * Consume OpenCodex from Baton's package/runtime environment. It owns provider
+ * auth, model discovery, and route execution. baton only schedules; resolve the engine,
  * do not start a local proxy and do not reimplement OAuth. Never write
  * openai_base_url or a catalog into ~/.codex.
  */

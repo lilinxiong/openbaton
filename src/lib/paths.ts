@@ -115,7 +115,7 @@ export function displayHomePath(dest: string, { cwd, env }: { cwd?: string; env?
   if (home) {
     const fromHome = path.relative(home, dest);
     if (fromHome && !fromHome.startsWith("..") && !path.isAbsolute(fromHome)) {
-      return fromHome;
+      return `~/${fromHome.replaceAll("\\", "/")}`;
     }
   }
   if (cwd) return path.relative(cwd, dest) || dest;

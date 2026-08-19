@@ -1,6 +1,6 @@
 # Artificial Analysis capability cache
 
-OpenBaton uses Artificial Analysis as a replaceable `CapabilityProvider`. The ordinary dispatch path never calls the remote API: it reads a project-local SQLite snapshot from `.baton/cache/capabilities/artificial-analysis.sqlite3`.
+OpenBaton uses Artificial Analysis as a replaceable `CapabilityProvider`. The ordinary dispatch path never calls the remote API: it reads a user-global SQLite snapshot from `~/.baton/cache/capabilities/artificial-analysis.sqlite3`.
 
 The capability commands require a Node.js runtime that provides `node:sqlite` (Node 22.5 or newer). Other Baton commands retain the package's existing Node compatibility.
 
@@ -10,7 +10,7 @@ The capability commands require a Node.js runtime that provides `node:sqlite` (N
 - API: [Artificial Analysis Data API](https://artificialanalysis.ai/data-api/docs)
 - Free endpoint: `https://artificialanalysis.ai/api/v2/language/models/free`
 
-The downloaded data and generated manifest are local-only and ignored by Git. They must not be committed or redistributed from this public repository. The repository commits only the schema, importer, attribution, and explicit route mapping decisions.
+The downloaded data and generated manifest are local-only under the user's home. They must not be committed or redistributed from this public repository. The repository commits only the schema, importer, attribution, and explicit route mapping decisions.
 
 ## Refresh
 

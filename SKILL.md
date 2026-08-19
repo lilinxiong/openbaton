@@ -15,11 +15,12 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - No subagent default.
    - Do not inherit the parent/host model as a default.
    - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
+   - Keep every executable OpenCodex route visible. Session/Goal exclusions are temporary inputs to the current route decision; never turn them into a global provider or model-family ban.
 
 3. **Tickets before host-native dispatch.** `baton spawn/apply` writes a queued ticket plus immutable Delegation Receipt. The host reserves with `baton dispatch next`, calls its real in-process `spawn_agent`, then binds the returned agent ID. The CLI never claims it can call host tools. Do **not** shell out to coding CLI print mode.
    - No route or Receipt → blocked. Never inherit the parent model or fallback.
    - Use `fork_context=false`; nesting depth is 1.
-   - Read-only is default. Writes require an explicit allowlist/operations Receipt and pass the parent Git safety gate before completion.
+   - Read-only is default. Writes require an explicit allowlist/operations Receipt and pass the parent Git safety gate on every terminal path, including worker error, timeout, or close.
 
 4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
 
@@ -31,13 +32,13 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - If absent: still fully usable via `baton spawn`.
 
-8. **OpenCodex is consumed, not reimplemented.** It is vendored as a git submodule and owns Claude / Codex / Grok model integration. baton only schedules.
+8. **OpenCodex is consumed, not reimplemented.** It is resolved from Baton's package/runtime environment and owns provider auth, model discovery, and route execution. baton only schedules.
    - `baton login` lists accounts and card->provider. `baton login <provider>` and `baton login --card <id>` open a browser so the user signs in.
    - Account-login providers: kimi, xai, cursor. Cursor login is experimental (PKCE). Do not enable nativeLocalExec. Do not paste Cursor keys.
    - Never ask the user to paste a base URL or API key. The user only types `baton login kimi`. Do not tell them to install ocx.
 
 9. **Capability data is local-first and replaceable.** Artificial Analysis is the first `CapabilityProvider`, not a routing oracle.
-   - Ordinary dispatch reads `.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
+   - Ordinary dispatch reads `~/.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
    - Remote refresh is explicit and uses a mode-0600 temporary key file. The key is never pasted into chat, stored, logged, or sent to workers.
    - Join route + profile only through explicit canonical mappings. Missing or uncertain mappings remain `unranked`; never fuzzy-match or invent a score.
    - Capability evidence informs the host's decision. It does not replace cards, route health, quota, authorization, or final acceptance.
@@ -45,6 +46,8 @@ You are the director. This is a skill pack plus `init` that installs into the co
 10. **Conversation promotion is dynamic.** The host watches ordinary dialogue for explicit execution intent, builds a faithful `explicit/inferred/unresolved/excluded` Draft, and asks once for approval. The user does not manually invoke Baton. OpenSpec owns breakdown/plan when present; otherwise the main agent owns them.
 
 11. **Route Snapshot gates executability.** Join cards with the persisted OpenCodex catalog fingerprint and local capability cache. Refresh discovery only when catalog/config changes or explicitly requested. Missing executable route is blocked; missing capability mapping is `unranked`.
+
+12. **Baton state is user-global.** Shared cache lives under `~/.baton/cache`; workspace runtime lives under `~/.baton/workspaces/<canonical-root-sha256>`. Never create a project-local `.baton` directory.
 
 ## Commands
 

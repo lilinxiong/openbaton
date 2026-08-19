@@ -37,12 +37,17 @@ describe("Codex card agents", () => {
       assert.match(skill, /WRITE_SCOPE_VIOLATION/);
       assert.match(skill, /Conversation-to-Goal is automatic host policy/);
       assert.match(skill, /Route data is local-first/);
+      assert.match(skill, /Keep every executable route family visible/);
+      assert.match(skill, /session\/Goal exclusions only to the current route decision/i);
+      assert.match(skill, /~\/\.baton\/workspaces/);
       assert.match(skill, /No fallback across routes or providers/i);
       assert.match(skill, /NO_EXECUTABLE_ROUTE/);
       assert.doesNotMatch(skill, /director-only/i);
       assert.doesNotMatch(skill, /spawn with `agent_type` = card id/);
       assert.doesNotMatch(skill, /fork_turns/);
       assert.doesNotMatch(skill, /agents\.default_subagent_model/);
+      assert.doesNotMatch(skill, /Never use `cursor\/claude-\*`/);
+      assert.doesNotMatch(skill, /Do not use `cursor\/claude-\*`/);
       for (const id of DEFAULT_IDS) {
         assert.ok(!fs.existsSync(path.join(home, ".codex", "agents", `${id}.toml`)), id);
       }
