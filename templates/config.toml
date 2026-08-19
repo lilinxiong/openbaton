@@ -1,8 +1,7 @@
 # baton director config
 # OpenCodex live routes generate the visible card set dynamically.
 # AA capability data generates ranked evidence and inferred positioning.
-# Optional [[models]] entries are user aliases/policy hints only. Baton ships no
-# model definitions; the executable catalog always comes from OpenCodex.
+# Baton accepts no local model definitions, aliases, or route overrides.
 
 [director]
 # Desired Baton concurrency ceiling. The host/session limit can be lower;

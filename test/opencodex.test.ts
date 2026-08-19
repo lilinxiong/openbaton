@@ -103,14 +103,14 @@ describe("OpenCodex route-catalog command adapter", () => {
     );
   });
 
-  it("exposes no Baton login or Grok-host surface", async () => {
+  it("exposes only the Codex host and no Baton login/alias surface", async () => {
     const out = capture();
     assert.equal(await run(["help"], { cwd: os.tmpdir(), stdout: out, stderr: capture() }), 0);
-    assert.doesNotMatch(out.text(), /^\s*baton login\b|--tools[^\n]*grok/im);
+    assert.doesNotMatch(out.text(), /^\s*baton login\b|--tools|cards add/im);
     const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
     for (const rel of ["SKILL.md", "README.md", "README.zh.md"]) {
       const text = fs.readFileSync(path.join(root, rel), "utf8");
-      assert.doesNotMatch(text, /^\s*baton login\b|Grok and Codex init|Grok \/ Codex.*init/im);
+      assert.doesNotMatch(text, /^\s*baton login\b|cards add|Claude Code, Cursor|Grok and Codex init|Grok \/ Codex.*init/im);
     }
   });
 });

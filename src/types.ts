@@ -7,8 +7,7 @@ export interface ModelCard {
   strengths: string;
   route_id?: string;
   reasoning_effort?: string;
-  enabled?: boolean;
-  source?: "dynamic" | "override";
+  source?: "dynamic";
   provider?: string | null;
   executable?: boolean;
   positioning?: string[];
@@ -45,7 +44,6 @@ export interface DirectorConfig {
     max_depth: number;
     runner?: string;
   };
-  models: ModelCard[];
 }
 
 export type UnknownRecord = Record<string, unknown>;

@@ -143,10 +143,6 @@ export function canonicalRouteId(route: ExecutableRoute): string {
   return route.route_id;
 }
 
-function routeVariants(route: ExecutableRoute): string[] {
-  return [canonicalRouteId(route)];
-}
-
 function numberAt(value: unknown, ...path: string[]): number | null {
   let current = value;
   for (const key of path) current = current && typeof current === "object" ? (current as Record<string, unknown>)[key] : null;
@@ -228,66 +224,7 @@ function applyPositioning(candidates: RouteCandidate[]): void {
   }
 }
 
-function matchesOverride(card: ModelCard, override: ModelCard): boolean {
-  const target = override.route_id || override.id;
-  const route = card.route_id || "";
-  const routeMatches = card.id === target || route === target || route.endsWith(`/${target}`);
-  if (!routeMatches) return false;
-  return override.reasoning_effort ? card.reasoning_effort === override.reasoning_effort : true;
-}
-
-function applyOverrides(candidates: RouteCandidate[], overrides: ModelCard[], snapshot: RouteSnapshot | null): RouteCandidate[] {
-  const removed = new Set<RouteCandidate>();
-  const aliases: RouteCandidate[] = [];
-  for (const override of overrides) {
-    const matches = candidates.filter((candidate) => matchesOverride(candidate.card, override));
-    if (override.enabled === false) {
-      for (const match of matches) removed.add(match);
-      continue;
-    }
-    const matchedRoutes = new Set(matches.map((candidate) => candidate.card.route_id).filter(Boolean));
-    const target = override.route_id || override.id;
-    if (matchedRoutes.size > 1 && !target.includes("/")) {
-      aliases.push({
-        card: { ...override, strengths: override.strengths || "ambiguous provider route override", source: "override", executable: false },
-        executable: false,
-        capability: null,
-      });
-      continue;
-    }
-    const base = override.reasoning_effort
-      ? matches.find((candidate) => candidate.card.reasoning_effort === override.reasoning_effort)
-      : matches.find((candidate) => !candidate.card.reasoning_effort) || matches[0];
-    if (base) {
-      removed.add(base);
-      aliases.push({
-        ...base,
-        card: {
-          ...base.card,
-          ...override,
-          id: override.id,
-          strengths: [base.card.strengths, override.strengths ? `User override: ${override.strengths}` : ""].filter(Boolean).join(". "),
-          route_id: base.card.route_id,
-          reasoning_effort: override.reasoning_effort || base.card.reasoning_effort,
-          source: "override",
-          enabled: true,
-        },
-      });
-      continue;
-    }
-    const matchingSnapshotRoutes = snapshot?.routes.filter((route) => routeVariants(route).includes(target)) || [];
-    const executable = matchingSnapshotRoutes.length === 1 && matchingSnapshotRoutes[0].disabled !== true;
-    aliases.push({
-      card: { ...override, strengths: override.strengths || "unranked user override", source: "override", executable },
-      executable,
-      capability: null,
-    });
-  }
-  return [...candidates.filter((candidate) => !removed.has(candidate)), ...aliases]
-    .sort((a, b) => a.card.id.localeCompare(b.card.id));
-}
-
-export function buildRouteCandidates(cwd: string, overrides: ModelCard[], capabilityDbPath: string): RouteCandidate[] {
+export function buildRouteCandidates(cwd: string, capabilityDbPath: string): RouteCandidate[] {
   const snapshot = readRouteSnapshot(cwd);
   const mergedMappings = new Map<string, StoredRouteMapping>();
   for (const mapping of listStoredRouteMappings({ dbPath: capabilityDbPath })) {
@@ -333,5 +270,5 @@ export function buildRouteCandidates(cwd: string, overrides: ModelCard[], capabi
     }
   }
   applyPositioning(candidates);
-  return applyOverrides(candidates, overrides, snapshot);
+  return candidates.sort((a, b) => a.card.id.localeCompare(b.card.id));
 }

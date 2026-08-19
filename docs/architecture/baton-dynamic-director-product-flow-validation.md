@@ -514,7 +514,7 @@ Parent gate 检查 tracked/untracked/rename/delete/mode change，并拒绝任何
 - OpenCodex model catalog fingerprint/generation；
 - 只在 catalog/config 变化时刷新；
 - route + profile + AA capability + health + quota + recent execution evidence；
-- card 作为主 agent 可读的策略/override，而不是唯一关键词评分输入；
+- exact OpenCodex route/profile card 作为主 agent 可读的能力证据，而不是本地 alias/override；
 - 无精确 mapping 保持 `unranked`，无 executable route 则 blocked。
 
 验收：普通 match/dispatch 不访问 OpenCodex discovery 或 AA 网络，但能解释最终候选和选择证据。

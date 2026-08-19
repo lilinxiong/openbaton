@@ -29,7 +29,6 @@ export interface ApplyConfig {
   director: {
     max_concurrent: number;
   };
-  models: ApplyModelCard[];
 }
 
 interface ApplyUnitBase {
@@ -133,6 +132,7 @@ interface ApplyChangeInput {
   cwd: string;
   change?: string | null;
   cfg: ApplyConfig;
+  cards: ApplyModelCard[];
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
 }
 
@@ -230,11 +230,11 @@ function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, selectCards }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, cards, selectCards }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
-  const { units, blocked } = planApply({ tasks, cards: cfg.models, selectCards });
+  const { units, blocked } = planApply({ tasks, cards, selectCards });
   if (blocked.length && units.length === 0) {
     return {
       changeDir,

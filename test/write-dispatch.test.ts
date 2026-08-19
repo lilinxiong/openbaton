@@ -35,7 +35,7 @@ function readTicket(cwd: string, id: string) {
 }
 
 async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
-  await run(["init", "--tools", "codex"], { cwd, env, stdout: sink(), stderr: sink() });
+  await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
   publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
   await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: sink(), stderr: sink() });
   await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
@@ -47,7 +47,7 @@ describe("write dispatch safety integration", () => {
     await withHome(async (home) => {
       const cwd = fixture();
       const env = fakeEnv(home);
-      await run(["init", "--tools", "codex"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: sink(), stderr: sink() });
       await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
@@ -65,7 +65,7 @@ describe("write dispatch safety integration", () => {
     await withHome(async (home) => {
       const cwd = fixture();
       const env = fakeEnv(home);
-      await run(["init", "--tools", "codex"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: sink(), stderr: sink() });
       await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
@@ -85,7 +85,7 @@ describe("write dispatch safety integration", () => {
     await withHome(async (home) => {
       const cwd = fixture();
       const env = fakeEnv(home);
-      await run(["init", "--tools", "codex"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const survey = capture();
       const surveyCode = await run(["spawn", "survey the repository structure", "--model", "kimi/k3[1m]"], { cwd, env, stdout: survey, stderr: survey });

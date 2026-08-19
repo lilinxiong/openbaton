@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { CodedError, DirectorConfig, ModelCard, UnknownRecord } from "../types.js";
+import type { CodedError, DirectorConfig, UnknownRecord } from "../types.js";
 import { parseToml, stringifyToml } from "./toml.js";
 import { configPath } from "./paths.js";
 
@@ -8,7 +8,6 @@ export const DEFAULT_MAX_CONCURRENT = 4;
 export const DEFAULT_MAX_DEPTH = 1;
 
 export type Config = DirectorConfig;
-export type Card = ModelCard;
 
 export interface DirectorSettings {
   max_concurrent: number;
@@ -30,7 +29,6 @@ export function emptyConfig(): Config {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
       max_depth: DEFAULT_MAX_DEPTH,
     },
-    models: [],
   };
 }
 
@@ -53,35 +51,9 @@ function normalizeDirector(raw: unknown): DirectorSettings {
   return settings;
 }
 
-function normalizeCard(raw: unknown): Card | null {
-  if (!isUnknownRecord(raw)) return null;
-  const id = String(raw.id || "").trim();
-  if (!id) return null;
-  const card: Card = {
-    id,
-    strengths: String(raw.strengths || "").trim(),
-  };
-  const routeId = optionalTrimmedString(raw.route_id);
-  const reasoningEffort = optionalTrimmedString(raw.reasoning_effort);
-  if (routeId) card.route_id = routeId;
-  if (reasoningEffort) card.reasoning_effort = reasoningEffort;
-  if (typeof raw.enabled === "boolean") card.enabled = raw.enabled;
-  return card;
-}
-
 function serializeConfig(cfg: Config): UnknownRecord {
   return {
     director: { ...cfg.director },
-    models: cfg.models.map((card) => {
-      const row: UnknownRecord = {
-        id: card.id,
-        strengths: card.strengths,
-      };
-      if (card.route_id) row.route_id = card.route_id;
-      if (card.reasoning_effort) row.reasoning_effort = card.reasoning_effort;
-      if (card.enabled !== undefined) row.enabled = card.enabled;
-      return row;
-    }),
   };
 }
 
@@ -89,9 +61,6 @@ export function normalizeConfig(raw: unknown): Config {
   const source = isUnknownRecord(raw) ? raw : {};
   return {
     director: normalizeDirector(source.director),
-    models: Array.isArray(source.models)
-      ? source.models.map(normalizeCard).filter((card): card is Card => card !== null)
-      : [],
   };
 }
 

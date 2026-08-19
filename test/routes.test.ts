@@ -49,13 +49,9 @@ describe("OpenCodex Route Snapshot", () => {
     assert.equal(refreshed.schema_version, 2);
     assert.equal(refreshed.engine_version, "opencodex 2.26.0");
     assert.equal(refreshed.routes[0].id, "kimi/k3-256k");
-    const candidates = buildRouteCandidates(root, [
-      { id: "k3", strengths: "", route_id: "kimi/k3-256k" },
-      { id: "grok", strengths: "", route_id: "xai/grok-4.6" },
-    ], path.join(root, "missing.sqlite3"));
-    assert.equal(candidates.find((item) => item.card.id === "k3")?.executable, true);
-    assert.equal(candidates.find((item) => item.card.id === "grok")?.executable, false);
-    assert.equal(candidates.find((item) => item.card.id === "k3")?.capability?.unranked, true);
+    const candidates = buildRouteCandidates(root, path.join(root, "missing.sqlite3"));
+    assert.equal(candidates.find((item) => item.card.id === "kimi/k3-256k")?.executable, true);
+    assert.equal(candidates.find((item) => item.card.id === "kimi/k3-256k")?.capability?.unranked, true);
   });
 
   it("rejects malformed catalogs", () => {
@@ -65,8 +61,9 @@ describe("OpenCodex Route Snapshot", () => {
   it("joins provider plus bare catalog id to a namespaced spawn route", () => {
     const root = cwd();
     publishRouteSnapshot(root, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-    const [candidate] = buildRouteCandidates(root, [{ id: "k3", strengths: "", route_id: "kimi/k3[1m]", reasoning_effort: "max" }], path.join(root, "missing.sqlite3"));
+    const [candidate] = buildRouteCandidates(root, path.join(root, "missing.sqlite3"));
     assert.equal(candidate.executable, true);
+    assert.equal(candidate.card.id, "kimi/k3[1m]");
   });
 
   it("preserves exact OpenCodex route ids and makes disabled routes visible but unavailable", () => {
@@ -100,7 +97,7 @@ describe("OpenCodex Route Snapshot", () => {
     assert.equal(snapshot.routes.find((route) => route.provider === "openai" && route.id === "gpt-5.6-sol")?.route_id, "gpt-5.6-sol");
     assert.equal(snapshot.routes.find((route) => route.provider === "cursor")?.route_id, "cursor/gpt-5.6-sol");
 
-    const candidates = buildRouteCandidates(root, [], dbPath);
+    const candidates = buildRouteCandidates(root, dbPath);
     assert.equal(candidates.some((item) => item.card.id === "gpt-5.6-sol@high" && item.executable), true);
     assert.equal(candidates.some((item) => item.card.id === "gpt-5.6-sol@max"), false, "unsupported native profile");
     assert.equal(candidates.some((item) => item.card.id === "cursor/gpt-5.6-sol@high" && !item.executable), true);
@@ -169,7 +166,7 @@ describe("OpenCodex Route Snapshot", () => {
         { routeId: "model-a", profile: "max", aaSlug: "aa-model-a" },
       ],
     });
-    const candidates = buildRouteCandidates(root, [], dbPath);
+    const candidates = buildRouteCandidates(root, dbPath);
     assert.equal(candidates.some((item) => item.card.id === "provider-a/model-a@high" && item.card.capability?.ranked), true);
     assert.equal(candidates.some((item) => item.card.id === "provider-b/model-a@low" && item.card.capability?.ranked), true);
     assert.equal(candidates.some((item) => item.card.id.endsWith("model-a@max")), false);
@@ -177,31 +174,14 @@ describe("OpenCodex Route Snapshot", () => {
     assert.equal(candidates.filter((item) => item.card.route_id?.endsWith("/model-a")).length, 4);
   });
 
-  it("layers aliases and exclusions over generated cards", () => {
+  it("returns only exact OpenCodex route ids", () => {
     const root = cwd();
     publishRouteSnapshot(root, { models: [
       { id: "one", provider: "provider" },
       { id: "two", provider: "provider" },
     ] });
-    const candidates = buildRouteCandidates(root, [
-      { id: "friendly", strengths: "user hint", route_id: "provider/one" },
-      { id: "provider/two", strengths: "", route_id: "provider/two", enabled: false },
-    ], path.join(root, "missing.sqlite3"));
-    assert.equal(candidates.some((item) => item.card.id === "friendly" && item.card.source === "override"), true);
-    assert.equal(candidates.some((item) => item.card.route_id === "provider/two"), false);
-  });
-
-  it("rejects an unnamespaced alias when the same id exists behind multiple providers", () => {
-    const root = cwd();
-    publishRouteSnapshot(root, { models: [
-      { id: "shared", provider: "provider-a" },
-      { id: "shared", provider: "provider-b" },
-    ] });
-    const candidates = buildRouteCandidates(root, [
-      { id: "friendly", strengths: "", route_id: "shared" },
-    ], path.join(root, "missing.sqlite3"));
-    const friendly = candidates.find((item) => item.card.id === "friendly");
-    assert.equal(friendly?.executable, false);
-    assert.match(friendly?.card.strengths || "", /ambiguous provider/);
+    const candidates = buildRouteCandidates(root, path.join(root, "missing.sqlite3"));
+    assert.deepEqual(candidates.map((item) => item.card.id), ["provider/one", "provider/two"]);
+    assert.ok(candidates.every((item) => item.card.source === "dynamic"));
   });
 });

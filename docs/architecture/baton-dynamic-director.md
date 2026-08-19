@@ -534,7 +534,7 @@ Artificial Analysis
   Intelligence / Coding / Agentic Index、速度、成本、延迟
 
 Dynamic Cards
-  OpenCodex route + AA capability + 用户 alias/hint/exclusion
+  OpenCodex exact route/profile + AA capability
 
 Route runtime
   health、quota、延迟、近期执行证据
@@ -549,9 +549,9 @@ OpenBaton 的能力数据分为稳定快照和动态信号：
 | 数据 | 来源 | 刷新方式 | 普通任务是否远程查询 |
 | --- | --- | --- | --- |
 | Route Snapshot | OpenCodex effective catalog | 配置/catalog 指纹变化、显式 refresh | 否 |
-| Canonical mapping | Baton mapping + user override | route 或 mapping 变化 | 否 |
+| Canonical mapping | Baton committed mapping | route 或 mapping 变化 | 否 |
 | Capability Cache | Artificial Analysis | cache miss、模型新增、benchmark 版本变化、TTL、显式 refresh | 否 |
-| Dynamic Cards | Route Snapshot + Capability Cache + `~/.baton/config.toml` overrides | 任一输入变化 | 否 |
+| Dynamic Cards | Route Snapshot + Capability Cache | 任一输入变化 | 否 |
 | Health / quota | route runtime | 独立轻量 monitor / provider event | 只读本地最新信号 |
 | Recent evidence | Baton execution history | worker 终态事件 | 否 |
 
@@ -586,7 +586,7 @@ OpenCodex config/catalog change
 - Coding Index：<https://artificialanalysis.ai/models/capabilities/coding>
 - Coding Agent Index：<https://artificialanalysis.ai/agents/coding-agents>
 
-模型能力优先看 model-level Coding / Agentic / Intelligence 和 component benchmark。Coding Agent Index 衡量“模型 + harness”，只能作为补充证据；不能把 Cursor/Claude Code/OpenCode harness 分数直接当作 Codex host-native subagent 的模型能力。
+模型能力优先看 model-level Coding / Agentic / Intelligence 和 component benchmark。任何非 Codex harness 分数只能作为补充证据，不能直接当作 Codex host-native subagent 的模型能力。
 
 ### 6.4 Candidate 结构
 
@@ -641,7 +641,7 @@ exact | variant | family | unmatched
 - `kimi/k3[1m]` 可引用 K3 的核心能力，但 context、价格、速度必须使用 route 自身数据。
 - `cursor/grok-4.6-fast` 不得直接等同于 `xai/grok-4.6`；harness、provider 和 fast variant 都可能改变结果。
 - 无可靠映射时标记 `unranked`，不伪造能力。
-- 用户可配置显式 mapping override。
+- 用户不能配置本地 model alias、route override 或 mapping override。
 
 ### 6.6 缓存与失效
 
@@ -814,7 +814,7 @@ V-01～V-05 的实测结论是 shared worktree/index/HEAD；parent diff gate 可
 
 ### 11.5 现实工程风险
 
-1. 当前 Codex host skill 与 `codex-agents.js` 仍基于旧的 `agent_type/fork_turns` 假设，需要切换到已验证的运行时 `model/reasoning_effort/fork_context`。
+1. 历史实现曾基于 `agent_type/fork_turns`；当前 Codex-only 协议使用运行时 `model/reasoning_effort/fork_context`。
 2. 当前 `baton spawn/apply` 只创建 ticket，没有真实调用 native spawn；ticket 还会在启动前被标成 `running`。
 3. 当前 queue 默认 4，没有 agent ID、真实终态和自动出队；Codex V1 实测物理上限为 6。
 4. 当前 OpenSpec conclusion 依赖行号，task 内容变化后可能漂移。

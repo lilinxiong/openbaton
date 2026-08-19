@@ -19,9 +19,9 @@ describe("applyChange", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-"));
     fs.mkdirSync(path.join(cwd, "openspec", "changes", "demo"), { recursive: true });
     fs.copyFileSync(fixtureTasks, path.join(cwd, "openspec", "changes", "demo", "tasks.md"));
-    initProject(cwd, { tools: ["claude"] });
+    initProject(cwd);
     const cfg = loadConfig(cwd);
-    const result = applyChange({ cwd, change: "demo", cfg });
+    const result = applyChange({ cwd, change: "demo", cfg, cards: [] });
     const pending = parseTasks(fs.readFileSync(fixtureTasks, "utf8")).filter((t) => t.status === "pending");
     assert.ok(pending.length >= 10);
     const handled = result.tickets.length + result.local.length + result.blocked.length;

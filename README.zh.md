@@ -21,12 +21,12 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 
 ## 它是什么
 
-不是又一个 coding CLI。而是一套 skill pack + `init`，坐在支持的 host 前面（Claude Code、Cursor、Codex、…）。
+不是又一个 coding CLI，而是一套只支持 Codex 的 skill pack + `init`，为 Codex 增加多模型 director。
 
 - **Dynamic Cards。** 所有 OpenCodex live provider/route 都保持可见；精确 AA mapping 生成结构化 capability 和定位推断，未映射 route 保持 `unranked`。
-- **Config 只保存策略。** `~/.baton/config.toml` 只放 alias、可选 policy hint 和 exclusion，不复制 benchmark 分数；没有默认 subagent、父模型继承或静默 fallback。
-- **所有 route 保持可见。** OpenCodex discovery 是可执行 catalog；card 决定哪些 route 进入调度。当前 session/Goal 的 exclusions 只影响本次调度，不会变成全局 route-family 禁令。
-- **host 原生 worker。** 进程内 spawn，不 shell 出去跑 coding CLI print mode。Codex init 装到 `~/.codex`，不写进项目；card 在 `~/.baton`。Baton 不支持 Grok host。
+- **Config 只保存 director 设置。** `~/.baton/config.toml` 只放并发/深度参数，不支持本地模型 alias 或 route override。
+- **所有 route 保持可见。** OpenCodex discovery 是完整可执行 catalog；显式选择必须使用 exact route/profile ID，session/Goal exclusion 只影响本次调度。
+- **Codex 原生 worker。** 只使用进程内 Codex subagent；Baton 不接入其他 coding CLI host，也不 shell 到 print mode。skill 安装到 `~/.codex`，Baton 状态保存在 `~/.baton`。
 - **逻辑上无限 spawn。** host/session 的并发上限是运行时能力，不写死为 6；超限作为 backpressure 回到 FIFO，不消耗 attempt。真实 `close_agent` 后才释放 slot。深度 1。
 - **具体任务优先。** Ticket 区分 `concrete` 与 `deliberative`。优先把工作拆成有 objective/deliverable/done condition 的具体单元；必须委派思考任务时使用 checkpoint 状态同步。
 - **洁癖。** 普通 worker 只回短结论；checkpoint 也只包含 phase、current result、next step、blocker。工具倾倒和隐藏推理不进主会话。
@@ -63,14 +63,14 @@ Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 
 
 所有 Baton 自有状态都放在用户目录 `~/.baton`；Baton 不再生成项目内 `.baton`。
 
-- `config.toml`、`SKILL.md`：用户全局策略和 skill。
+- `config.toml`、`SKILL.md`：用户全局 director 设置和 skill。
 - `cache/`：全局共享的 OpenCodex Route Snapshot 与 capability 数据。
 - `workspaces/<canonical-root-sha256>/`：按 workspace 隔离的 ticket、Receipt、run、lock 和 host capacity。
 
 ## 命令
 
 ```
-baton init [--force] [--tools claude,cursor,codex,agents]
+baton init [--force]
 baton capabilities status
 baton capabilities show MODEL [--profile PROFILE]
 baton routes refresh
@@ -78,9 +78,7 @@ baton routes status
 baton routes candidates
 baton conversation promote --from-file PATH
 baton cards --ranked
-baton cards --unranked --provider cursor
-baton cards add --id reviewer --route xai/grok-4.6 --reasoning-effort high --strengths "review policy hint"
-baton cards add --id cursor/claude-opus-5 --route cursor/claude-opus-5 --enabled false
+baton cards --unranked --provider kimi
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write

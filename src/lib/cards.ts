@@ -91,11 +91,11 @@ function scoreCapability(text: unknown, capability: CardCapabilityEvidence): num
  */
 export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: string; score: number; card: ModelCard } {
   const eligible = (cards || []).filter((card) =>
-    card.enabled !== false && card.executable !== false && (!card.capability || card.capability.ranked),
+    card.executable !== false && (!card.capability || card.capability.ranked),
   );
   if (eligible.length === 0) {
     throw new CardMatchError(
-      "no ranked executable cards are available. Refresh routes/capabilities or add an explicit override in ~/.baton/config.toml. baton will not invent a default model.",
+      "no ranked executable OpenCodex routes are available. Refresh routes/capabilities; baton will not invent a default model.",
       { code: "NO_CARDS" },
     );
   }
@@ -106,7 +106,7 @@ export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: s
   const best = ranked[0];
   if (!best || best.score <= 0) {
     throw new CardMatchError(
-      `no model card matches this unit. Describe the work in card strengths, or add a card. Refusing to inherit a parent/default model.\nunit: ${text}`,
+      `no OpenCodex route matches this unit. Refusing to inherit a parent/default model.\nunit: ${text}`,
       { code: "NO_CARD_MATCH", candidates: ranked.map((r) => r.card.id) },
     );
   }
@@ -121,19 +121,10 @@ export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: s
 }
 
 export function requireCardId(modelId: string, cards: ModelCard[]): ModelCard {
-  const matches = cards.filter((c) => c.enabled !== false && (
-    c.id === modelId || (!c.reasoning_effort && (c.route_id === modelId || c.route_id?.endsWith(`/${modelId}`)))
-  ));
-  if (matches.length > 1) {
-    throw new CardMatchError(
-      `model "${modelId}" matches multiple provider routes (${matches.map((card) => card.id).join(", ")}). Use an exact provider/route id.`,
-      { code: "AMBIGUOUS_CARD", candidates: matches.map((card) => card.id) },
-    );
-  }
-  const found = matches[0];
+  const found = cards.find((card) => card.id === modelId);
   if (!found) {
     throw new CardMatchError(
-      `model "${modelId}" is not a configured card. Cards are the only routing input.`,
+      `model "${modelId}" is not an exact route/profile id in the current OpenCodex snapshot.`,
       { code: "UNKNOWN_CARD", candidates: cards.map((c) => c.id) },
     );
   }

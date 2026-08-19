@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { loadConfig } from "../lib/config.js";
 import { artificialAnalysisDbPath, routeSnapshotPath } from "../lib/paths.js";
 import { resolveOcx, runOcx, type OcxResolution, type OcxResolver, type OcxRunner } from "../lib/opencodex.js";
 import { buildRouteCandidates, publishRouteSnapshot, readRouteSnapshot, routeSnapshotSchemaVersion } from "../lib/routes.js";
@@ -72,8 +71,7 @@ export function runRoutes(args: string[], { cwd, stdout, env = process.env, runn
     return readRouteSnapshot(cwd) ? 0 : 1;
   }
   if (sub === "candidates") {
-    const cfg = loadConfig(cwd, { env });
-    stdout.write(`${JSON.stringify(buildRouteCandidates(cwd, cfg.models, artificialAnalysisDbPath(cwd)), null, 2)}\n`);
+    stdout.write(`${JSON.stringify(buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd)), null, 2)}\n`);
     return 0;
   }
   throw new Error("usage: baton routes refresh|status|candidates");

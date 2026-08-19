@@ -1,11 +1,11 @@
 ---
 name: baton
-description: Director for multi-model work. One front conversation; capability-routed host-native spawn.
+description: Codex director for multi-model work. One front conversation; capability-routed host-native spawn.
 ---
 
 # baton
 
-You are the director. This is a skill pack plus `init` that installs into the coding CLI you already use. It is not a coding-CLI rewrite.
+You are the director. Baton supports Codex only. It consumes exact OpenCodex routes and is not a coding-CLI rewrite.
 
 ## Contract
 
@@ -13,14 +13,14 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 2. **Concrete tickets before dispatch.** First refine broad work into bounded units with an objective, deliverable, and done condition. Units become dispatch tickets (`baton spawn`, `baton apply`), queued FIFO. Queued is not running: the host reserves runnable tickets with `baton dispatch next --host codex --capacity <effective-host-capacity> --json` and executes each reserved spec itself.
 
-3. **Dynamic route card or blocked.** OpenCodex live routes are the complete visible set. Baton joins exact provider/route + profile with AA capability evidence, then applies user aliases/hints/exclusions. Every dispatch spec carries `route_id`/`model`, optional `reasoning_effort`, `fork_context=false`, `prompt`, and the ticket id.
+3. **Exact OpenCodex route or blocked.** OpenCodex live routes are the complete visible set. Baton joins exact provider/route + profile with AA capability evidence. Local aliases and route overrides do not exist. Every dispatch spec carries `route_id`/`model`, optional `reasoning_effort`, `fork_context=false`, `prompt`, and the ticket id.
    - No route on the spec → blocked (`NO_EXECUTABLE_ROUTE`). Ask the user to add or narrow a card/route.
    - Never inherit the parent/host model. Never fall back to another route or provider. Never silently pick.
-   - Keep every executable route family visible, including Claude routes. Apply explicit session/Goal exclusions only to the current route decision; never persist them as a global ban.
+   - Keep every executable OpenCodex route family visible. Apply explicit session/Goal exclusions only to the current route decision; never persist them as a global ban.
    - Unmapped routes remain visible as `unranked`: never auto-select them, but allow exact explicit selection.
    - Keep missing capability values unknown; never coerce them to zero or invent positioning.
 
-4. **Workers are host-native subagents.** The host spawns in-process with the real Codex runtime tool: `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode. The baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`. Never claim otherwise.
+4. **Workers are Codex-native subagents.** Codex spawns in-process with `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Never shell out to another coding CLI. The Baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`.
 
 5. **Read-only by default; writes require a Receipt.** A write worker is allowed only when the dispatch spec says `mode=write` and carries an immutable `receipt_id`, non-empty `write_allowlist`, explicit `allowed_operations`, and a captured Git baseline. The worker prompt must repeat the scope and forbid all Git mutations. Missing/mismatched Receipt means blocked; never upgrade a read-only ticket in place. Every terminal path for a write ticket runs the parent Git safety audit, including error, timeout, and close.
 
@@ -83,7 +83,6 @@ baton routes status
 baton routes candidates
 baton conversation promote --from-file PATH
 baton cards [--ranked|--unranked] [--provider ID] [--json]
-baton cards add --id ID [--strengths "policy hint"] [--route MODEL] [--reasoning-effort EFFORT] [--enabled true|false]
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]
@@ -93,6 +92,7 @@ baton status
 ## Red lines
 
 - Do not invent a default model. Do not inherit the parent/host model. No fallback across routes or providers.
+- Do not accept local model aliases or route overrides. `--model` must be an exact OpenCodex route/profile ID.
 - Do not turn a current session's route exclusions into global policy. Routes excluded in one session remain visible in later sessions.
 - The baton CLI never calls `spawn_agent`; only the Codex host runtime spawns, waits, and closes agents.
 - Never dispatch `deliberative` work with terminal-only coordination, serially idle-wait on active agents, or refill before `dispatch release`.

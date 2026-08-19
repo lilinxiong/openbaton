@@ -25,7 +25,7 @@ describe("dispatch CLI", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
-      assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await command(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
@@ -67,11 +67,14 @@ describe("dispatch CLI", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
-      await command(["init", "--tools", "codex"], { cwd, env });
+      await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const unavailable = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(unavailable.code, 1);
-      assert.match(unavailable.stderr, /not a configured card|no executable route/);
+      assert.match(unavailable.stderr, /not an exact route\/profile id|no executable route/);
+      const bareAlias = await command(["spawn", "implement complex unit", "--model", "k3[1m]"], { cwd, env });
+      assert.equal(bareAlias.code, 1);
+      assert.match(bareAlias.stderr, /not an exact route\/profile id/);
       assert.equal((await command(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });
@@ -87,7 +90,7 @@ describe("dispatch CLI", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
-      assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await command(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
@@ -133,7 +136,7 @@ describe("dispatch CLI", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
-      await command(["init", "--tools", "codex"], { cwd, env });
+      await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await command(["spawn", "analyze the lifecycle", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env })).code, 0);

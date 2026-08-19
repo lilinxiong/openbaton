@@ -21,12 +21,12 @@ The goal is not simply “more agents.” It is one accountable workflow that ca
 
 ## What it is
 
-Not another coding CLI. A skill pack + `init` that sits in front of the supported host you already use (Claude Code, Cursor, Codex, …).
+Not another coding CLI. A Codex-only skill pack + `init` that adds a multi-model director to Codex.
 
 - **Dynamic Cards.** Every OpenCodex live provider/route stays visible. Exact AA mappings add structured capability vectors and inferred positioning; unmapped routes remain `unranked`.
-- **Config is policy only.** `~/.baton/config.toml` stores aliases, optional policy hints, and exclusions—not copied benchmark scores. No subagent default, parent inherit, or silent fallback.
-- **All routes stay visible.** OpenCodex discovery is the executable catalog. Cards opt routes into scheduling; session/Goal exclusions apply only to that session and never become global route-family bans.
-- **Host-native workers.** Spawn in-process subagents. Do not shell out to coding CLI print modes. Codex init installs into `~/.codex` (not the project); cards live in `~/.baton`. Grok is not a supported Baton host.
+- **Config is director-only.** `~/.baton/config.toml` stores concurrency/depth settings only. Local model aliases and route overrides are not supported.
+- **All routes stay visible.** OpenCodex discovery is the complete executable catalog. Explicit selection requires the exact route/profile ID; session/Goal exclusions remain temporary.
+- **Codex-native workers.** Spawn in-process Codex subagents. Baton does not integrate with other coding CLI hosts or shell out to print modes. The skill installs into `~/.codex`; Baton state lives in `~/.baton`.
 - **Unlimited logical spawn.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns tickets to FIFO without consuming attempts, and slots release only after the host confirms `close_agent`. Depth 1.
 - **Concrete work first.** Tickets distinguish `concrete` from `deliberative` work. Prefer bounded objective/deliverable/done-condition units; necessary reasoning workers use checkpointed state sync.
 - **Hygiene.** Normal workers return one short conclusion. Checkpoints contain only phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay out of the main conversation.
@@ -63,14 +63,14 @@ Dynamic Card matching uses AA intelligence/coding/agentic, cost, throughput, and
 
 All Baton-owned state is global under `~/.baton`; Baton never creates a project-local `.baton` directory.
 
-- `config.toml` and `SKILL.md`: user-global policy and skill.
+- `config.toml` and `SKILL.md`: user-global director settings and skill.
 - `cache/`: shared OpenCodex Route Snapshot and capability data.
 - `workspaces/<sha256-of-canonical-root>/`: isolated tickets, Receipts, runs, locks, and remembered host capacity for one workspace.
 
 ## Commands
 
 ```
-baton init [--force] [--tools claude,cursor,codex,agents]
+baton init [--force]
 baton capabilities status
 baton capabilities show MODEL [--profile PROFILE]
 baton routes refresh
@@ -78,9 +78,7 @@ baton routes status
 baton routes candidates
 baton conversation promote --from-file PATH
 baton cards --ranked
-baton cards --unranked --provider cursor
-baton cards add --id reviewer --route xai/grok-4.6 --reasoning-effort high --strengths "review policy hint"
-baton cards add --id cursor/claude-opus-5 --route cursor/claude-opus-5 --enabled false
+baton cards --unranked --provider kimi
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write

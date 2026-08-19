@@ -16,7 +16,7 @@
 | Build / package | PASS | `npm pack` 成功，144 entries；隔离安装后 `baton init/spawn/status` 与 OpenCodex 2.25.0 可运行 |
 | 全局状态目录 | PASS | cache 位于 `~/.baton/cache`；workspace runtime 位于 `~/.baton/workspaces/<canonical-root-sha256>`；项目目录无 `.baton` |
 | Route Snapshot | PASS | 66 routes；generation 1；catalog 不变时 fingerprint 稳定 |
-| Dynamic Cards | PASS | 66 unique live routes 生成 89 张 route/profile/override cards：33 ranked、56 unranked、4 user overrides；缺失指标保持 null |
+| Dynamic Cards | PASS | OpenCodex live routes 生成 exact route/profile cards；不接受本地 alias/override，缺失指标保持 null |
 | 8-ticket FIFO | PASS | 6 active + 2 queued；只依次补位 7、8；最终 8 completed、active 0、available 6 |
 | Capacity lifecycle | PASS | 仅在第一次 `dispatch next` 传 6；后续 bind/complete/status/recover 均从持久状态读取 6 |
 | Provider / no fallback | PASS | OpenCodex usage ledger 的 8/8 请求均为 `kimi/k3-256k`、HTTP 200、单 attempt、无 recovery、`explicit-provider-namespace` |
@@ -47,8 +47,8 @@ denied.txt modified
 - OpenCodex catalog 中所有 executable routes 保持可见，包括 Claude routes。
 - OpenCodex live routes 自动生成 Dynamic Cards；AA-mapped profile 可自动参与调度，unmapped route 保持可见但 `unranked`。
 - Session/Goal exclusions 只约束当前调度，不得写成全局 provider/model-family 禁令。
-- 当前本机 66 条 live routes 生成 89 张 route/profile/override cards：33 ranked、56 unranked、4 个用户 alias overrides，覆盖全部 66 条唯一 route。
-- AA capability vectors 是自动匹配的主要证据；config 中的 strengths 仅是可选 policy hint。未映射 route 不参与自动匹配，但可通过 exact `--model` 显式调度。
+- 当前 OpenCodex live routes 直接生成 exact route/profile cards；本地 config 不增加、重命名、覆盖或隐藏模型。
+- AA capability vectors 是自动匹配的主要证据；未映射 route 不参与自动匹配，但可通过 exact `--model` 显式调度。
 
 ## 保留边界
 

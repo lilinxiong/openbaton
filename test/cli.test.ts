@@ -29,6 +29,20 @@ function capture() {
 }
 
 describe("cli run()", () => {
+  it("rejects legacy host selection because Baton is Codex-only", async () => {
+    await withHome(async (home) => {
+      const out = capture();
+      const code = await run(["init", "--tools", "cursor"], {
+        cwd: fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-")),
+        stdout: out,
+        stderr: out,
+        env: fakeEnv(home),
+      });
+      assert.equal(code, 1);
+      assert.match(out.text(), /Codex-only/);
+    });
+  });
+
   it("init + match + spawn in a temp cwd; no-match is blocked", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-"));
@@ -36,10 +50,9 @@ describe("cli run()", () => {
       const out = capture();
       const err = capture();
 
-      const initCode = await run(["init", "--tools", "claude,codex"], { cwd, stdout: out, stderr: err, env });
+      const initCode = await run(["init"], { cwd, stdout: out, stderr: err, env });
       assert.equal(initCode, 0);
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
-      assert.ok(fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
       assert.ok(fs.existsSync(path.join(home, ".codex/skills/baton/SKILL.md")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
       assert.ok(!fs.existsSync(path.join(cwd, ".grok")));
@@ -90,13 +103,8 @@ describe("cli run()", () => {
       assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
-      const addRoute = await run([
-        "cards", "add", "--id", "reviewer", "--strengths", "review code",
-        "--route", "xai/grok-4.6", "--reasoning-effort", "high",
-      ], { cwd, stdout: capture(), stderr: capture(), env });
-      assert.equal(addRoute, 0);
-      const config = fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8");
-      assert.match(config, /id = "reviewer"[\s\S]*route_id = "xai\/grok-4\.6"[\s\S]*reasoning_effort = "high"/);
+      const addRoute = await run(["cards", "add", "--id", "reviewer"], { cwd, stdout: capture(), stderr: capture(), env });
+      assert.equal(addRoute, 1);
     });
   });
 
@@ -113,7 +121,7 @@ describe("cli run()", () => {
       git(cwd, "add", "a.txt", "b.txt", "c.txt");
       git(cwd, "commit", "-q", "-m", "baseline");
 
-      assert.equal(await run(["init", "--tools", "codex"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const out = capture();
       const code = await run([
@@ -132,7 +140,7 @@ describe("cli run()", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-openspec-"));
       const env = fakeEnv(home);
-      assert.equal(await run(["init", "--tools", "codex"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
       const changeDir = path.join(cwd, "openspec", "changes", "demo");
       fs.mkdirSync(changeDir, { recursive: true });
       fs.writeFileSync(path.join(changeDir, "tasks.md"), "## 1. Work\n\n- [ ] 1.1 implement a complex repository migration\n");

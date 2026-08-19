@@ -82,5 +82,9 @@ describe("matchModelCard", () => {
     };
     assert.throws(() => matchModelCard("implement code", [unranked]), (err) => err instanceof CardMatchError && err.code === "NO_CARDS");
     assert.equal(requireCardId("provider/unmapped", [unranked]).route_id, "provider/unmapped");
+    assert.throws(
+      () => requireCardId("unmapped", [unranked]),
+      (error) => error instanceof CardMatchError && error.code === "UNKNOWN_CARD",
+    );
   });
 });

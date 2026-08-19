@@ -720,7 +720,7 @@
         <div class="background-grid">
           <article class="background-card"><span class="number">1</span><h3>只有原始 spawn 不够</h3><p>主 agent 能看到模型和 spawn 工具，却不知道每个模型的权威能力、route 差异、健康度、额度和适用任务。</p></article>
           <article class="background-card"><span class="number">2</span><h3>OpenSpec 不负责模型调度</h3><p>OpenSpec 持有 Goal、Plan、Tasks、Replan 和 Status，但不决定哪个模型执行、允许操作哪些文件、并发和 fallback。</p></article>
-          <article class="background-card"><span class="number">3</span><h3>外部 CLI workflow 需要进化</h3><p>原工作流通过 Grok/Kimi/Cursor 外部 CLI 执行。现在 transport 改为 host-native subagent，但授权、分配、验收和上下文卫生仍然需要。</p></article>
+          <article class="background-card"><span class="number">3</span><h3>Codex 原生 spawn 仍需调度</h3><p>Codex 提供 host-native subagent 原语；授权、route 分配、并发、验收和上下文卫生仍然需要统一 director。</p></article>
           <article class="background-card"><span class="number">4</span><h3>对话需要进入受控 Goal</h3><p>用户先自由讨论，确认方向后才开始执行。OpenBaton需要把当前对话编译成 Goal Draft 和一次授权单，不要求手动调用 goal-preflight skill。</p></article>
         </div>
         <div class="why-baton">

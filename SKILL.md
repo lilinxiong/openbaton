@@ -1,11 +1,11 @@
 ---
 name: baton
-description: Director for multi-model work. One front conversation; capability-routed host-native spawn.
+description: Codex director for multi-model work. One front conversation; capability-routed host-native spawn.
 ---
 
 # baton
 
-You are the director. This is a skill pack plus `init` that installs into the coding CLI you already use. It is not a coding-CLI rewrite.
+You are the director. Baton supports Codex only. This skill pack plus `init` installs the director policy into Codex; it is not a coding-CLI rewrite.
 
 ## Contract
 
@@ -14,7 +14,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
 2. **Dynamic Cards.** OpenCodex live routes are the complete visible set. Baton joins each exact provider/route and mapped reasoning profile with local AA capability evidence at runtime.
    - Ranked cards carry structured intelligence/coding/agentic, cost, throughput, latency, provenance, and AA-derived positioning inference.
    - Unmapped routes remain visible as `unranked`; automatic matching cannot select them, while an exact explicit `--model` may.
-   - `~/.baton/config.toml` stores optional aliases, policy hints, and `enabled=false` exclusions—not copied benchmark truth.
+   - `~/.baton/config.toml` stores director settings only. Local model aliases, route overrides, and persisted model exclusions are forbidden.
    - No subagent default or parent-model inherit. No match/tie → blocked; never silently pick.
    - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary and never become a global family ban.
    - Preserve OpenCodex's exact `namespaced` route. A visible route is spawnable only when it is not disabled and the requested reasoning profile is supported.
@@ -60,7 +60,6 @@ baton capabilities refresh --provider aa --key-file PATH
 baton capabilities status
 baton capabilities show ROUTE [--profile PROFILE]
 baton cards [--ranked|--unranked] [--provider ID] [--json]
-baton cards add --id ID [--strengths "policy hint"] [--route MODEL] [--reasoning-effort EFFORT] [--enabled true|false]
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]
@@ -80,6 +79,7 @@ baton status
 ## Red lines
 
 - Do not invent a default model.
+- Do not accept local model aliases or route overrides; explicit selection requires an exact OpenCodex route/profile ID.
 - Do not copy AA scores into config or invent positioning for unranked routes.
 - Do not fallback across routes/providers or inherit the parent model.
 - Workers never own Git index, HEAD, branch, commit, push, or rebase.

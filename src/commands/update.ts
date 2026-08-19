@@ -4,7 +4,6 @@ import { packageRoot, batonHomeDir, skillPath, configPath, displayHomePath } fro
 import { loadConfig, saveConfig, normalizeConfig, isUnknownRecord } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
-import { codexSkillInstalled, syncCodexCardAgents } from "../lib/codex-agents.js";
 
 export interface UpdateProjectOptions {
   forceSkill?: boolean;
@@ -16,7 +15,7 @@ export interface UpdateProjectResult {
 }
 
 /**
- * Refresh baton-owned files. Never clobber user model cards.
+ * Refresh Baton-owned Codex files and director settings.
  * Refreshes installed host SKILL copies. Does not install new hosts.
  * Director files live in ~/.baton. Never creates project .baton.
  */
@@ -42,24 +41,15 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
     actions.push(`wrote ${displayHomePath(destConfig, { cwd, env })} (was missing)`);
   } else {
     const current = loadConfig(cwd, { env });
-    const aliases = current.models.filter((card) => !/^AA Terminal-Bench\b/.test(card.strengths));
     const merged = normalizeConfig({
       director: { ...tmplDirector, ...current.director },
-      models: aliases,
     });
     saveConfig(cwd, merged, { env });
-    actions.push(`merged director defaults into ${displayHomePath(destConfig, { cwd, env })} (user aliases kept; executable models come from OpenCodex)`);
+    actions.push(`merged director defaults into ${displayHomePath(destConfig, { cwd, env })} (all routes come from OpenCodex)`);
   }
 
   const hosts = refreshInstalledHostSkills(cwd, { env });
   actions.push(...hosts.actions);
-
-  const cards = loadConfig(cwd, { env }).models;
-  if (codexSkillInstalled(cwd, { env })) {
-    const agents = syncCodexCardAgents(cwd, cards, { env });
-    for (const file of agents.created) actions.push(`updated ${file}`);
-    for (const file of agents.pruned) actions.push(`removed ${file}`);
-  }
 
   return { actions };
 }
