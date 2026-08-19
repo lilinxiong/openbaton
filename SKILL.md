@@ -42,6 +42,10 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - Join route + profile only through explicit canonical mappings. Missing or uncertain mappings remain `unranked`; never fuzzy-match or invent a score.
    - Capability evidence informs the host's decision. It does not replace cards, route health, quota, authorization, or final acceptance.
 
+10. **Conversation promotion is dynamic.** The host watches ordinary dialogue for explicit execution intent, builds a faithful `explicit/inferred/unresolved/excluded` Draft, and asks once for approval. The user does not manually invoke Baton. OpenSpec owns breakdown/plan when present; otherwise the main agent owns them.
+
+11. **Route Snapshot gates executability.** Join cards with the persisted OpenCodex catalog fingerprint and local capability cache. Refresh discovery only when catalog/config changes or explicitly requested. Missing executable route is blocked; missing capability mapping is `unranked`.
+
 ## Commands
 
 ```
@@ -61,6 +65,8 @@ baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch complete TICKET --text "short outcome" --json
 baton dispatch fail|timeout|close TICKET --json
 baton dispatch recover|status --json
+baton routes refresh|status|candidates
+baton conversation promote --from-file PATH
 baton status
 ```
 

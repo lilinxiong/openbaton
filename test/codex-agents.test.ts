@@ -35,6 +35,8 @@ describe("Codex card agents", () => {
       assert.match(skill, /fork_context=false/);
       assert.match(skill, /Read-only by default; writes require a Receipt/);
       assert.match(skill, /WRITE_SCOPE_VIOLATION/);
+      assert.match(skill, /Conversation-to-Goal is automatic host policy/);
+      assert.match(skill, /Route data is local-first/);
       assert.match(skill, /No fallback across routes or providers/i);
       assert.match(skill, /NO_EXECUTABLE_ROUTE/);
       assert.doesNotMatch(skill, /director-only/i);

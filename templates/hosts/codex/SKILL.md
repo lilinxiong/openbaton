@@ -30,6 +30,10 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - If absent: still fully usable via `baton spawn` + dispatch.
 
+9. **Conversation-to-Goal is automatic host policy.** During ordinary dialogue, keep discussing without side effects. When the user explicitly says phrases such as “按这个执行”, “转成 Goal”, or “开始进入实施流程”, compile the current conversation into `explicit/inferred/unresolved/excluded`, show a faithful Goal Draft, and request one approval. Do not require the user to invoke this skill manually. Unresolved items block activation. With OpenSpec, hand the approved business breakdown/plan to OpenSpec; without OpenSpec, the main agent owns Goal/Plan/Tasks. Baton owns only delegation/execution.
+
+10. **Route data is local-first.** Read the persisted OpenCodex Route Snapshot plus local AA capability cache. Refresh `baton routes` only when the OpenCodex catalog/config fingerprint changes or the user explicitly requests refresh. A card is executable only when its exact route is in the snapshot; missing route is blocked, missing AA mapping is `unranked`, never guessed. Capability evidence informs the main agent; it never makes the decision alone.
+
 ## Codex runtime protocol
 
 Lifecycle per ticket:
@@ -63,6 +67,10 @@ baton dispatch timeout TICKET [--message MSG] --json
 baton dispatch close TICKET [--message MSG] --json
 baton dispatch recover [--stale-ms N] --json
 baton dispatch status --json
+baton routes refresh
+baton routes status
+baton routes candidates
+baton conversation promote --from-file PATH
 baton cards
 baton cards add --id ID --strengths "..."
 baton match <text>
