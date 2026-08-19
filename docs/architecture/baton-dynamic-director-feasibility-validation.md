@@ -1,5 +1,7 @@
 # OpenBaton Dynamic Director 可行性验证记录
 
+> 历史基线：本文的 `REVISE` 是正式产品集成前结论，已被 [2026-08-19 Codex RC 验收报告](./openbaton-rc-validation-2026-08-19.md) 的 Codex adapter PASS 取代。
+
 验证日期：2026-08-18
 验证环境：Codex Desktop / host-native `spawn_agent`
 最终判定：**`REVISE / 技术可行，需按实测修订后实施`**

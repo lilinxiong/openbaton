@@ -730,9 +730,11 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 ## 11. 整体可行性判断
 
-### 11.1 总体结论
+> **当前状态（2026-08-19 RC）：`PASS / Codex 首版闭环通过`。** 137/137 tests、全局 `~/.baton` 状态、66-route snapshot、真实 8-ticket FIFO、write completion/error safety gate、OpenSpec stable-number writeback 和 provider no-fallback 日志均已通过。完整证据见 [OpenBaton Codex RC 验收报告](./openbaton-rc-validation-2026-08-19.md)。以下 11.1～11.8 保留的是实施前历史判定与验收规则，其中 `REVISE`、待集成和旧风险描述不再代表当前产品状态。
 
-当前结论是：**`REVISE / 技术可行，需按实测修订后实施`。**
+### 11.1 历史总体结论
+
+当时结论是：**`REVISE / 技术可行，需按实测修订后实施`。**
 
 2026-08-18 的验证性原型已经跑通 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 的组合闭环；但实测确认 Codex worker 共享父工作树、Git index 和 HEAD，prompt allowlist 也不是 host 强隔离。2026-08-19 已实现并实测 Artificial Analysis 本地 SQLite capability cache。OpenCodex 不锁死版本号，兼容性由运行时 capability probe 决定。
 
@@ -866,7 +868,7 @@ worker worktree/patch 验证
 | `REVISE / 需修订` | 机制可替代但当前设计假设错误，例如 worktree/import 模式与预期不同 |
 | `BLOCKED / 不可实施` | Host 无法提供安全结果回收或 OpenSpec/OpenCodex 关键接口不满足闭环 |
 
-当前状态：`REVISE / 技术可行，需按实测修订后实施`。Gate B、Gate C 的验证性原型通过，Capability Cache 已进入产品实现；Gate A 仍需把 shared Git 状态纳入 parent safety gate，并接入真实 native ticket lifecycle。OpenCodex 以 capability probe 兼容，不要求锁定版本。完成这些修订并复跑后，才可宣称 `PASS / 可实施`。
+该历史状态已经完成修订并复跑；当前结论以本节顶部 RC PASS 和独立验收报告为准。
 
 ## 12. 明确非目标
 

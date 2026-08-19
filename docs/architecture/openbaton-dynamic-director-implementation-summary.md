@@ -4,7 +4,7 @@
 
 ## 结论
 
-OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环。原验证报告中的 V-03～V-09 已逐批修复；默认只读，写 worker 必须持有不可变 Receipt，并在接受结论前通过 parent Git safety gate。
+OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环，并在最终 RC 验收中判定为 PASS。原验证报告中的 V-03～V-09 已逐批修复；默认只读，写 worker 必须持有不可变 Receipt，且 completed/errored/timed_out/closed 每条终态路径都执行 parent Git safety gate。
 
 ## 已实现能力
 
@@ -13,6 +13,7 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 - `src/`、`test/`、`bin/` 无 JavaScript 源文件。
 - NodeNext TypeScript build，生产源码执行 `tsc --noEmit`。
 - 测试使用 TypeScript + `tsx`。
+- 当前完整回归为 137 passed、0 failed。
 - npm 发布只包含编译后的 `dist` 和必要 templates/data。
 
 ### Host-native 多 subagent
@@ -32,6 +33,12 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 - Parent safety gate 审计 tracked、untracked、create、delete、rename、chmod、symlink、dirty baseline、Git index 和 HEAD。
 - 越界写入转为 `errored/WRITE_SCOPE_VIOLATION`，拒绝 worker conclusion 并释放槽位。
 - Worker 永不拥有 stage/commit/branch/rebase/push。
+
+### 全局状态目录
+
+- Baton 不生成项目内 `.baton`。
+- config/skill 和共享 route/capability cache 位于 `~/.baton`。
+- ticket、Receipt、run、lock 和 capacity 位于 `~/.baton/workspaces/<canonical-root-sha256>`，同一 repo 子目录共享 namespace，不同 repo 隔离。
 
 ### Route Snapshot 与能力数据
 
@@ -67,9 +74,9 @@ refill:  只补位 ticket 7、8
 final:   completed=8, active=0, available=6
 ```
 
-### V-06 写入负向测试
+### V-06 写入验收
 
-真实 Kimi worker 同时修改 `allowed.txt` 和越界 `denied.txt`：
+本轮真实 Kimi workers 均只修改 Receipt 允许的 `allowed.txt`，证明正向 scope 生效。负向 gate 使用当前编译 CLI、真实 Git baseline 和实际 allowed + denied diff：
 
 ```text
 ticket.status       = errored
@@ -78,6 +85,8 @@ ticket.conclusion   = null
 violation           = E_OUT_OF_SCOPE_PATH:denied.txt
 slot                = released
 ```
+
+同一负向场景通过 `dispatch fail --code UPSTREAM_429` 重跑后仍触发 safety gate，并在 `ticket.error.host_error` 中保留原始 host error。
 
 ### OpenCodex catalog
 
@@ -90,6 +99,8 @@ slot                = released
 ## 边界
 
 - 当前最终 PASS 针对 Codex host adapter；其它 host 必须独立验证。
-- AA Free 数据库只保存在本机并由 Git 忽略。
+- AA Free 数据库只保存在用户全局 `~/.baton/cache`，不进入项目 Git 工作树。
 - Benchmark 是主 agent 的证据，不是自动决策器。
 - Parent 始终拥有业务裁决、验收、测试与 Git。
+- OpenCodex catalog 的所有 executable routes 保持可见；session/Goal exclusions 仅在当前调度生效，不是全局 Claude 或 provider 禁令。
+- 当前 card 覆盖仍小于 route catalog；全 catalog card 建模属于后续独立工作。

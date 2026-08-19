@@ -1,5 +1,7 @@
 # OpenBaton Dynamic Director 产品流程验证报告
 
+> 历史基线：本报告验证的是 `683d866`，其 `FAIL / 尚未闭环` 结论已被 [2026-08-19 Codex RC 验收报告](./openbaton-rc-validation-2026-08-19.md) 的 PASS 取代。保留本文仅用于追溯当时的失败场景和修复批次。
+
 验证日期：2026-08-19
 
 验证基线：`683d866 feat: add local AA capability cache`
