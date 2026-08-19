@@ -4,18 +4,20 @@
   "description": "Director for multi-model work. 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.",
   "type": "module",
   "bin": {
-    "baton": "bin/baton.js"
+    "baton": "dist/bin/baton.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5"
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "baton": "node bin/baton.js"
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.test.json --noEmit --noCheck",
+    "test": "npm run check && tsx --test test/*.test.ts",
+    "baton": "tsx bin/baton.ts",
+    "prepack": "npm run build"
   },
   "files": [
-    "bin",
-    "src",
+    "dist",
     "data",
     "docs/data-sources",
     "templates",
@@ -33,5 +35,10 @@
   "license": "MIT",
   "dependencies": {
     "@bitkyc08/opencodex": "^2.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
   }
 }

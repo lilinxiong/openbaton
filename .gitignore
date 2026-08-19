@@ -1,4 +1,5 @@
 node_modules
+dist
 .baton/spawns
 .baton/runs
 .baton/tmp
