@@ -14,6 +14,7 @@ export const CAPABILITIES_DIR = "capabilities";
 export const AA_DB_NAME = "artificial-analysis.sqlite3";
 export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
 export const ROUTE_SNAPSHOT_NAME = "routes.json";
+export const DISPATCH_STATE_NAME = "dispatch.json";
 
 /**
  * User home for host + director files.
@@ -67,6 +68,11 @@ export function artificialAnalysisManifestPath(cwd: string): string {
 
 export function routeSnapshotPath(cwd: string): string {
   return path.join(cwd, BATON_DIR, CACHE_DIR, ROUTE_SNAPSHOT_NAME);
+}
+
+/** Dispatcher runtime state (remembered capacity). Lives under the git-ignored .baton/runs dir. */
+export function dispatchStatePath(cwd: string): string {
+  return path.join(cwd, BATON_DIR, RUNS_DIR, DISPATCH_STATE_NAME);
 }
 
 export function packageRoot(): string {

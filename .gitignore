@@ -4,5 +4,6 @@ dist
 .baton/runs
 .baton/tmp
 .baton/cache
+.baton/receipts
 *.log
 .DS_Store

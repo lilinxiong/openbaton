@@ -3,6 +3,7 @@ import {
   bindAgent,
   dispatchSnapshot,
   finishAgent,
+  persistedCapacity,
   recoverDispatches,
   reserveNext,
 } from "../lib/dispatch.js";
@@ -17,6 +18,9 @@ const USAGE = `usage:
   baton dispatch close TICKET [--message MESSAGE] --json
   baton dispatch recover [--stale-ms N] --json
   baton dispatch status [--capacity N] --json
+
+dispatch next remembers --capacity under .baton/runs/; later bind/complete/status/recover
+calls inherit it without repeating the flag.
 `;
 
 type FlagMap = Record<string, string | boolean>;
@@ -58,6 +62,8 @@ function print(stdout: WritableLike, value: unknown, json = true): void {
 
 function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean | undefined): number {
   if (value != null) return Number(value);
+  const remembered = persistedCapacity(cwd);
+  if (remembered != null) return remembered;
   return loadConfig(cwd, { env }).director.max_concurrent;
 }
 

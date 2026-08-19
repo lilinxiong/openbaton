@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { auditWorktree, captureBaseline, pathAllowed } from "../src/lib/safety.js";
+import { auditWorktree, captureBaseline, isBatonRuntimePath, pathAllowed } from "../src/lib/safety.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
@@ -68,6 +68,24 @@ describe("parent shared-worktree safety gate", () => {
     assert.equal(pathAllowed("allowed.txt.bak", ["allowed.txt"]), false);
     assert.equal(pathAllowed("../outside", ["**"]), false);
     assert.throws(() => pathAllowed("allowed.txt", ["../**"]), /invalid write allowlist/);
+  });
+
+  it("ignores project-local .baton runtime artifacts in baseline capture and audit", () => {
+    const cwd = fixture();
+    fs.mkdirSync(path.join(cwd, ".baton", "receipts"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, ".baton", "spawns"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".baton", "receipts", "rcpt-spn-0001-a1.json"), "{}\n");
+    fs.writeFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "{}\n");
+    const baseline = captureBaseline(cwd);
+    assert.deepEqual(baseline.dirty_entries, []);
+    // Runtime state written while a worker runs is not treated as a worker change.
+    fs.mkdirSync(path.join(cwd, ".baton", "runs"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".baton", "runs", "dispatch.json"), "{}\n");
+    const verdict = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
+    assert.equal(verdict.accepted, true);
+    assert.deepEqual(verdict.changes, []);
+    assert.equal(isBatonRuntimePath(".baton/receipts/rcpt.json"), true);
+    assert.equal(isBatonRuntimePath("src/allowed.txt"), false);
   });
 
   it("classifies executable mode changes as chmod rather than write", () => {

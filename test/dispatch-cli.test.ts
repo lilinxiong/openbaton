@@ -73,4 +73,45 @@ describe("dispatch CLI", () => {
       assert.equal(ticket.conclusion, null);
     });
   });
+
+  it("remembers dispatch next --capacity for later bind/complete/status/recover without repeating it", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement third unit", "--model", "k3"], { cwd, env })).code, 0);
+
+      const next = await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env });
+      assert.equal(next.code, 0, next.stderr);
+      assert.deepEqual(JSON.parse(next.stdout).reserved.map((item) => item.ticket_id), ["spn-0001", "spn-0002"]);
+
+      // Capacity is persisted under ignored Baton runtime state.
+      const stateFile = path.join(cwd, ".baton", "runs", "dispatch.json");
+      assert.ok(fs.existsSync(stateFile));
+      assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).capacity, 2);
+
+      // Every following command is a fresh process (restart) and omits --capacity.
+      const status = await command(["dispatch", "status", "--json"], { cwd, env });
+      assert.equal(status.code, 0, status.stderr);
+      const snap = JSON.parse(status.stdout);
+      assert.equal(snap.capacity, 2);
+      assert.equal(snap.active, 2);
+      assert.equal(snap.available, 0);
+
+      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-1", "--json"], { cwd, env });
+      assert.equal(bound.code, 0, bound.stderr);
+      assert.equal(JSON.parse(bound.stdout).snapshot.capacity, 2);
+
+      const completed = await command(["dispatch", "complete", "spn-0001", "--text", "done", "--json"], { cwd, env });
+      assert.equal(completed.code, 0, completed.stderr);
+      assert.equal(JSON.parse(completed.stdout).snapshot.capacity, 2);
+      assert.equal(JSON.parse(completed.stdout).snapshot.available, 1);
+
+      const recovered = await command(["dispatch", "recover", "--json"], { cwd, env });
+      assert.equal(recovered.code, 0, recovered.stderr);
+      assert.equal(JSON.parse(recovered.stdout).snapshot.capacity, 2);
+    });
+  });
 });

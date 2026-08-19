@@ -1,9 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeConclusion } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn } from "./spawn.js";
-import type { SpawnTicket, TicketStatus } from "./spawn.js";
+import type { SpawnTicket, TicketError, TicketStatus } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
+import { dispatchStatePath } from "./paths.js";
 import { readReceipt, type DelegationReceipt } from "./receipt.js";
 import { auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
@@ -29,6 +31,17 @@ export class DispatchError extends Error {
     this.code = code;
     Object.assign(this, extras);
   }
+}
+
+/** Host-reported terminal failure, kept as structured evidence when the safety gate overrides it. */
+interface HostTerminalError {
+  status: TicketStatus;
+  code: string;
+  message: string;
+}
+
+interface WriteScopeRejection extends TicketError {
+  host_error?: HostTerminalError;
 }
 
 type TimeInput = Date | string | number | (() => Date | string | number) | undefined;
@@ -102,6 +115,41 @@ function capacityValue(capacity: unknown): number {
   const value = Number(capacity);
   if (!Number.isInteger(value) || value < 1) throw new DispatchError("capacity must be a positive integer", "INVALID_CAPACITY");
   return value;
+}
+
+function readDispatchState(cwd: string): UnknownRecord {
+  try {
+    return JSON.parse(fs.readFileSync(dispatchStatePath(cwd), "utf8")) as UnknownRecord;
+  } catch {
+    return {};
+  }
+}
+
+function writeDispatchState(cwd: string, state: UnknownRecord): void {
+  const file = dispatchStatePath(cwd);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = file + ".tmp-" + process.pid + "-" + crypto.randomUUID();
+  try {
+    fs.writeFileSync(temp, JSON.stringify(state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
+  }
+}
+
+/** Capacity persisted by `dispatch next`, or null when no dispatch session has run yet. */
+export function persistedCapacity(cwd: string): number | null {
+  const value = Number(readDispatchState(cwd).capacity);
+  return Number.isInteger(value) && value >= 1 ? value : null;
+}
+
+/** Remember the capacity used by `dispatch next` so later bind/complete/status/recover calls inherit it. */
+export function rememberDispatchCapacity(cwd: string, capacity: number): number {
+  const max = capacityValue(capacity);
+  const state = readDispatchState(cwd);
+  state.capacity = max;
+  writeDispatchState(cwd, state);
+  return max;
 }
 
 export interface DispatchSpec {
@@ -203,10 +251,11 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
       ticket.attempt = Number(ticket.attempt || 0) + 1;
       ticket.error = null;
       writeSpawn(cwd, ticket);
-      const receipt = readReceipt(cwd, ticket.receipt_id!);
+    const receipt = readReceipt(cwd, ticket.receipt_id!);
       reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string }, receipt));
       available -= 1;
     }
+    rememberDispatchCapacity(cwd, max);
     return { reserved, blocked, snapshot: dispatchSnapshot(cwd, { capacity: max }) };
   });
 }
@@ -249,27 +298,42 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
     const expected: TicketStatus | TicketStatus[] = terminal === "completed" ? "running" : ["dispatching", "running"];
-    if (terminal === "completed") {
-      if (!ticket.agent_id) throw new DispatchError(`ticket ${id} has no bound agent`, "AGENT_NOT_BOUND", { ticketId: id });
-      if (ticket.mode === "write") {
-        if (!ticket.receipt_id) throw new DispatchError(`ticket ${id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: id });
-        const receipt = readReceipt(cwd, ticket.receipt_id);
-        if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
-        const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation => item !== "read");
-        const verdict = auditWorktree(cwd, receipt.baseline, { write_allowlist: receipt.scope.write_allowlist, allowed_operations: allowedOperations });
-        ticket.safety_verdict = verdict as unknown as UnknownRecord;
-        if (!verdict.accepted) {
-          transition(ticket, expected, "errored", { at, event: "safety_gate_rejected", detail: { error_code: "WRITE_SCOPE_VIOLATION" } });
-          ticket.error = {
-            code: "WRITE_SCOPE_VIOLATION",
-            message: verdict.violations.map((item) => item.code + ":" + (item.path || "repository")).join(", "),
-          };
-          ticket.conclusion = null;
-          ticket.finished_at = at;
-          writeSpawn(cwd, ticket);
-          return ticket;
-        }
+    if (terminal === "completed" && !ticket.agent_id) throw new DispatchError(`ticket ${id} has no bound agent`, "AGENT_NOT_BOUND", { ticketId: id });
+    let hostError: HostTerminalError | null = null;
+    if (terminal !== "completed") {
+      const code = String(errorCode || (terminal === "timed_out" ? "AGENT_TIMEOUT" : terminal === "closed" ? "AGENT_CLOSED" : "AGENT_ERROR"));
+      hostError = { status: terminal as TicketStatus, code, message: String(errorMessage || code) };
+    }
+    // Every terminal path of a write ticket runs the parent Git safety audit before the slot is released.
+    if (ticket.mode === "write") {
+      if (!ticket.receipt_id) throw new DispatchError(`ticket ${id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: id });
+      const receipt = readReceipt(cwd, ticket.receipt_id);
+      if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
+      const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation => item !== "read");
+      const verdict = auditWorktree(cwd, receipt.baseline, { write_allowlist: receipt.scope.write_allowlist, allowed_operations: allowedOperations });
+      ticket.safety_verdict = verdict as unknown as UnknownRecord;
+      if (!verdict.accepted) {
+        transition(ticket, expected, "errored", {
+          at,
+          event: "safety_gate_rejected",
+          detail: {
+            error_code: "WRITE_SCOPE_VIOLATION",
+            ...(hostError ? { host_status: hostError.status, host_error_code: hostError.code } : {}),
+          },
+        });
+        const rejection: WriteScopeRejection = {
+          code: "WRITE_SCOPE_VIOLATION",
+          message: verdict.violations.map((item) => item.code + ":" + (item.path || "repository")).join(", "),
+        };
+        if (hostError) rejection.host_error = hostError;
+        ticket.error = rejection;
+        ticket.conclusion = null;
+        ticket.finished_at = at;
+        writeSpawn(cwd, ticket);
+        return ticket;
       }
+    }
+    if (terminal === "completed") {
       const clean = sanitizeConclusion(conclusion);
       if (!clean.ok) throw new DispatchError("error" in clean ? clean.error : "invalid conclusion", "HYGIENE", { ticketId: id });
       if (ticket.openspec && typeof ticket.openspec.tasks_path === "string" && typeof ticket.openspec.number === "string") {
@@ -281,10 +345,9 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
       ticket.conclusion = clean.conclusion;
       ticket.error = null;
     } else {
-      const code = String(errorCode || (terminal === "timed_out" ? "AGENT_TIMEOUT" : terminal === "closed" ? "AGENT_CLOSED" : "AGENT_ERROR"));
-      const message = String(errorMessage || code);
-      transition(ticket, expected, terminal as TicketStatus, { at, event: `agent_${terminal}`, detail: { error_code: code } });
-      ticket.error = { code, message };
+      if (!hostError) throw new DispatchError("invalid terminal status: " + terminal, "INVALID_TERMINAL_STATUS", { ticketId: id });
+      transition(ticket, expected, terminal as TicketStatus, { at, event: "agent_" + terminal, detail: { error_code: hostError.code } });
+      ticket.error = { code: hostError.code, message: hostError.message };
       if (conclusion) {
         const clean = sanitizeConclusion(conclusion);
         if (clean.ok) ticket.conclusion = clean.conclusion;
@@ -324,8 +387,8 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, now }: Recove
   });
 }
 
-export function dispatchSnapshot(cwd: string, { capacity = 1 }: { capacity?: number } = {}) {
-  const max = capacityValue(capacity);
+export function dispatchSnapshot(cwd: string, { capacity }: { capacity?: number } = {}) {
+  const max = capacity == null ? (persistedCapacity(cwd) ?? 1) : capacityValue(capacity);
   const tickets = fifoTickets(cwd);
   const counts: Partial<Record<TicketStatus, number>> = {};
   for (const ticket of tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;

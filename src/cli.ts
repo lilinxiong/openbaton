@@ -28,7 +28,8 @@ interface RunOptions {
   fetchImpl?: typeof fetch;
 }
 
-type FlagMap = Record<string, string | boolean>;
+type FlagValue = string | boolean;
+type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
 export const VERSION = "0.1.0";
 
@@ -206,10 +207,11 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`unit: ${planned.description}\n`);
     return 0;
   }
-  const writePaths = (stringFlag(flags, "write-path") || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (writePaths.length) {
     const allowed = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
-    const operations = (stringFlag(flags, "write-ops") || "write,create").split(",").map((item) => item.trim()) as SafetyOperation[];
+    const opsFlags = multiFlag(flags, "write-ops");
+    const operations = (opsFlags.length ? opsFlags : ["write,create"]).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean) as SafetyOperation[];
     if (!operations.length || operations.some((item) => !allowed.has(item))) throw new Error("--write-ops must contain write,create,delete,rename,chmod");
     planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline: captureBaseline(cwd), writeAllowlist: writePaths, allowedOperations: operations });
     planned.ticket.mode = "write";
@@ -313,10 +315,10 @@ function parseFlags(args: string[]): FlagMap {
     const key = a.slice(2);
     const next = args[i + 1];
     if (next && !next.startsWith("--")) {
-      flags[key] = next;
       i += 1;
+      rememberFlag(flags, key, next);
     } else {
-      flags[key] = true;
+      rememberFlag(flags, key, true);
     }
   }
   return flags;
@@ -324,7 +326,28 @@ function parseFlags(args: string[]): FlagMap {
 
 function stringFlag(flags: FlagMap, key: string): string | undefined {
   const value = flags[key];
-  return typeof value === "string" ? value : undefined;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (let i = value.length - 1; i >= 0; i -= 1) {
+      if (typeof value[i] === "string") return value[i] as string;
+    }
+  }
+  return undefined;
+}
+
+function rememberFlag(flags: FlagMap, key: string, value: FlagValue): void {
+  const prev = flags[key];
+  if (prev === undefined) flags[key] = value;
+  else if (Array.isArray(prev)) prev.push(value);
+  else flags[key] = [prev, value];
+}
+
+/** All values of a repeatable flag, in order. Comma-separated values are split by callers. */
+function multiFlag(flags: FlagMap, key: string): string[] {
+  const value = flags[key];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  return [];
 }
 
 function positionalText(args: string[]): string {

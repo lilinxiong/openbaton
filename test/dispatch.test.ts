@@ -9,6 +9,7 @@ import {
   bindAgent,
   dispatchSnapshot,
   finishAgent,
+  persistedCapacity,
   recoverDispatches,
   reserveNext,
 } from "../src/lib/dispatch.js";
@@ -400,5 +401,34 @@ describe("restart: state reloads from disk", () => {
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "resumed and done", now: at(40) });
     const next = reserveNext(cwd, { capacity: 2, host: "codex", now: at(50) });
     assert.deepEqual(next.reserved.map((r) => r.ticket_id), ["t-0003"]);
+  });
+});
+
+describe("dispatch capacity persistence", () => {
+  it("remembers the capacity passed to reserveNext across a dispatcher restart", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 3);
+    reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
+
+    // Capacity is persisted under ignored Baton runtime state (.baton/runs/).
+    const stateFile = path.join(cwd, ".baton", "runs", "dispatch.json");
+    assert.ok(fs.existsSync(stateFile));
+    assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).capacity, 2);
+    assert.equal(persistedCapacity(cwd), 2);
+
+    // Simulate a restart: a fresh call resolves capacity from disk, not from flags.
+    const snap = dispatchSnapshot(cwd);
+    assert.equal(snap.capacity, 2);
+    assert.equal(snap.active, 2);
+    assert.equal(snap.available, 0);
+
+    // An explicit capacity still wins over the remembered one.
+    assert.equal(dispatchSnapshot(cwd, { capacity: 5 }).capacity, 5);
+
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    finishAgent(cwd, "t-0001", { status: "completed", conclusion: "done", now: at(30) });
+    const after = dispatchSnapshot(cwd);
+    assert.equal(after.capacity, 2);
+    assert.equal(after.available, 1);
   });
 });
