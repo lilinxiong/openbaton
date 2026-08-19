@@ -26,6 +26,11 @@ describe("dispatch CLI", () => {
       assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
       assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
+      const ticket = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "utf8"));
+      assert.equal(ticket.receipt_id, "rcpt-spn-0001-a1");
+      const receipt = JSON.parse(fs.readFileSync(path.join(cwd, ".baton", "receipts", `${ticket.receipt_id}.json`), "utf8"));
+      assert.equal(receipt.route.route_id, "kimi/k3[1m]");
+      assert.equal(receipt.retry.fallback, "none");
 
       const first = await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(first.code, 0, first.stderr);

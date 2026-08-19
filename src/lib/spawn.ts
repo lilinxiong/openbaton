@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
 import { directorMayRun } from "./hygiene.js";
+import { buildReadOnlyReceipt, type DelegationReceipt } from "./receipt.js";
 import type { CodedError, ModelCard, UnknownRecord } from "../types.js";
 
 export type TicketStatus = "queued" | "dispatching" | "running" | "completed" | "errored" | "timed_out" | "closed" | "done";
@@ -39,6 +40,7 @@ export interface SpawnTicket extends UnknownRecord {
   host: string | null;
   error: TicketError | null;
   conclusion: string | null;
+  receipt_id: string | null;
   created_at: string;
   updated_at: string;
   history: TicketHistoryEntry[];
@@ -137,6 +139,7 @@ export function buildSpawnTicket({
     host: null,
     error: null,
     conclusion: null,
+    receipt_id: null,
     created_at: createdAt,
     updated_at: createdAt,
     history: [{ event: "ticket_queued", at: createdAt }],
@@ -156,7 +159,7 @@ interface PlanStandaloneOptions {
 
 export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
-  | { director_local: false; ticket: SpawnTicket; queue: { running: number; queued: number } };
+  | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
 export function planStandaloneSpawn({ description, cards, explicitModel, queue, cwd }: PlanStandaloneOptions): StandalonePlan {
   if (directorMayRun(description)) {
@@ -180,5 +183,7 @@ export function planStandaloneSpawn({ description, cards, explicitModel, queue, 
     reasoningEffort: card.reasoning_effort || null,
     source: "standalone",
   });
-  return { director_local: false, ticket, queue: { running: 0, queued: 1 } };
+  const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at });
+  ticket.receipt_id = receipt.receipt_id;
+  return { director_local: false, ticket, receipt, queue: { running: 0, queued: 1 } };
 }

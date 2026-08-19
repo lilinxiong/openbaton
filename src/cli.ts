@@ -11,6 +11,7 @@ import { applyChange, concludeSpawn } from "./lib/apply.js";
 import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
 import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
+import { writeReceipt } from "./lib/receipt.js";
 import type { CodedError, WritableLike } from "./types.js";
 
 interface RunOptions {
@@ -197,6 +198,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`unit: ${planned.description}\n`);
     return 0;
   }
+  writeReceipt(cwd, planned.receipt);
   writeSpawn(cwd, planned.ticket);
   const t = planned.ticket;
   stdout.write(`spawn ${t.id}\n`);

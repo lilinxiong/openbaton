@@ -8,6 +8,7 @@ export const CONFIG_NAME = "config.toml";
 export const SKILL_NAME = "SKILL.md";
 export const SPAWNS_DIR = "spawns";
 export const RUNS_DIR = "runs";
+export const RECEIPTS_DIR = "receipts";
 export const CACHE_DIR = "cache";
 export const CAPABILITIES_DIR = "capabilities";
 export const AA_DB_NAME = "artificial-analysis.sqlite3";
@@ -45,6 +46,10 @@ export function spawnsDir(cwd: string): string {
 
 export function runsDir(cwd: string): string {
   return path.join(cwd, BATON_DIR, RUNS_DIR);
+}
+
+export function receiptsDir(cwd: string): string {
+  return path.join(cwd, BATON_DIR, RECEIPTS_DIR);
 }
 
 export function capabilitiesCacheDir(cwd: string): string {
