@@ -5,7 +5,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { matchModelCard } from "./cards.js";
-import { DispatchQueue, START } from "./queue.js";
 import { directorMayRun, sanitizeConclusion } from "./hygiene.js";
 import {
   loadTasksFromChangeDir,
@@ -58,6 +57,8 @@ export function planApply({ tasks, cards }) {
         description: task.description,
         prompt,
         model_id: matched.model_id,
+        route_id: matched.card.route_id || null,
+        reasoning_effort: matched.card.reasoning_effort || null,
         director_local: false,
         line_index: task.line_index,
         section: task.section,
@@ -97,7 +98,6 @@ export function applyChange({ cwd, change, cfg }) {
     };
   }
 
-  const queue = DispatchQueue.fromConfig(cfg);
   const tickets = [];
   const local = [];
   for (const unit of units) {
@@ -105,16 +105,14 @@ export function applyChange({ cwd, change, cfg }) {
       local.push(unit);
       continue;
     }
-    const decision = queue.admit();
-    if (decision === START) queue.noteStarted();
-    else queue.noteEnqueued();
     const id = nextSpawnId(cwd, "os");
     const ticket = buildSpawnTicket({
       id,
       description: unit.description,
       prompt: unit.prompt,
       modelId: unit.model_id,
-      decision,
+      routeId: unit.route_id,
+      reasoningEffort: unit.reasoning_effort,
       source: "openspec",
       openspec: {
         change_dir: changeDir,
@@ -135,7 +133,7 @@ export function applyChange({ cwd, change, cfg }) {
     tickets: tickets.map((t) => t.id),
     director_local: local,
     blocked,
-    queue: queue.snapshot(),
+    queue: { max_concurrent: cfg.director.max_concurrent, running: 0, queued: tickets.length },
   };
   fs.mkdirSync(runsDir(cwd), { recursive: true });
   fs.writeFileSync(
@@ -143,7 +141,7 @@ export function applyChange({ cwd, change, cfg }) {
     JSON.stringify(run, null, 2) + "\n",
   );
 
-  return { changeDir, tasksPath, units, blocked, tickets, local, queue: queue.snapshot(), run };
+  return { changeDir, tasksPath, units, blocked, tickets, local, queue: run.queue, run };
 }
 
 export function concludeSpawn(cwd, id, text) {
@@ -154,6 +152,11 @@ export function concludeSpawn(cwd, id, text) {
     throw err;
   }
   const ticket = readSpawn(cwd, id);
+  if (Number(ticket.schema_version || 1) >= 2) {
+    const err = new Error("schema v2 tickets require a bound host agent; use `baton dispatch complete` after wait_agent succeeds");
+    err.code = "LIFECYCLE_REQUIRED";
+    throw err;
+  }
   ticket.status = "done";
   ticket.conclusion = clean.conclusion;
   ticket.finished_at = new Date().toISOString();

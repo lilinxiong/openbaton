@@ -32,6 +32,11 @@ describe("initProject", () => {
       assert.ok(fs.existsSync(path.join(cwd, HOST_SKILL_REL.agents)));
       assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.grok)));
       assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.codex)));
+      const cfg = loadConfig(cwd, { env });
+      const k3 = cfg.models.find((model) => model.id === "k3");
+      assert.equal(k3.route_id, "kimi/k3[1m]");
+      assert.equal(k3.reasoning_effort, "max");
+      assert.equal(cfg.models.find((model) => model.id === "k3-256k").route_id, "kimi/k3-256k");
       assert.ok(fs.existsSync(path.join(cwd, "AGENTS.md")));
       assert.match(fs.readFileSync(path.join(cwd, "AGENTS.md"), "utf8"), /baton/);
       assertNoProjectHostDirs(cwd);

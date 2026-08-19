@@ -37,6 +37,12 @@ export function normalizeConfig(raw) {
       if (typeof m.auth_provider === "string" && m.auth_provider.trim()) {
         card.auth_provider = m.auth_provider.trim();
       }
+      if (typeof m.route_id === "string" && m.route_id.trim()) {
+        card.route_id = m.route_id.trim();
+      }
+      if (typeof m.reasoning_effort === "string" && m.reasoning_effort.trim()) {
+        card.reasoning_effort = m.reasoning_effort.trim();
+      }
       return card;
     })
     .filter((m) => m.id);

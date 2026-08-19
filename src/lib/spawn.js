@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
-import { DispatchQueue, START } from "./queue.js";
 import { directorMayRun } from "./hygiene.js";
 
 export function listSpawns(cwd) {
@@ -29,7 +29,13 @@ export function writeSpawn(cwd, ticket) {
   const dir = spawnsDir(cwd);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${ticket.id}.json`);
-  fs.writeFileSync(file, JSON.stringify(ticket, null, 2) + "\n", "utf8");
+  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(ticket, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
+  }
   return ticket;
 }
 
@@ -48,21 +54,37 @@ export function buildSpawnTicket({
   description,
   prompt,
   modelId,
-  decision,
+  routeId = null,
+  reasoningEffort = null,
   source = "standalone",
   openspec = null,
+  now = new Date(),
 }) {
+  const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   return {
+    schema_version: 2,
     id,
     description,
     prompt,
     model_id: modelId,
+    route_id: routeId,
+    reasoning_effort: reasoningEffort,
+    fork_context: false,
+    mode: "read-only",
+    read_only: true,
     source,
     openspec,
-    queue: decision,
-    status: decision === START ? "running" : "queued",
+    queue: "enqueue",
+    status: "queued",
+    attempt: 0,
+    max_attempts: 1,
+    agent_id: null,
+    host: null,
+    error: null,
     conclusion: null,
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
+    updated_at: createdAt,
+    history: [{ event: "ticket_queued", at: createdAt }],
   };
 }
 
@@ -77,21 +99,19 @@ export function planStandaloneSpawn({ description, cards, explicitModel, queue, 
       description,
     };
   }
-  const modelId = explicitModel
-    ? requireCardId(explicitModel, cards).id
-    : matchModelCard(description, cards).model_id;
-  const q = queue || new DispatchQueue(4);
-  const decision = q.admit();
-  if (decision === START) q.noteStarted();
-  else q.noteEnqueued();
+  void queue;
+  const card = explicitModel
+    ? requireCardId(explicitModel, cards)
+    : matchModelCard(description, cards).card;
   const id = nextSpawnId(cwd);
   const ticket = buildSpawnTicket({
     id,
     description,
     prompt: description,
-    modelId,
-    decision,
+    modelId: card.id,
+    routeId: card.route_id || null,
+    reasoningEffort: card.reasoning_effort || null,
     source: "standalone",
   });
-  return { director_local: false, ticket, queue: q.snapshot() };
+  return { director_local: false, ticket, queue: { running: 0, queued: 1 } };
 }

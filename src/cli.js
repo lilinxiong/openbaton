@@ -3,6 +3,7 @@ import { updateProject } from "./commands/update.js";
 import { listCards, addCard } from "./commands/cards.js";
 import { runLogin } from "./commands/login.js";
 import { runCapabilities } from "./commands/capabilities.js";
+import { runDispatch } from "./commands/dispatch.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
@@ -25,7 +26,7 @@ Usage:
   baton init [--force] [--tools a,b]  initialize .baton/ and host skill paths
   baton update                        refresh SKILL + director defaults; keep cards
   baton cards                       list model cards
-  baton cards add --id ID --strengths "..."
+  baton cards add --id ID --strengths "..." [--route MODEL] [--reasoning-effort EFFORT]
   baton match <text>                show which card would run
   baton spawn <text> [--model ID]   card-route a standalone unit
   baton apply [change]              execute an OpenSpec change (consume, do not invent)
@@ -36,6 +37,11 @@ Usage:
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
   baton capabilities show ROUTE [--profile PROFILE]
+  baton dispatch next --host codex --capacity N --json
+  baton dispatch bind TICKET --agent-id ID --host codex --json
+  baton dispatch complete TICKET --text "short conclusion" --json
+  baton dispatch fail|timeout|close TICKET --json
+  baton dispatch recover|status --json
   baton status                      director queue + OpenSpec status if present
   baton help | --help | -h
   baton version | --version | -v
@@ -75,6 +81,8 @@ export async function run(argv, { cwd = process.cwd(), stdout = process.stdout, 
         return await runLogin(args, { cwd, stdout, stderr, env, runner, resolve });
       case "capabilities":
         return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
+      case "dispatch":
+        return runDispatch(args, { cwd, stdout, env });
       case "status":
         return cmdStatus(cwd, stdout, env);
       default:
@@ -111,9 +119,15 @@ function cmdCards(args, cwd, stdout, env) {
   const sub = args[0];
   if (sub === "add") {
     const flags = parseFlags(args.slice(1));
-    const models = addCard(cwd, { id: flags.id, strengths: flags.strengths, env });
+    const models = addCard(cwd, {
+      id: flags.id,
+      strengths: flags.strengths,
+      routeId: flags.route,
+      reasoningEffort: flags["reasoning-effort"],
+      env,
+    });
     stdout.write(`cards: ${models.length}\n`);
-    for (const m of models) stdout.write(`  ${m.id} — ${m.strengths}\n`);
+    for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""} — ${m.strengths}\n`);
     return 0;
   }
   const models = listCards(cwd, { env });
@@ -122,7 +136,7 @@ function cmdCards(args, cwd, stdout, env) {
     return 0;
   }
   stdout.write(`cards: ${models.length}\n`);
-  for (const m of models) stdout.write(`  ${m.id} — ${m.strengths}\n`);
+  for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""} — ${m.strengths}\n`);
   return 0;
 }
 
@@ -173,9 +187,11 @@ async function cmdSpawn(args, cwd, stdout, env) {
   const t = planned.ticket;
   stdout.write(`spawn ${t.id}\n`);
   stdout.write(`  model:  ${t.model_id}\n`);
-  stdout.write(`  queue:  ${t.queue} (${t.status})\n`);
+  stdout.write(`  route:  ${t.route_id || "blocked until an executable route is configured"}\n`);
+  stdout.write(`  queue:  ${t.status}\n`);
+  stdout.write(`  mode:   ${t.mode}\n`);
   stdout.write(`  source: ${t.source}\n`);
-  stdout.write("parent gets only the conclusion — run: baton conclude " + t.id + " --text \"...\"\n");
+  stdout.write("host director must reserve it with `baton dispatch next --json`; queued is not running.\n");
   return 0;
 }
 
@@ -241,11 +257,13 @@ function cmdStatus(cwd, stdout, env) {
   const spawns = listSpawns(cwd);
   const running = spawns.filter((s) => s.status === "running").length;
   const queued = spawns.filter((s) => s.status === "queued").length;
-  const done = spawns.filter((s) => s.status === "done").length;
-  stdout.write(`  spawns: ${spawns.length}  running ${running}  queued ${queued}  done ${done}\n`);
+  const dispatching = spawns.filter((s) => s.status === "dispatching").length;
+  const terminal = spawns.filter((s) => ["completed", "errored", "timed_out", "closed", "done"].includes(s.status)).length;
+  stdout.write(`  spawns: ${spawns.length}  dispatching ${dispatching}  running ${running}  queued ${queued}  terminal ${terminal}\n`);
   for (const s of spawns) {
     const extra = s.conclusion ? ` → ${s.conclusion}` : "";
-    stdout.write(`    ${s.id}  ${s.status}  ${s.model_id || "director"}  ${s.description}${extra}\n`);
+    const worker = s.agent_id ? ` agent=${s.agent_id}` : "";
+    stdout.write(`    ${s.id}  ${s.status}  ${s.model_id || "director"}${worker}  ${s.description}${extra}\n`);
   }
   const os = readOpenSpecStatus(cwd);
   stdout.write(`  openspec (${os.source}): ${os.text}\n`);

@@ -51,6 +51,14 @@ describe("cli run()", () => {
       assert.match(spawnOut.text(), /spawn spn-0001/);
       assert.match(spawnOut.text(), /kimi-for-coding/);
       assert.ok(fs.existsSync(path.join(cwd, ".baton", "spawns", "spn-0001.json")));
+
+      const addRoute = await run([
+        "cards", "add", "--id", "reviewer", "--strengths", "review code",
+        "--route", "xai/grok-4.6", "--reasoning-effort", "high",
+      ], { cwd, stdout: capture(), stderr: capture(), env });
+      assert.equal(addRoute, 0);
+      const config = fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8");
+      assert.match(config, /id = "reviewer"[\s\S]*route_id = "xai\/grok-4\.6"[\s\S]*reasoning_effort = "high"/);
     });
   });
 });

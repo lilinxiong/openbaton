@@ -6,7 +6,7 @@ export function listCards(cwd, { env } = {}) {
   return loadConfig(cwd, { env }).models;
 }
 
-export function addCard(cwd, { id, strengths, env } = {}) {
+export function addCard(cwd, { id, strengths, routeId, reasoningEffort, env } = {}) {
   if (!id || !strengths) {
     throw new Error("cards add requires --id and --strengths");
   }
@@ -14,8 +14,13 @@ export function addCard(cwd, { id, strengths, env } = {}) {
   const existing = cfg.models.find((m) => m.id === id);
   if (existing) {
     existing.strengths = strengths;
+    if (routeId !== undefined) existing.route_id = String(routeId || "").trim() || undefined;
+    if (reasoningEffort !== undefined) existing.reasoning_effort = String(reasoningEffort || "").trim() || undefined;
   } else {
-    cfg.models.push({ id, strengths });
+    const card = { id, strengths };
+    if (routeId) card.route_id = String(routeId).trim();
+    if (reasoningEffort) card.reasoning_effort = String(reasoningEffort).trim();
+    cfg.models.push(card);
   }
   saveConfig(cwd, cfg, { env });
   const card = cfg.models.find((m) => m.id === id);
