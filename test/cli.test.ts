@@ -36,11 +36,11 @@ describe("cli run()", () => {
       const out = capture();
       const err = capture();
 
-      const initCode = await run(["init", "--tools", "claude,grok"], { cwd, stdout: out, stderr: err, env });
+      const initCode = await run(["init", "--tools", "claude,codex"], { cwd, stdout: out, stderr: err, env });
       assert.equal(initCode, 0);
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
-      assert.ok(fs.existsSync(path.join(home, ".grok/skills/baton/SKILL.md")));
+      assert.ok(fs.existsSync(path.join(home, ".codex/skills/baton/SKILL.md")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
       assert.ok(!fs.existsSync(path.join(cwd, ".grok")));
 
@@ -63,7 +63,7 @@ describe("cli run()", () => {
       const hitOut = capture();
       const hit = await run(["match", "code completion routine feature development"], { cwd, stdout: hitOut, stderr: capture(), env });
       assert.equal(hit, 0);
-      assert.match(hitOut.text(), /kimi-for-coding/);
+      assert.match(hitOut.text(), /kimi\/kimi-k2\.7-code-highspeed/);
 
       const matchJson = capture();
       assert.equal(await run(["match", "code completion routine feature development", "--json"], { cwd, stdout: matchJson, stderr: capture(), env }), 0);
@@ -86,7 +86,7 @@ describe("cli run()", () => {
       const spawned = await run(["spawn", "code completion routine feature development"], { cwd, stdout: spawnOut, stderr: capture(), env });
       assert.equal(spawned, 0);
       assert.match(spawnOut.text(), /spawn spn-0001/);
-      assert.match(spawnOut.text(), /kimi-for-coding/);
+      assert.match(spawnOut.text(), /kimi\/kimi-k2\.7-code-highspeed/);
       assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
@@ -117,7 +117,7 @@ describe("cli run()", () => {
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const out = capture();
       const code = await run([
-        "spawn", "implement the multi file unit", "--model", "k3",
+        "spawn", "implement the multi file unit", "--model", "kimi/k3[1m]",
         "--write-path", "a.txt", "--write-path", "b.txt,c.txt",
         "--write-ops", "write", "--write-ops", "delete,rename",
       ], { cwd, stdout: out, stderr: out, env });

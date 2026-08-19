@@ -8,7 +8,7 @@ import type { GitBaseline, SafetyOperation } from "./safety.js";
 export type ReceiptOperation = "read" | SafetyOperation;
 
 export interface DelegationReceipt {
-  schema_version: 1;
+  schema_version: 2;
   receipt_id: string;
   ticket_id: string;
   issued_at: string;
@@ -16,7 +16,7 @@ export interface DelegationReceipt {
     card_id: string;
     route_id: string | null;
     reasoning_effort: string | null;
-    auth_provider: string | null;
+    provider: string | null;
   };
   execution: {
     mode: "read-only" | "write";
@@ -65,7 +65,7 @@ export function buildReadOnlyReceipt({
   const timestamp = (issuedAt instanceof Date ? issuedAt : new Date(issuedAt)).toISOString();
   const attempts = Math.max(1, Math.floor(maxAttempts));
   return {
-    schema_version: 1,
+    schema_version: 2,
     receipt_id: `rcpt-${ticketId}-a1`,
     ticket_id: ticketId,
     issued_at: timestamp,
@@ -73,7 +73,7 @@ export function buildReadOnlyReceipt({
       card_id: card.id,
       route_id: card.route_id || null,
       reasoning_effort: card.reasoning_effort || null,
-      auth_provider: card.auth_provider || null,
+      provider: card.provider || null,
     },
     execution: { mode: "read-only", fork_context: false, max_depth: 1 },
     scope: { write_allowlist: [], allowed_operations: ["read"], side_effects: [] },

@@ -269,7 +269,6 @@ function applyOverrides(candidates: RouteCandidate[], overrides: ModelCard[], sn
           strengths: [base.card.strengths, override.strengths ? `User override: ${override.strengths}` : ""].filter(Boolean).join(". "),
           route_id: base.card.route_id,
           reasoning_effort: override.reasoning_effort || base.card.reasoning_effort,
-          auth_provider: override.auth_provider || base.card.auth_provider,
           source: "override",
           enabled: true,
         },
@@ -323,7 +322,6 @@ export function buildRouteCandidates(cwd: string, overrides: ModelCard[], capabi
       const card: ModelCard = {
         id,
         strengths: "",
-        auth_provider: route.provider || undefined,
         route_id: canonical,
         reasoning_effort: profile || undefined,
         source: "dynamic",

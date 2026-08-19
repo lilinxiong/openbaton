@@ -5,7 +5,6 @@ export interface WritableLike {
 export interface ModelCard {
   id: string;
   strengths: string;
-  auth_provider?: string;
   route_id?: string;
   reasoning_effort?: string;
   enabled?: boolean;

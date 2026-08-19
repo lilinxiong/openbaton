@@ -1,7 +1,6 @@
 import { initProject } from "./commands/init.js";
 import { updateProject } from "./commands/update.js";
 import { listCards, addCard } from "./commands/cards.js";
-import { runLogin } from "./commands/login.js";
 import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
@@ -9,10 +8,9 @@ import { runConversation } from "./commands/conversation.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
 import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
-import { applyChange, concludeSpawn, planApply, resolveApplyChange } from "./lib/apply.js";
-import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
+import { applyChange, concludeSpawn } from "./lib/apply.js";
+import { detectOpenSpecRoot, readOpenSpecStatus } from "./lib/openspec.js";
 import { DispatchQueue } from "./lib/queue.js";
-import { ensureFreshKimiAccount } from "./lib/kimi-account.js";
 import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
 import { buildRouteCandidates } from "./lib/routes.js";
@@ -60,9 +58,6 @@ Usage:
   baton spawn <text> [--model ID] [--task-kind concrete|deliberative]
   baton apply [change]              execute an OpenSpec change (consume, do not invent)
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
-  baton login                       list accounts + card->provider
-  baton login <provider>            sign in with a browser (kimi, xai, cursor)
-  baton login --card <id>           resolve card then login
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
   baton capabilities show ROUTE [--profile PROFILE]
@@ -109,8 +104,6 @@ export async function run(argv: string[], { cwd = process.cwd(), stdout = proces
         return await cmdApply(args, cwd, stdout, env, runner, resolve);
       case "conclude":
         return cmdConclude(args, cwd, stdout);
-      case "login":
-        return await runLogin(args, { cwd, stdout, stderr, env, runner, resolve });
       case "capabilities":
         return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
       case "dispatch":
@@ -175,7 +168,7 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   if (flags.ranked) models = models.filter((card) => card.capability?.ranked);
   if (flags.unranked) models = models.filter((card) => !card.capability?.ranked);
   const provider = stringFlag(flags, "provider");
-  if (provider) models = models.filter((card) => card.provider === provider || card.auth_provider === provider);
+  if (provider) models = models.filter((card) => card.provider === provider);
   if (flags.json) {
     stdout.write(`${JSON.stringify(models, null, 2)}\n`);
     return 0;
@@ -248,7 +241,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`unit: ${planned.description}\n`);
     return 0;
   }
-  if (planned.receipt.route.auth_provider === "kimi") await ensureFreshKimiAccount({ env, cwd });
   const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (writePaths.length) {
     const allowed = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
@@ -283,12 +275,7 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write("Create a change with OpenSpec when you want 1+1>2 apply.\n");
     return 2;
   }
-  const previewDir = resolveApplyChange(cwd, change);
   const selectCards = (prompt: string, available: ModelCard[]) => cardsForAutomaticSelection(cwd, available, prompt);
-  const preview = planApply({ tasks: loadTasksFromChangeDir(previewDir).tasks, cards, selectCards });
-  if (preview.units.some((unit) => !unit.director_local && unit.auth_provider === "kimi")) {
-    await ensureFreshKimiAccount({ env, cwd });
-  }
   const result = applyChange({ cwd, change, cfg: { ...cfg, models: cards }, selectCards });
   stdout.write(`apply ${result.changeDir}\n`);
   if (result.error) {

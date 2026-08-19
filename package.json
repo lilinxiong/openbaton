@@ -10,7 +10,7 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && tsx --test test/*.test.ts",
     "baton": "tsx bin/baton.ts",

@@ -1,28 +1,15 @@
 /**
  * Consume OpenCodex from Baton's package/runtime environment. It owns provider
- * auth, model discovery, and route execution. baton only schedules; resolve the engine,
- * do not start a local proxy and do not reimplement OAuth. Never write
- * openai_base_url or a catalog into ~/.codex.
+ * auth, model discovery, and route execution. baton only schedules and invokes
+ * OpenCodex catalog commands; it does not expose account or login operations.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { packageRoot } from "./paths.js";
-import type { CodedError, UnknownRecord } from "../types.js";
-
-const KIMI_OAUTH_CARDS = new Set<string>([
-  "k3",
-  "k3-256k",
-  "kimi-for-coding",
-  "kimi-for-coding-highspeed",
-]);
-
-const MIMO_KEY_CARDS = new Set<string>(["mimo-v2.5", "mimo-v2.5-pro"]);
+import type { CodedError } from "../types.js";
 
 export const OCX_PACKAGE = "@bitkyc08/" + "opencodex";
-
-export const MIMO_KEY_ONLY_MESSAGE =
-  "Xiaomi MiMo in OpenCodex is still API-key, not account login. Do not paste a key here.";
 
 export interface OcxResolution {
   source: "path" | "bundled" | "npx";
@@ -69,26 +56,10 @@ export interface OcxRunOptions extends OcxResolveOptions {
   inheritStdio?: boolean;
 }
 
-export interface AuthProviderMapping {
-  provider: string | null;
-  keyOnly: boolean;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return "";
-}
-
 export function engineMissingMessage(): string {
   return [
-    "blocked: baton could not start the login engine.",
-    "Account login is consumed, not reimplemented.",
-    "Do not paste a base URL or API key.",
+    "blocked: OpenCodex model discovery is unavailable.",
+    "Baton consumes the OpenCodex route catalog and does not own provider authentication.",
   ].join("\n");
 }
 
@@ -172,25 +143,6 @@ export function resolveOcx(options: OcxResolveOptions = {}): OcxResolution | nul
   return null;
 }
 
-/**
- * Map a card to an OpenCodex OAuth provider id.
- * auth_provider on the card wins when present (trimmed).
- * Defaults cover OAuth account login only (authKind oauth).
- * MiMo cards stay key-only — never default to xiaomi-mimo / mimo.
- */
-export function authProviderForCard(card: unknown): AuthProviderMapping {
-  if (!isRecord(card)) return { provider: null, keyOnly: false };
-  const id = stringValue(card.id).trim();
-  const routeId = stringValue(card.route_id).trim();
-  const routeModel = routeId.split("/").at(-1) || "";
-  if (MIMO_KEY_CARDS.has(id) || MIMO_KEY_CARDS.has(routeModel)) return { provider: null, keyOnly: true };
-  const authProvider = stringValue(card.auth_provider).trim();
-  if (authProvider) return { provider: authProvider, keyOnly: false };
-  if (KIMI_OAUTH_CARDS.has(id)) return { provider: "kimi", keyOnly: false };
-  if (id.toLowerCase().startsWith("grok")) return { provider: "xai", keyOnly: false };
-  return { provider: null, keyOnly: false };
-}
-
 export function defaultOcxRunner(input: OcxRunnerInput): OcxRunResult {
   const cmd = input.command || input.ocx;
   const argv = [...input.prefixArgs, ...input.args];
@@ -233,82 +185,4 @@ export function runOcx(args: string[], options: OcxRunOptions = {}): OcxRunResul
     cwd: options.cwd,
     source: resolved.source,
   });
-}
-
-export const ENGINE_START_FAILURE_MESSAGE =
-  "Error: account login should not require a local proxy.";
-
-export const ENGINE_UNREACHABLE_HINT =
-  "hint: the login engine is not used that way. baton login is account OAuth only.";
-
-const ENGINE_CLI_RE = /\b(?:npx\s+(?:-y\s+)?)?(?:ocx|opencodex|@bitkyc08\/opencodex)\b/i;
-
-/** Rewrite engine CLI names so users never see or type ocx. */
-export function sanitizeEngineOutput(text: unknown): string {
-  if (text == null) return "";
-  let out = stringValue(text);
-  out = out.replace(/Start it with:\s*(?:npx\s+(?:-y\s+)?)?(?:ocx|opencodex|@bitkyc08\/opencodex)(?:\s+start)?/gi, "");
-  out = out.replace(/Proxy is not running\.?/gi, "account login should not require a local proxy");
-  out = out.replace(/\b(?:npx\s+(?:-y\s+)?)?@bitkyc08\/opencodex\b/gi, "the login engine");
-  out = out.replace(/\bocx(?:\.[a-z]+)?\b/gi, "the login engine");
-  out = out.replace(/\bopencodex\b/gi, "the login engine");
-  out = out.replace(/(?:the login engine\s*){2,}/gi, "the login engine ");
-  out = out.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  return out;
-}
-
-function mentionsEngineCli(text: unknown): boolean {
-  return ENGINE_CLI_RE.test(stringValue(text));
-}
-
-export function isProxyDown(result: OcxRunResult | null | undefined): boolean {
-  if (!result) return false;
-  const errCode = result.error?.code;
-  if (errCode === "ECONNREFUSED") return true;
-  const text = [result.stderr, result.stdout, result.error?.message, errCode]
-    .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
-  if (!text) return false;
-  return /econnrefused|connection refused|econnreset|not running|proxy is down|unreachable proxy|connect failed|start it with/.test(text)
-    || /proxy.*(not running|unreachable|refused|down)/.test(text);
-}
-
-/** Account list only. Never start a local proxy. */
-export function listOcxAccounts(options: OcxRunOptions = {}): OcxRunResult {
-  return runOcx(["account", "list"], { ...options, inheritStdio: false });
-}
-
-export function resolveLoginProvider(name: unknown): string {
-  const raw = stringValue(name).trim();
-  const id = raw.toLowerCase();
-  if (!id) return "";
-  if (id === "xai" || id === "grok" || id.startsWith("grok-") || id === "grok.com") return "xai";
-  return raw;
-}
-
-/** Account OAuth only. Never start a local proxy or rewrite host config. */
-export function loginOcxProvider(provider: string, options: OcxRunOptions = {}): OcxRunResult {
-  const id = resolveLoginProvider(provider);
-  if (!id) {
-    const err = new Error("provider required") as CodedError;
-    err.code = "OCX_PROVIDER_REQUIRED";
-    throw err;
-  }
-  return runOcx(["account", "login", id], {
-    ...options,
-    inheritStdio: options.inheritStdio !== false,
-  });
-}
-
-export function ocxFailureHint(result: OcxRunResult): string {
-  const raw = String(result.stderr || result.error?.message || "").trim();
-  if (isProxyDown(result) || mentionsEngineCli(raw)) {
-    return ENGINE_START_FAILURE_MESSAGE + "\n" + ENGINE_UNREACHABLE_HINT;
-  }
-  const errText = sanitizeEngineOutput(raw);
-  const lines: string[] = [];
-  if (errText) lines.push(errText);
-  lines.push(ENGINE_UNREACHABLE_HINT);
-  return lines.join("\n");
 }

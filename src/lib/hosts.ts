@@ -4,8 +4,8 @@ import { packageRoot, hostHome, displayHomePath } from "./paths.js";
 
 export { hostHome } from "./paths.js";
 
-export const HOST_IDS = ["claude", "cursor", "grok", "codex", "agents"] as const;
-export const HOME_HOST_IDS = ["grok", "codex"] as const;
+export const HOST_IDS = ["claude", "cursor", "codex", "agents"] as const;
+export const HOME_HOST_IDS = ["codex"] as const;
 
 export type HostId = (typeof HOST_IDS)[number];
 export type HomeHostId = (typeof HOME_HOST_IDS)[number];
@@ -13,7 +13,6 @@ export type HomeHostId = (typeof HOME_HOST_IDS)[number];
 export const HOST_SKILL_REL: Record<HostId, string> = {
   claude: ".claude/skills/baton/SKILL.md",
   cursor: ".cursor/skills/baton/SKILL.md",
-  grok: ".grok/skills/baton/SKILL.md",
   codex: ".codex/skills/baton/SKILL.md",
   agents: ".agents/skills/baton/SKILL.md",
 };

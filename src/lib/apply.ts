@@ -45,14 +45,14 @@ export type ApplyUnit =
       model_id: null;
       route_id?: null;
       reasoning_effort?: null;
-      auth_provider?: null;
+      provider?: null;
       director_local: true;
     })
   | (ApplyUnitBase & {
       model_id: string;
       route_id?: string | null;
       reasoning_effort?: string | null;
-      auth_provider?: string | null;
+      provider?: string | null;
       director_local: false;
     });
 
@@ -207,7 +207,7 @@ export function planApply({ tasks, cards, selectCards }: PlanApplyInput): PlanAp
         model_id: matched.model_id,
         route_id: matched.card.route_id || null,
         reasoning_effort: matched.card.reasoning_effort || null,
-        auth_provider: matched.card.auth_provider || null,
+        provider: matched.card.provider || null,
         director_local: false,
         line_index: task.line_index,
         section: task.section,
@@ -279,7 +279,7 @@ export function applyChange({ cwd, change, cfg, selectCards }: ApplyChangeInput)
         strengths: "",
         route_id: unit.route_id || undefined,
         reasoning_effort: unit.reasoning_effort || undefined,
-        auth_provider: unit.auth_provider || undefined,
+        provider: unit.provider || undefined,
       },
       issuedAt: ticket.created_at,
       maxAttempts: ticket.max_attempts,

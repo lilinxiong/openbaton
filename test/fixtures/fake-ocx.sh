@@ -1,12 +1,11 @@
 #!/bin/sh
 printf "%s\n" "$*" >> "$OCX_ARGV_LOG"
-if [ "$1" = "account" ] && [ "$2" = "list" ]; then
-  echo "PROVIDER TYPE ID"
-  echo "kimi oauth acc-1"
+if [ "$1" = "--version" ]; then
+  echo "opencodex-test"
   exit 0
 fi
-if [ "$1" = "account" ] && [ "$2" = "login" ]; then
-  echo "login $3"
+if [ "$1" = "models" ] && [ "$2" = "live" ] && [ "$3" = "--json" ]; then
+  echo '{"models":[]}'
   exit 0
 fi
 echo "unexpected: $*" >&2

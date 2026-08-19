@@ -1,8 +1,8 @@
 # baton director config
 # OpenCodex live routes generate the visible card set dynamically.
 # AA capability data generates ranked evidence and inferred positioning.
-# [[models]] entries below are optional user aliases/policy hints only; they do
-# not copy benchmark truth and never make an unavailable route executable.
+# Optional [[models]] entries are user aliases/policy hints only. Baton ships no
+# model definitions; the executable catalog always comes from OpenCodex.
 
 [director]
 # Desired Baton concurrency ceiling. The host/session limit can be lower;
@@ -10,28 +10,3 @@
 max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1
-
-[[models]]
-id = "kimi-for-coding"
-auth_provider = "kimi"
-route_id = "kimi/kimi-k2.7-code-highspeed"
-strengths = "routine coding"
-
-[[models]]
-id = "kimi-for-coding-highspeed"
-auth_provider = "kimi"
-route_id = "kimi/kimi-k2.7-code-highspeed"
-strengths = "latency-sensitive interactive work"
-
-[[models]]
-id = "k3"
-auth_provider = "kimi"
-route_id = "kimi/k3[1m]"
-reasoning_effort = "max"
-strengths = "large-context complex repository work"
-
-[[models]]
-id = "k3-256k"
-auth_provider = "kimi"
-route_id = "kimi/k3-256k"
-strengths = "smaller-context focused coding"

@@ -27,8 +27,8 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
-      assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(ticket.receipt_id, "rcpt-spn-0001-a1");
       const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
@@ -40,7 +40,7 @@ describe("dispatch CLI", () => {
       const reserved = JSON.parse(first.stdout);
       assert.deepEqual(reserved.reserved.map((item) => item.ticket_id), ["spn-0001"]);
       assert.equal(reserved.reserved[0].model, "kimi/k3[1m]");
-      assert.equal(reserved.reserved[0].reasoning_effort, "max");
+      assert.equal(reserved.reserved[0].reasoning_effort, null);
       assert.equal(reserved.reserved[0].fork_context, false);
       assert.deepEqual(reserved.snapshot.queued, ["spn-0002"]);
 
@@ -72,7 +72,7 @@ describe("dispatch CLI", () => {
       const unavailable = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(unavailable.code, 1);
       assert.match(unavailable.stderr, /not a configured card|no executable route/);
-      assert.equal((await command(["spawn", "implement complex unit", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });
       assert.equal(conclude.code, 1);
@@ -89,9 +89,9 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init", "--tools", "codex"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await command(["spawn", "implement first unit", "--model", "k3"], { cwd, env })).code, 0);
-      assert.equal((await command(["spawn", "implement second unit", "--model", "k3"], { cwd, env })).code, 0);
-      assert.equal((await command(["spawn", "implement third unit", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "implement third unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
       const next = await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env });
       assert.equal(next.code, 0, next.stderr);
@@ -135,7 +135,7 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       await command(["init", "--tools", "codex"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await command(["spawn", "analyze the lifecycle", "--model", "k3"], { cwd, env })).code, 0);
+      assert.equal((await command(["spawn", "analyze the lifecycle", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env })).code, 0);
 
       const deferred = await command(["dispatch", "defer", "spn-0001", "--code", "AGENT_LIMIT_REACHED", "--observed-capacity", "1", "--json"], { cwd, env });

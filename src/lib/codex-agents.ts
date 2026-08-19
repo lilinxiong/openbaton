@@ -26,8 +26,8 @@ export interface HostAgentSyncResult {
 
 const SAFE_CARD_ID = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
 
-/** Current default cards — none are Codex-native. */
-const DEFAULT_NON_CODEX_CARDS = new Set([
+/** Legacy generated aliases — retained only so update can prune old files safely. */
+const LEGACY_NON_CODEX_CARDS = new Set([
   "k3",
   "k3-256k",
   "kimi-for-coding",
@@ -49,8 +49,8 @@ export function isChatGptNativeModel(id: unknown): boolean {
 
 /**
  * True only if this ChatGPT account can run the card as a worker.
- * ChatGPT-native models are never cards. Current defaults (k3, kimi-*,
- * mimo-*) and any other non-Codex-native id are not spawnable. No
+ * ChatGPT-native models are never card-agent files. Legacy k3/kimi/mimo
+ * aliases and any other non-Codex-native id are not spawnable. No
  * ChatGPT stand-in.
  */
 export function isCodexSpawnableCard(id: unknown): boolean {
@@ -58,7 +58,7 @@ export function isCodexSpawnableCard(id: unknown): boolean {
   if (!s) return false;
   if (isChatGptNativeModel(s)) return false;
   const lower = s.toLowerCase();
-  if (DEFAULT_NON_CODEX_CARDS.has(lower)) return false;
+  if (LEGACY_NON_CODEX_CARDS.has(lower)) return false;
   // Codex ChatGPT cannot run Kimi/MiMo or any other third-party card.
   return false;
 }

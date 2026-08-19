@@ -37,9 +37,8 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - If absent: still fully usable via `baton spawn`.
 
 8. **OpenCodex is consumed, not reimplemented.** It is resolved from Baton's package/runtime environment and owns provider auth, model discovery, and route execution. baton only schedules.
-   - `baton login` lists accounts and card->provider. `baton login <provider>` and `baton login --card <id>` open a browser so the user signs in.
-   - Account-login providers: kimi, xai, cursor. Cursor login is experimental (PKCE). Do not enable nativeLocalExec. Do not paste Cursor keys.
-   - Never ask the user to paste a base URL or API key. The user only types `baton login kimi`. Do not tell them to install ocx.
+   - Baton has no login, account, token-refresh, OAuth, or provider-configuration command. Authentication is completed entirely through OpenCodex outside Baton.
+   - Never ask the user for a base URL, API key, account token, or credential.
 
 9. **Capability data is local-first and replaceable.** Artificial Analysis is the first `CapabilityProvider`, not a routing oracle.
    - Ordinary dispatch reads `~/.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
@@ -57,9 +56,6 @@ You are the director. This is a skill pack plus `init` that installs into the co
 ## Commands
 
 ```
-baton login
-baton login <provider>
-baton login --card <id>
 baton capabilities refresh --provider aa --key-file PATH
 baton capabilities status
 baton capabilities show ROUTE [--profile PROFILE]
@@ -90,5 +86,6 @@ baton status
 - Never dispatch an open-ended reasoning task with terminal-only coordination, and never treat terminal ticket state as proof that the host slot was released.
 - Do not reimplement OpenSpec.
 - Do not reimplement OpenCodex OAuth, account pool, dashboard, or proxy.
+- Do not expose a Baton login command or write provider-account configuration.
 - Do not ask the user to paste a base URL or API key.
 - Do not dump worker tool output into this conversation.

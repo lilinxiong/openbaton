@@ -20,7 +20,7 @@ function assertNoProjectHostDirs(cwd) {
 }
 
 describe("initProject", () => {
-  it("writes ~/.baton and default host skill paths; grok/codex stay in home", async () => {
+  it("writes ~/.baton and supported host skill paths", async () => {
     await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
@@ -31,15 +31,9 @@ describe("initProject", () => {
       assert.ok(fs.existsSync(path.join(cwd, HOST_SKILL_REL.claude)));
       assert.ok(fs.existsSync(path.join(cwd, HOST_SKILL_REL.cursor)));
       assert.ok(fs.existsSync(path.join(cwd, HOST_SKILL_REL.agents)));
-      assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.grok)));
       assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.codex)));
       const cfg = loadConfig(cwd, { env });
-      assert.equal(cfg.models.length, 4);
-      assert.equal(cfg.models.some((model) => /AA Terminal-Bench/.test(model.strengths)), false);
-      const k3 = cfg.models.find((model) => model.id === "k3");
-      assert.equal(k3.route_id, "kimi/k3[1m]");
-      assert.equal(k3.reasoning_effort, "max");
-      assert.equal(cfg.models.find((model) => model.id === "k3-256k").route_id, "kimi/k3-256k");
+      assert.deepEqual(cfg.models, []);
       assert.ok(fs.existsSync(path.join(cwd, "AGENTS.md")));
       assert.match(fs.readFileSync(path.join(cwd, "AGENTS.md"), "utf8"), /baton/);
       assertNoProjectHostDirs(cwd);
@@ -47,16 +41,12 @@ describe("initProject", () => {
     });
   });
 
-  it("init --tools grok writes home skill + k3 agent and nothing in the project", async () => {
+  it("rejects the removed Grok host", async () => {
     await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      await initProject(cwd, { tools: ["grok"], env });
-      assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
-      assert.ok(fs.existsSync(path.join(home, ".grok", "skills", "baton", "SKILL.md")));
-      const k3 = fs.readFileSync(path.join(home, ".grok", "agents", "k3.md"), "utf8");
-      assert.match(k3, /^model: k3$/m);
-      assertNoProjectHostDirs(cwd);
+      await assert.rejects(() => initProject(cwd, { tools: ["grok"], env }), /unknown --tools: grok/);
+      assert.ok(!fs.existsSync(path.join(home, ".grok")));
     });
   });
 
@@ -125,7 +115,7 @@ describe("initProject", () => {
 });
 
 describe("updateProject", () => {
-  it("migrates legacy generated benchmark cards into aliases and preserves custom cards", async () => {
+  it("drops legacy generated model cards and preserves user aliases", async () => {
     await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
@@ -152,23 +142,19 @@ strengths = "my custom review policy"
       updateProject(cwd, { env });
       const cfg = loadConfig(cwd, { env });
       assert.equal(cfg.models.some((card) => card.id === "mimo-v2.5"), false);
-      assert.equal(cfg.models.find((card) => card.id === "k3")?.strengths, "large-context complex repository work");
+      assert.equal(cfg.models.some((card) => card.id === "k3"), false);
       assert.equal(cfg.models.find((card) => card.id === "my-reviewer")?.strengths, "my custom review policy");
     });
   });
 
-  it("fills missing builtin routes without overwriting user card values", async () => {
+  it("does not invent builtin aliases", async () => {
     await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
       await initProject(cwd, { tools: ["codex"], env });
-      const cfgPath = path.join(home, ".baton", "config.toml");
-      const old = fs.readFileSync(cfgPath, "utf8").replace(/\nroute_id = "kimi\/k3\[1m\]"\nreasoning_effort = "max"/, "");
-      fs.writeFileSync(cfgPath, old);
       updateProject(cwd, { env });
       const cfg = loadConfig(cwd, { env });
-      assert.equal(cfg.models.find((card) => card.id === "k3")?.route_id, "kimi/k3[1m]");
-      assert.equal(cfg.models.find((card) => card.id === "k3")?.reasoning_effort, "max");
+      assert.deepEqual(cfg.models, []);
     });
   });
 
@@ -176,21 +162,21 @@ strengths = "my custom review policy"
     await withHome(async (home) => {
       const cwd = tmp();
       const env = fakeEnv(home);
-      await initProject(cwd, { tools: ["grok"], env });
+      await initProject(cwd, { tools: ["codex"], env });
       const cfgPath = path.join(home, ".baton", "config.toml");
       fs.writeFileSync(
         cfgPath,
         `[director]\nmax_concurrent = 2\nmax_depth = 1\n\n[[models]]\nid = "opus"\nstrengths = "hard reasoning"\n`,
       );
-      fs.writeFileSync(path.join(home, ".grok/skills/baton/SKILL.md"), "OLD\n");
+      fs.writeFileSync(path.join(home, ".codex/skills/baton/SKILL.md"), "OLD\n");
       const result = updateProject(cwd, { env });
       const cfg = loadConfig(cwd, { env });
       assert.equal(cfg.models.length, 1);
       assert.equal(cfg.models[0].id, "opus");
       assert.equal(cfg.director.max_concurrent, 2);
       assert.match(fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8"), /You are the director/);
-      assert.match(fs.readFileSync(path.join(home, ".grok/skills/baton/SKILL.md"), "utf8"), /You are the director/);
-      assert.ok(result.actions.some((a) => /cards kept/.test(a)));
+      assert.match(fs.readFileSync(path.join(home, ".codex/skills/baton/SKILL.md"), "utf8"), /You are the director/);
+      assert.ok(result.actions.some((a) => /user aliases kept/.test(a)));
       assert.ok(!fs.existsSync(path.join(cwd, ".claude/skills/baton/SKILL.md")));
       assertNoProjectHostDirs(cwd);
     });

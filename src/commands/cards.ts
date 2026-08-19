@@ -1,5 +1,4 @@
 import { loadConfig, saveConfig, type Card, type ConfigEnvOptions } from "../lib/config.js";
-import { grokSkillInstalled, syncGrokCardAgents } from "../lib/grok-agents.js";
 import { codexSkillInstalled, syncCodexCardAgents } from "../lib/codex-agents.js";
 import { buildRouteCandidates } from "../lib/routes.js";
 import { artificialAnalysisDbPath } from "../lib/paths.js";
@@ -52,7 +51,6 @@ export function addCard(cwd: string, options: AddCardOptions = {}): Card[] {
     cfg.models.push(card);
   }
   saveConfig(cwd, cfg, { env });
-  if (grokSkillInstalled(cwd, { env })) syncGrokCardAgents(cwd, cfg.models, { env });
   if (codexSkillInstalled(cwd, { env })) syncCodexCardAgents(cwd, cfg.models, { env });
   return listCards(cwd, { env });
 }

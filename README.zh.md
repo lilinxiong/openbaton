@@ -21,12 +21,12 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 
 ## 它是什么
 
-不是又一个 coding CLI。而是一套 skill pack + `init`，坐在你已经在用的 host 前面（Claude Code、Cursor、Grok、Codex、…）。
+不是又一个 coding CLI。而是一套 skill pack + `init`，坐在支持的 host 前面（Claude Code、Cursor、Codex、…）。
 
 - **Dynamic Cards。** 所有 OpenCodex live provider/route 都保持可见；精确 AA mapping 生成结构化 capability 和定位推断，未映射 route 保持 `unranked`。
 - **Config 只保存策略。** `~/.baton/config.toml` 只放 alias、可选 policy hint 和 exclusion，不复制 benchmark 分数；没有默认 subagent、父模型继承或静默 fallback。
 - **所有 route 保持可见。** OpenCodex discovery 是可执行 catalog；card 决定哪些 route 进入调度。当前 session/Goal 的 exclusions 只影响本次调度，不会变成全局 route-family 禁令。
-- **host 原生 worker。** 进程内 spawn。不要 shell 出去跑 `claude -p` / `cursor-agent -p` / `grok -p`。Grok / Codex 的 init 装到 `~/.grok` 和 `~/.codex`，不写进项目；card 在 `~/.baton`。
+- **host 原生 worker。** 进程内 spawn，不 shell 出去跑 coding CLI print mode。Codex init 装到 `~/.codex`，不写进项目；card 在 `~/.baton`。Baton 不支持 Grok host。
 - **逻辑上无限 spawn。** host/session 的并发上限是运行时能力，不写死为 6；超限作为 backpressure 回到 FIFO，不消耗 attempt。真实 `close_agent` 后才释放 slot。深度 1。
 - **具体任务优先。** Ticket 区分 `concrete` 与 `deliberative`。优先把工作拆成有 objective/deliverable/done condition 的具体单元；必须委派思考任务时使用 checkpoint 状态同步。
 - **洁癖。** 普通 worker 只回短结论；checkpoint 也只包含 phase、current result、next step、blocker。工具倾倒和隐藏推理不进主会话。
@@ -41,17 +41,7 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 
 ## OpenCodex
 
-OpenCodex 通过 Baton 的 package dependency/runtime resolver 消费。provider 账号、认证、模型发现和 route 执行归 OpenCodex；baton 只调度（card、match、director）。仓库不再 vendor OpenCodex submodule，也不重做这些接入。
-
-账号登录交给 OpenCodex 消费，不重做 — 和 OpenSpec 一样。用浏览器登录即可：
-
-```
-baton login kimi      # Moonshot Kimi
-baton login cursor    # Cursor（实验性 PKCE）
-baton login grok      # xAI Grok 账号
-```
-
-不要粘贴 base URL 或 API key。不要粘贴 Cursor 密钥。
+OpenCodex 通过 Baton 的 package dependency/runtime resolver 消费。provider 账号、认证、模型发现和 route 执行归 OpenCodex；Baton 只调度（card、match、director），没有 login 或 credential 命令。
 
 既能独立，又能 1+1>2 — baton 负责分派；账号由 OpenCodex 持有。
 
@@ -80,8 +70,7 @@ Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 
 ## 命令
 
 ```
-baton init [--force] [--tools claude,cursor,grok,codex,agents]
-baton login kimi
+baton init [--force] [--tools claude,cursor,codex,agents]
 baton capabilities status
 baton capabilities show MODEL [--profile PROFILE]
 baton routes refresh
@@ -94,7 +83,7 @@ baton cards add --id reviewer --route xai/grok-4.6 --reasoning-effort high --str
 baton cards add --id cursor/claude-opus-5 --route cursor/claude-opus-5 --enabled false
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
-baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write
+baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
 baton apply
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json

@@ -61,10 +61,8 @@ function normalizeCard(raw: unknown): Card | null {
     id,
     strengths: String(raw.strengths || "").trim(),
   };
-  const authProvider = optionalTrimmedString(raw.auth_provider);
   const routeId = optionalTrimmedString(raw.route_id);
   const reasoningEffort = optionalTrimmedString(raw.reasoning_effort);
-  if (authProvider) card.auth_provider = authProvider;
   if (routeId) card.route_id = routeId;
   if (reasoningEffort) card.reasoning_effort = reasoningEffort;
   if (typeof raw.enabled === "boolean") card.enabled = raw.enabled;
@@ -79,7 +77,6 @@ function serializeConfig(cfg: Config): UnknownRecord {
         id: card.id,
         strengths: card.strengths,
       };
-      if (card.auth_provider) row.auth_provider = card.auth_provider;
       if (card.route_id) row.route_id = card.route_id;
       if (card.reasoning_effort) row.reasoning_effort = card.reasoning_effort;
       if (card.enabled !== undefined) row.enabled = card.enabled;

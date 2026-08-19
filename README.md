@@ -21,12 +21,12 @@ The goal is not simply “more agents.” It is one accountable workflow that ca
 
 ## What it is
 
-Not another coding CLI. A skill pack + `init` that sits in front of the host you already use (Claude Code, Cursor, Grok, Codex, …).
+Not another coding CLI. A skill pack + `init` that sits in front of the supported host you already use (Claude Code, Cursor, Codex, …).
 
 - **Dynamic Cards.** Every OpenCodex live provider/route stays visible. Exact AA mappings add structured capability vectors and inferred positioning; unmapped routes remain `unranked`.
 - **Config is policy only.** `~/.baton/config.toml` stores aliases, optional policy hints, and exclusions—not copied benchmark scores. No subagent default, parent inherit, or silent fallback.
 - **All routes stay visible.** OpenCodex discovery is the executable catalog. Cards opt routes into scheduling; session/Goal exclusions apply only to that session and never become global route-family bans.
-- **Host-native workers.** Spawn in-process subagents. Do not shell out to `claude -p` / `cursor-agent -p` / `grok -p`. Grok and Codex init install into `~/.grok` and `~/.codex` (not the project); cards live in `~/.baton`.
+- **Host-native workers.** Spawn in-process subagents. Do not shell out to coding CLI print modes. Codex init installs into `~/.codex` (not the project); cards live in `~/.baton`. Grok is not a supported Baton host.
 - **Unlimited logical spawn.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns tickets to FIFO without consuming attempts, and slots release only after the host confirms `close_agent`. Depth 1.
 - **Concrete work first.** Tickets distinguish `concrete` from `deliberative` work. Prefer bounded objective/deliverable/done-condition units; necessary reasoning workers use checkpointed state sync.
 - **Hygiene.** Normal workers return one short conclusion. Checkpoints contain only phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay out of the main conversation.
@@ -41,17 +41,7 @@ Do not reimplement OpenSpec.
 
 ## OpenCodex
 
-OpenCodex is consumed through Baton's package dependency/runtime resolver. It owns provider accounts, authentication, model discovery, and route execution. baton only schedules (cards, match, director); the repository does not vendor an OpenCodex submodule or reimplement that wiring.
-
-Account login is consumed, not reimplemented — same idea as OpenSpec. Sign in with a browser:
-
-```
-baton login kimi      # Moonshot Kimi
-baton login cursor    # Cursor (experimental PKCE)
-baton login grok      # xAI Grok account
-```
-
-Do not paste a base URL or API key. Do not paste Cursor keys.
+OpenCodex is consumed through Baton's package dependency/runtime resolver. It owns provider accounts, authentication, model discovery, and route execution. Baton only schedules (cards, match, director) and intentionally has no login or credential command.
 
 既能独立，又能 1+1>2 — baton routes; OpenCodex holds the account.
 
@@ -80,8 +70,7 @@ All Baton-owned state is global under `~/.baton`; Baton never creates a project-
 ## Commands
 
 ```
-baton init [--force] [--tools claude,cursor,grok,codex,agents]
-baton login kimi
+baton init [--force] [--tools claude,cursor,codex,agents]
 baton capabilities status
 baton capabilities show MODEL [--profile PROFILE]
 baton routes refresh
@@ -94,7 +83,7 @@ baton cards add --id reviewer --route xai/grok-4.6 --reasoning-effort high --str
 baton cards add --id cursor/claude-opus-5 --route cursor/claude-opus-5 --enabled false
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
-baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write
+baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
 baton apply
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json

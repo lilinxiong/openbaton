@@ -11,11 +11,12 @@ describe("Delegation Receipt", () => {
   it("builds a fail-closed immutable read-only authorization snapshot", () => {
     const receipt = buildReadOnlyReceipt({
       ticketId: "spn-0001",
-      card: { id: "k3", strengths: "flagship", route_id: "kimi/k3[1m]", reasoning_effort: "max", auth_provider: "kimi" },
+      card: { id: "k3", strengths: "flagship", route_id: "kimi/k3[1m]", reasoning_effort: "max", provider: "kimi" },
       issuedAt: "2026-08-19T00:00:00.000Z",
     });
     assert.equal(receipt.receipt_id, "rcpt-spn-0001-a1");
     assert.equal(receipt.route.route_id, "kimi/k3[1m]");
+    assert.equal(receipt.route.provider, "kimi");
     assert.equal(receipt.execution.mode, "read-only");
     assert.deepEqual(receipt.scope.write_allowlist, []);
     assert.deepEqual(receipt.scope.allowed_operations, ["read"]);
