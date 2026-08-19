@@ -732,29 +732,29 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 ### 11.1 总体结论
 
-当前结论是：**架构方向具备现有基础，但整体实施可行性仍为 `CONDITIONAL / 待验证`。**
+当前结论是：**`REVISE / 技术可行，需按实测修订后实施`。**
 
-已经证明 OpenSpec、OpenCodex 和 host-native subagent 可以提供所需底座；尚未证明 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 能作为一个完整系统稳定闭环。
+2026-08-18 的验证性原型已经跑通 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 的组合闭环；但实测确认 Codex worker 共享父工作树、Git index 和 HEAD，prompt allowlist 也不是 host 强隔离。当前仓库尚未集成这些机制，OpenCodex `^2.22.0` 与运行时 `2.18.0` 的版本基线也未闭合。
 
-因此可以进入“验证性原型”阶段，但只有通过本节定义的 Gate A～C 后，才能给出“该方案可实施”的最终结论。
+因此方案不是 `BLOCKED`，可以进入正式实现；实现必须采用 parent diff gate、父 agent Git ownership、稳定 OpenSpec task number 和真实 native ticket lifecycle。完整证据见 [OpenBaton Dynamic Director 可行性验证记录](./baton-dynamic-director-feasibility-validation.md)。
 
 ### 11.2 能力分级
 
 | 模块 | 判断 | 依据 |
 | --- | --- | --- |
-| Conversation-to-Goal | 设计可行，待验证 | 主 agent 有 session 上下文，但提升信号、忠实摘要和一次授权尚未实现 |
+| Conversation-to-Goal | 原型通过，待产品集成 | 显式提升、讨论态拒绝和 excluded 已通过验证性测试 |
 | OpenSpec workflow | 已有基础 | OpenSpec 1.9 已有 change/spec/status/instructions/templates/validate/archive |
 | OpenCodex route | 已验证基础 | provider/auth/catalog 和 namespaced model 已存在 |
 | 动态 subagent | 已验证 | 7 个模型、跨轮 session、并发 6 已实测 |
-| Route Snapshot | 待实现验证 | 指纹和版本策略明确，但尚无生产实现 |
-| Capability Cache | 待实现验证 | API、cache key 和失效规则明确，但尚未验证缓存闭环 |
-| Delegation Receipt | 契约有先例，待集成验证 | goal-preflight 证明授权语义，但未与 native dispatch 集成 |
-| Read-only 多模型 Goal | 待端到端验证 | 底层能力存在，但完整 Goal 闭环尚未运行 |
-| OpenSpec task 调度 | 待验证 | parser/writeback 已有，但需要稳定 task identity 和 round-trip 测试 |
-| 写代码的 subagent | 待验证 | 需要确认 shared/forked worktree 和 patch 上传行为 |
-| 文件级强授权 | 待验证 | prompt 不是安全隔离，需要 diff/import gate 或 host 权限约束 |
+| Route Snapshot | 原型通过，待产品集成 | 稳定 hash 和 generation 已验证 |
+| Capability Cache | 原型通过，真实 API 凭据待接入 | hit/TTL/version/stale LKG/unranked 已验证；AA API 要求 key |
+| Delegation Receipt | 原型通过，待 native dispatch 集成 | model/path/operation/retry 已验证 fail-closed |
+| Read-only 多模型 Goal | 端到端原型通过 | 简单任务和三 route 并发复杂任务已运行 |
+| OpenSpec task 调度 | 端到端原型通过 | task number 插行稳定性和 OpenSpec 1.9 completion round-trip 已通过 |
+| 写代码的 subagent | 机制通过，集成需修订 | 已确认 shared worktree；Kimi write worker + parent diff gate 通过 |
+| 文件级强授权 | parent gate 原型通过 | host 不执行 prompt allowlist；越界 diff 由父 gate 拒绝 |
 | 多宿主兼容 | 后续验证 | Codex 可先验证，其它 host 需要独立 adapter |
-| 最终实施结论 | 尚未形成 | 必须通过 Gate A～C |
+| 最终实施结论 | `REVISE` | 技术闭环可实现；需修订 host adapter、安全边界、版本基线后再提升为 PASS |
 
 ### 11.3 已证明的底座与待证明的闭环
 
@@ -769,7 +769,7 @@ Codex V1 支持 namespaced model 动态 spawn
 物理并发上限 6 已测得
 ```
 
-待证明的完整闭环：
+验证性原型已覆盖的完整闭环：
 
 ```text
 当前对话
@@ -784,7 +784,7 @@ Codex V1 支持 namespaced model 动态 spawn
 → 主 agent 验收
 ```
 
-这条闭环中的每个设计点都有实现路径，但它目前仍是待验证组合，不能用单项底座证据替代端到端结论。
+这条闭环已在临时 fixture 中端到端运行，但尚未进入当前产品代码。原型通过不能替代正式集成、锁定版本和回归测试。
 
 ### 11.4 Gate A：实现机制与安全边界
 
@@ -805,7 +805,7 @@ Codex V1 支持 namespaced model 动态 spawn
 | 修改停留在 fork | 只选择性导入批准文件或 commit |
 | Host 提供 patch/upload | 将该通道作为唯一批准导入面 |
 
-V-01～V-05 只阻塞写代码 worker；版本基线影响全部后续实现。Gate A 未通过时，不得给出完整方案可实施的结论。
+V-01～V-05 的实测结论是 shared worktree/index/HEAD；parent diff gate 可以承接写入安全边界。版本基线仍影响全部后续实现，因此 Gate A 判为 `REVISE`。
 
 ### 11.5 现实工程风险
 
@@ -866,7 +866,7 @@ worker worktree/patch 验证
 | `REVISE / 需修订` | 机制可替代但当前设计假设错误，例如 worktree/import 模式与预期不同 |
 | `BLOCKED / 不可实施` | Host 无法提供安全结果回收或 OpenSpec/OpenCodex 关键接口不满足闭环 |
 
-当前状态：`CONDITIONAL / 待验证`。可以开始 Gate A 和验证性原型，但尚不能宣称最终方案可实施。
+当前状态：`REVISE / 技术可行，需按实测修订后实施`。Gate B、Gate C 的验证性原型通过；Gate A 因 shared Git 状态和 OpenCodex 版本基线要求修订。完成修订并在锁定版本上复跑后，才可宣称 `PASS / 可实施`。
 
 ## 12. 明确非目标
 

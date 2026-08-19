@@ -888,26 +888,26 @@
       <div class="section-head">
         <div>
           <p class="eyebrow">06 · Feasibility</p>
-          <h2 id="feasibility-title">整体实施可行性：CONDITIONAL / 待验证</h2>
+          <h2 id="feasibility-title">整体实施可行性：REVISE / 技术可行</h2>
         </div>
-        <p>已有底座证明架构方向成立，但必须通过机制、安全、控制面原型和三条端到端场景后，才能给出最终“可实施”结论。</p>
+        <p>验证性原型已跑通控制面和端到端闭环；实测同时确认 shared worktree、父 Git ownership、稳定 task number 与版本基线是正式实现必须修订的边界。</p>
       </div>
       <div class="panel flow-panel">
         <div class="feasibility-summary">
           <article class="feasibility-card" style="--status-color: var(--ok)"><strong>已证明的底座</strong><p>OpenSpec workflow 命令、OpenCodex provider/catalog、namespaced native spawn、7 个 route、跨轮 session 和并发 6。</p></article>
-          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>待验证的组合链路</strong><p>Conversation-to-Goal、snapshots/cache、Receipt、真实 queue、OpenSpec round-trip、worker 写入与文件授权。</p></article>
-          <article class="feasibility-card" style="--status-color: var(--danger)"><strong>最终实施结论 · 尚未形成</strong><p>当前只能进入 Gate A 和验证性原型；不能用单项底座证据替代端到端可实施结论。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--ok)"><strong>原型闭环已通过</strong><p>Conversation-to-Goal、snapshots/cache、Receipt、queue、OpenSpec round-trip、worker 写入与 parent diff gate。</p></article>
+          <article class="feasibility-card" style="--status-color: var(--worker)"><strong>最终实施结论 · REVISE</strong><p>技术路径成立；当前产品需按 shared worktree、安全 gate、native ticket lifecycle 和版本基线修订后实施。</p></article>
         </div>
         <div class="table-responsive">
           <table class="feasibility-table">
             <thead><tr><th>能力</th><th>判断</th><th>关键依据</th></tr></thead>
             <tbody>
-              <tr><td>Conversation-to-Goal</td><td><span class="status-label" style="--status-color: var(--worker)">待验证</span></td><td>上下文基础存在；提升信号、忠实摘要和一次授权尚未实现。</td></tr>
+              <tr><td>Conversation-to-Goal</td><td><span class="status-label" style="--status-color: var(--ok)">原型通过</span></td><td>显式提升、讨论态拒绝、excluded 和 Receipt fail-closed 已通过验证。</td></tr>
               <tr><td>OpenSpec workflow</td><td><span class="status-label" style="--status-color: var(--ok)">已有基础</span></td><td>OpenSpec 1.9 已提供 change/spec/status/instructions/validate/archive。</td></tr>
               <tr><td>OpenCodex + native spawn</td><td><span class="status-label" style="--status-color: var(--ok)">已验证</span></td><td>Namespaced route、7 个模型、跨轮 session 和并发 6 已实测。</td></tr>
-              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--worker)">待验证</span></td><td>设计和缓存策略明确，但尚未形成真实运行闭环。</td></tr>
-              <tr><td>写代码 worker</td><td><span class="status-label" style="--status-color: var(--worker)">待验证</span></td><td>需要确认 shared/forked worktree、patch 上传和 allowlist 外修改拒绝机制。</td></tr>
-              <tr><td>最终方案</td><td><span class="status-label" style="--status-color: var(--danger)">尚未结论</span></td><td>必须通过 Gate A、Gate B 和 Gate C。</td></tr>
+              <tr><td>能力快照与授权</td><td><span class="status-label" style="--status-color: var(--ok)">原型通过</span></td><td>24/24 控制面测试通过；Artificial Analysis 自动化 API 仍需 key 和 canonical mapping。</td></tr>
+              <tr><td>写代码 worker</td><td><span class="status-label" style="--status-color: var(--ok)">机制通过</span></td><td>shared worktree 已确认；parent diff gate 接受 allowlist 内改动并拒绝越界文件。</td></tr>
+              <tr><td>最终方案</td><td><span class="status-label" style="--status-color: var(--worker)">REVISE</span></td><td>不是 BLOCKED；完成 host adapter、安全边界和版本基线修订后可提升为 PASS。</td></tr>
             </tbody>
           </table>
         </div>
@@ -916,7 +916,7 @@
           <div class="delivery-phase"><b>Gate B · 控制面原型</b><p>Goal 提升、snapshots/cache、Receipt、native dispatch、queue 与 no-fallback。</p></div>
           <div class="delivery-phase"><b>Gate C · 端到端</b><p>简单任务、复杂无 OpenSpec、复杂 OpenSpec Goal 和写入闭环。</p></div>
         </div>
-        <div class="loop-back">当前：CONDITIONAL。Gate A～C 全部通过后才能判定 PASS；read-only 通过但写入失败则为 PARTIAL；关键接口不满足闭环则为 BLOCKED。</div>
+        <div class="loop-back">当前：REVISE。Gate B/C 原型通过；Gate A 的 shared Git 状态和 OpenCodex 版本基线要求修订。完整证据见 baton-dynamic-director-feasibility-validation.md。</div>
       </div>
     </section>
 
