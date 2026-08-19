@@ -49,6 +49,10 @@ Mappings are exact and profile-aware. A route returns `unranked` when:
 
 OpenBaton does not fuzzy-match route names and never treats `unranked` as a weak score. The route remains available; the main agent can still consider provider health, quota, context, latency, price, and user policy.
 
+## Dynamic Cards
+
+Baton joins the OpenCodex live route snapshot with these exact mappings at runtime. Ranked route/profile pairs expose structured intelligence, coding, agentic, cost, throughput, and latency evidence plus percentile-derived positioning tags. The positioning text is explicitly an inference; it is not copied back into `~/.baton/config.toml`. Unmapped routes remain visible and explicitly selectable as `unranked`, but automatic task matching cannot select them.
+
 ## Snapshot behavior
 
 - All API pages are fetched before replacing the current database.

@@ -1,6 +1,6 @@
 ---
 name: baton
-description: Director for multi-model work. One front conversation; card-routed host-native spawn.
+description: Director for multi-model work. One front conversation; capability-routed host-native spawn.
 ---
 
 # baton
@@ -11,11 +11,12 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths + explicit host route/profile) in `~/.baton/config.toml`.
-   - No subagent default.
-   - Do not inherit the parent/host model as a default.
-   - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
-   - Keep every executable OpenCodex route visible. Session/Goal exclusions are temporary inputs to the current route decision; never turn them into a global provider or model-family ban.
+2. **Dynamic Cards.** OpenCodex live routes are the complete visible set. Baton joins each exact provider/route and mapped reasoning profile with local AA capability evidence at runtime.
+   - Ranked cards carry structured intelligence/coding/agentic, cost, throughput, latency, provenance, and AA-derived positioning inference.
+   - Unmapped routes remain visible as `unranked`; automatic matching cannot select them, while an exact explicit `--model` may.
+   - `~/.baton/config.toml` stores optional aliases, policy hints, and `enabled=false` exclusions—not copied benchmark truth.
+   - No subagent default or parent-model inherit. No match/tie → blocked; never silently pick.
+   - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary and never become a global family ban.
 
 3. **Tickets before host-native dispatch.** `baton spawn/apply` writes a queued ticket plus immutable Delegation Receipt. The host reserves with `baton dispatch next`, calls its real in-process `spawn_agent`, then binds the returned agent ID. The CLI never claims it can call host tools. Do **not** shell out to coding CLI print mode.
    - No route or Receipt → blocked. Never inherit the parent model or fallback.
@@ -41,7 +42,8 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - Ordinary dispatch reads `~/.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
    - Remote refresh is explicit and uses a mode-0600 temporary key file. The key is never pasted into chat, stored, logged, or sent to workers.
    - Join route + profile only through explicit canonical mappings. Missing or uncertain mappings remain `unranked`; never fuzzy-match or invent a score.
-   - Capability evidence informs the host's decision. It does not replace cards, route health, quota, authorization, or final acceptance.
+   - Capability vectors drive Dynamic Card positioning and task matching. Missing values remain unknown, never zero.
+   - Capability evidence does not replace route health, quota, authorization, session policy, or final acceptance.
 
 10. **Conversation promotion is dynamic.** The host watches ordinary dialogue for explicit execution intent, builds a faithful `explicit/inferred/unresolved/excluded` Draft, and asks once for approval. The user does not manually invoke Baton. OpenSpec owns breakdown/plan when present; otherwise the main agent owns them.
 
@@ -58,8 +60,8 @@ baton login --card <id>
 baton capabilities refresh --provider aa --key-file PATH
 baton capabilities status
 baton capabilities show ROUTE [--profile PROFILE]
-baton cards
-baton cards add --id ID --strengths "..." --route MODEL [--reasoning-effort EFFORT]
+baton cards [--ranked|--unranked] [--provider ID] [--json]
+baton cards add --id ID [--strengths "policy hint"] [--route MODEL] [--reasoning-effort EFFORT] [--enabled true|false]
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]
@@ -76,6 +78,7 @@ baton status
 ## Red lines
 
 - Do not invent a default model.
+- Do not copy AA scores into config or invent positioning for unranked routes.
 - Do not fallback across routes/providers or inherit the parent model.
 - Workers never own Git index, HEAD, branch, commit, push, or rebase.
 - Do not reimplement OpenSpec.

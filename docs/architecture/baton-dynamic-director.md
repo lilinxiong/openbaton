@@ -531,10 +531,10 @@ OpenCodex catalog
   当前可执行 route、context、reasoning effort、provider
 
 Artificial Analysis
-  Intelligence / Coding / Agentic Index、Terminal-Bench、SciCode、速度、成本
+  Intelligence / Coding / Agentic Index、速度、成本、延迟
 
-Baton cards
-  用户偏好、人工能力说明、显式映射和覆盖
+Dynamic Cards
+  OpenCodex route + AA capability + 用户 alias/hint/exclusion
 
 Route runtime
   health、quota、延迟、近期执行证据
@@ -551,7 +551,7 @@ OpenBaton 的能力数据分为稳定快照和动态信号：
 | Route Snapshot | OpenCodex effective catalog | 配置/catalog 指纹变化、显式 refresh | 否 |
 | Canonical mapping | Baton mapping + user override | route 或 mapping 变化 | 否 |
 | Capability Cache | Artificial Analysis | cache miss、模型新增、benchmark 版本变化、TTL、显式 refresh | 否 |
-| Cards | `~/.baton/config.toml` | card 配置变化 | 否 |
+| Dynamic Cards | Route Snapshot + Capability Cache + `~/.baton/config.toml` overrides | 任一输入变化 | 否 |
 | Health / quota | route runtime | 独立轻量 monitor / provider event | 只读本地最新信号 |
 | Recent evidence | Baton execution history | worker 终态事件 | 否 |
 
@@ -730,7 +730,7 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 ## 11. 整体可行性判断
 
-> **当前状态（2026-08-19 RC）：`PASS / Codex 首版闭环通过`。** 137/137 tests、全局 `~/.baton` 状态、66-route snapshot、真实 8-ticket FIFO、write completion/error safety gate、OpenSpec stable-number writeback 和 provider no-fallback 日志均已通过。完整证据见 [OpenBaton Codex RC 验收报告](./openbaton-rc-validation-2026-08-19.md)。以下 11.1～11.8 保留的是实施前历史判定与验收规则，其中 `REVISE`、待集成和旧风险描述不再代表当前产品状态。
+> **当前状态（2026-08-19 RC）：`PASS / Codex 首版闭环通过`。** 144/144 tests、全局 `~/.baton` 状态、66-route Dynamic Cards、真实 8-ticket FIFO、write completion/error safety gate、OpenSpec stable-number writeback 和 provider no-fallback 日志均已通过。完整证据见 [OpenBaton Codex RC 验收报告](./openbaton-rc-validation-2026-08-19.md)。以下 11.1～11.8 保留的是实施前历史判定与验收规则，其中 `REVISE`、待集成和旧风险描述不再代表当前产品状态。
 
 ### 11.1 历史总体结论
 

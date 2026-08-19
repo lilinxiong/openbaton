@@ -12,13 +12,15 @@
 
 | Gate | 结果 | 当前证据 |
 | --- | --- | --- |
-| Git / TypeScript | PASS | 137/137 tests；`tsc --noEmit`、`git diff --check` 通过 |
+| Git / TypeScript | PASS | 144/144 tests；`tsc --noEmit`、`git diff --check` 通过 |
 | Build / package | PASS | `npm pack` 成功，144 entries；隔离安装后 `baton init/spawn/status` 与 OpenCodex 2.25.0 可运行 |
 | 全局状态目录 | PASS | cache 位于 `~/.baton/cache`；workspace runtime 位于 `~/.baton/workspaces/<canonical-root-sha256>`；项目目录无 `.baton` |
 | Route Snapshot | PASS | 66 routes；generation 1；catalog 不变时 fingerprint 稳定 |
+| Dynamic Cards | PASS | 66 unique live routes 生成 89 张 route/profile/override cards：33 ranked、56 unranked、4 user overrides；缺失指标保持 null |
 | 8-ticket FIFO | PASS | 6 active + 2 queued；只依次补位 7、8；最终 8 completed、active 0、available 6 |
 | Capacity lifecycle | PASS | 仅在第一次 `dispatch next` 传 6；后续 bind/complete/status/recover 均从持久状态读取 6 |
 | Provider / no fallback | PASS | OpenCodex usage ledger 的 8/8 请求均为 `kimi/k3-256k`、HTTP 200、单 attempt、无 recovery、`explicit-provider-namespace` |
+| Dynamic selection execution | PASS | 无 `--model` 的复杂仓库任务选择 `xai/grok-4.6@high`；真实 host 完成，日志为 xAI/Grok 4.6、high、HTTP 200、单 attempt、无 recovery |
 | Real write positive | PASS | 真实 Kimi worker 只修改 Receipt 允许的 `allowed.txt`；parent safety verdict accepted |
 | Completion-path negative | PASS | 当前编译 CLI 在 allowed + denied diff 下转为 `errored/WRITE_SCOPE_VIOLATION`，拒绝 conclusion，释放 slot |
 | Error-path negative | PASS | `UPSTREAM_429` 终态也执行 safety audit；外层错误为 `WRITE_SCOPE_VIOLATION`，并保留结构化 `host_error` |
@@ -43,9 +45,10 @@ denied.txt modified
 ## Route 可见性边界
 
 - OpenCodex catalog 中所有 executable routes 保持可见，包括 Claude routes。
-- Card 决定 route 是否进入 Baton 调度；没有 card 不等于 route 不可见。
+- OpenCodex live routes 自动生成 Dynamic Cards；AA-mapped profile 可自动参与调度，unmapped route 保持可见但 `unranked`。
 - Session/Goal exclusions 只约束当前调度，不得写成全局 provider/model-family 禁令。
-- 当前配置仍只有 6 张 card、4 张 executable card、3 条唯一 executable route；全 catalog card 覆盖是后续独立工作，不影响本轮安全闭环 PASS。
+- 当前本机 66 条 live routes 生成 89 张 route/profile/override cards：33 ranked、56 unranked、4 个用户 alias overrides，覆盖全部 66 条唯一 route。
+- AA capability vectors 是自动匹配的主要证据；config 中的 strengths 仅是可选 policy hint。未映射 route 不参与自动匹配，但可通过 exact `--model` 显式调度。
 
 ## 保留边界
 

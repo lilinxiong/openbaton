@@ -1,6 +1,6 @@
 ---
 name: baton
-description: Director for multi-model work. One front conversation; card-routed host-native spawn.
+description: Director for multi-model work. One front conversation; capability-routed host-native spawn.
 ---
 
 # baton
@@ -11,10 +11,11 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
-2. **Cards only.** Route each unit by model cards (`id` + strengths) in `~/.baton/config.toml`.
+2. **Dynamic Cards.** Baton joins OpenCodex live routes with AA capability evidence; `~/.baton/config.toml` supplies aliases, policy hints, exclusions, and the explicit Grok agent aliases required by this host.
    - No subagent default.
    - Do not inherit the parent/host model as a default.
-   - No match → blocked. Ask the user to add or narrow a card. Never silently pick.
+   - Unmapped routes remain visible as `unranked`; Grok can spawn only cards with an installed explicit agent alias.
+   - No match/tie → blocked. Never silently pick.
 
 3. **Workers are host-native subagents.** Spawn in-process. Do **not** shell out to `grok -p`, `claude -p`, `cursor-agent -p`, or any other CLI print mode.
 
@@ -48,8 +49,8 @@ Official `spawn_subagent` has no `model` param. Children would inherit the paren
 baton login
 baton login <provider>
 baton login --card <id>
-baton cards
-baton cards add --id ID --strengths "..."
+baton cards [--ranked|--unranked] [--provider ID]
+baton cards add --id ID [--strengths "policy hint"] [--route MODEL] [--enabled true|false]
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]

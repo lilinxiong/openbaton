@@ -13,7 +13,7 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 - `src/`、`test/`、`bin/` 无 JavaScript 源文件。
 - NodeNext TypeScript build，生产源码执行 `tsc --noEmit`。
 - 测试使用 TypeScript + `tsx`。
-- 当前完整回归为 137 passed、0 failed。
+- 当前完整回归为 144 passed、0 failed。
 - npm 发布只包含编译后的 `dist` 和必要 templates/data。
 
 ### Host-native 多 subagent
@@ -44,9 +44,16 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 
 - `baton routes refresh` 消费 OpenCodex `models live --json`。
 - 稳定 SHA-256 fingerprint；catalog 不变不增加 generation。
-- card 与 executable route、profile、AA SQLite capability 合流。
+- 所有 executable routes 自动生成 Dynamic Cards；精确 AA mapping 生成 profile capability，未映射 route 保持 `unranked`。
 - 无 executable route 为 blocked；无 AA mapping 为 `unranked`，不猜分。
-- `baton update` 只补内置 card 缺失 route/profile，不覆盖用户值或自定义 card。
+- `baton update` 将旧 benchmark cards 迁移为 alias/policy hints，不覆盖用户自定义 override/exclusion。
+
+### Dynamic Cards
+
+- 当前 66 条 OpenCodex live routes 生成 89 张 route/profile/override cards：33 ranked、56 unranked、4 user overrides。
+- AA intelligence/coding/agentic、cost、throughput 和 latency 形成结构化 capability vector；定位标签是 percentile-derived inference。
+- 自动匹配只选择 ranked executable cards；unranked routes 保持可见，并允许 exact `--model` 显式选择。
+- 真实无 `--model` 任务选择并执行 `xai/grok-4.6@high`；OpenCodex 日志确认单 attempt、无 fallback。
 
 ### Conversation-to-Goal
 
@@ -103,4 +110,4 @@ slot                = released
 - Benchmark 是主 agent 的证据，不是自动决策器。
 - Parent 始终拥有业务裁决、验收、测试与 Git。
 - OpenCodex catalog 的所有 executable routes 保持可见；session/Goal exclusions 仅在当前调度生效，不是全局 Claude 或 provider 禁令。
-- 当前 card 覆盖仍小于 route catalog；全 catalog card 建模属于后续独立工作。
+- 当前 Dynamic Cards 覆盖完整 OpenCodex live catalog；用户 config 只保存 alias、hint 和 exclusion。

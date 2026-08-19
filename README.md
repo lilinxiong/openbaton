@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-Director for multi-model work. One front conversation, card-routed native spawn, clean director context.
+Director for multi-model work. One front conversation, capability-routed native spawn, clean director context.
 
 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.
 
@@ -23,7 +23,8 @@ The goal is not simply “more agents.” It is one accountable workflow that ca
 
 Not another coding CLI. A skill pack + `init` that sits in front of the host you already use (Claude Code, Cursor, Grok, Codex, …).
 
-- **Cards only.** Each model is `id` + strengths. The CLI picks per task. No subagent default. No inherit-parent-as-default. No match → blocked.
+- **Dynamic Cards.** Every OpenCodex live provider/route stays visible. Exact AA mappings add structured capability vectors and inferred positioning; unmapped routes remain `unranked`.
+- **Config is policy only.** `~/.baton/config.toml` stores aliases, optional policy hints, and exclusions—not copied benchmark scores. No subagent default, parent inherit, or silent fallback.
 - **All routes stay visible.** OpenCodex discovery is the executable catalog. Cards opt routes into scheduling; session/Goal exclusions apply only to that session and never become global route-family bans.
 - **Host-native workers.** Spawn in-process subagents. Do not shell out to `claude -p` / `cursor-agent -p` / `grok -p`. Grok and Codex init install into `~/.grok` and `~/.codex` (not the project); cards live in `~/.baton`.
 - **Unlimited logical spawn.** Queue if the host has a hard cap. Never refuse. Depth 1.
@@ -65,6 +66,8 @@ baton capabilities show gpt-5.6-luna --profile high
 
 No fuzzy model matching. Routes without an exact canonical mapping stay `unranked`, not blocked and not assigned an invented score. See [Artificial Analysis capability cache](docs/data-sources/artificial-analysis.md).
 
+Dynamic Card matching uses AA intelligence/coding/agentic, cost, throughput, and latency evidence. Missing metrics stay unknown. Provider health, quota, authorization, and session policy remain separate gates.
+
 ## State layout
 
 All Baton-owned state is global under `~/.baton`; Baton never creates a project-local `.baton` directory.
@@ -84,8 +87,10 @@ baton routes refresh
 baton routes status
 baton routes candidates
 baton conversation promote --from-file PATH
-baton cards
-baton cards add --id opus --strengths "hard reasoning, long refactors" --route MODEL
+baton cards --ranked
+baton cards --unranked --provider cursor
+baton cards add --id reviewer --route xai/grok-4.6 --reasoning-effort high --strengths "review policy hint"
+baton cards add --id cursor/claude-opus-5 --route cursor/claude-opus-5 --enabled false
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write

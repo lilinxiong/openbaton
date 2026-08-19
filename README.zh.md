@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-指挥棒。多模型协作的 director：一个入口对话，按 card 分派原生 spawn，主上下文洁癖。
+指挥棒。多模型协作的 director：一个入口对话，按 capability 分派原生 spawn，主上下文洁癖。
 
 既能独立，又能 1+1>2 — 单独可用；有 OpenSpec 时严格更好。
 
@@ -23,7 +23,8 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 
 不是又一个 coding CLI。而是一套 skill pack + `init`，坐在你已经在用的 host 前面（Claude Code、Cursor、Grok、Codex、…）。
 
-- **只认 card。** 每个模型是 `id` + strengths。CLI 按任务选人。没有 subagent 默认值。不继承父模型当默认。匹配不上就拦住。
+- **Dynamic Cards。** 所有 OpenCodex live provider/route 都保持可见；精确 AA mapping 生成结构化 capability 和定位推断，未映射 route 保持 `unranked`。
+- **Config 只保存策略。** `~/.baton/config.toml` 只放 alias、可选 policy hint 和 exclusion，不复制 benchmark 分数；没有默认 subagent、父模型继承或静默 fallback。
 - **所有 route 保持可见。** OpenCodex discovery 是可执行 catalog；card 决定哪些 route 进入调度。当前 session/Goal 的 exclusions 只影响本次调度，不会变成全局 route-family 禁令。
 - **host 原生 worker。** 进程内 spawn。不要 shell 出去跑 `claude -p` / `cursor-agent -p` / `grok -p`。Grok / Codex 的 init 装到 `~/.grok` 和 `~/.codex`，不写进项目；card 在 `~/.baton`。
 - **逻辑上无限 spawn。** host 有硬上限就排队。永不拒绝。深度 1。
@@ -65,6 +66,8 @@ baton capabilities show gpt-5.6-luna --profile high
 
 不做模糊模型匹配。没有精确 canonical mapping 的 route 保持 `unranked`：不阻塞使用，也不编造分数。详见 [Artificial Analysis 能力缓存](docs/data-sources/artificial-analysis.md)。
 
+Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 和 latency 证据。缺失指标保持 unknown；provider health、quota、授权和 session policy 仍是独立 gate。
+
 ## 状态目录
 
 所有 Baton 自有状态都放在用户目录 `~/.baton`；Baton 不再生成项目内 `.baton`。
@@ -84,8 +87,10 @@ baton routes refresh
 baton routes status
 baton routes candidates
 baton conversation promote --from-file PATH
-baton cards
-baton cards add --id opus --strengths "hard reasoning, long refactors" --route MODEL
+baton cards --ranked
+baton cards --unranked --provider cursor
+baton cards add --id reviewer --route xai/grok-4.6 --reasoning-effort high --strengths "review policy hint"
+baton cards add --id cursor/claude-opus-5 --route cursor/claude-opus-5 --enabled false
 baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model k3 --write-path src/file.ts --write-ops write

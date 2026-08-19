@@ -6,6 +6,6 @@ OpenBaton can build a local, untracked capability cache from the Artificial Anal
 - API documentation: [Artificial Analysis Data API](https://artificialanalysis.ai/data-api/docs)
 - Default endpoint: `https://artificialanalysis.ai/api/v2/language/models/free`
 
-Artificial Analysis data is not committed to this repository. The generated SQLite database and manifest live under `.baton/cache/capabilities/`, which is ignored by Git. Users must supply their own API key and comply with the Artificial Analysis terms, attribution requirements, tier limits, and redistribution rules.
+Artificial Analysis data is not committed to this repository. The generated SQLite database and manifest live under user-global `~/.baton/cache/capabilities/` and never enter a project Git worktree. Users must supply their own API key and comply with the Artificial Analysis terms, attribution requirements, tier limits, and redistribution rules.
 
 The committed `route-mappings.json` contains only explicit OpenBaton route-to-canonical-model mapping decisions. Missing or uncertain mappings remain `unranked`; OpenBaton does not fuzzy-match model names or invent benchmark scores.

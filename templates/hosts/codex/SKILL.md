@@ -1,6 +1,6 @@
 ---
 name: baton
-description: Director for multi-model work. One front conversation; card-routed host-native spawn.
+description: Director for multi-model work. One front conversation; capability-routed host-native spawn.
 ---
 
 # baton
@@ -13,10 +13,12 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 2. **Tickets before dispatch.** Units become dispatch tickets (`baton spawn`, `baton apply`), queued FIFO. Queued is not running: the host reserves runnable tickets with `baton dispatch next --host codex --capacity 6 --json` and executes each reserved spec itself.
 
-3. **Route or blocked.** Every dispatch spec carries `route_id`/`model`, optional `reasoning_effort`, `fork_context=false`, `prompt`, and the ticket id. Routes resolve through OpenCodex provider/auth config and the card that stamped the ticket.
+3. **Dynamic route card or blocked.** OpenCodex live routes are the complete visible set. Baton joins exact provider/route + profile with AA capability evidence, then applies user aliases/hints/exclusions. Every dispatch spec carries `route_id`/`model`, optional `reasoning_effort`, `fork_context=false`, `prompt`, and the ticket id.
    - No route on the spec → blocked (`NO_EXECUTABLE_ROUTE`). Ask the user to add or narrow a card/route.
    - Never inherit the parent/host model. Never fall back to another route or provider. Never silently pick.
    - Keep every executable route family visible, including Claude routes. Apply explicit session/Goal exclusions only to the current route decision; never persist them as a global ban.
+   - Unmapped routes remain visible as `unranked`: never auto-select them, but allow exact explicit selection.
+   - Keep missing capability values unknown; never coerce them to zero or invent positioning.
 
 4. **Workers are host-native subagents.** The host spawns in-process with the real Codex runtime tool: `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Do **not** shell out to `claude -p`, `cursor-agent -p`, or any other CLI print mode. The baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`. Never claim otherwise.
 
@@ -73,8 +75,8 @@ baton routes refresh
 baton routes status
 baton routes candidates
 baton conversation promote --from-file PATH
-baton cards
-baton cards add --id ID --strengths "..."
+baton cards [--ranked|--unranked] [--provider ID] [--json]
+baton cards add --id ID [--strengths "policy hint"] [--route MODEL] [--reasoning-effort EFFORT] [--enabled true|false]
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change]
