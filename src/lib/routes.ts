@@ -4,6 +4,8 @@ import path from "node:path";
 import { routeSnapshotPath } from "./paths.js";
 import {
   listStoredRouteMappings,
+  loadRouteMappings,
+  queryMappedRouteCapability,
   queryRouteCapability,
   type RouteCapabilityResult,
   type StoredRouteMapping,
@@ -13,19 +15,38 @@ import type { CardCapabilityEvidence, ModelCard } from "../types.js";
 export interface ExecutableRoute {
   id: string;
   provider: string | null;
+  /** Exact model string accepted by the host runtime. Never reconstruct it. */
+  route_id: string;
+  disabled: boolean;
+  native: boolean;
+  reasoning_efforts: string[];
+  default_reasoning_effort: string | null;
 }
 
 export interface RouteSnapshot {
-  schema_version: 1;
+  schema_version: 2;
   generation: number;
   fingerprint: string;
   fetched_at: string;
   source: "opencodex";
+  engine_version: string | null;
   routes: ExecutableRoute[];
 }
 
 function stableRoutes(routes: ExecutableRoute[]): string {
-  return JSON.stringify(routes.slice().sort((a, b) => `${a.provider || ""}/${a.id}`.localeCompare(`${b.provider || ""}/${b.id}`)));
+  return JSON.stringify(routes.slice().sort((a, b) => a.route_id.localeCompare(b.route_id) || String(a.provider || "").localeCompare(String(b.provider || ""))));
+}
+
+function strings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))].sort();
+}
+
+function exactRouteId(record: Record<string, unknown> | null, id: string, provider: string | null): string {
+  const namespaced = String(record?.namespaced ?? record?.route_id ?? record?.routeId ?? "").trim();
+  if (namespaced) return namespaced;
+  if (id.includes("/") || !provider || record?.native === true || provider === "openai") return id;
+  return `${provider}/${id}`;
 }
 
 export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
@@ -41,19 +62,48 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
     const id = String(record?.id ?? record?.model ?? record?.name ?? item ?? "").trim();
     if (!id) continue;
     const provider = typeof record?.provider === "string" ? record.provider : id.includes("/") ? id.split("/", 1)[0] : null;
-    byId.set(`${provider || ""}\0${id}`, { id, provider });
+    const routeId = exactRouteId(record, id, provider);
+    const reasoningEfforts = strings(record?.reasoningEfforts ?? record?.reasoning_efforts);
+    const defaultReasoningEffort = String(record?.defaultReasoningEffort ?? record?.default_reasoning_effort ?? "").trim() || null;
+    byId.set(`${provider || ""}\0${routeId}`, {
+      id,
+      provider,
+      route_id: routeId,
+      disabled: record?.disabled === true,
+      native: record?.native === true,
+      reasoning_efforts: reasoningEfforts,
+      default_reasoning_effort: defaultReasoningEffort,
+    });
   }
-  return [...byId.values()].sort((a, b) => `${a.provider || ""}/${a.id}`.localeCompare(`${b.provider || ""}/${b.id}`));
+  return [...byId.values()].sort((a, b) => a.route_id.localeCompare(b.route_id) || String(a.provider || "").localeCompare(String(b.provider || "")));
 }
 
-export function publishRouteSnapshot(cwd: string, catalog: unknown, now: Date = new Date()): { changed: boolean; snapshot: RouteSnapshot } {
+interface PublishRouteSnapshotOptions { engineVersion?: string | null }
+
+export function publishRouteSnapshot(
+  cwd: string,
+  catalog: unknown,
+  now: Date = new Date(),
+  { engineVersion = null }: PublishRouteSnapshotOptions = {},
+): { changed: boolean; snapshot: RouteSnapshot } {
   const routes = normalizeRouteCatalog(catalog);
   const fingerprint = crypto.createHash("sha256").update(stableRoutes(routes)).digest("hex");
   const file = routeSnapshotPath(cwd);
-  let previous: RouteSnapshot | null = null;
-  if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as RouteSnapshot;
-  if (previous?.fingerprint === fingerprint) return { changed: false, snapshot: previous };
-  const snapshot: RouteSnapshot = { schema_version: 1, generation: (previous?.generation || 0) + 1, fingerprint, fetched_at: now.toISOString(), source: "opencodex", routes };
+  let previous: Partial<RouteSnapshot> | null = null;
+  if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+  const normalizedEngineVersion = String(engineVersion || "").trim() || null;
+  if (previous?.schema_version === 2 && previous.fingerprint === fingerprint && previous.engine_version === normalizedEngineVersion) {
+    return { changed: false, snapshot: previous as RouteSnapshot };
+  }
+  const snapshot: RouteSnapshot = {
+    schema_version: 2,
+    generation: Number(previous?.generation || 0) + 1,
+    fingerprint,
+    fetched_at: now.toISOString(),
+    source: "opencodex",
+    engine_version: normalizedEngineVersion,
+    routes,
+  };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
@@ -65,7 +115,22 @@ export function publishRouteSnapshot(cwd: string, catalog: unknown, now: Date = 
 
 export function readRouteSnapshot(cwd: string): RouteSnapshot | null {
   const file = routeSnapshotPath(cwd);
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) as RouteSnapshot : null;
+  if (!fs.existsSync(file)) return null;
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+  if (parsed.schema_version !== 2 || !Array.isArray(parsed.routes)) return null;
+  return parsed as RouteSnapshot;
+}
+
+export function routeSnapshotSchemaVersion(cwd: string): number | null {
+  const file = routeSnapshotPath(cwd);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { schema_version?: unknown };
+    const value = Number(parsed.schema_version);
+    return Number.isInteger(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface RouteCandidate {
@@ -75,12 +140,11 @@ export interface RouteCandidate {
 }
 
 export function canonicalRouteId(route: ExecutableRoute): string {
-  if (route.id.includes("/") || !route.provider) return route.id;
-  return `${route.provider}/${route.id}`;
+  return route.route_id;
 }
 
-function routeVariants(route: ExecutableRoute, includeBare = true): string[] {
-  return [...new Set([canonicalRouteId(route), ...(includeBare ? [route.id] : [])])];
+function routeVariants(route: ExecutableRoute): string[] {
+  return [canonicalRouteId(route)];
 }
 
 function numberAt(value: unknown, ...path: string[]): number | null {
@@ -118,7 +182,7 @@ function applyPositioning(candidates: RouteCandidate[]): void {
   const unique = new Map<string, CardCapabilityEvidence>();
   for (const candidate of candidates) {
     const capability = candidate.card.capability;
-    if (capability?.ranked && capability.aa_slug && !unique.has(capability.aa_slug)) unique.set(capability.aa_slug, capability);
+    if (candidate.executable && capability?.ranked && capability.aa_slug && !unique.has(capability.aa_slug)) unique.set(capability.aa_slug, capability);
   }
   const values = [...unique.values()];
   const metric = (key: keyof CardCapabilityEvidence) => values.map((item) => item[key]).filter((item): item is number => typeof item === "number");
@@ -213,7 +277,7 @@ function applyOverrides(candidates: RouteCandidate[], overrides: ModelCard[], sn
       continue;
     }
     const matchingSnapshotRoutes = snapshot?.routes.filter((route) => routeVariants(route).includes(target)) || [];
-    const executable = matchingSnapshotRoutes.length === 1;
+    const executable = matchingSnapshotRoutes.length === 1 && matchingSnapshotRoutes[0].disabled !== true;
     aliases.push({
       card: { ...override, strengths: override.strengths || "unranked user override", source: "override", executable },
       executable,
@@ -226,22 +290,36 @@ function applyOverrides(candidates: RouteCandidate[], overrides: ModelCard[], sn
 
 export function buildRouteCandidates(cwd: string, overrides: ModelCard[], capabilityDbPath: string): RouteCandidate[] {
   const snapshot = readRouteSnapshot(cwd);
-  const mappings = listStoredRouteMappings({ dbPath: capabilityDbPath });
+  const mergedMappings = new Map<string, StoredRouteMapping>();
+  for (const mapping of listStoredRouteMappings({ dbPath: capabilityDbPath })) {
+    mergedMappings.set(`${mapping.routeId}\0${mapping.profile}`, mapping);
+  }
+  for (const mapping of loadRouteMappings()) {
+    mergedMappings.set(`${mapping.routeId}\0${mapping.profile}`, {
+      routeId: mapping.routeId,
+      profile: mapping.profile,
+      aaSlug: mapping.aaSlug,
+      mappingSource: mapping.source,
+      note: mapping.note,
+    });
+  }
+  const mappings = [...mergedMappings.values()];
   const candidates: RouteCandidate[] = [];
-  const idCounts = new Map<string, number>();
-  for (const route of snapshot?.routes || []) idCounts.set(route.id, (idCounts.get(route.id) || 0) + 1);
   for (const route of snapshot?.routes || []) {
     const canonical = canonicalRouteId(route);
-    const variants = routeVariants(route, idCounts.get(route.id) === 1);
     const routeMappings = mappings
-      .filter((mapping) => variants.includes(mapping.routeId))
-      .sort((a, b) => Number(b.routeId === canonical) - Number(a.routeId === canonical));
+      .filter((mapping) => mapping.routeId === canonical)
+      .sort((a, b) => a.profile.localeCompare(b.profile));
     const byProfile = new Map<string, StoredRouteMapping>();
     for (const mapping of routeMappings) if (!byProfile.has(mapping.profile)) byProfile.set(mapping.profile, mapping);
     if (!byProfile.has("")) byProfile.set("", { routeId: canonical, profile: "", aaSlug: "", mappingSource: "explicit", note: null });
     for (const [profile, mapping] of byProfile) {
-      const result = queryRouteCapability({ dbPath: capabilityDbPath, routeId: mapping.routeId, profile });
+      if (profile && route.reasoning_efforts.length > 0 && !route.reasoning_efforts.includes(profile)) continue;
+      const result = mapping.aaSlug
+        ? queryMappedRouteCapability({ dbPath: capabilityDbPath, routeId: canonical, profile, mapping })
+        : queryRouteCapability({ dbPath: capabilityDbPath, routeId: mapping.routeId, profile });
       const id = profile ? `${canonical}@${profile}` : canonical;
+      const executable = route.disabled !== true;
       const card: ModelCard = {
         id,
         strengths: "",
@@ -250,10 +328,10 @@ export function buildRouteCandidates(cwd: string, overrides: ModelCard[], capabi
         reasoning_effort: profile || undefined,
         source: "dynamic",
         provider: route.provider,
-        executable: true,
+        executable,
         capability: evidence(result, mapping.routeId),
       };
-      candidates.push({ card, executable: true, capability: result });
+      candidates.push({ card, executable, capability: result });
     }
   }
   applyPositioning(candidates);

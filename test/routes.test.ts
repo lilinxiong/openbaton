@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildRouteCandidates, normalizeRouteCatalog, publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
-import { runRoutes } from "../src/commands/routes.js";
+import { buildRouteCandidates, normalizeRouteCatalog, publishRouteSnapshot, readRouteSnapshot, routeSnapshotSchemaVersion } from "../src/lib/routes.js";
+import { ensureRouteSnapshotFresh, runRoutes } from "../src/commands/routes.js";
 import { routeSnapshotPath } from "../src/lib/paths.js";
 import { isolatedHome } from "./home.js";
 import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
@@ -37,10 +37,18 @@ describe("OpenCodex Route Snapshot", () => {
       cwd: root,
       stdout,
       resolve: () => ({ source: "path", command: "/fake/ocx", prefixArgs: [] }),
-      runner: () => ({ status: 0, stdout: JSON.stringify({ liveModels: ["kimi/k3-256k"] }), stderr: "", error: null }),
+      runner: ({ args }) => ({
+        status: 0,
+        stdout: args[0] === "--version" ? "opencodex 2.26.0\n" : JSON.stringify({ liveModels: ["kimi/k3-256k"] }),
+        stderr: "",
+        error: null,
+      }),
     });
     assert.equal(code, 0);
-    assert.equal(JSON.parse(stdout.text()).snapshot.routes[0].id, "kimi/k3-256k");
+    const refreshed = JSON.parse(stdout.text()).snapshot;
+    assert.equal(refreshed.schema_version, 2);
+    assert.equal(refreshed.engine_version, "opencodex 2.26.0");
+    assert.equal(refreshed.routes[0].id, "kimi/k3-256k");
     const candidates = buildRouteCandidates(root, [
       { id: "k3", strengths: "", route_id: "kimi/k3-256k" },
       { id: "grok", strengths: "", route_id: "xai/grok-4.6" },
@@ -59,6 +67,80 @@ describe("OpenCodex Route Snapshot", () => {
     publishRouteSnapshot(root, { models: [{ id: "k3[1m]", provider: "kimi" }] });
     const [candidate] = buildRouteCandidates(root, [{ id: "k3", strengths: "", route_id: "kimi/k3[1m]", reasoning_effort: "max" }], path.join(root, "missing.sqlite3"));
     assert.equal(candidate.executable, true);
+  });
+
+  it("preserves exact OpenCodex route ids and makes disabled routes visible but unavailable", () => {
+    const root = cwd();
+    const dbPath = path.join(root, "aa.sqlite3");
+    publishRouteSnapshot(root, [
+      {
+        provider: "openai", id: "gpt-5.6-sol", namespaced: "gpt-5.6-sol", native: true, disabled: false,
+        reasoningEfforts: ["low", "high"], defaultReasoningEffort: "low",
+      },
+      {
+        provider: "cursor", id: "gpt-5.6-sol", namespaced: "cursor/gpt-5.6-sol", disabled: true,
+        reasoningEfforts: ["low", "high", "max"],
+      },
+      { provider: "openai", id: "gpt-5.4", namespaced: "gpt-5.4", native: true, disabled: true },
+    ]);
+    writeCapabilitySnapshot({
+      dbPath,
+      metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
+      models: [{
+        id: "aa-sol", slug: "gpt-5-6-sol-high", name: "GPT-5.6 Sol high",
+        evaluations: { artificial_analysis_intelligence_index: 80, artificial_analysis_coding_index: 90 },
+        pricing: {}, performance: {}, cost: {},
+      }],
+      // The cache intentionally has no mappings: the committed mapping file
+      // must take effect without a remote AA refresh.
+      mappings: [],
+    });
+
+    const snapshot = readRouteSnapshot(root)!;
+    assert.equal(snapshot.routes.find((route) => route.provider === "openai" && route.id === "gpt-5.6-sol")?.route_id, "gpt-5.6-sol");
+    assert.equal(snapshot.routes.find((route) => route.provider === "cursor")?.route_id, "cursor/gpt-5.6-sol");
+
+    const candidates = buildRouteCandidates(root, [], dbPath);
+    assert.equal(candidates.some((item) => item.card.id === "gpt-5.6-sol@high" && item.executable), true);
+    assert.equal(candidates.some((item) => item.card.id === "gpt-5.6-sol@max"), false, "unsupported native profile");
+    assert.equal(candidates.some((item) => item.card.id === "cursor/gpt-5.6-sol@high" && !item.executable), true);
+    assert.equal(candidates.some((item) => item.card.id === "gpt-5.4" && !item.executable), true);
+  });
+
+  it("rejects legacy snapshots instead of reconstructing route ids", () => {
+    const root = cwd();
+    const file = routeSnapshotPath(root);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schema_version: 1, generation: 1, routes: [{ id: "gpt-5.6-sol", provider: "openai" }] }));
+    assert.equal(routeSnapshotSchemaVersion(root), 1);
+    assert.equal(readRouteSnapshot(root), null);
+  });
+
+  it("refreshes an existing snapshot when the OpenCodex runtime version changes", () => {
+    const root = cwd();
+    publishRouteSnapshot(root, [{ provider: "kimi", id: "k3", namespaced: "kimi/k3" }], new Date("2026-08-19T00:00:00Z"), {
+      engineVersion: "opencodex 2.25.0",
+    });
+    const calls: string[][] = [];
+    ensureRouteSnapshotFresh({
+      cwd: root,
+      stdout: sink(),
+      resolve: () => ({ source: "path", command: "/fake/ocx", prefixArgs: [] }),
+      runner: ({ args }) => {
+        calls.push(args);
+        return {
+          status: 0,
+          stdout: args[0] === "--version"
+            ? "opencodex 2.26.0\n"
+            : JSON.stringify([{ provider: "openai", id: "gpt-5.6-sol", namespaced: "gpt-5.6-sol", native: true }]),
+          stderr: "",
+          error: null,
+        };
+      },
+    });
+    assert.deepEqual(calls, [["--version"], ["--version"], ["models", "live", "--json"]]);
+    assert.equal(readRouteSnapshot(root)?.engine_version, "opencodex 2.26.0");
+    assert.equal(readRouteSnapshot(root)?.routes[0].route_id, "gpt-5.6-sol");
   });
 
   it("generates ranked profile cards from AA and keeps unmapped live routes visible", () => {

@@ -17,6 +17,8 @@ You are the director. This is a skill pack plus `init` that installs into the co
    - `~/.baton/config.toml` stores optional aliases, policy hints, and `enabled=false` exclusions—not copied benchmark truth.
    - No subagent default or parent-model inherit. No match/tie → blocked; never silently pick.
    - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary and never become a global family ban.
+   - Preserve OpenCodex's exact `namespaced` route. A visible route is spawnable only when it is not disabled and the requested reasoning profile is supported.
+   - Recent host/route/profile/task-shape failures enter a bounded cooldown for automatic matching. Explicit selection remains possible; an existing ticket never falls back.
 
 3. **Tickets before host-native dispatch.** `baton spawn/apply` writes a queued ticket plus immutable Delegation Receipt. The host reserves with `baton dispatch next`, calls its real in-process `spawn_agent`, then binds the returned agent ID. The CLI never claims it can call host tools. Do **not** shell out to coding CLI print mode.
    - No route or Receipt → blocked. Never inherit the parent model or fallback.
@@ -47,7 +49,7 @@ You are the director. This is a skill pack plus `init` that installs into the co
 
 10. **Conversation promotion is dynamic.** The host watches ordinary dialogue for explicit execution intent, builds a faithful `explicit/inferred/unresolved/excluded` Draft, and asks once for approval. The user does not manually invoke Baton. OpenSpec owns breakdown/plan when present; otherwise the main agent owns them.
 
-11. **Route Snapshot gates executability.** Join cards with the persisted OpenCodex catalog fingerprint and local capability cache. Refresh discovery only when catalog/config changes or explicitly requested. Missing executable route is blocked; missing capability mapping is `unranked`.
+11. **Route Snapshot gates executability.** Join cards with the persisted OpenCodex catalog fingerprint and local capability cache. Legacy snapshots and OpenCodex runtime-version changes refresh before planning; otherwise discovery remains local-first and explicit. Missing executable route is blocked; missing capability mapping is `unranked`.
 
 12. **Baton state is user-global.** Shared cache lives under `~/.baton/cache`; workspace runtime lives under `~/.baton/workspaces/<canonical-root-sha256>`. Never create a project-local `.baton` directory.
 

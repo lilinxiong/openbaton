@@ -9,6 +9,7 @@ import { dispatchLockPath, dispatchStatePath } from "./paths.js";
 import { readReceipt, type DelegationReceipt } from "./receipt.js";
 import { auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
+import { recordRouteHealth } from "./route-health.js";
 
 export const ACTIVE_TICKET_STATUSES = new Set<TicketStatus>(["dispatching", "running"]);
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
@@ -34,14 +35,30 @@ export class DispatchError extends Error {
 }
 
 /** Host-reported terminal failure, kept as structured evidence when the safety gate overrides it. */
+type TerminalDispatchStatus = "completed" | "errored" | "timed_out" | "closed";
+
 interface HostTerminalError {
-  status: TicketStatus;
+  status: Exclude<TerminalDispatchStatus, "completed">;
   code: string;
   message: string;
 }
 
 interface WriteScopeRejection extends TicketError {
   host_error?: HostTerminalError;
+}
+
+function updateRouteHealth(cwd: string, ticket: SpawnTicket, status: TerminalDispatchStatus, error: HostTerminalError | null, at: string): void {
+  if (!ticket.route_id) return;
+  recordRouteHealth(cwd, {
+    routeId: ticket.route_id,
+    profile: ticket.reasoning_effort,
+    host: ticket.host || ticket.dispatch_host || "codex",
+    taskText: ticket.prompt,
+    terminalStatus: status,
+    errorCode: error?.code || null,
+    message: error?.message || null,
+    now: new Date(at),
+  });
 }
 
 type TimeInput = Date | string | number | (() => Date | string | number) | undefined;
@@ -302,7 +319,7 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
     let hostError: HostTerminalError | null = null;
     if (terminal !== "completed") {
       const code = String(errorCode || (terminal === "timed_out" ? "AGENT_TIMEOUT" : terminal === "closed" ? "AGENT_CLOSED" : "AGENT_ERROR"));
-      hostError = { status: terminal as TicketStatus, code, message: String(errorMessage || code) };
+      hostError = { status: terminal as HostTerminalError["status"], code, message: String(errorMessage || code) };
     }
     // Every terminal path of a write ticket runs the parent Git safety audit before the slot is released.
     if (ticket.mode === "write") {
@@ -330,6 +347,7 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
         ticket.conclusion = null;
         ticket.finished_at = at;
         writeSpawn(cwd, ticket);
+        if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at);
         return ticket;
       }
     }
@@ -355,6 +373,7 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
     }
     ticket.finished_at = at;
     writeSpawn(cwd, ticket);
+    updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at);
     return ticket;
   });
 }

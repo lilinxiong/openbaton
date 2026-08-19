@@ -127,4 +127,43 @@ describe("cli run()", () => {
       assert.deepEqual(receipt.scope.allowed_operations, ["write", "delete", "rename"]);
     });
   });
+
+  it("prints the schema-v2 host lifecycle after OpenSpec apply, never legacy conclude", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-openspec-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init", "--tools", "codex"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      const changeDir = path.join(cwd, "openspec", "changes", "demo");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), "## 1. Work\n\n- [ ] 1.1 implement a complex repository migration\n");
+      publishRouteSnapshot(cwd, {
+        models: [{
+          id: "grok-4.6", provider: "xai", namespaced: "xai/grok-4.6", disabled: false,
+          reasoningEfforts: ["high"],
+        }],
+      });
+      writeCapabilitySnapshot({
+        dbPath: artificialAnalysisDbPath(cwd),
+        metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
+        models: [{
+          id: "aa-grok", slug: "grok-4-6", name: "Grok 4.6",
+          evaluations: {
+            artificial_analysis_intelligence_index: 80,
+            artificial_analysis_coding_index: 90,
+            artificial_analysis_agentic_index: 85,
+          },
+          pricing: {}, performance: {}, cost: {},
+        }],
+        mappings: [{ routeId: "xai/grok-4.6", profile: "high", aaSlug: "grok-4-6" }],
+      });
+
+      const out = capture();
+      const err = capture();
+      const code = await run(["apply", "demo"], { cwd, stdout: out, stderr: err, env });
+      assert.equal(code, 0, err.text());
+      assert.match(out.text(), /Schema-v2 tickets require the host lifecycle/);
+      assert.match(out.text(), /baton dispatch next/);
+      assert.doesNotMatch(out.text(), /baton conclude/);
+    });
+  });
 });

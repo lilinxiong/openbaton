@@ -513,10 +513,10 @@ describe("kimi OIDC refresh", () => {
         writeAuth(home, TOKEN, { expires: now - 1_000 });
         const out = capture();
         const err = capture();
-        const code = await run(["spawn", "flagship Kimi K3 large repo refactor"], {
+        const code = await run(["spawn", "flagship Kimi K3 large repo refactor", "--model", "k3"], {
           cwd, stdout: out, stderr: err, env,
         });
-        assert.equal(code, 0);
+        assert.equal(code, 0, out.text() + err.text());
         assert.match(out.text(), /k3/);
         assert.equal(server.requests.length, 1);
         assert.equal(readKimiAccountToken({ home }), NEXT_ACCESS);

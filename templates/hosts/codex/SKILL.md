@@ -45,7 +45,7 @@ Lifecycle per ticket:
 1. **Reserve.** `baton dispatch next --host codex --capacity 6 --json` → `{ reserved, blocked, snapshot }`. Each reserved spec has `ticket_id`, `route_id` (=`model`), `reasoning_effort` (nullable), `fork_context: false`, `mode`, `receipt_id`, `write_allowlist`, `allowed_operations`, `prompt`, `attempt`, `max_attempts`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
 2. **Spawn.** For each reserved spec, call `spawn_agent` with `model=<route_id>`, `reasoning_effort` only when present, and `fork_context=false`. The prompt is self-contained; the worker does not inherit this conversation.
 3. **Bind.** On successful spawn: `baton dispatch bind <ticket_id> --agent-id <agent_id> --host codex --json`. The ticket is now `running`.
-4. **Wait.** `wait_agent` until the worker finishes. Expect a short conclusion only.
+4. **Wait.** Use bounded `wait_agent` windows of at most 60 seconds. Expect a short conclusion only. After three consecutive windows with no terminal state and no new host/provider progress, record `dispatch timeout` with the original evidence, then close the agent. Never create a replacement ticket or switch routes as part of that terminal path.
 5. **Finish.** Exactly one terminal write per ticket. Every terminal write for a write-mode ticket runs the parent Git safety gate; violations turn the ticket into `errored/WRITE_SCOPE_VIOLATION`, preserve host failure evidence, and reject the conclusion:
    - success → `baton dispatch complete <ticket> --text "short conclusion" --json`
    - error → `baton dispatch fail <ticket> --code CODE --message MSG --json`

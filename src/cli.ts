@@ -4,7 +4,7 @@ import { listCards, addCard } from "./commands/cards.js";
 import { runLogin } from "./commands/login.js";
 import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
-import { runRoutes } from "./commands/routes.js";
+import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { loadConfig } from "./lib/config.js";
 import { matchModelCard, CardMatchError } from "./lib/cards.js";
@@ -17,6 +17,7 @@ import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
 import { buildRouteCandidates } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
+import { cardsForAutomaticSelection } from "./lib/route-health.js";
 import type { DirectorConfig, ModelCard } from "./types.js";
 import type { OcxResolver, OcxRunner } from "./lib/opencodex.js";
 import type { CodedError, WritableLike } from "./types.js";
@@ -36,7 +37,8 @@ type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
 export const VERSION = "0.1.0";
 
-function resolvedCards(cwd: string, cfg: DirectorConfig): ModelCard[] {
+function resolvedCards(cwd: string, cfg: DirectorConfig, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): ModelCard[] {
+  ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
   return buildRouteCandidates(cwd, cfg.models, artificialAnalysisDbPath(cwd)).map((candidate) => candidate.card);
 }
 
@@ -56,7 +58,7 @@ Usage:
   baton match <text>                show which card would run
   baton spawn <text> [--model ID]   card-route a standalone unit
   baton apply [change]              execute an OpenSpec change (consume, do not invent)
-  baton conclude <id> --text "..."  write a short conclusion (hygiene)
+  baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton login                       list accounts + card->provider
   baton login <provider>            sign in with a browser (kimi, xai, cursor)
   baton login --card <id>           resolve card then login
@@ -94,13 +96,13 @@ export async function run(argv: string[], { cwd = process.cwd(), stdout = proces
       case "update":
         return cmdUpdate(cwd, stdout, env);
       case "cards":
-        return cmdCards(args, cwd, stdout, env);
+        return cmdCards(args, cwd, stdout, env, runner, resolve);
       case "match":
-        return cmdMatch(args, cwd, stdout, env);
+        return cmdMatch(args, cwd, stdout, env, runner, resolve);
       case "spawn":
-        return await cmdSpawn(args, cwd, stdout, env);
+        return await cmdSpawn(args, cwd, stdout, env, runner, resolve);
       case "apply":
-        return await cmdApply(args, cwd, stdout, env);
+        return await cmdApply(args, cwd, stdout, env, runner, resolve);
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "login":
@@ -114,7 +116,7 @@ export async function run(argv: string[], { cwd = process.cwd(), stdout = proces
       case "conversation":
         return runConversation(args, { stdout });
       case "status":
-        return cmdStatus(cwd, stdout, env);
+        return cmdStatus(cwd, stdout, env, runner, resolve);
       default:
         stderr.write(`unknown command: ${cmd}\n\n${HELP}`);
         return 2;
@@ -147,7 +149,8 @@ function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
   return 0;
 }
 
-function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
+function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): number {
+  ensureRouteSnapshotFresh({ cwd, stdout, env, runner, resolve });
   const sub = args[0];
   if (sub === "add") {
     const flags = parseFlags(args.slice(1));
@@ -182,14 +185,15 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   return 0;
 }
 
-function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
+function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): number {
   const text = positionalText(args);
   if (!text) {
     throw new Error("usage: baton match <text>");
   }
   const cfg = loadConfig(cwd, { env });
   try {
-    const hit = matchModelCard(text, resolvedCards(cwd, cfg));
+    const cards = resolvedCards(cwd, cfg, env, runner, resolve);
+    const hit = matchModelCard(text, cardsForAutomaticSelection(cwd, cards, text));
     const flags = parseFlags(args);
     if (flags.json) stdout.write(`${JSON.stringify({ ...hit, evidence: hit.card.capability || null }, null, 2)}\n`);
     else {
@@ -208,12 +212,13 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   }
 }
 
-async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
+async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
   const cfg = loadConfig(cwd, { env });
-  const cards = resolvedCards(cwd, cfg);
+  const allCards = resolvedCards(cwd, cfg, env, runner, resolve);
+  const cards = stringFlag(flags, "model") ? allCards : cardsForAutomaticSelection(cwd, allCards, text);
   const queue = DispatchQueue.fromConfig(cfg);
   // account for already-running tickets
   for (const s of listSpawns(cwd)) {
@@ -256,10 +261,10 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   return 0;
 }
 
-async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
+async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
   const change = args.find((a) => !a.startsWith("-")) || null;
   const cfg = loadConfig(cwd, { env });
-  const cards = resolvedCards(cwd, cfg);
+  const cards = resolvedCards(cwd, cfg, env, runner, resolve);
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
     stdout.write("  baton spawn \"explore the auth module\"\n");
@@ -267,11 +272,12 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     return 2;
   }
   const previewDir = resolveApplyChange(cwd, change);
-  const preview = planApply({ tasks: loadTasksFromChangeDir(previewDir).tasks, cards });
+  const selectCards = (prompt: string, available: ModelCard[]) => cardsForAutomaticSelection(cwd, available, prompt);
+  const preview = planApply({ tasks: loadTasksFromChangeDir(previewDir).tasks, cards, selectCards });
   if (preview.units.some((unit) => !unit.director_local && unit.auth_provider === "kimi")) {
     await ensureFreshKimiAccount({ env, cwd });
   }
-  const result = applyChange({ cwd, change, cfg: { ...cfg, models: cards } });
+  const result = applyChange({ cwd, change, cfg: { ...cfg, models: cards }, selectCards });
   stdout.write(`apply ${result.changeDir}\n`);
   if (result.error) {
     stdout.write(`blocked: ${result.error}\n`);
@@ -288,8 +294,8 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   for (const b of result.blocked) {
     stdout.write(`  blocked ${b.id}: ${b.error}\n`);
   }
-  stdout.write("OpenSpec remains the status source of truth. Conclude with:\n");
-  stdout.write("  baton conclude <id> --text \"short outcome\"\n");
+  stdout.write("OpenSpec remains the status source of truth. Schema-v2 tickets require the host lifecycle:\n");
+  stdout.write("  reserve with `baton dispatch next --host codex --json`, bind the host agent, then use `baton dispatch complete|fail|timeout|close`.\n");
   return result.blocked.length ? 1 : 0;
 }
 
@@ -307,7 +313,7 @@ function cmdConclude(args: string[], cwd: string, stdout: WritableLike): number 
   return 0;
 }
 
-function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
+function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): number {
   let cfg = null;
   try {
     cfg = loadConfig(cwd, { env });
@@ -320,7 +326,7 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
     throw err;
   }
   stdout.write("baton status\n");
-  const cards = resolvedCards(cwd, cfg);
+  const cards = resolvedCards(cwd, cfg, env, runner, resolve);
   const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
   const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
   stdout.write(`  cards: ${cards.length} dynamic/override (${rankedCards} ranked, ${unrankedCards} unranked)\n`);

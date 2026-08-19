@@ -426,6 +426,47 @@ export function queryRouteCapability({ dbPath, routeId, profile = "" }: { dbPath
   }
 }
 
+/**
+ * Query model metrics using an explicit in-repo mapping. This lets mapping-only
+ * releases take effect immediately without forcing a remote AA snapshot refresh.
+ */
+export function queryMappedRouteCapability({
+  dbPath,
+  routeId,
+  profile = "",
+  mapping,
+}: {
+  dbPath: string;
+  routeId: string;
+  profile?: string;
+  mapping: StoredRouteMapping;
+}): RouteCapabilityResult {
+  const route = String(routeId || "").trim();
+  const requestedProfile = String(profile || "").trim();
+  if (!route) throw new Error("routeId is required");
+  if (!fs.existsSync(dbPath)) return { routeId: route, profile: requestedProfile, ranked: false, unranked: true, reason: "cache_missing" };
+  const { DatabaseSync } = sqliteModule();
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT * FROM models WHERE slug = ?").get(mapping.aaSlug) as ModelRow | undefined;
+    if (!row) return { routeId: route, profile: requestedProfile, aaSlug: mapping.aaSlug, ranked: false, unranked: true, reason: "aa_model_not_in_snapshot" };
+    const model = modelFromRow(row);
+    const values = Object.values(model?.evaluations ?? {}).filter((value) => typeof value === "number");
+    return {
+      routeId: route,
+      profile: requestedProfile,
+      aaSlug: mapping.aaSlug,
+      mappingSource: mapping.mappingSource,
+      ranked: values.length > 0,
+      unranked: values.length === 0,
+      reason: values.length > 0 ? null : "aa_model_has_no_ranked_metrics",
+      model: model ?? undefined,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 export type CapabilityStatusResult =
   | { exists: false; modelCount: number; mappingCount: number }
   | {

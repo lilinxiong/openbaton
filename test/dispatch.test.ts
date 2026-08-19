@@ -15,6 +15,7 @@ import {
 } from "../src/lib/dispatch.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
+import { readRouteHealth } from "../src/lib/route-health.js";
 import { isolatedHome } from "./home.js";
 
 isolatedHome("baton-dispatch-home-");
@@ -313,6 +314,9 @@ describe("finishAgent", () => {
     const timedOut = finishAgent(cwd, "t-0002", { status: "timed_out", errorMessage: "no events for 10m", now: at(40) });
     assert.equal(timedOut.status, "timed_out");
     assert.equal(timedOut.error.code, "AGENT_TIMEOUT");
+    const timeoutHealth = readRouteHealth(cwd).records.find((record) => record.error_code === "AGENT_TIMEOUT");
+    assert.equal(timeoutHealth?.route_id, "codex/default");
+    assert.equal(timeoutHealth?.status, "degraded");
 
     // Closed from dispatching with a default structured code.
     const closed = finishAgent(cwd, "t-0003", { status: "closed", now: at(50) });

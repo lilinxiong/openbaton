@@ -21,14 +21,9 @@ import { buildSpawnTicket, nextSpawnId, writeSpawn, readSpawn } from "./spawn.js
 import { buildReadOnlyReceipt, writeReceipt } from "./receipt.js";
 import { runsDir } from "./paths.js";
 import type { SpawnTicket } from "./spawn.js";
+import type { ModelCard } from "../types.js";
 
-export interface ApplyModelCard {
-  id: string;
-  strengths: string;
-  auth_provider?: string;
-  route_id?: string;
-  reasoning_effort?: string;
-}
+export type ApplyModelCard = ModelCard;
 
 export interface ApplyConfig {
   director: {
@@ -126,6 +121,7 @@ export class ApplyError extends Error {
 interface PlanApplyInput {
   tasks: OpenSpecTask[];
   cards: ApplyModelCard[];
+  selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
 }
 
 interface PlanApplyResult {
@@ -137,6 +133,7 @@ interface ApplyChangeInput {
   cwd: string;
   change?: string | null;
   cfg: ApplyConfig;
+  selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
 }
 
 function errorMessage(error: unknown): string {
@@ -183,7 +180,7 @@ export function resolveApplyChange(cwd: string, change?: string | null): string 
   );
 }
 
-export function planApply({ tasks, cards }: PlanApplyInput): PlanApplyResult {
+export function planApply({ tasks, cards, selectCards }: PlanApplyInput): PlanApplyResult {
   const units: ApplyUnit[] = [];
   const blocked: BlockedApplyTask[] = [];
   for (const task of tasks) {
@@ -202,7 +199,7 @@ export function planApply({ tasks, cards }: PlanApplyInput): PlanApplyResult {
       continue;
     }
     try {
-      const matched = matchModelCard(prompt, cards);
+      const matched = matchModelCard(prompt, selectCards ? selectCards(prompt, cards) : cards);
       units.push({
         id: task.number || `line-${task.line_index}`,
         description: task.description,
@@ -233,11 +230,11 @@ function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, selectCards }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
-  const { units, blocked } = planApply({ tasks, cards: cfg.models });
+  const { units, blocked } = planApply({ tasks, cards: cfg.models, selectCards });
   if (blocked.length && units.length === 0) {
     return {
       changeDir,
