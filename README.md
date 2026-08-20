@@ -7,7 +7,7 @@ Director for multi-model work. One front conversation, capability-routed native 
 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.
 
 ```
-npm i -g baton   # source checkout: npm run baton -- <command>
+bun add -g baton   # source checkout: bun run baton -- <command>
 baton init
 ```
 
@@ -23,11 +23,11 @@ The goal is not simply “more agents.” It is one accountable workflow that ca
 
 Not another coding CLI. A Codex-only skill pack + `init` that adds a multi-model director to Codex.
 
-- **Dynamic Cards.** Every OpenCodex live provider/route stays visible. Exact AA mappings add structured capability vectors and inferred positioning; unmapped routes remain `unranked`.
+- **Dynamic Cards.** Every OpenCodex live provider/route stays visible. Exact AA evidence adds structured capability vectors and inferred positioning. Missing-profile and serving-variant base scores are labelled reference-only and cannot drive automatic recommendation; AA rows without aggregate rankings still disclose their available data.
 - **Config is director-only.** `~/.baton/config.toml` stores concurrency/depth settings only. Local model aliases and route overrides are not supported.
 - **Catalog visibility is separate from subagent eligibility.** OpenCodex discovery remains fully inspectable. Built-in policy forbids every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile from subagent candidates; proposals disclose those exclusions. Other session/Goal exclusions remain temporary.
 - **Current-host intersection.** A route is spawnable only when it is both executable in OpenCodex and advertised by the current Codex session. Catalog-only routes remain visible as `HOST_ROUTE_UNAVAILABLE`.
-- **Mandatory model confirmation.** `spawn/apply` first disclose the preferred and candidate exact routes, strengths, task and raw AA scores, provider quota remaining/reset (or an explicit unknown reason), and callability. They create no ticket until the user confirms or changes the route.
+- **Mandatory model confirmation.** `spawn/apply` first disclose the preferred and candidate exact routes in comparison tables, including strengths, task and raw/available AA data, reference route/profile provenance, provider quota remaining/reset (or an explicit unknown reason), and callability. They create no ticket until the user confirms or changes the route.
 - **Quota provenance and local fallback.** Reported OpenCodex quota is authoritative. Only for an absent/unknown provider report, Baton may call an installed local CodexBar CLI and persist its sanitized percentage/reset windows as `codexbar:...`; otherwise quota remains explicitly unknown.
 - **Codex-native workers.** Spawn in-process Codex subagents. Baton does not integrate with other coding CLI hosts or shell out to print modes. The skill installs into `~/.codex`; Baton state lives in `~/.baton`.
 - **Unlimited logical spawn.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns tickets to FIFO without consuming attempts, and slots release only after the host confirms `close_agent`. Depth 1.
@@ -58,7 +58,7 @@ baton capabilities status
 baton capabilities show gpt-5.6-luna --profile high
 ```
 
-No fuzzy model matching. Routes without an exact canonical mapping stay `unranked`, not blocked and not assigned an invented score. See [Artificial Analysis capability cache](docs/data-sources/artificial-analysis.md).
+No fuzzy model matching. A missing profile may show its base-profile score, and serving variants such as `-fast`/`-highspeed` may show the suffix-free base-model score; both are explicitly reference-only and excluded from automatic recommendation. Routes without exact or deterministic reference evidence stay `unranked`, not blocked and not assigned an invented score. See [Artificial Analysis capability cache](docs/data-sources/artificial-analysis.md).
 
 Dynamic Card matching uses AA intelligence/coding/agentic, cost, throughput, and latency evidence. Missing metrics stay unknown. Provider health, quota, authorization, and session policy remain separate gates.
 
@@ -66,9 +66,9 @@ Dynamic Card matching uses AA intelligence/coding/agentic, cost, throughput, and
 
 The Codex director performs this automatically after an ordinary request enters execution; the user does not need to know Baton commands:
 
-1. Sync the exact models and allowed reasoning efforts exposed by the current Codex `spawn_agent` surface with `baton host sync --model ... --profile ROUTE=...`. Baton reads sanitized quota reports from OpenCodex first; a callable local CodexBar is tried only for providers OpenCodex did not report.
+1. Sync the exact models and allowed reasoning efforts exposed by the current Codex calling-host model selector/tool schema with `baton host sync --model ... --profile ROUTE=...`. Do not truncate this to a shorter `spawn_agent` optional-override hint. Baton reads sanitized quota reports from OpenCodex first; a callable local CodexBar is tried only for providers OpenCodex did not report.
 2. `baton spawn` or `baton apply` writes a selection proposal only. It does not create a ticket.
-3. The director shows the preferred route and all policy-eligible callable candidates with strengths, task score, AA scores, remaining quota, reset time, and availability. It separately discloses the built-in `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` family exclusions.
+3. The director shows the preferred route and all policy-eligible callable candidates with strengths, task score, AA scores/available data, reference-only provenance, remaining quota, reset time, and availability. It separately discloses the built-in `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` family exclusions.
 4. After the user keeps or changes the choice, `baton selection approve ... --confirm` creates the immutable Receipt and queued ticket. A changed host snapshot or source task invalidates the proposal.
 
 Quota precedence is `OpenCodex reported > local CodexBar fallback > unknown`. CodexBar is an informational local fallback and may represent its locally selected account; it does not change OpenCodex provider/auth/route ownership. Baton stores no CodexBar account email/id, login method, cookie, token, or raw error. An unreported quota is never treated as zero or sufficient. A user may explicitly select a disclosed callable `unranked` route, but cannot override the built-in forbidden families. Baton never auto-recommends an unranked route and never falls back between models/providers. See [CodexBar quota fallback](docs/data-sources/codexbar.md).

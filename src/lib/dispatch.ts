@@ -265,10 +265,10 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
       message = `ticket ${ticket.id} was not approved against the current Codex host snapshot`;
     } else if (!host.advertised_models.includes(ticket.route_id)) {
       code = "HOST_ROUTE_UNAVAILABLE";
-      message = `ticket ${ticket.id} route ${ticket.route_id} is absent from the current Codex spawn surface`;
+      message = `ticket ${ticket.id} route ${ticket.route_id} is absent from the current Codex host surface`;
     } else if (ticket.reasoning_effort && !(host.advertised_profiles[ticket.route_id] || []).includes(ticket.reasoning_effort)) {
       code = "HOST_PROFILE_UNAVAILABLE";
-      message = `ticket ${ticket.id} profile ${ticket.reasoning_effort} is absent from the current Codex spawn surface`;
+      message = `ticket ${ticket.id} profile ${ticket.reasoning_effort} is absent from the current Codex host surface`;
     }
   }
   if (!code && !ticket.receipt_id) {

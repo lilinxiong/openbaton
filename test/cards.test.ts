@@ -88,6 +88,31 @@ describe("matchModelCard", () => {
     );
   });
 
+  it("keeps reference-only scores visible but excludes them from automatic matching", () => {
+    const referenceOnly = {
+      id: "provider/fast-model", strengths: "implement code repository migration", route_id: "provider/fast-model",
+      source: "dynamic" as const, executable: true,
+      capability: {
+        source: "artificial-analysis" as const, ranked: true, unranked: false, reason: null,
+        reference_only: true, reference_reasons: ["SERVING_VARIANT_BASE_MODEL_REFERENCE"],
+        intelligence_index: 99, coding_index: 99, agentic_index: 99,
+        cost_per_task: 0.01, output_tokens_per_second: 500, time_to_first_answer_seconds: 0.1,
+      },
+    };
+    const exact = {
+      id: "provider/exact-model", strengths: "implement code", route_id: "provider/exact-model",
+      source: "dynamic" as const, executable: true,
+      capability: {
+        source: "artificial-analysis" as const, ranked: true, unranked: false, reason: null,
+        intelligence_index: 60, coding_index: 60, agentic_index: 60,
+        cost_per_task: 1, output_tokens_per_second: 50, time_to_first_answer_seconds: 5,
+      },
+    };
+
+    assert.equal(matchModelCard("implement code repository migration", [referenceOnly, exact]).model_id, exact.id);
+    assert.equal(requireCardId(referenceOnly.id, [referenceOnly]).capability?.reference_only, true);
+  });
+
   it("never auto-matches any built-in forbidden family even when it scores highest", () => {
     const forbidden = {
       id: "provider/gpt-5.6-sol-max@high", route_id: "provider/gpt-5.6-sol-max", reasoning_effort: "high",

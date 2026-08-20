@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -11,7 +11,7 @@ const samplesDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceArg = process.argv[2];
 const mode = process.argv[3];
 if (!workspaceArg || !new Set(["standalone", "openspec"]).has(mode)) {
-  fail("usage: node samples/verify.mjs WORKSPACE standalone|openspec");
+  fail("usage: bun samples/verify.mjs WORKSPACE standalone|openspec");
 }
 
 const workspace = fs.realpathSync(path.resolve(workspaceArg));
@@ -122,6 +122,18 @@ function verifyModelSelection(items, selections, runtimeRoot) {
       for (const candidate of unit.candidates) {
         assert(candidate.strengths, `${candidate.model_id} must disclose strengths`);
         assert(Object.hasOwn(candidate, "task_score"), `${candidate.model_id} must disclose task score`);
+        assert(Object.hasOwn(candidate, "reference_only"), `${candidate.model_id} must disclose whether evidence is reference-only`);
+        assert(Array.isArray(candidate.reference_reasons), `${candidate.model_id} must disclose reference provenance`);
+        assert(Object.hasOwn(candidate, "reference_route_id"), `${candidate.model_id} must disclose reference route provenance`);
+        assert(Object.hasOwn(candidate, "reference_profile"), `${candidate.model_id} must disclose reference profile provenance`);
+        assert(Object.hasOwn(candidate, "aa_slug"), `${candidate.model_id} must disclose AA identity provenance`);
+        assert(Object.hasOwn(candidate, "aa_data"), `${candidate.model_id} must disclose available AA data`);
+        if (candidate.reference_only) {
+          assert(candidate.reference_reasons.length > 0, `${candidate.model_id} reference-only evidence needs a reason`);
+          assert(candidate.reference_route_id, `${candidate.model_id} reference-only evidence needs a source route`);
+          assert(candidate.aa_slug, `${candidate.model_id} reference-only evidence needs an AA slug`);
+          assert(/reference only/i.test(candidate.strengths), `${candidate.model_id} reference-only evidence must be visibly labelled`);
+        }
         for (const key of ["intelligence", "coding", "agentic"]) {
           assert(Object.hasOwn(candidate.aa_scores, key), `${candidate.model_id} must disclose AA ${key}`);
         }

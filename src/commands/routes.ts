@@ -35,13 +35,13 @@ export function refreshRouteSnapshot(options: RouteCommandOptions) {
 /**
  * Refresh only when an existing snapshot is legacy or its recorded OpenCodex
  * runtime changed. A missing snapshot remains an explicit `routes refresh`
- * precondition, and npx is never invoked from the ordinary hot path.
+ * precondition, and bunx is never invoked from the ordinary hot path.
  */
 export function ensureRouteSnapshotFresh(options: RouteCommandOptions): void {
   const schema = routeSnapshotSchemaVersion(options.cwd);
   if (schema == null && !fs.existsSync(routeSnapshotPath(options.cwd))) return;
   const resolved = resolvedEngine(options);
-  if (!resolved || resolved.source === "npx") return;
+  if (!resolved || resolved.source === "bunx") return;
   if (schema !== 2) {
     refreshRouteSnapshot({ ...options, resolve: () => resolved });
     return;

@@ -10,6 +10,7 @@ import {
   normalizeArtificialAnalysisModel,
 } from "../src/lib/capabilities/aa.js";
 import {
+  normalizedAaSlug,
   writeCapabilitySnapshot,
   queryRouteCapability,
   readCapabilityStatus,
@@ -256,6 +257,29 @@ describe("capability store", () => {
     assert.equal(hit.model.slug, "kimi-k3");
     assert.equal(hit.model.intelligence_index, 52.4);
     assert.equal(hit.model.blended_cost_1m, 1.08);
+  });
+
+  it("resolves a deterministic normalized model/profile slug without a provider-specific mapping", () => {
+    const dbPath = tmpDbPath();
+    seed(dbPath, {
+      models: [{ slug: "claude-opus-5-high", name: "Claude Opus 5 high", intelligence_index: 80 }],
+    });
+    assert.equal(normalizedAaSlug("claude-opus-5", "high"), "claude-opus-5-high");
+    assert.equal(normalizedAaSlug("mimo-v2.5-pro"), "mimo-v2-5-pro");
+    const hit = queryRouteCapability({ dbPath, routeId: "claude-opus-5", profile: "high" });
+    assert.equal(hit.ranked, true);
+    if (!hit.ranked) return;
+    assert.equal(hit.aaSlug, "claude-opus-5-high");
+    assert.equal(hit.mappingSource, "normalized-model-id");
+  });
+
+  it("does not inherit a default mapping into an unmapped reasoning profile", () => {
+    const dbPath = tmpDbPath();
+    seed(dbPath, { mappings: [{ routeId: "model-a", aaSlug: "kimi-k3" }] });
+    const miss = queryRouteCapability({ dbPath, routeId: "model-a", profile: "high" });
+    assert.equal(miss.ranked, false);
+    assert.equal(miss.unranked, true);
+    assert.equal(miss.reason, "no_canonical_mapping");
   });
 
   it("unknown route returns ranked:false, unranked:true and never a silent default", () => {

@@ -226,9 +226,98 @@ function quotaText(candidate: SelectionCandidate): string {
   return candidate.quota.windows.map((item) => `${item.label} remaining ${item.remaining_percent.toFixed(2)}%${item.resets_at ? ` reset ${item.resets_at}` : ""}`).join("; ");
 }
 
-function scoreText(candidate: SelectionCandidate): string {
-  const aa = candidate.aa_scores;
-  return `task=${candidate.task_score ?? "unranked"}; AA intelligence=${aa.intelligence ?? "unknown"}, coding=${aa.coding ?? "unknown"}, agentic=${aa.agentic ?? "unknown"}`;
+function tableCell(value: unknown): string {
+  return String(value ?? "").replaceAll("|", "\\|").replaceAll(/\r?\n/g, "<br>");
+}
+
+function tableRow(values: unknown[]): string {
+  return `| ${values.map(tableCell).join(" | ")} |\n`;
+}
+
+function metric(value: number | null): string {
+  return value == null ? "unknown" : String(value);
+}
+
+function evidenceText(candidate: SelectionCandidate): string {
+  if (!candidate.reference_only) return candidate.ranked ? "exact" : "unranked";
+  const source = candidate.reference_route_id
+    ? `${candidate.reference_route_id}@${candidate.reference_profile || "base"}`
+    : "unknown source";
+  return `reference only: ${candidate.reference_reasons.join("+")}; source=${source}; AA=${candidate.aa_slug || "unknown"}`;
+}
+
+function numericDataText(value: Record<string, number | null>): string {
+  const entries = Object.entries(value);
+  return entries.length ? entries.map(([key, item]) => `${key}=${metric(item)}`).join("; ") : "none";
+}
+
+function printCandidateTable(stdout: WritableLike, unit: SelectionProposal["units"][number]): void {
+  stdout.write("  candidates:\n\n");
+  stdout.write(tableRow(["Candidate", "Preferred", "Provider", "Evidence", "Task score", "AA I/C/A", "Cost/task", "Tok/s", "TTFA (s)", "Strengths", "Callability"]));
+  stdout.write(tableRow(["---", "---", "---", "---", "---:", "---", "---:", "---:", "---:", "---", "---"]));
+  for (const candidate of unit.candidates.filter((item) => item.selectable)) {
+    const aa = candidate.aa_scores;
+    stdout.write(tableRow([
+      candidate.model_id,
+      candidate.model_id === unit.recommended_model_id ? "yes" : "",
+      candidate.provider || "unknown",
+      evidenceText(candidate),
+      candidate.task_score ?? "unranked",
+      `${metric(aa.intelligence)}/${metric(aa.coding)}/${metric(aa.agentic)}`,
+      metric(aa.cost_per_task),
+      metric(aa.output_tokens_per_second),
+      metric(aa.time_to_first_answer_seconds),
+      candidate.strengths,
+      `${candidate.host.code}: ${candidate.host.reason}`,
+    ]));
+  }
+}
+
+function printPartialAaTable(stdout: WritableLike, proposal: SelectionProposal): void {
+  const partial = new Map<string, SelectionCandidate>();
+  for (const unit of proposal.units) {
+    for (const candidate of unit.candidates) {
+      if (candidate.reference_only && !candidate.ranked && candidate.aa_data && !partial.has(candidate.model_id)) {
+        partial.set(candidate.model_id, candidate);
+      }
+    }
+  }
+  if (!partial.size) return;
+  stdout.write("\nAA partial data (reference only; no aggregate task score):\n\n");
+  stdout.write(tableRow(["Candidate", "Evaluations", "Pricing", "Performance", "Cost"]));
+  stdout.write(tableRow(["---", "---", "---", "---", "---"]));
+  for (const candidate of partial.values()) {
+    const aa = candidate.aa_data!;
+    stdout.write(tableRow([
+      candidate.model_id,
+      numericDataText(aa.evaluations),
+      numericDataText(aa.pricing),
+      numericDataText(aa.performance),
+      numericDataText(aa.cost),
+    ]));
+  }
+}
+
+function printQuotaTable(stdout: WritableLike, proposal: SelectionProposal): void {
+  const providers = new Map<string, SelectionCandidate>();
+  for (const unit of proposal.units) {
+    for (const candidate of unit.candidates) {
+      const provider = candidate.provider || "unknown";
+      if (!providers.has(provider)) providers.set(provider, candidate);
+    }
+  }
+  stdout.write("\nprovider quota (applies to every candidate with that provider):\n\n");
+  stdout.write(tableRow(["Provider", "Status", "Source", "Remaining/reset or unknown reason", "Observed at"]));
+  stdout.write(tableRow(["---", "---", "---", "---", "---"]));
+  for (const [provider, candidate] of [...providers].sort(([a], [b]) => a.localeCompare(b))) {
+    stdout.write(tableRow([
+      provider,
+      candidate.quota.status,
+      candidate.quota.source || "unknown",
+      quotaText(candidate),
+      candidate.quota.observed_at,
+    ]));
+  }
 }
 
 export function printSelectionProposal(stdout: WritableLike, proposal: SelectionProposal): void {
@@ -243,25 +332,24 @@ export function printSelectionProposal(stdout: WritableLike, proposal: Selection
     }
     stdout.write(`  preferred: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
     if (unit.requested_model_id) stdout.write(`  user requested: ${unit.requested_model_id}\n`);
-    stdout.write("  candidates:\n");
-    for (const candidate of unit.candidates.filter((item) => item.selectable)) {
-      stdout.write(`    - ${candidate.model_id}${candidate.model_id === unit.recommended_model_id ? " [preferred]" : ""}\n`);
-      stdout.write(`      strengths: ${candidate.strengths}\n`);
-      stdout.write(`      score: ${scoreText(candidate)}\n`);
-      stdout.write(`      quota: ${quotaText(candidate)}\n`);
-      stdout.write(`      callable: yes (${candidate.host.reason})\n`);
-    }
+    printCandidateTable(stdout, unit);
   }
+  printPartialAaTable(stdout, proposal);
+  printQuotaTable(stdout, proposal);
   if (proposal.policy_exclusions?.length) {
-    stdout.write("\nforbidden from subagent candidates by built-in policy:\n");
+    stdout.write("\nforbidden from subagent candidates by built-in policy:\n\n");
+    stdout.write(tableRow(["Family", "Routes", "Code", "Cards/profiles"]));
+    stdout.write(tableRow(["---", "---", "---", "---:"]));
     for (const item of proposal.policy_exclusions) {
       const routes = item.routes.length ? item.routes.join(", ") : "no currently catalogued route";
-      stdout.write(`  - ${item.family}: ${routes} (${item.code}; ${item.card_count} cards/profiles)\n`);
+      stdout.write(tableRow([item.family, routes, item.code, item.card_count]));
     }
   }
   if (proposal.unavailable_by_provider.length) {
-    stdout.write("\nvisible in OpenCodex but unavailable to this Codex host:\n");
-    for (const item of proposal.unavailable_by_provider) stdout.write(`  - ${item.provider}: ${item.routes.join(", ")} (${item.code})\n`);
+    stdout.write("\nvisible in OpenCodex but unavailable to this Codex host:\n\n");
+    stdout.write(tableRow(["Provider", "Routes", "Code", "Cards/profiles"]));
+    stdout.write(tableRow(["---", "---", "---", "---:"]));
+    for (const item of proposal.unavailable_by_provider) stdout.write(tableRow([item.provider, item.routes.join(", "), item.code, item.card_count]));
   }
   stdout.write(`\nNo ticket exists yet. Approve unchanged: baton selection approve ${proposal.id} --confirm\n`);
   stdout.write(`Change a standalone choice with --model ID, or an OpenSpec choice with repeated --route TASK=ID.\n`);

@@ -1,14 +1,35 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { OpenSpecError, parseTasks, writeTaskConclusion, writeTaskConclusionByNumber } from "../src/lib/openspec.js";
+import { OpenSpecError, parseTasks, readOpenSpecStatus, writeTaskConclusion, writeTaskConclusionByNumber } from "../src/lib/openspec.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.join(here, "fixtures/openspec/changes/demo/tasks.md");
 
 describe("parseTasks + writeTaskConclusion", () => {
+  it("retries status with the sole change for OpenSpec CLIs that require --change", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-openspec-status-"));
+    const change = path.join(cwd, "openspec", "changes", "incident-audit");
+    fs.mkdirSync(change, { recursive: true });
+    fs.writeFileSync(path.join(change, "tasks.md"), "- [ ] 1.1 Verify incidents\n");
+    const calls: string[][] = [];
+    const status = readOpenSpecStatus(cwd, {
+      cli: "/fake/openspec",
+      runner: (_command, args) => {
+        calls.push(args);
+        return args.includes("--change")
+          ? { status: 0, stdout: "incident-audit 0/1 complete\n", stderr: "- Loading change status...\n" }
+          : { status: 1, stdout: "", stderr: "Missing required option --change" };
+      },
+    });
+    assert.equal(status.ok, true);
+    assert.equal(status.text, "incident-audit 0/1 complete");
+    assert.deepEqual(calls, [["status"], ["status", "--change", "incident-audit"]]);
+  });
+
   it("parses pending/done/skipped and flips a checkbox with a conclusion", () => {
     const text = fs.readFileSync(fixture, "utf8");
     const tasks = parseTasks(text);

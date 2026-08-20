@@ -212,7 +212,7 @@ export function hostRouteAvailability(cwd: string, card: ModelCard, host = readH
     return { available: false, code: "NO_EXECUTABLE_ROUTE", reason: "route is not executable in the OpenCodex snapshot" };
   }
   if (!host) {
-    return { available: false, code: "HOST_CAPABILITIES_REQUIRED", reason: "current Codex spawn model surface has not been synced" };
+    return { available: false, code: "HOST_CAPABILITIES_REQUIRED", reason: "complete current Codex host model surface has not been synced" };
   }
   const catalog = readRouteSnapshot(cwd);
   if (!catalog || catalog.fingerprint !== host.catalog_fingerprint) {

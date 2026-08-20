@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
@@ -11,6 +12,8 @@ import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
 import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
 import { withHome, fakeEnv } from "./home.js";
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
@@ -30,6 +33,12 @@ function capture() {
 }
 
 describe("cli run()", () => {
+  it("lets large disclosures flush instead of forcing process exit", () => {
+    const entry = fs.readFileSync(path.join(root, "bin", "baton.ts"), "utf8");
+    assert.match(entry, /process\.exitCode = code/);
+    assert.doesNotMatch(entry, /process\.exit\(code\)/);
+  });
+
   it("rejects legacy host selection because Baton is Codex-only", async () => {
     await withHome(async (home) => {
       const out = capture();

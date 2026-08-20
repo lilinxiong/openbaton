@@ -13,17 +13,6 @@
     { "routeId": "gpt-5.6-luna", "profile": "xhigh", "aaSlug": "gpt-5-6-luna-xhigh" },
     { "routeId": "gpt-5.6-luna", "profile": "max", "aaSlug": "gpt-5-6-luna" },
     {
-      "routeId": "cursor/gpt-5.6-luna",
-      "profile": "",
-      "aaSlug": "gpt-5-6-luna-medium",
-      "note": "Exact Cursor serving route; capability evidence comes from the underlying GPT-5.6 Luna model."
-    },
-    { "routeId": "cursor/gpt-5.6-luna", "profile": "low", "aaSlug": "gpt-5-6-luna-low" },
-    { "routeId": "cursor/gpt-5.6-luna", "profile": "medium", "aaSlug": "gpt-5-6-luna-medium" },
-    { "routeId": "cursor/gpt-5.6-luna", "profile": "high", "aaSlug": "gpt-5-6-luna-high" },
-    { "routeId": "cursor/gpt-5.6-luna", "profile": "xhigh", "aaSlug": "gpt-5-6-luna-xhigh" },
-    { "routeId": "cursor/gpt-5.6-luna", "profile": "max", "aaSlug": "gpt-5-6-luna" },
-    {
       "routeId": "gpt-5.6-sol",
       "profile": "",
       "aaSlug": "gpt-5-6-sol-low",
@@ -35,17 +24,6 @@
     { "routeId": "gpt-5.6-sol", "profile": "xhigh", "aaSlug": "gpt-5-6-sol-xhigh" },
     { "routeId": "gpt-5.6-sol", "profile": "max", "aaSlug": "gpt-5-6-sol" },
     {
-      "routeId": "cursor/gpt-5.6-sol",
-      "profile": "",
-      "aaSlug": "gpt-5-6-sol-low",
-      "note": "Exact Cursor serving route; capability evidence comes from the underlying GPT-5.6 Sol model."
-    },
-    { "routeId": "cursor/gpt-5.6-sol", "profile": "low", "aaSlug": "gpt-5-6-sol-low" },
-    { "routeId": "cursor/gpt-5.6-sol", "profile": "medium", "aaSlug": "gpt-5-6-sol-medium" },
-    { "routeId": "cursor/gpt-5.6-sol", "profile": "high", "aaSlug": "gpt-5-6-sol-high" },
-    { "routeId": "cursor/gpt-5.6-sol", "profile": "xhigh", "aaSlug": "gpt-5-6-sol-xhigh" },
-    { "routeId": "cursor/gpt-5.6-sol", "profile": "max", "aaSlug": "gpt-5-6-sol" },
-    {
       "routeId": "gpt-5.6-terra",
       "profile": "",
       "aaSlug": "gpt-5-6-terra-medium",
@@ -56,46 +34,39 @@
     { "routeId": "gpt-5.6-terra", "profile": "high", "aaSlug": "gpt-5-6-terra-high" },
     { "routeId": "gpt-5.6-terra", "profile": "xhigh", "aaSlug": "gpt-5-6-terra-xhigh" },
     { "routeId": "gpt-5.6-terra", "profile": "max", "aaSlug": "gpt-5-6-terra" },
+    { "routeId": "claude-fable-5", "profile": "max", "aaSlug": "claude-fable-5" },
+    { "routeId": "claude-opus-5", "profile": "max", "aaSlug": "claude-opus-5" },
+    { "routeId": "claude-sonnet-5", "profile": "max", "aaSlug": "claude-sonnet-5" },
+    { "routeId": "grok-4.5", "profile": "high", "aaSlug": "grok-4-5" },
+    { "routeId": "grok-4.6", "profile": "high", "aaSlug": "grok-4-6" },
+    { "routeId": "k3", "profile": "low", "aaSlug": "kimi-k3-low" },
+    { "routeId": "k3", "profile": "max", "aaSlug": "kimi-k3" },
     {
-      "routeId": "cursor/gpt-5.6-terra",
-      "profile": "",
-      "aaSlug": "gpt-5-6-terra-medium",
-      "note": "Exact Cursor serving route; capability evidence comes from the underlying GPT-5.6 Terra model."
-    },
-    { "routeId": "cursor/gpt-5.6-terra", "profile": "low", "aaSlug": "gpt-5-6-terra-low" },
-    { "routeId": "cursor/gpt-5.6-terra", "profile": "medium", "aaSlug": "gpt-5-6-terra-medium" },
-    { "routeId": "cursor/gpt-5.6-terra", "profile": "high", "aaSlug": "gpt-5-6-terra-high" },
-    { "routeId": "cursor/gpt-5.6-terra", "profile": "xhigh", "aaSlug": "gpt-5-6-terra-xhigh" },
-    { "routeId": "cursor/gpt-5.6-terra", "profile": "max", "aaSlug": "gpt-5-6-terra" },
-    { "routeId": "xai/grok-4.6", "profile": "high", "aaSlug": "grok-4-6" },
-    { "routeId": "kimi/k3", "profile": "low", "aaSlug": "kimi-k3-low" },
-    { "routeId": "kimi/k3", "profile": "max", "aaSlug": "kimi-k3" },
-    {
-      "routeId": "kimi/k3-256k",
+      "routeId": "k3-256k",
       "profile": "low",
       "aaSlug": "kimi-k3-low",
       "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
     },
     {
-      "routeId": "kimi/k3-256k",
+      "routeId": "k3-256k",
       "profile": "max",
       "aaSlug": "kimi-k3",
       "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
     },
     {
-      "routeId": "kimi/k3[1m]",
+      "routeId": "k3[1m]",
       "profile": "low",
       "aaSlug": "kimi-k3-low",
       "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
     },
     {
-      "routeId": "kimi/k3[1m]",
+      "routeId": "k3[1m]",
       "profile": "max",
       "aaSlug": "kimi-k3",
       "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
     },
     {
-      "routeId": "kimi/kimi-k2.7-code-highspeed",
+      "routeId": "kimi-k2.7-code-highspeed",
       "aaSlug": "kimi-k2-7-code",
       "note": "Highspeed is a serving route for the same Kimi K2.7 Code model."
     },

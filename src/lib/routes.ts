@@ -143,6 +143,51 @@ export function canonicalRouteId(route: ExecutableRoute): string {
   return route.route_id;
 }
 
+/**
+ * Provider namespaces identify an execution/account route, not the underlying
+ * model identity used for capability evidence. Keep route_id intact everywhere
+ * operational and remove only the catalog-declared provider prefix here.
+ */
+export function capabilityRouteId(route: ExecutableRoute): string {
+  const canonical = canonicalRouteId(route);
+  const prefix = route.native || !route.provider ? "" : `${route.provider}/`;
+  return prefix && canonical.startsWith(prefix) ? canonical.slice(prefix.length) : canonical;
+}
+
+/** Serving-speed suffixes do not identify a separately benchmarked base model. */
+export function servingBaseCapabilityIds(routeId: string): string[] {
+  const bases: string[] = [];
+  let current = String(routeId || "").trim();
+  while (/(?:-fast|-highspeed)$/.test(current)) {
+    current = current.replace(/(?:-fast|-highspeed)$/, "");
+    if (current) bases.push(current);
+  }
+  return bases;
+}
+
+function hasCapabilityModel(result: RouteCapabilityResult): result is Extract<RouteCapabilityResult, { mappingSource: string }> {
+  return "mappingSource" in result && result.model != null;
+}
+
+function asReference(
+  result: Extract<RouteCapabilityResult, { mappingSource: string }>,
+  reasons: string[],
+  routeId: string,
+  profile: string,
+): RouteCapabilityResult {
+  const referenceReasons = [...new Set([
+    ...reasons,
+    ...(result.ranked ? [] : ["AA_RANKING_METRICS_MISSING"]),
+  ])];
+  return {
+    ...result,
+    referenceOnly: referenceReasons.length > 0,
+    referenceReasons,
+    referenceRouteId: routeId,
+    referenceProfile: profile,
+  };
+}
+
 function numberAt(value: unknown, ...path: string[]): number | null {
   let current = value;
   for (const key of path) current = current && typeof current === "object" ? (current as Record<string, unknown>)[key] : null;
@@ -151,20 +196,34 @@ function numberAt(value: unknown, ...path: string[]): number | null {
 
 function evidence(result: RouteCapabilityResult, mappingRouteId?: string): CardCapabilityEvidence {
   const model = "model" in result ? result.model : undefined;
+  const numericData = (value: Record<string, unknown> | undefined): Record<string, number | null> => Object.fromEntries(
+    Object.entries(value || {}).filter(([, item]) => item == null || typeof item === "number") as Array<[string, number | null]>,
+  );
   return {
     source: "artificial-analysis",
     ranked: result.ranked,
     unranked: result.unranked,
     reason: result.reason,
+    reference_only: "referenceOnly" in result ? result.referenceOnly === true : false,
+    reference_reasons: "referenceReasons" in result ? result.referenceReasons || [] : [],
+    ...(result && "referenceRouteId" in result && result.referenceRouteId ? { reference_route_id: result.referenceRouteId } : {}),
+    ...(result && "referenceProfile" in result ? { reference_profile: result.referenceProfile } : {}),
     ...(result.aaSlug ? { aa_slug: result.aaSlug } : {}),
+    ...(model?.name ? { aa_name: model.name } : {}),
     ...(mappingRouteId ? { mapping_route_id: mappingRouteId } : {}),
-    ...(result.ranked && "mappingSource" in result ? { mapping_source: result.mappingSource } : {}),
+    ...("mappingSource" in result ? { mapping_source: result.mappingSource } : {}),
     intelligence_index: model?.intelligence_index ?? null,
     coding_index: model?.coding_index ?? null,
     agentic_index: model?.agentic_index ?? null,
     cost_per_task: numberAt(model?.cost, "cost_per_task", "total_cost"),
     output_tokens_per_second: numberAt(model?.performance, "median_output_tokens_per_second"),
     time_to_first_answer_seconds: numberAt(model?.performance, "median_time_to_first_answer_token_seconds"),
+    ...(model ? { aa_data: {
+      evaluations: numericData(model.evaluations),
+      pricing: numericData(model.pricing),
+      performance: numericData(model.performance),
+      cost: numericData(model.cost),
+    } } : {}),
   };
 }
 
@@ -192,8 +251,16 @@ function applyPositioning(candidates: RouteCandidate[]): void {
   for (const candidate of candidates) {
     const cap = candidate.card.capability;
     if (!cap?.ranked) {
-      candidate.card.positioning = ["unranked"];
-      candidate.card.strengths = `unranked; ${cap?.reason || "no capability evidence"}`;
+      const partial = cap?.reference_only && cap.aa_slug;
+      candidate.card.positioning = [partial ? "reference-only" : "unranked"];
+      const available = [
+        cap?.cost_per_task == null ? null : `cost/task=${cap.cost_per_task}`,
+        cap?.output_tokens_per_second == null ? null : `tok/s=${cap.output_tokens_per_second}`,
+        cap?.time_to_first_answer_seconds == null ? null : `ttfa=${cap.time_to_first_answer_seconds}s`,
+      ].filter(Boolean);
+      candidate.card.strengths = partial
+        ? `AA partial reference only: ${cap.aa_name || cap.aa_slug}; ${cap.reason || "ranking metrics missing"}${available.length ? `; ${available.join(", ")}` : ""}`
+        : `unranked; ${cap?.reason || "no capability evidence"}`;
       continue;
     }
     cap.relative = {
@@ -220,7 +287,10 @@ function applyPositioning(candidates: RouteCandidate[]): void {
       cap.cost_per_task == null ? null : `cost/task=${cap.cost_per_task}`,
       cap.output_tokens_per_second == null ? null : `tok/s=${cap.output_tokens_per_second}`,
     ].filter(Boolean);
-    candidate.card.strengths = `AA-derived inference: ${tags.join(", ")}${fields.length ? `; ${fields.join(", ")}` : ""}`;
+    const reference = cap.reference_only
+      ? `; reference only (${(cap.reference_reasons || []).join(", ")}; source=${cap.aa_slug || "unknown"})`
+      : "";
+    candidate.card.strengths = `AA-derived inference: ${tags.join(", ")}${fields.length ? `; ${fields.join(", ")}` : ""}${reference}`;
   }
 }
 
@@ -243,25 +313,67 @@ export function buildRouteCandidates(cwd: string, capabilityDbPath: string): Rou
   const candidates: RouteCandidate[] = [];
   for (const route of snapshot?.routes || []) {
     const canonical = canonicalRouteId(route);
+    const capabilityRoute = capabilityRouteId(route);
     const routeMappings = mappings
-      .filter((mapping) => mapping.routeId === canonical)
+      .filter((mapping) => mapping.routeId === capabilityRoute)
       .sort((a, b) => a.profile.localeCompare(b.profile));
     const byProfile = new Map<string, StoredRouteMapping>();
     for (const mapping of routeMappings) if (!byProfile.has(mapping.profile)) byProfile.set(mapping.profile, mapping);
-    if (!byProfile.has("")) byProfile.set("", { routeId: canonical, profile: "", aaSlug: "", mappingSource: "explicit", note: null });
+    if (!byProfile.has("")) byProfile.set("", { routeId: capabilityRoute, profile: "", aaSlug: "", mappingSource: "explicit", note: null });
     // OpenCodex owns the callable profile surface. Keep every exact supported
     // route@profile visible even when AA has no mapping for it; missing evidence
     // is unranked/unknown, never a reason to erase a user-selectable host route.
     for (const profile of route.reasoning_efforts) {
       if (!byProfile.has(profile)) {
-        byProfile.set(profile, { routeId: canonical, profile, aaSlug: "", mappingSource: "explicit", note: null });
+        byProfile.set(profile, { routeId: capabilityRoute, profile, aaSlug: "", mappingSource: "explicit", note: null });
       }
     }
-    for (const [profile, mapping] of byProfile) {
-      if (profile && route.reasoning_efforts.length > 0 && !route.reasoning_efforts.includes(profile)) continue;
-      const result = mapping.aaSlug
-        ? queryMappedRouteCapability({ dbPath: capabilityDbPath, routeId: canonical, profile, mapping })
-        : queryRouteCapability({ dbPath: capabilityDbPath, routeId: mapping.routeId, profile });
+    const query = (lookupRoute: string, lookupProfile: string): RouteCapabilityResult => {
+      const explicit = mergedMappings.get(`${lookupRoute}\0${lookupProfile}`);
+      return explicit?.aaSlug
+        ? queryMappedRouteCapability({ dbPath: capabilityDbPath, routeId: lookupRoute, profile: lookupProfile, mapping: explicit })
+        : queryRouteCapability({ dbPath: capabilityDbPath, routeId: lookupRoute, profile: lookupProfile });
+    };
+    for (const [profile] of byProfile) {
+      // A stored capability mapping is evidence only; it must never expand the
+      // callable profile surface owned by the current OpenCodex catalog.
+      if (profile && !route.reasoning_efforts.includes(profile)) continue;
+      let result = query(capabilityRoute, profile);
+      if (hasCapabilityModel(result) && !result.ranked) {
+        result = asReference(result, [], capabilityRoute, profile);
+      }
+      if (!hasCapabilityModel(result)) {
+        const attempts: Array<{ routeId: string; profile: string; reasons: string[] }> = [];
+        const servingBases = servingBaseCapabilityIds(capabilityRoute);
+        if (!profile && route.default_reasoning_effort && servingBases.length === 0) {
+          attempts.push({
+            routeId: capabilityRoute,
+            profile: route.default_reasoning_effort,
+            reasons: ["DEFAULT_PROFILE_REFERENCE"],
+          });
+        }
+        for (const base of servingBases) {
+          if (profile) attempts.push({ routeId: base, profile, reasons: ["SERVING_VARIANT_BASE_MODEL_REFERENCE"] });
+          attempts.push({
+            routeId: base,
+            profile: "",
+            reasons: ["SERVING_VARIANT_BASE_MODEL_REFERENCE", ...(profile ? ["BASE_PROFILE_REFERENCE"] : [])],
+          });
+        }
+        if (profile && servingBases.length === 0) {
+          attempts.push({ routeId: capabilityRoute, profile: "", reasons: ["BASE_PROFILE_REFERENCE"] });
+        }
+        const seen = new Set<string>();
+        for (const attempt of attempts) {
+          const key = `${attempt.routeId}\0${attempt.profile}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const fallback = query(attempt.routeId, attempt.profile);
+          if (!hasCapabilityModel(fallback)) continue;
+          result = asReference(fallback, attempt.reasons, attempt.routeId, attempt.profile);
+          break;
+        }
+      }
       const id = profile ? `${canonical}@${profile}` : canonical;
       const executable = route.disabled !== true;
       const card: ModelCard = {
@@ -272,7 +384,7 @@ export function buildRouteCandidates(cwd: string, capabilityDbPath: string): Rou
         source: "dynamic",
         provider: route.provider,
         executable,
-        capability: evidence(result, mapping.routeId),
+        capability: evidence(result, "referenceRouteId" in result ? result.referenceRouteId : capabilityRoute),
       };
       candidates.push({ card, executable, capability: result });
     }

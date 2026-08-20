@@ -98,6 +98,52 @@ describe("mandatory model selection disclosure", () => {
     }), new RegExp(SUBAGENT_MODEL_FAMILY_FORBIDDEN));
   }));
 
+  it("discloses a reference score and AA data without making it automatically eligible", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-reference-"));
+    publishRouteSnapshot(cwd, { models: [
+      { id: "exact", provider: "provider", namespaced: "provider/exact" },
+      { id: "fast", provider: "provider", namespaced: "provider/fast" },
+    ] });
+    const host = writeHostCapabilitySnapshot(cwd, {
+      advertisedModels: ["provider/exact", "provider/fast"],
+      quotaCatalog: { reports: [] },
+    });
+    const exact = card("provider/exact", "provider/exact", "provider", 60, 60, 0.5);
+    const reference = card("provider/fast", "provider/fast", "provider", 99, 99, 1);
+    reference.capability.reference_only = true;
+    reference.capability.reference_reasons = ["SERVING_VARIANT_BASE_MODEL_REFERENCE"];
+    reference.capability.reference_route_id = "provider/base";
+    reference.capability.reference_profile = "";
+    reference.capability.aa_slug = "base";
+    reference.capability.aa_data = {
+      evaluations: { artificial_analysis_coding_index: 99 },
+      pricing: { price_1m_input_tokens: 1 },
+      performance: { median_output_tokens_per_second: 100 },
+      cost: {},
+    };
+    reference.strengths += "; reference only (SERVING_VARIANT_BASE_MODEL_REFERENCE)";
+
+    const unit = buildSelectionUnit({
+      cwd,
+      key: "standalone",
+      description: "implement a repository migration",
+      prompt: "implement a repository migration",
+      cards: [exact, reference],
+      automaticCards: [exact, reference],
+      host,
+    });
+    const disclosed = unit.candidates.find((candidate) => candidate.model_id === reference.id)!;
+    assert.equal(unit.recommended_model_id, exact.id);
+    assert.equal(disclosed.selectable, true);
+    assert.equal(disclosed.automatic_eligible, false);
+    assert.equal(disclosed.reference_only, true);
+    assert.equal(disclosed.reference_route_id, "provider/base");
+    assert.equal(disclosed.reference_profile, "");
+    assert.equal(disclosed.aa_slug, "base");
+    assert.ok((disclosed.task_score || 0) > 0, "base-model reference task score remains visible");
+    assert.equal(disclosed.aa_data?.pricing.price_1m_input_tokens, 1);
+  }));
+
   it("requires confirmation, permits an exact user override, and binds the approval into ticket and Receipt", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-cli-"));
@@ -111,12 +157,12 @@ describe("mandatory model selection disclosure", () => {
         dbPath: artificialAnalysisDbPath(cwd),
         metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
         models: [
-          { id: "aa-strong", slug: "strong", name: "Strong", evaluations: { artificial_analysis_intelligence_index: 90, artificial_analysis_coding_index: 95, artificial_analysis_agentic_index: 90 }, pricing: {}, performance: {}, cost: {} },
-          { id: "aa-cheap", slug: "cheap", name: "Cheap", evaluations: { artificial_analysis_intelligence_index: 40, artificial_analysis_coding_index: 50, artificial_analysis_agentic_index: 30 }, pricing: {}, performance: {}, cost: {} },
+          { id: "aa-strong", slug: "aa-strong", name: "Strong", evaluations: { artificial_analysis_intelligence_index: 90, artificial_analysis_coding_index: 95, artificial_analysis_agentic_index: 90 }, pricing: {}, performance: {}, cost: {} },
+          { id: "aa-cheap", slug: "aa-cheap", name: "Cheap", evaluations: { artificial_analysis_intelligence_index: 40, artificial_analysis_coding_index: 50, artificial_analysis_agentic_index: 30 }, pricing: {}, performance: {}, cost: {} },
         ],
         mappings: [
-          { routeId: "provider-a/strong", profile: "high", aaSlug: "strong" },
-          { routeId: "provider-b/cheap", profile: "low", aaSlug: "cheap" },
+          { routeId: "strong", profile: "high", aaSlug: "aa-strong" },
+          { routeId: "cheap", profile: "low", aaSlug: "aa-cheap" },
         ],
       });
       writeHostCapabilitySnapshot(cwd, {
@@ -135,10 +181,11 @@ describe("mandatory model selection disclosure", () => {
       assert.match(disclosed.text(), /\[confirmation required\]/);
       assert.match(disclosed.text(), /preferred: provider-a\/strong@high/);
       assert.match(disclosed.text(), /candidates:/);
-      assert.match(disclosed.text(), /strengths: AA-derived inference/);
-      assert.match(disclosed.text(), /score: task=\d+; AA intelligence=\d+, coding=\d+, agentic=\d+/);
-      assert.match(disclosed.text(), /quota: unknown \(PROVIDER_QUOTA_NOT_REPORTED;/);
-      assert.match(disclosed.text(), /callable: yes/);
+      assert.match(disclosed.text(), /\| Candidate \| Preferred \| Provider \| Evidence \| Task score \| AA I\/C\/A \|/);
+      assert.match(disclosed.text(), /\| provider-a\/strong@high \| yes \| provider-a \| exact \| \d+ \| 90\/95\/90 \|/);
+      assert.match(disclosed.text(), /\| Provider \| Status \| Source \| Remaining\/reset or unknown reason \| Observed at \|/);
+      assert.match(disclosed.text(), /PROVIDER_QUOTA_NOT_REPORTED/);
+      assert.match(disclosed.text(), /AVAILABLE/);
       assert.match(disclosed.text(), /No ticket exists yet/);
 
       const forbidden = capture();

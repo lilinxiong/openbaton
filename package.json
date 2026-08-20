@@ -7,14 +7,16 @@
     "baton": "dist/bin/baton.js"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.5",
+    "bun": ">=1.3.14"
   },
+  "packageManager": "bun@1.3.14",
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
-    "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run check && tsx --test test/*.test.ts",
-    "baton": "tsx bin/baton.ts",
-    "prepack": "npm run build"
+    "build": "bun -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && bunx --bun tsc -p tsconfig.json && bun -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
+    "check": "bunx --bun tsc -p tsconfig.json --noEmit",
+    "test": "bun run check && bun test --timeout 30000 test/*.test.ts",
+    "baton": "bun bin/baton.ts",
+    "prepack": "bun run build"
   },
   "files": [
     "dist",
@@ -38,7 +40,6 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }
 }

@@ -30,6 +30,11 @@ export interface SelectionCandidate {
   selectable: boolean;
   automatic_eligible: boolean;
   ranked: boolean;
+  reference_only: boolean;
+  reference_reasons: string[];
+  reference_route_id: string | null;
+  reference_profile: string | null;
+  aa_slug: string | null;
   task_score: number | null;
   strengths: string;
   positioning: string[];
@@ -41,6 +46,7 @@ export interface SelectionCandidate {
     output_tokens_per_second: number | null;
     time_to_first_answer_seconds: number | null;
   };
+  aa_data: CardCapabilityEvidence["aa_data"] | null;
   quota: ProviderQuotaDisclosure;
   host: HostRouteAvailability;
 }
@@ -106,18 +112,25 @@ function candidateFor(
   if (!card.route_id || card.executable === false) return null;
   const availability = hostRouteAvailability(cwd, card, host);
   const ranked = card.capability?.ranked === true;
+  const referenceOnly = card.capability?.reference_only === true;
   return {
     model_id: card.id,
     route_id: card.route_id,
     reasoning_effort: card.reasoning_effort || null,
     provider: card.provider || null,
     selectable: availability.available,
-    automatic_eligible: availability.available && ranked && automaticIds.has(card.id),
+    automatic_eligible: availability.available && ranked && !referenceOnly && automaticIds.has(card.id),
     ranked,
+    reference_only: referenceOnly,
+    reference_reasons: card.capability?.reference_reasons || [],
+    reference_route_id: card.capability?.reference_route_id ?? null,
+    reference_profile: card.capability?.reference_profile ?? null,
+    aa_slug: card.capability?.aa_slug ?? null,
     task_score: ranked ? scoreCard(prompt, card) : null,
     strengths: card.strengths,
     positioning: card.positioning || [],
     aa_scores: evidenceScores(card.capability),
+    aa_data: card.capability?.aa_data || null,
     quota: quotaForProvider(host, card.provider),
     host: availability,
   };
@@ -168,7 +181,7 @@ export function buildSelectionUnit({
   const top = topScore == null ? [] : ranked.filter((item) => item.task_score === topScore);
   const recommended = top.length === 1 ? top[0].model_id : null;
   let reason: SelectionUnit["recommendation_reason"];
-  if (!ranked.length) reason = candidates.some((item) => item.selectable && item.ranked)
+  if (!ranked.length) reason = candidates.some((item) => item.selectable && item.ranked && !item.reference_only)
     ? "NO_POSITIVE_TASK_SCORE"
     : "NO_SELECTABLE_RANKED_CANDIDATE";
   else if (top.length > 1) reason = "AMBIGUOUS_TOP_SCORE";

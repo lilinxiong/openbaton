@@ -32,8 +32,25 @@ type SqliteDatabaseCtor = new (path: string, options?: SqliteDatabaseOptions) =>
 function sqliteModule(): { DatabaseSync: SqliteDatabaseCtor } {
   try {
     return require("node:sqlite") as { DatabaseSync: SqliteDatabaseCtor };
+  } catch {}
+  try {
+    const { Database } = require("bun:sqlite") as {
+      Database: new (path: string, options?: { readonly?: boolean; create?: boolean }) => SqliteDatabase;
+    };
+    class BunDatabaseSync implements SqliteDatabase {
+      private readonly database: SqliteDatabase;
+
+      constructor(file: string, options: SqliteDatabaseOptions = {}) {
+        this.database = new Database(file, options.readOnly ? { readonly: true } : { create: true });
+      }
+
+      exec(sql: string): unknown { return this.database.exec(sql); }
+      prepare(sql: string): SqliteStatement { return this.database.prepare(sql); }
+      close(): void { this.database.close(); }
+    }
+    return { DatabaseSync: BunDatabaseSync };
   } catch {
-    const err: CodedError = new Error("capability cache requires a Node.js runtime with node:sqlite support");
+    const err: CodedError = new Error("capability cache requires node:sqlite or bun:sqlite support");
     err.code = "BATON_SQLITE_UNAVAILABLE";
     throw err;
   }
@@ -393,8 +410,22 @@ export type RouteCapabilityResult =
       ranked: boolean;
       unranked: boolean;
       reason: string | null;
+      referenceOnly?: boolean;
+      referenceReasons?: string[];
+      referenceRouteId?: string;
+      referenceProfile?: string;
       model?: QueriedCapabilityModel;
     };
+
+/**
+ * Artificial Analysis slugs use hyphens where OpenCodex model ids commonly
+ * use dots. This is a deterministic identity normalization, not fuzzy search.
+ */
+export function normalizedAaSlug(routeId: string, profile = ""): string {
+  const base = String(routeId || "").trim().toLowerCase().replaceAll(".", "-");
+  const effort = String(profile || "").trim().toLowerCase();
+  return effort ? `${base}-${effort}` : base;
+}
 
 export function queryRouteCapability({ dbPath, routeId, profile = "" }: { dbPath: string; routeId: string; profile?: string }): RouteCapabilityResult {
   const route = String(routeId || "").trim();
@@ -404,18 +435,22 @@ export function queryRouteCapability({ dbPath, routeId, profile = "" }: { dbPath
   const { DatabaseSync } = sqliteModule();
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    let mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ?").get(route, requestedProfile) as RouteMappingRow | undefined;
-    if (!mapping && requestedProfile) mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ''").get(route) as RouteMappingRow | undefined;
-    if (!mapping) return { routeId: route, profile: requestedProfile, ranked: false, unranked: true, reason: "no_canonical_mapping" };
-    const row = db.prepare("SELECT * FROM models WHERE slug = ?").get(mapping.aa_slug) as ModelRow | undefined;
-    if (!row) return { routeId: route, profile: requestedProfile, aaSlug: mapping.aa_slug, ranked: false, unranked: true, reason: "aa_model_not_in_snapshot" };
+    const mapping = db.prepare("SELECT * FROM route_mappings WHERE route_id = ? AND profile = ?").get(route, requestedProfile) as RouteMappingRow | undefined;
+    const directSlug = normalizedAaSlug(route, requestedProfile);
+    const aaSlug = mapping?.aa_slug || directSlug;
+    const row = db.prepare("SELECT * FROM models WHERE slug = ?").get(aaSlug) as ModelRow | undefined;
+    if (!row) {
+      return mapping
+        ? { routeId: route, profile: requestedProfile, aaSlug, ranked: false, unranked: true, reason: "aa_model_not_in_snapshot" }
+        : { routeId: route, profile: requestedProfile, ranked: false, unranked: true, reason: "no_canonical_mapping" };
+    }
     const model = modelFromRow(row);
     const values = Object.values(model?.evaluations ?? {}).filter((value) => typeof value === "number");
     return {
       routeId: route,
       profile: requestedProfile,
-      aaSlug: mapping.aa_slug,
-      mappingSource: mapping.mapping_source,
+      aaSlug,
+      mappingSource: mapping?.mapping_source || "normalized-model-id",
       ranked: values.length > 0,
       unranked: values.length === 0,
       reason: values.length > 0 ? null : "aa_model_has_no_ranked_metrics",

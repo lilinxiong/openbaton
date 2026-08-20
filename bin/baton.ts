@@ -6,4 +6,6 @@ const code = await run(process.argv.slice(2), {
   stdout: process.stdout,
   stderr: process.stderr,
 });
-process.exit(code);
+// Do not force-exit while a large model-selection disclosure is still queued
+// on stdout/stderr. Setting exitCode lets Node/Bun flush both streams first.
+process.exitCode = code;

@@ -12,7 +12,7 @@ import type { CodedError } from "../types.js";
 export const OCX_PACKAGE = "@bitkyc08/" + "opencodex";
 
 export interface OcxResolution {
-  source: "path" | "bundled" | "npx";
+  source: "path" | "bundled" | "bunx";
   command: string;
   prefixArgs: string[];
 }
@@ -45,8 +45,8 @@ export interface OcxResolveOptions {
   packageRoot?: string;
   findOnPath?: OcxPathFinder;
   findBundled?: (options?: OcxResolveOptions) => string | null;
-  findNpx?: OcxPathFinder;
-  npxAvailable?: OcxPathFinder;
+  findBunx?: OcxPathFinder;
+  bunxAvailable?: OcxPathFinder;
 }
 
 export interface OcxRunOptions extends OcxResolveOptions {
@@ -119,14 +119,14 @@ export function findBundledOcx(options: OcxResolveOptions = {}): string | null {
 
 /**
  * Resolve an ocx invocation: PATH, then the OpenCodex git submodule
- * (opencodex/bin/ocx.mjs), then node_modules, then npx.
+ * (opencodex/bin/ocx.mjs), then node_modules, then bunx.
  * Returns { source, command, prefixArgs } or null.
  */
 export function resolveOcx(options: OcxResolveOptions = {}): OcxResolution | null {
   const env = options.env || process.env;
   const findOnPath = options.findOnPath || ((value: NodeJS.ProcessEnv) => findBinaryOnPath("ocx", value));
   const findBundled = options.findBundled || (() => findBundledOcx(options));
-  const findNpx = options.findNpx || ((value: NodeJS.ProcessEnv) => findBinaryOnPath("npx", value));
+  const findBunx = options.findBunx || ((value: NodeJS.ProcessEnv) => findBinaryOnPath("bunx", value));
 
   const pathHit = findOnPath(env);
   if (pathHit) return { source: "path", command: pathHit, prefixArgs: [] };
@@ -134,12 +134,12 @@ export function resolveOcx(options: OcxResolveOptions = {}): OcxResolution | nul
   const bundled = findBundled(options);
   if (bundled) return { source: "bundled", command: bundled, prefixArgs: [] };
 
-  if (options.npxAvailable) {
-    if (!options.npxAvailable(env)) return null;
-    return { source: "npx", command: "npx", prefixArgs: ["-y", OCX_PACKAGE] };
+  if (options.bunxAvailable) {
+    if (!options.bunxAvailable(env)) return null;
+    return { source: "bunx", command: "bunx", prefixArgs: ["--bun", OCX_PACKAGE] };
   }
-  const npx = findNpx(env);
-  if (npx) return { source: "npx", command: npx, prefixArgs: ["-y", OCX_PACKAGE] };
+  const bunx = findBunx(env);
+  if (bunx) return { source: "bunx", command: bunx, prefixArgs: ["--bun", OCX_PACKAGE] };
   return null;
 }
 

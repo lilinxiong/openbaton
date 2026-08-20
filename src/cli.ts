@@ -59,7 +59,7 @@ Usage:
   baton init [--force]                initialize Baton + Codex skill
   baton update                        refresh Codex skill + director defaults
   baton cards [--ranked|--unranked] [--provider ID] [--json]
-  baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish current Codex spawn surface
+  baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish complete current Codex host surface
   baton match <text>                disclose preferred/candidate models without creating work
   baton spawn <text> [--model ID]   create a model-selection proposal (no ticket)
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal

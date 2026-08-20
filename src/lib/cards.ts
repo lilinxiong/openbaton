@@ -119,7 +119,9 @@ export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: s
 /** Ranked disclosure input. Unlike matchModelCard, ties and zero scores are retained for user choice. */
 export function rankModelCards(text: unknown, cards: ModelCard[]): Array<{ card: ModelCard; score: number }> {
   return (cards || [])
-    .filter((card) => card.executable !== false && isSubagentModelAllowed(card) && (!card.capability || card.capability.ranked))
+    .filter((card) => card.executable !== false
+      && isSubagentModelAllowed(card)
+      && (!card.capability || (card.capability.ranked && card.capability.reference_only !== true)))
     .map((card) => ({ card, score: scoreCard(text, card) }))
     .sort((a, b) => b.score - a.score || a.card.id.localeCompare(b.card.id));
 }

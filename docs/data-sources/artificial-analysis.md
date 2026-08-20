@@ -2,7 +2,7 @@
 
 OpenBaton uses Artificial Analysis as a replaceable `CapabilityProvider`. The ordinary dispatch path never calls the remote API: it reads a user-global SQLite snapshot from `~/.baton/cache/capabilities/artificial-analysis.sqlite3`.
 
-The capability commands require a Node.js runtime that provides `node:sqlite` (Node 22.5 or newer). Other Baton commands retain the package's existing Node compatibility.
+The capability commands use `node:sqlite` on Node.js 22.5 or newer and `bun:sqlite` on Bun 1.3.14 or newer.
 
 ## Data and attribution
 
@@ -41,17 +41,41 @@ baton capabilities show gpt-5.6-luna --profile high
 baton capabilities show kimi/k3 --profile max --json
 ```
 
-Mappings are exact and profile-aware. A route returns `unranked` when:
+Capability identity is provider-neutral: OpenCodex keeps `provider/model` as the
+exact execution route, while AA lookup uses the catalog-declared underlying
+`model` id. This removes any provider namespace generically (for example,
+`cursor/claude-opus-5` and `mimo/mimo-v2.5-pro`) without changing dispatch,
+quota, health, or callability identity.
 
-- there is no explicit canonical mapping;
-- the mapped AA slug is absent from the local snapshot; or
-- the mapped AA model has no numeric ranked metric.
+Lookup first applies an explicit profile-aware exception mapping, then a
+deterministic exact AA-slug normalization such as
+`mimo-v2.5-pro -> mimo-v2-5-pro`. It never performs fuzzy or similarity matching.
+
+When exact evidence is absent, Baton may disclose two deterministic fallbacks:
+
+- a missing profile may use the same route's base-profile AA row;
+- a serving variant ending in `-fast` or `-highspeed` may use the suffix-free base model's same-profile row, then its base-profile row.
+
+Fallback evidence is marked `reference_only` with its source route/profile and
+reason. It is shown to the user as informational evidence and is excluded from
+automatic recommendation. It remains explicitly selectable when every other
+host, policy, and callability gate passes.
+
+If an exact AA row exists without aggregate ranking metrics, Baton exposes the
+available numeric evaluation, pricing, performance, and cost fields as partial
+`reference_only` data. Its task score remains `unranked`; Baton never derives or
+invents a missing aggregate score.
+
+A route/profile has no ranked or reference score when:
+
+- neither an explicit mapping nor an exact normalized AA slug exists;
+- the mapped AA slug and deterministic fallback rows are absent from the local snapshot.
 
 OpenBaton does not fuzzy-match route names and never treats `unranked` as a weak score. The route remains available; the main agent can still consider provider health, quota, context, latency, price, and user policy.
 
 ## Dynamic Cards
 
-Baton joins the OpenCodex live route snapshot with these exact mappings at runtime. Ranked route/profile pairs expose structured intelligence, coding, agentic, cost, throughput, and latency evidence plus percentile-derived positioning tags. The positioning text is explicitly an inference; it is not copied back into `~/.baton/config.toml`. Unmapped routes remain visible and, when allowed by the built-in subagent model policy, explicitly selectable as `unranked`; automatic task matching cannot select them.
+Baton joins the OpenCodex live route snapshot with these mappings at runtime. Exact ranked route/profile pairs expose structured intelligence, coding, agentic, cost, throughput, and latency evidence plus percentile-derived positioning tags. The positioning text is explicitly an inference; it is not copied back into `~/.baton/config.toml`. Reference-only and unranked routes remain visible and, when allowed by the built-in subagent model policy, explicitly selectable; automatic task matching cannot select either class.
 
 ## Snapshot behavior
 

@@ -48,6 +48,14 @@ export interface OpenSpecStatus {
   text: string;
 }
 
+export interface OpenSpecCommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export type OpenSpecRunner = (command: string, args: string[], cwd: string) => OpenSpecCommandResult;
+
 export class OpenSpecError extends Error {
   readonly code: OpenSpecErrorCode;
 
@@ -201,17 +209,45 @@ export function listChangeNames(cwd: string): string[] {
  * Prefer the OpenSpec CLI for status. Fall back to artifact presence only.
  * Never pretend baton is the status source of truth.
  */
-export function readOpenSpecStatus(cwd: string): OpenSpecStatus {
-  const cli = openspecCliAvailable();
+export function readOpenSpecStatus(
+  cwd: string,
+  options: { cli?: string | null; runner?: OpenSpecRunner } = {},
+): OpenSpecStatus {
+  const cli = options.cli === undefined ? openspecCliAvailable() : options.cli;
   if (cli) {
-    const result = spawnSync(cli, ["status"], { cwd, encoding: "utf8" });
+    const runner = options.runner || ((command: string, args: string[], workingDirectory: string) => {
+      const result = spawnSync(command, args, { cwd: workingDirectory, encoding: "utf8" });
+      return { status: result.status, stdout: result.stdout || "", stderr: result.stderr || "" };
+    });
+    const result = runner(cli, ["status"], cwd);
     if (result.status === 0) {
       return { source: "openspec-cli", ok: true, text: result.stdout.trim() };
+    }
+    const failure = (result.stderr || result.stdout || "").trim();
+    if (/--change/.test(failure)) {
+      const names = listChangeNames(cwd);
+      if (names.length === 1) {
+        const scoped = runner(cli, ["status", "--change", names[0]], cwd);
+        const scopedText = scoped.status === 0 ? scoped.stdout : (scoped.stderr || scoped.stdout);
+        return {
+          source: "openspec-cli",
+          ok: scoped.status === 0,
+          text: (scopedText || "").trim() || `openspec status --change ${names[0]} exited ${scoped.status}`,
+        };
+      }
+      const listing = runner(cli, ["list"], cwd);
+      if (listing.status === 0) {
+        return {
+          source: "openspec-cli",
+          ok: true,
+          text: listing.stdout.trim() || (names.length ? `OpenSpec changes: ${names.join(", ")}` : "No OpenSpec changes."),
+        };
+      }
     }
     return {
       source: "openspec-cli",
       ok: false,
-      text: (result.stderr || result.stdout || "").trim() || `openspec status exited ${result.status}`,
+      text: failure || `openspec status exited ${result.status}`,
     };
   }
   const root = detectOpenSpecRoot(cwd);

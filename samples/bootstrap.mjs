@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import fs from "node:fs";
 import os from "node:os";
@@ -9,14 +9,14 @@ import { fileURLToPath } from "node:url";
 const samplesDir = path.dirname(fileURLToPath(import.meta.url));
 const mode = process.argv[2];
 if (!new Set(["standalone", "openspec"]).has(mode)) {
-  fail("usage: node samples/bootstrap.mjs standalone|openspec [--output PATH]");
+  fail("usage: bun samples/bootstrap.mjs standalone|openspec [--output PATH]");
 }
 
 const outputIndex = process.argv.indexOf("--output");
 const requestedOutput = outputIndex >= 0 ? process.argv[outputIndex + 1] : null;
 if (outputIndex >= 0 && !requestedOutput) fail("--output requires a path");
 
-requireCommand("baton", ["version"], "Run `npm run build && npm link` from the OpenBaton checkout first.");
+requireCommand("baton", ["version"], "Run `bun run build && bun link` from the OpenBaton checkout first.");
 if (mode === "openspec") requireCommand("openspec", ["--version"], "Install OpenSpec before running the OpenSpec sample.");
 
 const workspace = requestedOutput
@@ -43,7 +43,7 @@ if (mode === "openspec") {
 }
 
 const request = fs.readFileSync(path.join(samplesDir, mode, "REQUEST.txt"), "utf8").trim();
-const verifyCommand = `node ${JSON.stringify(path.join(samplesDir, "verify.mjs"))} ${JSON.stringify(workspace)} ${mode}`;
+const verifyCommand = `bun ${JSON.stringify(path.join(samplesDir, "verify.mjs"))} ${JSON.stringify(workspace)} ${mode}`;
 
 process.stdout.write([
   `mode: ${mode}`,
@@ -54,7 +54,7 @@ process.stdout.write([
   request,
   "---",
   "",
-  "Expected interaction: Codex must disclose preferred/candidate exact routes, strengths, task + AA scores,",
+  "Expected interaction: Codex must use comparison tables to disclose preferred/candidate exact routes, strengths, task + AA scores,",
   "remaining quota/unknown reason, and current callability before any ticket exists.",
   "The proposal must auditably exclude every gpt-5.5, gpt-5.6-sol, and gpt-5.6-terra route/profile from subagent candidates.",
   "Review that disclosure, change or manually select at least one callable exact route,",

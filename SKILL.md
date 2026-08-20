@@ -12,10 +12,12 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 1. **One front conversation.** The host (you) is the director. The user talks here only.
 
 2. **Dynamic Cards.** OpenCodex live routes are the complete visible set. Baton joins each exact provider/route and mapped reasoning profile with local AA capability evidence at runtime.
-   - Ranked cards carry structured intelligence/coding/agentic, cost, throughput, latency, provenance, and AA-derived positioning inference.
-   - Unmapped routes remain visible as `unranked`; automatic matching cannot select them, while an exact explicit `--model` may.
+   - Exact ranked route/profile cards carry structured intelligence/coding/agentic, cost, throughput, latency, provenance, and AA-derived positioning inference.
+   - If an exact profile has no AA row, disclose the base-profile score as `reference_only`. For deterministic serving variants such as `-fast` or `-highspeed`, disclose the suffix-free base-model score as `reference_only`. These scores are informational only and cannot drive automatic recommendation.
+   - When AA has a route/profile row but no aggregate ranking metrics, disclose every available numeric AA evaluation, pricing, performance, and cost field as partial `reference_only` evidence. Keep its task score `unranked`; never invent an aggregate score.
+   - Routes with no exact or deterministic reference evidence remain visible as `unranked`; automatic matching cannot select them, while an exact explicit `--model` may.
    - `~/.baton/config.toml` stores director settings only. Local model aliases, route overrides, and user-configured model exclusions are forbidden. The product has one built-in subagent policy: every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile is forbidden from candidates, explicit selection, tickets, and dispatch.
-   - A catalog route/profile is only callable when it is also advertised by the current Codex `spawn_agent` surface. Before planning, silently sync that session-scoped surface with repeated `--model EXACT_ROUTE` and `--profile EXACT_ROUTE=EFFORT,...`; catalog-only routes remain `HOST_ROUTE_UNAVAILABLE`, unsupported profiles remain `HOST_PROFILE_UNAVAILABLE`.
+   - A catalog route/profile is only callable when it is also advertised by the current Codex calling-host model/profile surface. Before planning, silently sync the complete session-scoped model selector or calling-host tool schema with repeated `--model EXACT_ROUTE` and `--profile EXACT_ROUTE=EFFORT,...`; do not truncate it to an abbreviated `spawn_agent` optional-override list. Catalog-only routes remain `HOST_ROUTE_UNAVAILABLE`, unsupported profiles remain `HOST_PROFILE_UNAVAILABLE`.
    - Read provider quota through OpenCodex first. When one provider is absent/unknown, and a local CodexBar CLI is installed and callable, query that provider as a fallback. OpenCodex reported windows always win. Persist only sanitized percentage/reset windows and a `codexbar:...` source; never persist CodexBar account identity, login method, credentials, raw output, or raw errors. Missing/failed quota stays `unknown`; never coerce it to zero or “enough”.
    - No subagent default or parent-model inherit. No unique positive recommendation means manual choice is required; never silently pick.
    - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary. The built-in `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` ban is the only global family policy and must be disclosed separately from host unavailability.
@@ -23,7 +25,7 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
    - Recent host/route/profile/task-shape failures enter a bounded cooldown for automatic matching. Explicit selection remains possible; an existing ticket never falls back.
 
 3. **Model disclosure and user confirmation are mandatory.** Before any ticket exists, turn broad work into bounded units with an objective, deliverable, and done condition. `baton spawn/apply` creates only an immutable selection proposal.
-   - For every delegated unit, disclose the preferred exact route/profile, every policy-eligible current-host candidate, model strengths, task score, raw AA intelligence/coding/agentic scores, provider quota remaining/reset or explicit unknown reason, and Codex callability. Also summarize built-in family exclusions and catalog routes excluded by the current host.
+   - For every delegated unit, use comparison tables to disclose the preferred exact route/profile, every policy-eligible current-host candidate, model strengths, task score, raw AA intelligence/coding/agentic scores, all available partial AA data, reference route/profile/AA provenance, provider quota remaining/reset or explicit unknown reason, and Codex callability. Also summarize built-in family exclusions and catalog routes excluded by the current host.
    - Stop and ask the user to approve or change the proposal. Goal/execution approval is not model approval. The user may choose any disclosed callable exact route/profile, including an `unranked` route; never accept an alias.
    - Only after the user's reply, run `baton selection approve PROPOSAL --confirm`, adding `--model ID` for standalone or repeated `--route TASK=ID` for OpenSpec changes. The approval is bound into the ticket and immutable Delegation Receipt.
    - No confirmation, stale host snapshot, changed source task, or unavailable selected route means blocked. Never create a ticket early and never silently substitute another route.
@@ -52,7 +54,7 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 10. **Capability data is local-first and replaceable.** Artificial Analysis is the first `CapabilityProvider`, not a routing oracle.
    - Ordinary dispatch reads `~/.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
    - Remote refresh is explicit and uses a mode-0600 temporary key file. The key is never pasted into chat, stored, logged, or sent to workers.
-   - Join route + profile only through explicit canonical mappings. Missing or uncertain mappings remain `unranked`; never fuzzy-match or invent a score.
+   - Use explicit canonical mappings or deterministic exact AA-slug normalization. Provider namespaces are execution identities, not model identities. Base-profile and suffix-free serving-variant fallbacks must be visibly `reference_only`; missing or uncertain model identities remain `unranked`. Never fuzzy-match or invent a score.
    - Capability vectors drive Dynamic Card positioning and task matching. Missing values remain unknown, never zero.
    - Capability evidence does not replace route health, quota, authorization, session policy, or final acceptance.
 
@@ -94,10 +96,10 @@ baton status
 - Do not invent a default model.
 - Do not create, reserve, or spawn a ticket before the user confirms the disclosed selection proposal.
 - Do not treat OpenCodex catalog visibility as proof that the current Codex host can spawn a route.
-- Do not hide preferred/candidate routes, task and AA scores, strengths, quota remaining/unknown state, or callability from the user.
+- Do not hide preferred/candidate routes, task and AA scores/data, reference-only provenance, strengths, quota remaining/unknown state, or callability from the user.
 - Do not accept local model aliases or route overrides; explicit selection requires an exact OpenCodex route/profile ID.
 - Never include or dispatch any `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` provider route, variant, or reasoning profile as a subagent model. This built-in family ban cannot be overridden by user confirmation or an old proposal/ticket.
-- Do not copy AA scores into config or invent positioning for unranked routes.
+- Do not copy AA scores into config, use reference-only evidence for automatic recommendation, or invent aggregate scores/positioning for unranked routes.
 - Do not fallback across routes/providers or inherit the parent model.
 - Workers never own Git index, HEAD, branch, commit, push, or rebase.
 - Never dispatch an open-ended reasoning task with terminal-only coordination, and never treat terminal ticket state as proof that the host slot was released.

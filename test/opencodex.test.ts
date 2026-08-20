@@ -23,13 +23,13 @@ function capture() {
 }
 
 describe("OpenCodex route-catalog command adapter", () => {
-  it("resolves PATH, bundled runtime, then npx", () => {
+  it("resolves PATH, bundled runtime, then bunx", () => {
     const order: string[] = [];
     const pathHit = resolveOcx({
       env: {},
       findOnPath: () => { order.push("path"); return "/usr/bin/ocx"; },
       findBundled: () => { order.push("bundled"); return "/pkg/node_modules/.bin/ocx"; },
-      npxAvailable: () => { order.push("npx"); return true; },
+      bunxAvailable: () => { order.push("bunx"); return true; },
     });
     assert.equal(pathHit?.source, "path");
     assert.deepEqual(order, ["path"]);
@@ -39,21 +39,21 @@ describe("OpenCodex route-catalog command adapter", () => {
       env: {},
       findOnPath: () => { order.push("path"); return null; },
       findBundled: () => { order.push("bundled"); return "/pkg/node_modules/.bin/ocx"; },
-      npxAvailable: () => { order.push("npx"); return true; },
+      bunxAvailable: () => { order.push("bunx"); return true; },
     });
     assert.equal(bundled?.source, "bundled");
     assert.deepEqual(order, ["path", "bundled"]);
 
     order.length = 0;
-    const viaNpx = resolveOcx({
+    const viaBunx = resolveOcx({
       env: {},
       findOnPath: () => { order.push("path"); return null; },
       findBundled: () => { order.push("bundled"); return null; },
-      npxAvailable: () => { order.push("npx"); return true; },
+      bunxAvailable: () => { order.push("bunx"); return true; },
     });
-    assert.equal(viaNpx?.source, "npx");
-    assert.deepEqual(viaNpx?.prefixArgs, ["-y", OCX_PACKAGE]);
-    assert.deepEqual(order, ["path", "bundled", "npx"]);
+    assert.equal(viaBunx?.source, "bunx");
+    assert.deepEqual(viaBunx?.prefixArgs, ["--bun", OCX_PACKAGE]);
+    assert.deepEqual(order, ["path", "bundled", "bunx"]);
   });
 
   it("finds the OpenCodex submodule before node_modules", () => {
@@ -70,7 +70,7 @@ describe("OpenCodex route-catalog command adapter", () => {
     const hit = resolveOcx({
       env: { ...process.env, PATH: emptyPath },
       packageRoot: root,
-      npxAvailable: () => false,
+      bunxAvailable: () => false,
     });
     assert.equal(hit?.source, "bundled");
     assert.equal(hit?.command, submodule);
