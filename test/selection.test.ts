@@ -102,7 +102,10 @@ describe("mandatory model selection disclosure", () => {
     assert.deepEqual(proposal.quota_pools.at(-1)?.model_ids, ["cursor/composer-2.5", "cursor/grok-4.6"]);
     const fragment = renderSelectionView(proposal);
     assert.doesNotMatch(fragment, /<!doctype|<html|<body/i);
-    assert.match(fragment, /Provider quota pool 中选择模型/);
+    assert.match(fragment, /data-baton-presentation="current_conversation_inline_only"/);
+    assert.match(fragment, /额度池中选择模型/);
+    assert.match(fragment, /Baton 模型选择/);
+    assert.match(fragment, /模型擅长项/);
     assert.match(fragment, /Cursor API/);
     assert.match(fragment, /额度耗尽/);
     assert.match(fragment, /sendFollowUpMessage/);
@@ -278,9 +281,22 @@ describe("mandatory model selection disclosure", () => {
 
       const renderedPath = path.join(cwd, "selection-view.html");
       const rendered = capture();
-      assert.equal(await run(["selection", "render", proposal.id, "--output", renderedPath, "--json"], { cwd, env, stdout: rendered, stderr: rendered }), 0, rendered.text());
-      assert.equal(JSON.parse(rendered.text()).output, renderedPath);
+      const untranslated = capture();
+      assert.equal(await run(["selection", "render", proposal.id, "--output", renderedPath, "--json"], { cwd, env, stdout: untranslated, stderr: untranslated }), 1);
+      assert.match(untranslated.text(), /CHINESE_TASK_LABEL_REQUIRED/);
+      assert.equal(await run(["selection", "render", proposal.id, "--output", renderedPath, "--task-label", `${proposal.units[0].key}=实施复杂的多文件仓库迁移`, "--json"], { cwd, env, stdout: rendered, stderr: rendered }), 0, rendered.text());
+      const renderedResult = JSON.parse(rendered.text());
+      assert.equal(renderedResult.output, renderedPath);
+      assert.equal(renderedResult.presentation, "current_conversation_inline_only");
+      assert.equal(renderedResult.surface, "current_conversation");
+      assert.equal(renderedResult.display_language, "zh-CN");
+      assert.deepEqual(renderedResult.content_reference, { kind: "visualize", path: renderedPath });
+      assert.equal(renderedResult.inline_content_reference, `visualize${JSON.stringify({ path: renderedPath })}`);
+      assert.equal(renderedResult.host_action, "emit_inline_content_reference_in_current_response");
+      assert.equal(renderedResult.browser_navigation_allowed, false);
+      assert.equal(renderedResult.file_link_allowed, false);
       assert.match(fs.readFileSync(renderedPath, "utf8"), /sendFollowUpMessage/);
+      assert.match(fs.readFileSync(renderedPath, "utf8"), /实施复杂的多文件仓库迁移/);
       assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
 
       const forbidden = capture();

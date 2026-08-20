@@ -29,7 +29,7 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 3. **Model disclosure and user confirmation are mandatory.** Before any ticket exists, turn broad work into bounded units with an objective, deliverable, and done condition. `baton spawn/apply` creates only an immutable selection proposal.
    - For every delegated unit, use comparison tables to disclose the preferred exact route/profile, every policy-eligible current-host candidate, model strengths, task score, raw AA intelligence/coding/agentic scores, all available partial AA data, reference route/profile/AA provenance, provider quota remaining/reset or explicit unknown reason, and Codex callability. Also summarize built-in family exclusions and catalog routes excluded by the current host.
    - Stop and ask the user to approve or change the proposal. Goal/execution approval is not model approval. The user may choose any disclosed callable exact route/profile, including an `unranked` route; never accept an alias.
-   - In Codex surfaces that support inline interaction, run `baton selection render PROPOSAL --output PATH` and present the generated selector. The user first expands provider quota pools and checks exact routes/profiles, then assigns only checked routes to tasks, then clicks Submit. Submit is the model confirmation; before that action, tickets and subagents must both remain zero. Fall back to the grouped text disclosure only when inline interaction is unavailable.
+   - Codex selector presentation is **current-conversation inline-only** and Chinese-first. Translate every English task into a concise, faithful Chinese display label and pass repeated `--task-label TASK=CHINESE_LABEL`; this changes presentation only and must not rewrite the source task/request or its fingerprint. Run `baton selection render PROPOSAL --output PATH --task-label ... --json`, then emit its `inline_content_reference` in the same assistant response. Never open the artifact in a browser, navigate to `file://`, expose it as a Markdown/file link, or create a separate page, window, task, or conversation. The user first expands provider quota pools and checks exact routes/profiles, then assigns only checked routes to tasks, then clicks Submit. Submit is the model confirmation; before that action, tickets and subagents must both remain zero. If the current host cannot emit the inline content reference, keep the Chinese grouped text disclosure in this same conversation; do not open another surface.
    - Only after the user's reply, run `baton selection approve PROPOSAL --confirm`, adding `--model ID` for standalone or repeated `--route TASK=ID` for OpenSpec changes. The approval is bound into the ticket and immutable Delegation Receipt.
    - No confirmation, stale host snapshot, changed source task, or unavailable selected route means blocked. Never create a ticket early and never silently substitute another route.
 
@@ -80,7 +80,7 @@ baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change] [--route TASK=EXACT_ROUTE[@PROFILE]]
 baton selection show PROPOSAL [--json]
-baton selection render PROPOSAL --output PATH [--json]
+baton selection render PROPOSAL --output PATH [--task-label TASK=CHINESE_LABEL] [--json]
 baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
@@ -98,6 +98,7 @@ baton status
 ## Red lines
 
 - Do not invent a default model.
+- Never present a selection artifact outside the current front conversation; browser navigation, `file://` pages, file links, and separate selection windows/tasks are forbidden.
 - Do not create, reserve, or spawn a ticket before the user confirms the disclosed selection proposal.
 - Do not treat OpenCodex catalog visibility as proof that the current Codex host can spawn a route.
 - Do not hide preferred/candidate routes, task and AA scores/data, reference-only provenance, strengths, quota remaining/unknown state, or callability from the user.

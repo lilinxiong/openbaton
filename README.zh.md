@@ -71,7 +71,7 @@ Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 
 3. director 向用户展示优选及所有符合内置 policy 的当前可调用候选，包含优势、任务分、AA 分/现有数据、参考分来源、剩余额度、重置时间和可调用状态；`gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` 全系列禁令单独披露。
 4. 用户保留或修改选择后，`baton selection approve ... --confirm` 才创建 immutable Receipt 和 queued ticket。host snapshot 或源任务发生变化时，旧 proposal 失效。
 
-候选按 quota pool 分组：普通 provider 一组；Cursor 拆成 `Cursor Auto`（仅 Grok/Composer 系列）和 `Cursor API`（其他 Cursor route）。有额度的组按剩余额度降序，`unknown` 其次，额度为 0 的组置灰、隐藏模型并排在最后。ASR/TTS/voice-clone/voice-design 等不适合文本推理任务的 route 进入 `TASK_CAPABILITY_MISMATCH` 排除清单。支持内联交互的 Codex 窗口可通过 `baton selection render PROPOSAL --output PATH` 展示“勾选模型 → 分配任务 → Submit”流程；Submit 前始终是 0 ticket、0 subagent。
+候选按 quota pool 分组：普通 provider 一组；Cursor 拆成 `Cursor Auto`（仅 Grok/Composer 系列）和 `Cursor API`（其他 Cursor route）。有额度的组按剩余额度降序，`unknown` 其次，额度为 0 的组置灰、隐藏模型并排在最后。ASR/TTS/voice-clone/voice-design 等不适合文本推理任务的 route 进入 `TASK_CAPABILITY_MISMATCH` 排除清单。`baton selection render PROPOSAL --output PATH --task-label TASK=中文说明 --json` 返回中文的“仅限当前对话内联” content reference；英文源 task 必须提供忠实的中文展示名，但不会修改原始 request、task 或 fingerprint。Codex host 必须在当前回复中嵌入该 reference，禁止用浏览器打开、跳转 `file://`、暴露文件链接或创建独立 selector 页面/窗口。交互仍是“勾选模型 → 分配任务 → 确认提交”，确认前始终是 0 ticket、0 subagent。
 
 Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。CodexBar 只提供带来源标记的本地提示，可能对应其本机所选账号，不改变 OpenCodex 对 provider/auth/route 的所有权。Baton 不保存 CodexBar 的账号邮箱/ID、login method、cookie、token 或原始错误。Provider 仍无法报告额度时显示 `unknown`，绝不当作 0 或“额度充足”。用户可以显式选择 proposal 中可调用的 `unranked` route，但不能覆盖内置禁用系列；Baton 不会自动推荐 unranked route，也不会在模型/provider 间 fallback。详见 [CodexBar quota fallback](docs/data-sources/codexbar.md)。
 
@@ -103,7 +103,7 @@ baton spawn "explore why CI is red"
 baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
 baton apply
 baton selection show sel-0001
-baton selection render sel-0001 --output /absolute/path/selection.html
+baton selection render sel-0001 --output /absolute/path/selection.html --task-label '1.1=中文任务说明' --json
 baton selection approve sel-0001 --confirm
 baton selection approve sel-0002 --confirm --model gpt-5.6-luna@low
 baton selection approve sel-0003 --confirm --route 1.1=gpt-5.6-luna@high

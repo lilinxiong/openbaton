@@ -66,6 +66,28 @@ function routeAssignments(values: string[]): Map<string, string> {
   return routes;
 }
 
+function chineseTaskLabels(values: string[], proposal: SelectionProposal): Record<string, string> {
+  const labels: Record<string, string> = {};
+  const units = proposal.units.filter((unit) => !unit.director_local);
+  const validKeys = new Set(units.map((unit) => unit.key));
+  for (const value of values) {
+    const split = value.indexOf("=");
+    if (split <= 0 || split === value.length - 1) throw new Error(`invalid --task-label: ${value}; expected TASK=CHINESE_LABEL`);
+    const key = value.slice(0, split).trim();
+    const label = value.slice(split + 1).trim();
+    if (!validKeys.has(key)) throw new Error(`--task-label unit is not delegable in ${proposal.id}: ${key}`);
+    if (labels[key]) throw new Error(`duplicate --task-label: ${key}`);
+    if (!/\p{Script=Han}/u.test(label)) throw new Error(`CHINESE_TASK_LABEL_REQUIRED: ${key} display label must contain Chinese text`);
+    labels[key] = label;
+  }
+  for (const unit of units) {
+    if (!/\p{Script=Han}/u.test(unit.description) && !labels[unit.key]) {
+      throw new Error(`CHINESE_TASK_LABEL_REQUIRED: ${unit.key} has an English source task; render with --task-label ${unit.key}=CHINESE_LABEL`);
+    }
+  }
+  return labels;
+}
+
 function approvalFor(proposal: SelectionProposal, key: string, selected: string, recommended: string | null, at: string): ModelSelectionApproval {
   return {
     proposal_id: proposal.id,
@@ -186,7 +208,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
 export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: string; stdout: WritableLike; cards: ModelCard[] }): number {
   const sub = args[0] || "show";
   const id = args[1];
-  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--confirm] [--model ID] [--route TASK=ID]");
+  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--confirm] [--model ID] [--route TASK=ID]");
   const proposal = readSelectionProposal(cwd, id);
   if (sub === "show") {
     const flags = flagsOf(args.slice(2));
@@ -197,14 +219,19 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
   if (sub === "render") {
     const flags = flagsOf(args.slice(2));
     const output = one(flags, "output");
-    if (!output) throw new Error("usage: baton selection render PROPOSAL --output PATH");
+    if (!output) throw new Error("usage: baton selection render PROPOSAL --output PATH [--task-label TASK=CHINESE_LABEL]");
     if (proposal.status !== "pending_confirmation") throw new Error(`selection proposal ${proposal.id} is already ${proposal.status}`);
-    const file = writeSelectionView(proposal, output);
-    if (flags.json) stdout.write(`${JSON.stringify({ proposal_id: proposal.id, status: proposal.status, output: file }, null, 2)}\n`);
-    else stdout.write(`${file}\n`);
+    const taskLabels = chineseTaskLabels(many(flags, "task-label"), proposal);
+    const artifact = writeSelectionView(proposal, output, { taskLabels });
+    const result = { proposal_id: proposal.id, status: proposal.status, ...artifact };
+    if (flags.json) stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    else {
+      stdout.write(`${artifact.inline_content_reference}\n`);
+      stdout.write("presentation: current conversation inline only; do not open a browser, navigate to file://, emit a file link, or create a separate page\n");
+    }
     return 0;
   }
-  if (sub !== "approve") throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--confirm] [--model ID] [--route TASK=ID]");
+  if (sub !== "approve") throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--confirm] [--model ID] [--route TASK=ID]");
   const flags = flagsOf(args.slice(2));
   if (!flags.confirm) throw new Error("MODEL_SELECTION_NOT_CONFIRMED: --confirm is required only after the user has reviewed the disclosed proposal");
   validateProposal(cwd, proposal);

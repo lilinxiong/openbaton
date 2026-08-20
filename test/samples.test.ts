@@ -99,6 +99,10 @@ describe("built-in Baton capability samples", () => {
     assert.match(expected, /No ticket exists until the user reviews and confirms/);
     assert.match(expected, /at least two providers/i);
     assert.match(expected, /No `gpt-5\.5`, `gpt-5\.6-sol`, or `gpt-5\.6-terra`/);
+    const instructions = fs.readFileSync(path.join(samples, "README.md"), "utf8");
+    assert.match(instructions, /Chinese, current-conversation inline-only/);
+    assert.match(instructions, /--task-label TASK=CHINESE_LABEL/);
+    assert.match(instructions, /never open a browser, navigate to `file:\/\/`/i);
   });
 
   it("strict-validates the embedded OpenSpec change when OpenSpec is available", { skip: !openspecCliAvailable() }, () => {

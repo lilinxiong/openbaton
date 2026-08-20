@@ -64,7 +64,7 @@ Usage:
   baton spawn <text> [--model ID]   create a model-selection proposal (no ticket)
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
   baton selection show PROPOSAL
-  baton selection render PROPOSAL --output PATH
+  baton selection render PROPOSAL --output PATH --task-label TASK=中文  return Chinese current-conversation inline-only selector
   baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH

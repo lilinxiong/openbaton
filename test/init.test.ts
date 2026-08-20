@@ -24,6 +24,12 @@ describe("Codex-only init/update", () => {
       assert.ok(fs.existsSync(path.join(home, ".baton", "config.toml")));
       assert.ok(fs.existsSync(path.join(home, ".baton", "SKILL.md")));
       assert.ok(fs.existsSync(path.join(home, HOST_SKILL_REL.codex)));
+      const directorSkill = fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8");
+      const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
+      for (const skill of [directorSkill, hostSkill]) {
+        assert.match(skill, /current-conversation inline-only/i);
+        assert.match(skill, /Never open.*browser.*file:\/\//i);
+      }
       assert.deepEqual(loadConfig(cwd, { env }), {
         director: { max_concurrent: 4, max_depth: 1 },
       });
@@ -46,6 +52,7 @@ describe("Codex-only init/update", () => {
       assert.ok(kept.skipped.some((item) => item.includes(".codex")));
       await initProject(cwd, { env, force: true });
       assert.match(fs.readFileSync(skill, "utf8"), /Baton supports Codex only/);
+      assert.match(fs.readFileSync(skill, "utf8"), /current-conversation inline-only/i);
     });
   });
 

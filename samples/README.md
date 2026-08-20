@@ -43,6 +43,8 @@ At this point no ticket may exist. Reply in the same conversation with one confi
 
 Codex should then approve the proposals and execute the tickets. Never ask it to choose an unavailable route, and never accept fallback.
 
+The selector is a Chinese, current-conversation inline-only artifact. Codex must faithfully translate every English source task into a Chinese `--task-label TASK=CHINESE_LABEL` used only for rendering, then emit the `inline_content_reference` returned by `baton selection render ... --json` in the current response. The original business request, source task, and fingerprint stay unchanged. Codex must never open a browser, navigate to `file://`, show a file link, or create a separate page/window/task for model selection. If inline rendering is unavailable, the complete Chinese disclosure and confirmation remain as text in this same conversation.
+
 ## Standalone path
 
 ```bash
