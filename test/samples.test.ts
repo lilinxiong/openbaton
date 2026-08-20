@@ -92,7 +92,7 @@ describe("built-in Baton capability samples", () => {
       "codexbar:",
       "HOST_ROUTE_UNAVAILABLE",
       "SUBAGENT_MODEL_FAMILY_FORBIDDEN",
-      "builtin-no-gpt-5.5-gpt-5.6-sol-terra-v2",
+      "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3",
       "selectedProviders",
     ]) assert.match(verifier, new RegExp(marker));
     const expected = fs.readFileSync(path.join(samples, "EXPECTED.md"), "utf8");

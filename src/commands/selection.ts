@@ -14,8 +14,10 @@ import {
   type SelectionCandidate,
   type SelectionProposal,
 } from "../lib/selection.js";
+import type { SelectionQuotaPool } from "../lib/quota-pools.js";
 import type { ModelCard, ModelSelectionApproval, WritableLike } from "../types.js";
 import { SUBAGENT_MODEL_POLICY_ID, assertSubagentModelAllowed } from "../lib/model-policy.js";
+import { writeSelectionView } from "../lib/selection-view.js";
 
 type FlagValue = string | boolean;
 type FlagMap = Record<string, FlagValue | FlagValue[]>;
@@ -101,7 +103,7 @@ function selectedCandidate(proposal: SelectionProposal, key: string, override: s
   assertSubagentModelAllowed(selected, selected);
   const candidate = unit.candidates.find((item) => item.model_id === selected);
   if (!candidate) throw new Error(`${key}: ${selected} was not disclosed in proposal ${proposal.id}`);
-  if (!candidate.selectable) throw new Error(`${key}: ${selected}: ${candidate.host.code}: ${candidate.host.reason}`);
+  if (!candidate.selectable) throw new Error(`${key}: ${selected}: ${candidate.selection_code}: ${candidate.selection_reason}`);
   const at = new Date().toISOString();
   return { candidate, approval: approvalFor(proposal, key, selected, unit.recommended_model_id, at) };
 }
@@ -184,7 +186,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
 export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: string; stdout: WritableLike; cards: ModelCard[] }): number {
   const sub = args[0] || "show";
   const id = args[1];
-  if (!id) throw new Error("usage: baton selection show|approve PROPOSAL [--confirm] [--model ID] [--route TASK=ID]");
+  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--confirm] [--model ID] [--route TASK=ID]");
   const proposal = readSelectionProposal(cwd, id);
   if (sub === "show") {
     const flags = flagsOf(args.slice(2));
@@ -192,7 +194,17 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
     else printSelectionProposal(stdout, proposal);
     return 0;
   }
-  if (sub !== "approve") throw new Error("usage: baton selection show|approve PROPOSAL [--confirm] [--model ID] [--route TASK=ID]");
+  if (sub === "render") {
+    const flags = flagsOf(args.slice(2));
+    const output = one(flags, "output");
+    if (!output) throw new Error("usage: baton selection render PROPOSAL --output PATH");
+    if (proposal.status !== "pending_confirmation") throw new Error(`selection proposal ${proposal.id} is already ${proposal.status}`);
+    const file = writeSelectionView(proposal, output);
+    if (flags.json) stdout.write(`${JSON.stringify({ proposal_id: proposal.id, status: proposal.status, output: file }, null, 2)}\n`);
+    else stdout.write(`${file}\n`);
+    return 0;
+  }
+  if (sub !== "approve") throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--confirm] [--model ID] [--route TASK=ID]");
   const flags = flagsOf(args.slice(2));
   if (!flags.confirm) throw new Error("MODEL_SELECTION_NOT_CONFIRMED: --confirm is required only after the user has reviewed the disclosed proposal");
   validateProposal(cwd, proposal);
@@ -221,9 +233,10 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
   return 0;
 }
 
-function quotaText(candidate: SelectionCandidate): string {
-  if (candidate.quota.status === "unknown") return `unknown (${candidate.quota.reason}; observed ${candidate.quota.observed_at})`;
-  return candidate.quota.windows.map((item) => `${item.label} remaining ${item.remaining_percent.toFixed(2)}%${item.resets_at ? ` reset ${item.resets_at}` : ""}`).join("; ");
+function quotaText(pool: SelectionQuotaPool): string {
+  if (pool.status === "unknown") return `unknown (${pool.reason}; observed ${pool.observed_at})`;
+  if (pool.status === "exhausted") return "quota exhausted; models hidden and selection disabled";
+  return pool.windows.map((item) => `${item.label} remaining ${item.remaining_percent.toFixed(2)}%${item.resets_at ? ` reset ${item.resets_at}` : ""}`).join("; ");
 }
 
 function tableCell(value: unknown): string {
@@ -251,25 +264,35 @@ function numericDataText(value: Record<string, number | null>): string {
   return entries.length ? entries.map(([key, item]) => `${key}=${metric(item)}`).join("; ") : "none";
 }
 
-function printCandidateTable(stdout: WritableLike, unit: SelectionProposal["units"][number]): void {
-  stdout.write("  candidates:\n\n");
-  stdout.write(tableRow(["Candidate", "Preferred", "Provider", "Evidence", "Task score", "AA I/C/A", "Cost/task", "Tok/s", "TTFA (s)", "Strengths", "Callability"]));
-  stdout.write(tableRow(["---", "---", "---", "---", "---:", "---", "---:", "---:", "---:", "---", "---"]));
-  for (const candidate of unit.candidates.filter((item) => item.selectable)) {
-    const aa = candidate.aa_scores;
-    stdout.write(tableRow([
-      candidate.model_id,
-      candidate.model_id === unit.recommended_model_id ? "yes" : "",
-      candidate.provider || "unknown",
-      evidenceText(candidate),
-      candidate.task_score ?? "unranked",
-      `${metric(aa.intelligence)}/${metric(aa.coding)}/${metric(aa.agentic)}`,
-      metric(aa.cost_per_task),
-      metric(aa.output_tokens_per_second),
-      metric(aa.time_to_first_answer_seconds),
-      candidate.strengths,
-      `${candidate.host.code}: ${candidate.host.reason}`,
-    ]));
+function printCandidateTable(stdout: WritableLike, proposal: SelectionProposal, unit: SelectionProposal["units"][number]): void {
+  stdout.write("  candidates:\n  grouped by quota pool (available first, unknown next, exhausted last)\n");
+  for (const pool of proposal.quota_pools) {
+    const candidates = unit.candidates.filter((candidate) => candidate.quota_pool_id === pool.id);
+    if (!candidates.length) continue;
+    stdout.write(`\n  ${pool.label} [${pool.status}] — ${quotaText(pool)}\n`);
+    if (pool.status === "exhausted") {
+      stdout.write(`  ${candidates.length} exact routes/profiles hidden; this quota pool cannot be selected.\n`);
+      continue;
+    }
+    stdout.write("\n");
+    stdout.write(tableRow(["Candidate", "Preferred", "Provider", "Evidence", "Task score", "AA I/C/A", "Cost/task", "Tok/s", "TTFA (s)", "Strengths", "Callability"]));
+    stdout.write(tableRow(["---", "---", "---", "---", "---:", "---", "---:", "---:", "---:", "---", "---"]));
+    for (const candidate of candidates.filter((item) => item.selectable)) {
+      const aa = candidate.aa_scores;
+      stdout.write(tableRow([
+        candidate.model_id,
+        candidate.model_id === unit.recommended_model_id ? "yes" : "",
+        candidate.provider || "unknown",
+        evidenceText(candidate),
+        candidate.task_score ?? "unranked",
+        `${metric(aa.intelligence)}/${metric(aa.coding)}/${metric(aa.agentic)}`,
+        metric(aa.cost_per_task),
+        metric(aa.output_tokens_per_second),
+        metric(aa.time_to_first_answer_seconds),
+        candidate.strengths,
+        `${candidate.host.code}: ${candidate.host.reason}`,
+      ]));
+    }
   }
 }
 
@@ -299,23 +322,18 @@ function printPartialAaTable(stdout: WritableLike, proposal: SelectionProposal):
 }
 
 function printQuotaTable(stdout: WritableLike, proposal: SelectionProposal): void {
-  const providers = new Map<string, SelectionCandidate>();
-  for (const unit of proposal.units) {
-    for (const candidate of unit.candidates) {
-      const provider = candidate.provider || "unknown";
-      if (!providers.has(provider)) providers.set(provider, candidate);
-    }
-  }
-  stdout.write("\nprovider quota (applies to every candidate with that provider):\n\n");
-  stdout.write(tableRow(["Provider", "Status", "Source", "Remaining/reset or unknown reason", "Observed at"]));
-  stdout.write(tableRow(["---", "---", "---", "---", "---"]));
-  for (const [provider, candidate] of [...providers].sort(([a], [b]) => a.localeCompare(b))) {
+  stdout.write("\nprovider quota pools (available first, unknown next, exhausted last):\n\n");
+  stdout.write(tableRow(["Quota pool", "Provider", "Status", "Source", "Remaining/reset or unknown reason", "Models", "Observed at"]));
+  stdout.write(tableRow(["---", "---", "---", "---", "---", "---:", "---"]));
+  for (const pool of proposal.quota_pools) {
     stdout.write(tableRow([
-      provider,
-      candidate.quota.status,
-      candidate.quota.source || "unknown",
-      quotaText(candidate),
-      candidate.quota.observed_at,
+      pool.label,
+      pool.provider,
+      pool.status,
+      pool.source || "unknown",
+      quotaText(pool),
+      pool.model_ids.length,
+      pool.observed_at,
     ]));
   }
 }
@@ -332,10 +350,16 @@ export function printSelectionProposal(stdout: WritableLike, proposal: Selection
     }
     stdout.write(`  preferred: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
     if (unit.requested_model_id) stdout.write(`  user requested: ${unit.requested_model_id}\n`);
-    printCandidateTable(stdout, unit);
+    printCandidateTable(stdout, proposal, unit);
   }
   printPartialAaTable(stdout, proposal);
   printQuotaTable(stdout, proposal);
+  if (proposal.task_exclusions.length) {
+    stdout.write("\nexcluded by task capability:\n\n");
+    stdout.write(tableRow(["Candidate", "Provider", "Code", "Reason"]));
+    stdout.write(tableRow(["---", "---", "---", "---"]));
+    for (const item of proposal.task_exclusions) stdout.write(tableRow([item.model_id, item.provider || "unknown", item.code, item.reason]));
+  }
   if (proposal.policy_exclusions?.length) {
     stdout.write("\nforbidden from subagent candidates by built-in policy:\n\n");
     stdout.write(tableRow(["Family", "Routes", "Code", "Cards/profiles"]));

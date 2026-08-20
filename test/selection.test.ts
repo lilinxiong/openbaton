@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { run } from "../src/cli.js";
 import { buildSelectionUnit, createSelectionProposal, readSelectionProposal, selectionSourceFingerprint, writeSelectionProposal } from "../src/lib/selection.js";
 import { SUBAGENT_MODEL_FAMILY_FORBIDDEN, SUBAGENT_MODEL_POLICY_ID } from "../src/lib/model-policy.js";
+import { renderSelectionView } from "../src/lib/selection-view.js";
 import { normalizeProviderQuotas, writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { artificialAnalysisDbPath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
@@ -33,6 +35,92 @@ function card(id: string, route: string, provider: string, coding: number, agent
 }
 
 describe("mandatory model selection disclosure", () => {
+  it("groups quota pools, adapts Cursor API/Auto, hides exhausted pools, and filters non-agent routes", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-pools-"));
+    publishRouteSnapshot(cwd, { models: [
+      { id: "claude-opus-5", provider: "cursor", namespaced: "cursor/claude-opus-5" },
+      { id: "grok-4.6", provider: "cursor", namespaced: "cursor/grok-4.6" },
+      { id: "composer-2.5", provider: "cursor", namespaced: "cursor/composer-2.5" },
+      { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
+      { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
+      { id: "mimo-v2.5-tts", provider: "mimo", namespaced: "mimo/mimo-v2.5-tts" },
+    ] });
+    const host = writeHostCapabilitySnapshot(cwd, {
+      advertisedModels: [
+        "cursor/claude-opus-5", "cursor/grok-4.6", "cursor/composer-2.5",
+        "alibaba-token-plan/glm-5.2", "mimo/mimo-v2.5-pro", "mimo/mimo-v2.5-tts",
+      ],
+      quotaCatalog: { reports: [{
+        provider: "cursor",
+        source: "cursor:period-usage",
+        quota: {
+          monthlyPercent: 100,
+          customWindows: [
+            { label: "First-party models", percent: 4.752 },
+            { label: "API usage", percent: 93.72 },
+          ],
+        },
+      }] },
+    });
+    const cards = [
+      card("cursor/claude-opus-5", "cursor/claude-opus-5", "cursor", 90, 90, 1),
+      card("cursor/grok-4.6", "cursor/grok-4.6", "cursor", 99, 99, 1),
+      card("cursor/composer-2.5", "cursor/composer-2.5", "cursor", 98, 98, 1),
+      card("alibaba-token-plan/glm-5.2", "alibaba-token-plan/glm-5.2", "alibaba-token-plan", 80, 80, 0.8),
+      card("mimo/mimo-v2.5-pro", "mimo/mimo-v2.5-pro", "mimo", 60, 50, 0.5),
+      card("mimo/mimo-v2.5-tts", "mimo/mimo-v2.5-tts", "mimo", 100, 100, 1),
+    ];
+    const unit = buildSelectionUnit({
+      cwd,
+      key: "standalone",
+      description: "audit incident JSON and produce a report",
+      prompt: "audit incident JSON and produce a report",
+      cards,
+      automaticCards: cards,
+      host,
+    });
+    assert.equal(unit.candidates.some((candidate) => candidate.model_id === "mimo/mimo-v2.5-tts"), false);
+    assert.deepEqual(unit.task_exclusions.map((item) => item.model_id), ["mimo/mimo-v2.5-tts"]);
+    assert.equal(unit.candidates.some((candidate) => candidate.model_id === "mimo/mimo-v2.5-pro"), true);
+    assert.equal(unit.candidates.find((candidate) => candidate.model_id === "cursor/grok-4.6")?.selection_code, "QUOTA_POOL_EXHAUSTED");
+    assert.equal(unit.candidates.find((candidate) => candidate.model_id === "cursor/grok-4.6")?.selectable, false);
+    assert.equal(unit.recommended_model_id, "cursor/claude-opus-5");
+
+    const proposal = createSelectionProposal(cwd, {
+      source: "standalone",
+      units: [unit],
+      sourceFingerprint: selectionSourceFingerprint({ description: unit.description }),
+      payload: { description: unit.description },
+    });
+    assert.deepEqual(proposal.quota_pools.map((pool) => [pool.id, pool.status]), [
+      ["cursor-api", "available"],
+      ["alibaba-token-plan", "unknown"],
+      ["mimo", "unknown"],
+      ["cursor-auto", "exhausted"],
+    ]);
+    assert.equal(proposal.quota_pools[0].remaining_percent, 6.280000000000001);
+    assert.deepEqual(proposal.quota_pools.at(-1)?.model_ids, ["cursor/composer-2.5", "cursor/grok-4.6"]);
+    const fragment = renderSelectionView(proposal);
+    assert.doesNotMatch(fragment, /<!doctype|<html|<body/i);
+    assert.match(fragment, /Provider quota pool 中选择模型/);
+    assert.match(fragment, /Cursor API/);
+    assert.match(fragment, /额度耗尽/);
+    assert.match(fragment, /sendFollowUpMessage/);
+    const script = fragment.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(script);
+    assert.doesNotThrow(() => new vm.Script(script));
+    assert.throws(() => buildSelectionUnit({
+      cwd,
+      key: "blocked",
+      description: unit.description,
+      prompt: unit.prompt,
+      cards,
+      automaticCards: cards,
+      host,
+      requestedModelId: "cursor/grok-4.6",
+    }), /QUOTA_POOL_EXHAUSTED/);
+  }));
+
   it("converts OpenCodex used percentages into explicit remaining quota windows", () => {
     const quotas = normalizeProviderQuotas({ reports: [
       { provider: "kimi", source: "kimi:usages", quota: { fiveHourPercent: 5, fiveHourResetAt: 1_800_000_000_000, weeklyPercent: 9 } },
@@ -183,10 +271,17 @@ describe("mandatory model selection disclosure", () => {
       assert.match(disclosed.text(), /candidates:/);
       assert.match(disclosed.text(), /\| Candidate \| Preferred \| Provider \| Evidence \| Task score \| AA I\/C\/A \|/);
       assert.match(disclosed.text(), /\| provider-a\/strong@high \| yes \| provider-a \| exact \| \d+ \| 90\/95\/90 \|/);
-      assert.match(disclosed.text(), /\| Provider \| Status \| Source \| Remaining\/reset or unknown reason \| Observed at \|/);
+      assert.match(disclosed.text(), /\| Quota pool \| Provider \| Status \| Source \| Remaining\/reset or unknown reason \| Models \| Observed at \|/);
       assert.match(disclosed.text(), /PROVIDER_QUOTA_NOT_REPORTED/);
       assert.match(disclosed.text(), /AVAILABLE/);
       assert.match(disclosed.text(), /No ticket exists yet/);
+
+      const renderedPath = path.join(cwd, "selection-view.html");
+      const rendered = capture();
+      assert.equal(await run(["selection", "render", proposal.id, "--output", renderedPath, "--json"], { cwd, env, stdout: rendered, stderr: rendered }), 0, rendered.text());
+      assert.equal(JSON.parse(rendered.text()).output, renderedPath);
+      assert.match(fs.readFileSync(renderedPath, "utf8"), /sendFollowUpMessage/);
+      assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
 
       const forbidden = capture();
       assert.equal(await run(["selection", "approve", proposal.id, "--confirm", "--model", "gpt-5.6-terra@max"], { cwd, env, stdout: forbidden, stderr: forbidden }), 1);

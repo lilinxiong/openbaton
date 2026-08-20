@@ -18,6 +18,13 @@ import {
   summarizeSubagentModelPolicyExclusions,
   type SubagentModelPolicyExclusion,
 } from "./model-policy.js";
+import {
+  buildSelectionQuotaPools,
+  quotaPoolForCandidate,
+  type QuotaPoolStatus,
+  type SelectionQuotaPool,
+} from "./quota-pools.js";
+import { taskCapabilityExclusion, type TaskCapabilityExclusion } from "./task-suitability.js";
 import type { CardCapabilityEvidence, ModelCard, UnknownRecord } from "../types.js";
 
 export type SelectionProposalStatus = "pending_confirmation" | "approved";
@@ -28,6 +35,8 @@ export interface SelectionCandidate {
   reasoning_effort: string | null;
   provider: string | null;
   selectable: boolean;
+  selection_code: HostRouteAvailability["code"] | "QUOTA_POOL_EXHAUSTED";
+  selection_reason: string;
   automatic_eligible: boolean;
   ranked: boolean;
   reference_only: boolean;
@@ -48,6 +57,10 @@ export interface SelectionCandidate {
   };
   aa_data: CardCapabilityEvidence["aa_data"] | null;
   quota: ProviderQuotaDisclosure;
+  quota_pool_id: string;
+  quota_pool_label: string;
+  quota_pool_status: QuotaPoolStatus;
+  quota_pool_remaining_percent: number | null;
   host: HostRouteAvailability;
 }
 
@@ -62,6 +75,7 @@ export interface SelectionUnit {
   recommendation_reason: "UNIQUE_HIGHEST_TASK_SCORE" | "AMBIGUOUS_TOP_SCORE" | "NO_POSITIVE_TASK_SCORE" | "NO_SELECTABLE_RANKED_CANDIDATE" | "DIRECTOR_LOCAL";
   requires_manual_choice: boolean;
   candidates: SelectionCandidate[];
+  task_exclusions: TaskCapabilityExclusion[];
   policy_exclusions: SubagentModelPolicyExclusion[];
   metadata: UnknownRecord;
 }
@@ -78,6 +92,8 @@ export interface SelectionProposal {
   source_fingerprint: string;
   model_policy_id: string;
   units: SelectionUnit[];
+  quota_pools: SelectionQuotaPool[];
+  task_exclusions: TaskCapabilityExclusion[];
   policy_exclusions: SubagentModelPolicyExclusion[];
   unavailable_by_provider: Array<{ provider: string; card_count: number; routes: string[]; code: string }>;
   payload: UnknownRecord;
@@ -111,6 +127,14 @@ function candidateFor(
 ): SelectionCandidate | null {
   if (!card.route_id || card.executable === false) return null;
   const availability = hostRouteAvailability(cwd, card, host);
+  const quota = quotaForProvider(host, card.provider);
+  const quotaPool = quotaPoolForCandidate({
+    model_id: card.id,
+    route_id: card.route_id,
+    provider: card.provider || null,
+    quota,
+  });
+  const selectable = availability.available && quotaPool.selectable;
   const ranked = card.capability?.ranked === true;
   const referenceOnly = card.capability?.reference_only === true;
   return {
@@ -118,8 +142,10 @@ function candidateFor(
     route_id: card.route_id,
     reasoning_effort: card.reasoning_effort || null,
     provider: card.provider || null,
-    selectable: availability.available,
-    automatic_eligible: availability.available && ranked && !referenceOnly && automaticIds.has(card.id),
+    selectable,
+    selection_code: !availability.available ? availability.code : quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
+    selection_reason: !availability.available ? availability.reason : quotaPool.status === "exhausted" ? `${quotaPool.label} quota is exhausted` : "route is callable and its quota pool is not exhausted",
+    automatic_eligible: selectable && ranked && !referenceOnly && automaticIds.has(card.id),
     ranked,
     reference_only: referenceOnly,
     reference_reasons: card.capability?.reference_reasons || [],
@@ -131,7 +157,11 @@ function candidateFor(
     positioning: card.positioning || [],
     aa_scores: evidenceScores(card.capability),
     aa_data: card.capability?.aa_data || null,
-    quota: quotaForProvider(host, card.provider),
+    quota,
+    quota_pool_id: quotaPool.id,
+    quota_pool_label: quotaPool.label,
+    quota_pool_status: quotaPool.status,
+    quota_pool_remaining_percent: quotaPool.remaining_percent,
     host: availability,
   };
 }
@@ -163,11 +193,16 @@ export function buildSelectionUnit({
     return {
       key, description, prompt, director_local: true,
       recommended_model_id: null, requested_model_id: null, default_model_id: null,
-      recommendation_reason: "DIRECTOR_LOCAL", requires_manual_choice: false, candidates: [], policy_exclusions: [], metadata,
+      recommendation_reason: "DIRECTOR_LOCAL", requires_manual_choice: false, candidates: [], task_exclusions: [], policy_exclusions: [], metadata,
     };
   }
   const policyExclusions = summarizeSubagentModelPolicyExclusions(cards);
-  const eligibleCards = cards.filter(isSubagentModelAllowed);
+  const policyEligibleCards = cards.filter(isSubagentModelAllowed);
+  const taskExclusions = policyEligibleCards
+    .map(taskCapabilityExclusion)
+    .filter((item): item is TaskCapabilityExclusion => item !== null);
+  const excludedIds = new Set(taskExclusions.map((item) => item.model_id));
+  const eligibleCards = policyEligibleCards.filter((card) => !excludedIds.has(card.id));
   const automaticIds = new Set((automaticCards || cards).filter(isSubagentModelAllowed).map((card) => card.id));
   const candidates = eligibleCards
     .map((card) => candidateFor(cwd, prompt, card, host, automaticIds))
@@ -191,7 +226,7 @@ export function buildSelectionUnit({
     assertSubagentModelAllowed(requestedModelId, requestedModelId);
     const requested = candidates.find((item) => item.model_id === requestedModelId);
     if (!requested) throw new Error(`requested model is not an exact route/profile id in this proposal: ${requestedModelId}`);
-    if (!requested.selectable) throw new Error(`${requestedModelId}: ${requested.host.code}: ${requested.host.reason}`);
+    if (!requested.selectable) throw new Error(`${requestedModelId}: ${requested.selection_code}: ${requested.selection_reason}`);
   }
   const defaultModel = requestedModelId || recommended;
   return {
@@ -205,6 +240,7 @@ export function buildSelectionUnit({
     recommendation_reason: reason,
     requires_manual_choice: defaultModel == null,
     candidates,
+    task_exclusions: taskExclusions,
     policy_exclusions: policyExclusions,
     metadata,
   };
@@ -226,6 +262,24 @@ function policyExclusionSummary(units: SelectionUnit[]): SubagentModelPolicyExcl
   return [...groups.values()].sort((a, b) => a.family.localeCompare(b.family));
 }
 
+function taskExclusionSummary(units: SelectionUnit[]): TaskCapabilityExclusion[] {
+  const exclusions = new Map<string, TaskCapabilityExclusion>();
+  for (const unit of units) {
+    for (const exclusion of unit.task_exclusions || []) exclusions.set(exclusion.model_id, exclusion);
+  }
+  return [...exclusions.values()].sort((a, b) => a.model_id.localeCompare(b.model_id));
+}
+
+function proposalQuotaPools(units: SelectionUnit[]): SelectionQuotaPool[] {
+  const candidates = new Map<string, SelectionCandidate>();
+  for (const unit of units) {
+    for (const candidate of unit.candidates) {
+      if (candidate.host.available && !candidates.has(candidate.model_id)) candidates.set(candidate.model_id, candidate);
+    }
+  }
+  return buildSelectionQuotaPools([...candidates.values()]);
+}
+
 function nextProposalId(cwd: string): string {
   const dir = selectionsDir(cwd);
   if (!fs.existsSync(dir)) return "sel-0001";
@@ -241,7 +295,7 @@ function unavailableSummary(units: SelectionUnit[]): SelectionProposal["unavaila
   const groups = new Map<string, { cards: Set<string>; routes: Set<string>; codes: Set<string> }>();
   for (const unit of units) {
     for (const candidate of unit.candidates) {
-      if (candidate.selectable || candidate.host.code === "NO_EXECUTABLE_ROUTE") continue;
+      if (candidate.host.available || candidate.host.code === "NO_EXECUTABLE_ROUTE") continue;
       const provider = candidate.provider || "unknown";
       const group = groups.get(provider) || { cards: new Set(), routes: new Set(), codes: new Set() };
       group.cards.add(candidate.model_id);
@@ -286,6 +340,8 @@ export function createSelectionProposal(cwd: string, {
     source_fingerprint: sourceFingerprint,
     model_policy_id: SUBAGENT_MODEL_POLICY_ID,
     units,
+    quota_pools: proposalQuotaPools(units),
+    task_exclusions: taskExclusionSummary(units),
     policy_exclusions: policyExclusionSummary(units),
     unavailable_by_provider: unavailableSummary(units),
     payload,
@@ -319,6 +375,32 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   if (!fs.existsSync(file)) throw new Error(`selection proposal not found: ${id}`);
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as SelectionProposal;
   if (value.schema_version !== 1) throw new Error(`unsupported selection proposal schema: ${value.schema_version}`);
+  for (const unit of value.units || []) {
+    if (!Array.isArray(unit.task_exclusions)) unit.task_exclusions = [];
+    for (const candidate of unit.candidates || []) {
+      const pool = quotaPoolForCandidate(candidate);
+      candidate.quota_pool_id ||= pool.id;
+      candidate.quota_pool_label ||= pool.label;
+      candidate.quota_pool_status ||= pool.status;
+      if (candidate.quota_pool_remaining_percent === undefined) candidate.quota_pool_remaining_percent = pool.remaining_percent;
+      if (!candidate.selection_code) {
+        candidate.selection_code = !candidate.host.available
+          ? candidate.host.code
+          : pool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE";
+      }
+      if (!candidate.selection_reason) {
+        candidate.selection_reason = !candidate.host.available
+          ? candidate.host.reason
+          : pool.status === "exhausted" ? `${pool.label} quota is exhausted` : "route is callable and its quota pool is not exhausted";
+      }
+      if (pool.status === "exhausted" && candidate.host.available) {
+        candidate.selectable = false;
+        candidate.automatic_eligible = false;
+      }
+    }
+  }
+  if (!Array.isArray(value.quota_pools)) value.quota_pools = proposalQuotaPools(value.units || []);
+  if (!Array.isArray(value.task_exclusions)) value.task_exclusions = taskExclusionSummary(value.units || []);
   return value;
 }
 

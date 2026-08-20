@@ -71,6 +71,8 @@ The Codex director performs this automatically after an ordinary request enters 
 3. The director shows the preferred route and all policy-eligible callable candidates with strengths, task score, AA scores/available data, reference-only provenance, remaining quota, reset time, and availability. It separately discloses the built-in `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` family exclusions.
 4. After the user keeps or changes the choice, `baton selection approve ... --confirm` creates the immutable Receipt and queued ticket. A changed host snapshot or source task invalidates the proposal.
 
+Candidates are grouped by quota pool. Normal providers have one pool; Cursor is split into `Cursor Auto` (Grok and Composer series only) and `Cursor API` (all other Cursor routes). Available pools sort by remaining quota, unknown pools follow, and zero-quota pools are disabled, hide their models, and sort last. ASR, TTS, voice-clone, and voice-design routes are disclosed as `TASK_CAPABILITY_MISMATCH` for text-reasoning work. On Codex surfaces with inline interaction, `baton selection render PROPOSAL --output PATH` provides the check-models, assign-tasks, Submit flow; ticket and subagent counts remain zero until Submit is confirmed.
+
 Quota precedence is `OpenCodex reported > local CodexBar fallback > unknown`. CodexBar is an informational local fallback and may represent its locally selected account; it does not change OpenCodex provider/auth/route ownership. Baton stores no CodexBar account email/id, login method, cookie, token, or raw error. An unreported quota is never treated as zero or sufficient. A user may explicitly select a disclosed callable `unranked` route, but cannot override the built-in forbidden families. Baton never auto-recommends an unranked route and never falls back between models/providers. See [CodexBar quota fallback](docs/data-sources/codexbar.md).
 
 ## State layout
@@ -101,6 +103,7 @@ baton spawn "explore why CI is red"
 baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
 baton apply
 baton selection show sel-0001
+baton selection render sel-0001 --output /absolute/path/selection.html
 baton selection approve sel-0001 --confirm
 baton selection approve sel-0002 --confirm --model gpt-5.6-luna@low
 baton selection approve sel-0003 --confirm --route 1.1=gpt-5.6-luna@high

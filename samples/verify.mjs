@@ -104,7 +104,7 @@ function verifyModelSelection(items, selections, runtimeRoot) {
   assert(delegatedUnits.length === items.length, `expected ${items.length} disclosed delegated units, got ${delegatedUnits.length}`);
   assert(selections.length === (mode === "openspec" ? 1 : 5), `unexpected ${mode} proposal count: ${selections.length}`);
   assert(selections.every((proposal) => proposal.status === "approved" && proposal.approved_at), "every selection proposal must be user-approved");
-  assert(selections.every((proposal) => proposal.model_policy_id === "builtin-no-gpt-5.5-gpt-5.6-sol-terra-v2"), "every proposal must bind the current built-in model policy");
+  assert(selections.every((proposal) => proposal.model_policy_id === "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3"), "every proposal must bind the current built-in model policy");
   assert(selections.every((proposal) => ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"].every((family) => proposal.policy_exclusions?.some((item) => item.family === family && item.code === "SUBAGENT_MODEL_FAMILY_FORBIDDEN"))), "every proposal must disclose all forbidden model families");
   assert(selections.every((proposal) => proposal.history?.[0]?.event === "pending_confirmation" && proposal.history?.some((event) => event.event === "approved")), "every proposal must prove pending disclosure before approval");
 

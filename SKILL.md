@@ -19,6 +19,8 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
    - `~/.baton/config.toml` stores director settings only. Local model aliases, route overrides, and user-configured model exclusions are forbidden. The product has one built-in subagent policy: every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile is forbidden from candidates, explicit selection, tickets, and dispatch.
    - A catalog route/profile is only callable when it is also advertised by the current Codex calling-host model/profile surface. Before planning, silently sync the complete session-scoped model selector or calling-host tool schema with repeated `--model EXACT_ROUTE` and `--profile EXACT_ROUTE=EFFORT,...`; do not truncate it to an abbreviated `spawn_agent` optional-override list. Catalog-only routes remain `HOST_ROUTE_UNAVAILABLE`, unsupported profiles remain `HOST_PROFILE_UNAVAILABLE`.
    - Read provider quota through OpenCodex first. When one provider is absent/unknown, and a local CodexBar CLI is installed and callable, query that provider as a fallback. OpenCodex reported windows always win. Persist only sanitized percentage/reset windows and a `codexbar:...` source; never persist CodexBar account identity, login method, credentials, raw output, or raw errors. Missing/failed quota stays `unknown`; never coerce it to zero or “enough”.
+   - Present candidates by quota pool, not as one flat model list. Treat Cursor as two pools: `cursor-auto` contains only `cursor/grok-*` and `cursor/composer-*` routes and uses the Cursor monthly/Auto allowance; every other Cursor route belongs to `cursor-api` and uses the reported `API usage` window. Sort available pools by remaining quota, then unknown pools, with exhausted pools disabled, collapsed, and last. Never show selectable models inside an exhausted pool.
+   - Exclude routes whose recognizable function cannot perform the current text-reasoning/tool task. ASR, TTS, voice-clone, and voice-design routes are disclosed under `TASK_CAPABILITY_MISMATCH`, not offered as model checkboxes. Do not exclude a general reasoning route such as `mimo-v2.5-pro` merely because it shares a provider or model family.
    - No subagent default or parent-model inherit. No unique positive recommendation means manual choice is required; never silently pick.
    - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary. The built-in `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` ban is the only global family policy and must be disclosed separately from host unavailability.
    - Preserve OpenCodex's exact `namespaced` route. A visible route is spawnable only when it is not disabled and the requested reasoning profile is supported.
@@ -27,6 +29,7 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 3. **Model disclosure and user confirmation are mandatory.** Before any ticket exists, turn broad work into bounded units with an objective, deliverable, and done condition. `baton spawn/apply` creates only an immutable selection proposal.
    - For every delegated unit, use comparison tables to disclose the preferred exact route/profile, every policy-eligible current-host candidate, model strengths, task score, raw AA intelligence/coding/agentic scores, all available partial AA data, reference route/profile/AA provenance, provider quota remaining/reset or explicit unknown reason, and Codex callability. Also summarize built-in family exclusions and catalog routes excluded by the current host.
    - Stop and ask the user to approve or change the proposal. Goal/execution approval is not model approval. The user may choose any disclosed callable exact route/profile, including an `unranked` route; never accept an alias.
+   - In Codex surfaces that support inline interaction, run `baton selection render PROPOSAL --output PATH` and present the generated selector. The user first expands provider quota pools and checks exact routes/profiles, then assigns only checked routes to tasks, then clicks Submit. Submit is the model confirmation; before that action, tickets and subagents must both remain zero. Fall back to the grouped text disclosure only when inline interaction is unavailable.
    - Only after the user's reply, run `baton selection approve PROPOSAL --confirm`, adding `--model ID` for standalone or repeated `--route TASK=ID` for OpenSpec changes. The approval is bound into the ticket and immutable Delegation Receipt.
    - No confirmation, stale host snapshot, changed source task, or unavailable selected route means blocked. Never create a ticket early and never silently substitute another route.
 
@@ -77,6 +80,7 @@ baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change] [--route TASK=EXACT_ROUTE[@PROFILE]]
 baton selection show PROPOSAL [--json]
+baton selection render PROPOSAL --output PATH [--json]
 baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
@@ -97,6 +101,7 @@ baton status
 - Do not create, reserve, or spawn a ticket before the user confirms the disclosed selection proposal.
 - Do not treat OpenCodex catalog visibility as proof that the current Codex host can spawn a route.
 - Do not hide preferred/candidate routes, task and AA scores/data, reference-only provenance, strengths, quota remaining/unknown state, or callability from the user.
+- Do not flatten provider quota pools, place an exhausted pool above an available/unknown pool, expose its models as selectable, or mix Cursor Auto and Cursor API accounting.
 - Do not accept local model aliases or route overrides; explicit selection requires an exact OpenCodex route/profile ID.
 - Never include or dispatch any `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` provider route, variant, or reasoning profile as a subagent model. This built-in family ban cannot be overridden by user confirmation or an old proposal/ticket.
 - Do not copy AA scores into config, use reference-only evidence for automatic recommendation, or invent aggregate scores/positioning for unranked routes.

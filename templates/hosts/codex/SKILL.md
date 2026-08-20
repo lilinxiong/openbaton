@@ -20,10 +20,13 @@ You are the director. Baton supports Codex only. It consumes exact OpenCodex rou
    - Keep every executable OpenCodex route family visible in the catalog. Built-in subagent policy forbids all `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider routes, variants, and reasoning profiles from candidates, explicit selection and dispatch. Apply other session/Goal exclusions only to the current route decision.
    - Unmapped routes remain visible as `unranked`: never auto-select them, but allow exact explicit selection.
    - Keep missing capability values unknown; never coerce them to zero or invent positioning.
+   - Filter task-incompatible route functions before model choice. ASR, TTS, voice-clone, and voice-design routes must be disclosed as `TASK_CAPABILITY_MISMATCH`, not shown as selectable candidates for text-reasoning/tool work. General reasoning routes remain eligible.
+   - Group candidates by quota pool. Split Cursor into `cursor-auto` (only Grok and Composer series, monthly/Auto quota) and `cursor-api` (all other Cursor routes, `API usage` quota). Sort available pools by remaining quota, unknown pools next, and exhausted pools last. Exhausted groups are disabled/collapsed and expose no model checkboxes.
 
 4. **Model disclosure and user confirmation are mandatory.** `baton spawn/apply` creates selection proposals, not tickets. For each delegated unit, use comparison tables to disclose the preferred and policy-eligible candidate exact routes/profiles, strengths, task score, raw AA intelligence/coding/agentic scores, all available partial AA data, reference route/profile/AA provenance, provider quota remaining/reset or explicit unknown reason, and current Codex callability. Summarize built-in family exclusions and catalog routes excluded by the host.
    - Stop for the user's model approval after disclosure. Goal/execution approval does not count as model approval. The user may keep the preferred route or change to any disclosed callable exact route, including `unranked`.
    - Only after the reply, use `baton selection approve PROPOSAL --confirm`, with `--model ID` or repeated `--route TASK=ID` for changes. Approval is immutable evidence in the ticket and Receipt.
+   - When inline interaction is available, run `baton selection render PROPOSAL --output PATH` and surface that selector in the current conversation. The interaction order is pool expansion and exact-route checkboxes, task assignment from checked routes, then Submit. Submit counts as explicit model confirmation; no ticket or subagent may exist before it.
    - Missing confirmation, a stale host snapshot, changed source tasks, or an unavailable route blocks ticket creation. Never silently substitute.
 
 5. **Workers are Codex-native subagents.** Codex spawns in-process with `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Never shell out to another coding CLI. The Baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`.
@@ -51,7 +54,7 @@ You are the director. Baton supports Codex only. It consumes exact OpenCodex rou
 
 Lifecycle per ticket:
 
-0. **Sync and confirm.** Extract every exact model route and allowed reasoning effort from this session's complete calling-host model selector/tool schema, run `baton host sync` with repeated `--model`/`--profile`, then create selection proposals. Do not substitute a shorter `spawn_agent` override hint for that host surface. Surface all disclosure fields and wait for the user's confirmation or route changes. Run `baton selection approve ... --confirm` only after that reply. No approval means no ticket and no spawn.
+0. **Sync and confirm.** Extract every exact model route and allowed reasoning effort from this session's complete calling-host model selector/tool schema, run `baton host sync` with repeated `--model`/`--profile`, then create selection proposals. Do not substitute a shorter `spawn_agent` override hint for that host surface. Prefer `baton selection render PROPOSAL --output PATH` for the current Codex window; otherwise use grouped text disclosure. Wait for Submit/user confirmation or route changes. Run `baton selection approve ... --confirm` only after that confirmation. No approval means no ticket and no spawn.
 1. **Reserve.** `baton dispatch next --host codex --capacity <effective-host-capacity> --json` → `{ reserved, blocked, snapshot }`. Each reserved spec also carries `work_unit` and `coordination`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
 2. **Spawn.** For each reserved spec, call `spawn_agent` with `model=<route_id>`, `reasoning_effort` only when present, and `fork_context=false`. The prompt is self-contained. If the host returns `AgentLimitReached`, stop spawning that batch and run `baton dispatch defer <ticket> --code AGENT_LIMIT_REACHED --json` for each unbound reservation; when at least one Baton agent is open, also pass `--observed-capacity <currently-open-baton-agents>`. Do not consume attempts or switch routes.
 3. **Bind.** On successful spawn: `baton dispatch bind <ticket_id> --agent-id <agent_id> --host codex --json`. The ticket is now `running`.
@@ -92,6 +95,7 @@ baton routes candidates
 baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]
 baton host status
 baton selection show PROPOSAL [--json]
+baton selection render PROPOSAL --output PATH [--json]
 baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
 baton conversation promote --from-file PATH
 baton cards [--ranked|--unranked] [--provider ID] [--json]
@@ -106,6 +110,7 @@ baton status
 - Do not invent a default model. Do not inherit the parent/host model. No fallback across routes or providers.
 - Do not create or dispatch a ticket before the user confirms the disclosed model proposal.
 - Do not hide preferred/candidate routes, strengths, task/AA scores and available data, reference-only provenance, quota remaining/unknown state, or host callability.
+- Do not flatten provider quota pools, mix Cursor Auto/API accounting, or expose models from an exhausted pool.
 - Do not overwrite reported OpenCodex quota with CodexBar or persist CodexBar account/auth/raw-output fields.
 - Do not equate OpenCodex catalog visibility with current Codex host availability.
 - Do not accept local model aliases or route overrides. `--model` must be an exact OpenCodex route/profile ID.

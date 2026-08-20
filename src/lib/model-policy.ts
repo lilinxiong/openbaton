@@ -1,6 +1,6 @@
 import type { ModelCard } from "../types.js";
 
-export const SUBAGENT_MODEL_POLICY_ID = "builtin-no-gpt-5.5-gpt-5.6-sol-terra-v2";
+export const SUBAGENT_MODEL_POLICY_ID = "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3";
 export const SUBAGENT_MODEL_FAMILY_FORBIDDEN = "SUBAGENT_MODEL_FAMILY_FORBIDDEN";
 
 export const FORBIDDEN_SUBAGENT_MODEL_FAMILIES = [
