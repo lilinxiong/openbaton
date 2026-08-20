@@ -28,7 +28,7 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 - **Catalog 可见性与 subagent 资格分离。** OpenCodex discovery 仍完整可审计。内置 policy 禁止 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra` 的所有 provider route、variant 和 reasoning profile 进入 subagent 候选，proposal 会单独披露；其它 session/Goal exclusion 仍只影响本次调度。
 - **当前 host 取交集。** route 必须同时满足 OpenCodex 可执行、当前 Codex session 的 `spawn_agent` 已声明；只在 catalog 中存在的 route 仍可见，但标为 `HOST_ROUTE_UNAVAILABLE`。
 - **模型必须确认。** `spawn/apply` 先用对比表披露优选与候选 exact route、模型优势、任务分、AA 原始分/现有数据、参考 route/profile 来源、provider 剩余额度/重置时间（或明确 unknown 原因）及可调用性。用户确认或改选前不创建 ticket。
-- **额度来源与本地 fallback。** OpenCodex 已报告的 quota 永远优先；只有某个 provider 缺失或 unknown 时，Baton 才尝试调用本机已安装的 CodexBar CLI，并以 `codexbar:...` 来源保存脱敏后的百分比/reset 窗口；仍取不到就明确保持 unknown。
+- **额度来源与本地 fallback。** OpenCodex 已报告的 quota 永远优先；只有某个 provider 缺失或 unknown 时，Baton 才读取本机 CodexBar GUI 快照（其次 history，最后 CLI），并以 `codexbar:...` 来源保存脱敏后的百分比/reset 窗口；仍取不到就明确保持 unknown。
 - **Codex 原生 worker。** 只使用进程内 Codex subagent；Baton 不接入其他 coding CLI host，也不 shell 到 print mode。skill 安装到 `~/.codex`，Baton 状态保存在 `~/.baton`。
 - **逻辑上无限 spawn。** host/session 的并发上限是运行时能力，不写死为 6；超限作为 backpressure 回到 FIFO，不消耗 attempt。真实 `close_agent` 后才释放 slot。深度 1。
 - **具体任务优先。** Ticket 区分 `concrete` 与 `deliberative`。优先把工作拆成有 objective/deliverable/done condition 的具体单元；必须委派思考任务时使用 checkpoint 状态同步。
@@ -66,7 +66,7 @@ Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 
 
 普通业务请求进入实施后，由 Codex director 无感执行；用户不需要知道 Baton 命令：
 
-1. 把当前 Codex calling-host 模型选择器/host tool schema 暴露的完整 exact model 和允许的 reasoning effort 用 `baton host sync --model ... --profile ROUTE=...` 同步给 Baton；不得用更短的 `spawn_agent` optional-override 提示截断 host surface。Baton 优先读取 OpenCodex 的脱敏 quota report，只对 OpenCodex 未报告的 provider 尝试本机可调用的 CodexBar。
+1. 把当前 Codex calling-host 模型选择器/host tool schema 暴露的完整 exact model 和允许的 reasoning effort 用 `baton host sync --model ... --profile ROUTE=...` 同步给 Baton；不得用更短的 `spawn_agent` optional-override 提示截断 host surface。Baton 优先读取 OpenCodex 的脱敏 quota report，只对 OpenCodex 未报告的 provider 读取本机 CodexBar GUI 快照（其次 history，最后 CLI）。
 2. `baton spawn` 或 `baton apply` 只创建 selection proposal，不创建 ticket。
 3. director 向用户展示优选及所有符合内置 policy 的当前可调用候选，包含优势、任务分、AA 分/现有数据、参考分来源、剩余额度、重置时间和可调用状态；`gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` 全系列禁令单独披露。
 4. 用户保留或修改选择后，`baton selection approve ... --confirm` 才创建 immutable Receipt 和 queued ticket。host snapshot 或源任务发生变化时，旧 proposal 失效。

@@ -437,6 +437,70 @@ describe("mandatory model selection disclosure", () => {
     });
   });
 
+  it("uses the CodexBar GUI snapshot for providers OpenCodex did not report without calling the CLI", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-codexbar-gui-"));
+      const env = fakeEnv(home);
+      const widgetDir = path.join(home, "Library", "Group Containers", "Y5PE65HELJ.com.steipete.codexbar");
+      fs.mkdirSync(widgetDir, { recursive: true });
+      fs.writeFileSync(path.join(widgetDir, "widget-snapshot.json"), `${JSON.stringify({
+        generatedAt: "2026-08-20T09:12:24Z",
+        entries: [{
+          provider: "alibabatokenplan",
+          updatedAt: "2026-08-20T09:11:51Z",
+          accountEmail: "must-not-persist@example.invalid",
+          secondary: { usedPercent: 0.963488, resetsAt: "2026-08-27T06:08:00Z", windowMinutes: 10_080 },
+          usageRows: [{ percentLeft: 99.036512, id: "secondary", title: "7-day" }],
+        }, {
+          provider: "mimo",
+          updatedAt: "2026-08-20T09:11:51Z",
+          primary: { usedPercent: 3.73, resetsAt: "2027-04-24T23:59:59Z", windowMinutes: 43_200 },
+          usageRows: [{ percentLeft: 96.27, id: "primary", title: "Credits" }],
+        }],
+      })}\n`);
+      publishRouteSnapshot(cwd, { models: [
+        { id: "strong", provider: "openai", namespaced: "openai/strong" },
+        { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
+        { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
+      ] });
+      const queried = [];
+      const out = capture();
+      assert.equal(await run([
+        "host", "sync",
+        "--model", "openai/strong",
+        "--model", "alibaba-token-plan/glm-5.2",
+        "--model", "mimo/mimo-v2.5-pro",
+      ], {
+        cwd, env, stdout: out, stderr: out,
+        resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
+        runner: () => ({
+          status: 0,
+          stdout: JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] }),
+          stderr: "",
+          error: null,
+        }),
+        codexBarResolve: () => "/Applications/CodexBarCLI",
+        codexBarRunner: (input) => {
+          queried.push(input.args[input.args.indexOf("--provider") + 1]);
+          return { status: 1, stdout: "", stderr: "must-not-run", error: new Error("keychain") };
+        },
+      }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.deepEqual(queried, []);
+      const openai = result.snapshot.provider_quotas.find((item) => item.provider === "openai");
+      const alibaba = result.snapshot.provider_quotas.find((item) => item.provider === "alibaba-token-plan");
+      const mimo = result.snapshot.provider_quotas.find((item) => item.provider === "mimo");
+      assert.equal(openai.source, "chatgpt:wham");
+      assert.equal(alibaba.source, "codexbar:alibaba-token-plan:widget");
+      assert.equal(alibaba.windows[0].label, "7-day");
+      assert.equal(alibaba.windows[0].remaining_percent, 99.036512);
+      assert.equal(mimo.source, "codexbar:mimo:widget");
+      assert.equal(mimo.windows[0].label, "Credits");
+      assert.equal(mimo.windows[0].remaining_percent, 96.27);
+      assert.doesNotMatch(JSON.stringify(result.snapshot), /must-not-persist@example\.invalid|must-not-run|keychain/);
+    });
+  });
+
   it("keeps missing quota fail-soft when CodexBar is not installed or callable", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-no-codexbar-"));

@@ -31,6 +31,21 @@ export interface QueryCodexBarQuotaOptions {
   now?: Date | string | number;
 }
 
+export interface QueryCodexBarGuiQuotaOptions {
+  env?: NodeJS.ProcessEnv;
+  now?: Date | string | number;
+  snapshot?: unknown | null;
+}
+
+export interface QueryCodexBarFallbackOptions {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  command: string | null;
+  runner?: CodexBarRunner;
+  now?: Date | string | number;
+  snapshot?: unknown | null;
+}
+
 const CODEXBAR_TIMEOUT_MS = 15_000;
 
 function isExecutableFile(file: string): boolean {
@@ -232,4 +247,188 @@ export function queryCodexBarQuota(provider: string, options: QueryCodexBarQuota
   } catch {
     return unknownQuota(provider, codexBarProvider, observedAt, "CODEXBAR_INVALID_JSON");
   }
+}
+
+function homeDir(env: NodeJS.ProcessEnv): string {
+  return env.HOME || os.homedir();
+}
+
+function guiProviderKey(provider: string): string | null {
+  const id = codexBarProviderId(provider);
+  return id ? id.replace(/-/g, "") : null;
+}
+
+function safeLabel(value: unknown, fallback: string): string {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text || text.length > 64 || text.includes("@")) return fallback;
+  return text;
+}
+
+function safeWindowName(value: unknown, fallback: string): string {
+  const id = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,31}$/.test(id) ? id : fallback;
+}
+
+function reportedQuota(
+  provider: string,
+  codexBarProvider: string,
+  source: string,
+  observedAt: string,
+  windows: QuotaWindow[],
+): ProviderQuotaDisclosure {
+  return {
+    provider,
+    label: provider,
+    status: "reported",
+    source: `codexbar:${codexBarProvider}:${safeSource(source)}`,
+    observed_at: observedAt,
+    windows,
+    reason: null,
+    reverse_engineered: false,
+  };
+}
+
+function windowsFromGuiEntry(entry: Record<string, unknown>): QuotaWindow[] {
+  const rows = Array.isArray(entry.usageRows) ? entry.usageRows : [];
+  if (!rows.length) return windowsFromUsage(entry);
+  const windows: QuotaWindow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = record(rows[index]);
+    if (!row) continue;
+    const id = String(row.id || "").trim();
+    const slot = record(id ? entry[id] : null) || record(row.window);
+    const used = boundedPercent(slot?.usedPercent)
+      ?? (Number.isFinite(Number(row.percentLeft)) ? boundedPercent(100 - Number(row.percentLeft)) : null);
+    if (used == null) continue;
+    const name = safeWindowName(id, `row_${index + 1}`);
+    windows.push({
+      name,
+      label: safeLabel(row.title, name),
+      used_percent: used,
+      remaining_percent: Math.max(0, 100 - used),
+      resets_at: isoTimestamp(slot?.resetsAt ?? row.resetsAt),
+    });
+  }
+  return windows;
+}
+
+function findGuiEntry(snapshot: unknown, guiKey: string): Record<string, unknown> | null {
+  const root = record(snapshot);
+  const entries = Array.isArray(root?.entries) ? root.entries : [];
+  for (const item of entries) {
+    const entry = record(item);
+    const provider = String(entry?.provider || "").trim().toLowerCase().replace(/-/g, "");
+    if (entry && provider === guiKey) return entry;
+  }
+  return null;
+}
+
+/** Newest CodexBar menu-bar/widget snapshot under the user Library group container. */
+export function loadCodexBarGuiSnapshot({ env = process.env }: { env?: NodeJS.ProcessEnv } = {}): unknown | null {
+  const groupRoot = path.join(homeDir(env), "Library", "Group Containers");
+  let names: fs.Dirent[] = [];
+  try {
+    names = fs.readdirSync(groupRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const files = names
+    .filter((item) => item.isDirectory() && (item.name.endsWith(".com.steipete.codexbar") || item.name === "com.steipete.codexbar"))
+    .map((item) => path.join(groupRoot, item.name, "widget-snapshot.json"))
+    .filter((file) => {
+      try {
+        return fs.statSync(file).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  for (const file of files) {
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+export function normalizeCodexBarGuiQuota(
+  provider: string,
+  snapshot: unknown,
+  now: Date | string | number = new Date(),
+): ProviderQuotaDisclosure | null {
+  const codexBarProvider = codexBarProviderId(provider);
+  const guiKey = guiProviderKey(provider);
+  if (!codexBarProvider || !guiKey) return null;
+  const entry = findGuiEntry(snapshot, guiKey);
+  if (!entry) return null;
+  const windows = windowsFromGuiEntry(entry);
+  if (!windows.length) return null;
+  const root = record(snapshot);
+  const observedAt = isoTimestamp(entry.updatedAt) || isoTimestamp(root?.generatedAt) || fallbackObservedAt(now);
+  return reportedQuota(provider, codexBarProvider, "widget", observedAt, windows);
+}
+
+function quotaFromCodexBarHistory(
+  provider: string,
+  options: { env?: NodeJS.ProcessEnv; now?: Date | string | number } = {},
+): ProviderQuotaDisclosure | null {
+  const codexBarProvider = codexBarProviderId(provider);
+  const guiKey = guiProviderKey(provider);
+  if (!codexBarProvider || !guiKey) return null;
+  const file = path.join(
+    homeDir(options.env || process.env),
+    "Library", "Application Support", "com.steipete.codexbar", "history", `${guiKey}.json`,
+  );
+  let value: unknown;
+  try {
+    value = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  const root = record(value);
+  const groups = Array.isArray(root?.unscoped) ? root.unscoped : [];
+  const windows: QuotaWindow[] = [];
+  let observedAt: string | null = null;
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = record(groups[index]);
+    const entries = Array.isArray(group?.entries) ? group.entries : [];
+    const last = record(entries[entries.length - 1]);
+    const used = boundedPercent(last?.usedPercent);
+    if (!last || used == null) continue;
+    const name = safeWindowName(group?.name, `window_${index + 1}`);
+    const duration = durationLabel(group?.windowMinutes);
+    windows.push({
+      name,
+      label: duration || name,
+      used_percent: used,
+      remaining_percent: Math.max(0, 100 - used),
+      resets_at: isoTimestamp(last.resetsAt),
+    });
+    observedAt = isoTimestamp(last.capturedAt) || observedAt;
+  }
+  if (!windows.length) return null;
+  return reportedQuota(provider, codexBarProvider, "history", observedAt || fallbackObservedAt(options.now || new Date()), windows);
+}
+
+/** Informational GUI-matching quota: widget snapshot first, then local history. */
+export function queryCodexBarGuiQuota(provider: string, options: QueryCodexBarGuiQuotaOptions = {}): ProviderQuotaDisclosure | null {
+  const snapshot = options.snapshot === undefined ? loadCodexBarGuiSnapshot({ env: options.env }) : options.snapshot;
+  const fromWidget = snapshot == null ? null : normalizeCodexBarGuiQuota(provider, snapshot, options.now);
+  if (fromWidget) return fromWidget;
+  return quotaFromCodexBarHistory(provider, { env: options.env, now: options.now });
+}
+
+export function queryCodexBarFallback(provider: string, options: QueryCodexBarFallbackOptions): ProviderQuotaDisclosure | null {
+  const gui = queryCodexBarGuiQuota(provider, { env: options.env, now: options.now, snapshot: options.snapshot });
+  if (gui?.status === "reported") return gui;
+  if (!options.command) return null;
+  return queryCodexBarQuota(provider, {
+    cwd: options.cwd,
+    env: options.env,
+    command: options.command,
+    runner: options.runner,
+    now: options.now,
+  });
 }

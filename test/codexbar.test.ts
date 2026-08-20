@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   codexBarProviderId,
+  normalizeCodexBarGuiQuota,
   normalizeCodexBarQuota,
+  queryCodexBarFallback,
+  queryCodexBarGuiQuota,
   queryCodexBarQuota,
   resolveCodexBar,
 } from "../src/lib/codexbar.js";
@@ -112,5 +115,97 @@ describe("CodexBar quota fallback", () => {
     assert.equal(merged.find((item) => item.provider === "openai")?.source, "chatgpt:wham");
     assert.equal(merged.find((item) => item.provider === "openai")?.windows[0].remaining_percent, 80);
     assert.equal(merged.find((item) => item.provider === "alibaba-token-plan")?.source, "codexbar:alibaba-token-plan:web");
+  });
+
+  it("matches CodexBar GUI widget rows and ignores account, cookie, and cost fields", () => {
+    const snapshot = {
+      generatedAt: "2026-08-20T09:12:24Z",
+      entries: [{
+        provider: "alibabatokenplan",
+        updatedAt: "2026-08-20T09:11:51Z",
+        accountEmail: "private@example.invalid",
+        secondary: {
+          usedPercent: 0.963488,
+          resetsAt: "2026-08-27T06:08:00Z",
+          windowMinutes: 10_080,
+          resetDescription: "96.35 / 10,000 credits used",
+        },
+        usageRows: [{ percentLeft: 99.036512, id: "secondary", title: "7-day" }],
+        tokenUsage: { sessionCostUSD: 12.34, accountEmail: "private@example.invalid" },
+      }, {
+        provider: "mimo",
+        updatedAt: "2026-08-20T09:11:51Z",
+        primary: {
+          usedPercent: 3.73,
+          resetsAt: "2027-04-24T23:59:59Z",
+          windowMinutes: 43_200,
+          resetDescription: "17,027,148,984 / 456,000,000,000 Credits",
+        },
+        usageRows: [{ percentLeft: 96.27, id: "primary", title: "Credits" }],
+      }],
+    };
+    const alibaba = normalizeCodexBarGuiQuota("alibaba-token-plan", snapshot, "2026-08-20T00:00:00Z");
+    const mimo = normalizeCodexBarGuiQuota("mimo", snapshot, "2026-08-20T00:00:00Z");
+    assert.equal(alibaba?.status, "reported");
+    assert.equal(alibaba?.source, "codexbar:alibaba-token-plan:widget");
+    assert.equal(alibaba?.windows[0].label, "7-day");
+    assert.equal(alibaba?.windows[0].remaining_percent, 99.036512);
+    assert.equal(alibaba?.windows[0].resets_at, "2026-08-27T06:08:00.000Z");
+    assert.equal(mimo?.source, "codexbar:mimo:widget");
+    assert.equal(mimo?.windows[0].label, "Credits");
+    assert.equal(mimo?.windows[0].remaining_percent, 96.27);
+    const persisted = JSON.stringify([alibaba, mimo]);
+    for (const secret of ["private@example.invalid", "sessionCostUSD", "12.34", "10,000 credits"]) {
+      assert.doesNotMatch(persisted, new RegExp(secret));
+    }
+  });
+
+  it("prefers the GUI snapshot over a live CLI probe, then history, then CLI", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-codexbar-gui-"));
+    const widgetDir = path.join(home, "Library", "Group Containers", "Y5PE65HELJ.com.steipete.codexbar");
+    fs.mkdirSync(widgetDir, { recursive: true });
+    fs.writeFileSync(path.join(widgetDir, "widget-snapshot.json"), `${JSON.stringify({
+      entries: [{
+        provider: "mimo",
+        updatedAt: "2026-08-20T09:11:51Z",
+        primary: { usedPercent: 3.73, resetsAt: "2027-04-24T23:59:59Z" },
+        usageRows: [{ id: "primary", title: "Credits", percentLeft: 96.27 }],
+      }],
+    })}\n`);
+    let called = 0;
+    const runner = () => {
+      called += 1;
+      return { status: 0, stdout: JSON.stringify([{ usage: { primary: { usedPercent: 90 } } }]), stderr: "", error: null };
+    };
+    const gui = queryCodexBarFallback("mimo", {
+      cwd: home, env: { HOME: home }, command: "/Applications/CodexBarCLI", runner, now: "2026-08-20T00:00:00Z",
+    });
+    assert.equal(called, 0);
+    assert.equal(gui?.source, "codexbar:mimo:widget");
+    assert.equal(gui?.windows[0].remaining_percent, 96.27);
+
+    const historyHome = fs.mkdtempSync(path.join(os.tmpdir(), "baton-codexbar-history-"));
+    const historyDir = path.join(historyHome, "Library", "Application Support", "com.steipete.codexbar", "history");
+    fs.mkdirSync(historyDir, { recursive: true });
+    fs.writeFileSync(path.join(historyDir, "alibabatokenplan.json"), `${JSON.stringify({
+      unscoped: [{
+        name: "weekly",
+        windowMinutes: 10_080,
+        entries: [
+          { capturedAt: "2026-08-19T00:00:00Z", usedPercent: 40, resetsAt: "2026-08-26T00:00:00Z" },
+          { capturedAt: "2026-08-20T09:11:52Z", usedPercent: 0.963488, resetsAt: "2026-08-27T06:08:00Z" },
+        ],
+      }],
+    })}\n`);
+    const history = queryCodexBarGuiQuota("alibaba-token-plan", { env: { HOME: historyHome }, now: "2026-08-20T00:00:00Z" });
+    assert.equal(history?.source, "codexbar:alibaba-token-plan:history");
+    assert.equal(history?.windows[0].remaining_percent, 99.036512);
+    assert.equal(history?.observed_at, "2026-08-20T09:11:52.000Z");
+
+    const cli = queryCodexBarFallback("mimo", {
+      cwd: historyHome, env: { HOME: historyHome }, command: "codexbar", runner, now: "2026-08-20T00:00:00Z",
+    });
+    assert.equal(called, 1);
+    assert.equal(cli?.windows[0].remaining_percent, 10);
   });
 });

@@ -64,7 +64,7 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 - 用户必须在同一任务中显式确认，可改选任一已披露且可调用的 exact route/profile。确认写入不可变 ticket/Receipt evidence；host snapshot 或任务源变化会使 proposal 失效。
 - 未确认、route/profile 不在当前 host 交集、Receipt 不一致时均 fail-closed；禁止静默 fallback。
 - 内置 subagent policy 永久排除 `gpt-5.5`、`gpt-5.6-sol` 与 `gpt-5.6-terra` 全系列（所有 provider route、variant、reasoning profile）。Catalog/card 仍可审计，但 proposal candidate、自动优选、显式改选、旧 proposal/ticket 和 dispatch 均不能绕过；proposal 单独记录 `SUBAGENT_MODEL_FAMILY_FORBIDDEN`。
-- Quota 按 provider 使用固定优先级：OpenCodex 有有效窗口时直接采用；仅缺失/unknown 时探测本机可调用的 CodexBar CLI；仍失败则保持 unknown。CodexBar fallback 只保存百分比、reset 和 `codexbar:...` provenance，不保存账号、认证、cookie/token、原始输出或原始错误，也不改变 OpenCodex 的 provider/auth/route 所有权。
+- Quota 按 provider 使用固定优先级：OpenCodex 有有效窗口时直接采用；仅缺失/unknown 时读取本机 CodexBar GUI 快照（其次 history，最后 CLI），以便与 CodexBar 界面一致；仍失败则保持 unknown。CodexBar fallback 只保存百分比、reset 和 `codexbar:...` provenance，不保存账号、认证、cookie/token、原始输出或原始错误，也不改变 OpenCodex 的 provider/auth/route 所有权。
 
 ### Dynamic Cards
 

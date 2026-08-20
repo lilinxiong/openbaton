@@ -5,7 +5,7 @@ import {
   type ProviderQuotaDisclosure,
 } from "../lib/host-capabilities.js";
 import {
-  queryCodexBarQuota,
+  queryCodexBarFallback,
   resolveCodexBar,
   type CodexBarResolver,
   type CodexBarRunner,
@@ -93,11 +93,9 @@ export function runHost(args: string[], {
   const quotaFallbacks: ProviderQuotaDisclosure[] = [];
   if (missingProviders.length) {
     const command = (codexBarResolve || resolveCodexBar)({ cwd, env });
-    if (command) {
-      for (const provider of missingProviders) {
-        const fallback = queryCodexBarQuota(provider, { cwd, env, command, runner: codexBarRunner });
-        if (fallback) quotaFallbacks.push(fallback);
-      }
+    for (const provider of missingProviders) {
+      const fallback = queryCodexBarFallback(provider, { cwd, env, command, runner: codexBarRunner });
+      if (fallback) quotaFallbacks.push(fallback);
     }
   }
 
