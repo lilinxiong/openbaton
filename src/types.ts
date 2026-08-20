@@ -18,11 +18,13 @@ export interface ModelSelectionApproval {
   proposal_id: string;
   approval_id: string;
   approved_at: string;
-  confirmed_by: "user";
+  confirmed_by: "user" | "ops-config";
   host_snapshot_id: string;
   recommended_model_id: string | null;
   selected_model_id: string;
   changed_by_user: boolean;
+  ops_profile?: "runner" | "longctx";
+  ops_action?: string;
 }
 
 export interface CardCapabilityEvidence {

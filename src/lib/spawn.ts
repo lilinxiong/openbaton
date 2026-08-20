@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
 import { directorMayRun } from "./hygiene.js";
-import { buildReadOnlyReceipt, type DelegationReceipt } from "./receipt.js";
+import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt } from "./receipt.js";
 import { assertSubagentModelAllowed } from "./model-policy.js";
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import {
@@ -236,4 +236,10 @@ export function planStandaloneSpawn({ description, cards, explicitModel, queue, 
   const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at, selection: selectionApproval });
   ticket.receipt_id = receipt.receipt_id;
   return { director_local: false, ticket, receipt, queue: { running: 0, queued: 1 } };
+}
+
+export function persistStandalonePlan(cwd: string, planned: StandalonePlan): SpawnTicket {
+  if (planned.director_local === true) throw new Error("ops dispatch unexpectedly stayed on the director");
+  writeReceipt(cwd, planned.receipt);
+  return writeSpawn(cwd, planned.ticket);
 }

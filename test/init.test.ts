@@ -37,6 +37,7 @@ describe("Codex-only init/update", () => {
         assert.ok(!fs.existsSync(path.join(cwd, dir)), dir);
       }
       assert.ok(!fs.existsSync(path.join(cwd, "AGENTS.md")));
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton.toml")));
     });
   });
 

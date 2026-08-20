@@ -22,6 +22,7 @@ export const ROUTE_SNAPSHOT_NAME = "routes.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const DISPATCH_STATE_NAME = "dispatch.json";
 export const HOST_CAPABILITIES_NAME = "host-capabilities.json";
+export const PROJECT_OPS_CONFIG_NAME = ".baton.toml";
 
 /**
  * User home for host + director files.
@@ -61,6 +62,11 @@ export function batonDir(cwd: string, env?: NodeJS.ProcessEnv): string {
 
 export function configPath(_cwd: string, { env }: { env?: NodeJS.ProcessEnv } = {}): string {
   return path.join(batonHomeDir(env), CONFIG_NAME);
+}
+
+/** Project-local ops policy. Lives at the git root as a hidden file; not runtime/skill state. */
+export function projectOpsConfigPath(cwd: string): string {
+  return path.join(canonicalWorkspaceRoot(cwd), PROJECT_OPS_CONFIG_NAME);
 }
 
 export function skillPath(_cwd: string, { env }: { env?: NodeJS.ProcessEnv } = {}): string {

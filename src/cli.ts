@@ -6,11 +6,13 @@ import { runDispatch } from "./commands/dispatch.js";
 import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { runHost } from "./commands/host.js";
+import { runConfig } from "./commands/config.js";
 import { printSelectionProposal, runSelection } from "./commands/selection.js";
 import { loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
-import { listSpawns } from "./lib/spawn.js";
+import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
+import { resolveOpsDispatch } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { buildRouteCandidates } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
@@ -60,6 +62,7 @@ Usage:
   baton update                        refresh Codex skill + director defaults
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish complete current Codex host surface
+  baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]  project ops routes (.baton.toml)
   baton match <text>                disclose preferred/candidate models without creating work
   baton spawn <text> [--model ID]   create a model-selection proposal (no ticket)
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
@@ -120,6 +123,9 @@ export async function run(argv: string[], {
       case "host":
         ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
         return runHost(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
+      case "config":
+        ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
+        return runConfig(args, { cwd, stdout, env, runner, resolve });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env, runner, resolve);
       case "apply":
@@ -245,6 +251,39 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`unit: ${text}\n`);
     return 0;
   }
+  const explicitModel = stringFlag(flags, "model") || null;
+  const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
+  if (!explicitModel && !writePathsEarly.length) {
+    const ops = resolveOpsDispatch(cwd, text, allCards);
+    if (ops.kind === "director") {
+      stdout.write(`director-local: ${ops.reason}\n`);
+      stdout.write(`unit: ${text}\n`);
+      return 0;
+    }
+    if (ops.kind === "empty-index") {
+      stdout.write("ops: git-commit skipped; empty index, nothing to commit\n");
+      stdout.write(`unit: ${text}\n`);
+      return 0;
+    }
+    if (ops.kind === "unavailable") throw new Error(ops.reason);
+    if (ops.kind === "dispatch") {
+      const planned = planStandaloneSpawn({
+        description: text,
+        cards: allCards,
+        explicitModel: ops.card.id,
+        cwd,
+        taskKind: kindFlag === "deliberative" ? "deliberative" : "concrete",
+        deliverable: stringFlag(flags, "deliverable") || null,
+        doneWhen: stringFlag(flags, "done-when") || null,
+        selectionApproval: ops.approval,
+      });
+      const ticket = persistStandalonePlan(cwd, planned);
+      stdout.write(`ops-dispatch: ${ops.profile} ${ops.action} → ${ops.card.id}\n`);
+      stdout.write(`  ticket ${ticket.id}  wait for the worker conclusion (success or failure)\n`);
+      if (flags.json) stdout.write(`${JSON.stringify(ticket, null, 2)}\n`);
+      return 0;
+    }
+  }
   const host = readHostCapabilitySnapshot(cwd);
   if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
   const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
@@ -265,7 +304,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const unit = buildSelectionUnit({
     cwd, key: "standalone", description: text, prompt: text, cards: allCards,
     automaticCards: cardsForAutomaticSelection(cwd, allCards, text), host,
-    requestedModelId: stringFlag(flags, "model") || null,
+    requestedModelId: explicitModel,
   });
   const proposal = createSelectionProposal(cwd, {
     source: "standalone",
@@ -297,9 +336,31 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   }
   const host = readHostCapabilitySnapshot(cwd);
   if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
-  const units = tasks.map((task) => {
+  const units = [];
+  const dispatched = [];
+  for (const task of tasks) {
     const prompt = formatTaskPrompt(task);
-    return buildSelectionUnit({
+    const requested = routeAssignments.get(task.number) || null;
+    let directorLocal = directorMayRun(task.description);
+    if (!requested && !directorLocal) {
+      const ops = resolveOpsDispatch(cwd, task.description, cards);
+      if (ops.kind === "unavailable") throw new Error(`${task.number}: ${ops.reason}`);
+      if (ops.kind === "director" || ops.kind === "empty-index") directorLocal = true;
+      else if (ops.kind === "dispatch") {
+        const planned = planStandaloneSpawn({
+          description: task.description,
+          cards,
+          explicitModel: ops.card.id,
+          cwd,
+          taskKind: "concrete",
+          selectionApproval: ops.approval,
+        });
+        const ticket = persistStandalonePlan(cwd, planned);
+        dispatched.push({ number: task.number, ticket, action: ops.action, profile: ops.profile });
+        continue;
+      }
+    }
+    units.push(buildSelectionUnit({
       cwd,
       key: task.number,
       description: task.description,
@@ -307,11 +368,18 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
       cards,
       automaticCards: cardsForAutomaticSelection(cwd, cards, prompt),
       host,
-      requestedModelId: routeAssignments.get(task.number) || null,
-      directorLocal: directorMayRun(task.description),
+      requestedModelId: requested,
+      directorLocal,
       metadata: { line_index: task.line_index, section: task.section },
-    });
-  });
+    }));
+  }
+  for (const item of dispatched) {
+    stdout.write(`ops-dispatch ${item.number}: ${item.profile} ${item.action} → ${item.ticket.model_id} (${item.ticket.id})\n`);
+  }
+  if (!units.length) {
+    if (flags.json) stdout.write(`${JSON.stringify({ dispatched: dispatched.map((item) => item.ticket) }, null, 2)}\n`);
+    return 0;
+  }
   const taskSource = tasks.map((task) => ({ number: task.number, description: task.description, section: task.section }));
   const proposal = createSelectionProposal(cwd, {
     source: "openspec",
@@ -319,8 +387,9 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     sourceFingerprint: selectionSourceFingerprint(taskSource),
     payload: { change: change || changeDir.split(/[\\/]/).at(-1), change_dir: changeDir },
   });
-  if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
-  else printSelectionProposal(stdout, proposal);
+  if (flags.json) {
+    stdout.write(`${JSON.stringify(dispatched.length ? { proposal, dispatched: dispatched.map((item) => item.ticket) } : proposal, null, 2)}\n`);
+  } else printSelectionProposal(stdout, proposal);
   return 0;
 }
 

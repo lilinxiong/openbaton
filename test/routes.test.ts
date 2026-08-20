@@ -30,6 +30,16 @@ describe("OpenCodex Route Snapshot", () => {
     assert.ok(!fs.existsSync(path.join(root, ".baton")));
   });
 
+  it("persists OpenCodex contextWindow on each route", () => {
+    const root = cwd();
+    const published = publishRouteSnapshot(root, { models: [
+      { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
+      { id: "k3", provider: "kimi", namespaced: "kimi/k3", context_window: 262_144 },
+    ] });
+    assert.equal(published.snapshot.routes.find((route) => route.route_id === "kimi/k3[1m]")?.context_window, 1_048_576);
+    assert.equal(published.snapshot.routes.find((route) => route.route_id === "kimi/k3")?.context_window, 262_144);
+  });
+
   it("refreshes from injectable OpenCodex and keeps unavailable cards non-executable", () => {
     const root = cwd();
     const stdout = sink();

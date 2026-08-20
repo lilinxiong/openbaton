@@ -21,6 +21,7 @@ export interface ExecutableRoute {
   native: boolean;
   reasoning_efforts: string[];
   default_reasoning_effort: string | null;
+  context_window: number | null;
 }
 
 export interface RouteSnapshot {
@@ -40,6 +41,13 @@ function stableRoutes(routes: ExecutableRoute[]): string {
 function strings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))].sort();
+}
+
+function contextWindow(record: Record<string, unknown> | null): number | null {
+  const raw = record?.contextWindow ?? record?.context_window;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.floor(value);
 }
 
 function exactRouteId(record: Record<string, unknown> | null, id: string, provider: string | null): string {
@@ -73,6 +81,7 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
       native: record?.native === true,
       reasoning_efforts: reasoningEfforts,
       default_reasoning_effort: defaultReasoningEffort,
+      context_window: contextWindow(record),
     });
   }
   return [...byId.values()].sort((a, b) => a.route_id.localeCompare(b.route_id) || String(a.provider || "").localeCompare(String(b.provider || "")));

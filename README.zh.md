@@ -29,6 +29,7 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 - **当前 host 取交集。** route 必须同时满足 OpenCodex 可执行、当前 Codex session 的 `spawn_agent` 已声明；只在 catalog 中存在的 route 仍可见，但标为 `HOST_ROUTE_UNAVAILABLE`。
 - **模型必须确认。** `spawn/apply` 先用对比表披露优选与候选 exact route、模型优势、任务分、AA 原始分/现有数据、参考 route/profile 来源、provider 剩余额度/重置时间（或明确 unknown 原因）及可调用性。用户确认或改选前不创建 ticket。
 - **额度来源与本地 fallback。** OpenCodex 已报告的 quota 永远优先；只有某个 provider 缺失或 unknown 时，Baton 才读取本机 CodexBar GUI 快照（其次 history，最后 CLI），并以 `codexbar:...` 来源保存脱敏后的百分比/reset 窗口；仍取不到就明确保持 unknown。
+- **项目 ops 配置。** 仓库根的 `.baton.toml` 保存可选的 `runner` / `longctx` exact route。没有内置默认；空则该类由主 agent 执行。`baton config` 只列出当前 host 可调用且按类过滤后的选项。已配置但当前不可调用则失败，不 inherit 父模型。
 - **Codex 原生 worker。** 只使用进程内 Codex subagent；Baton 不接入其他 coding CLI host，也不 shell 到 print mode。skill 安装到 `~/.codex`，Baton 状态保存在 `~/.baton`。
 - **逻辑上无限 spawn。** host/session 的并发上限是运行时能力，不写死为 6；超限作为 backpressure 回到 FIFO，不消耗 attempt。真实 `close_agent` 后才释放 slot。深度 1。
 - **具体任务优先。** Ticket 区分 `concrete` 与 `deliberative`。优先把工作拆成有 objective/deliverable/done condition 的具体单元；必须委派思考任务时使用 checkpoint 状态同步。

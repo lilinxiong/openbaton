@@ -24,11 +24,7 @@ export function parseToml(text: string): Record<string, unknown> {
 
     const table = line.match(/^\[([^\]\n]+)\]$/);
     if (table) {
-      const key = table[1].trim();
-      if (!root[key] || typeof root[key] !== "object" || Array.isArray(root[key])) {
-        root[key] = {};
-      }
-      current = root[key] as Record<string, unknown>;
+      current = ensureTable(root, table[1].trim());
       arrayKey = null;
       continue;
     }
@@ -44,11 +40,28 @@ export function parseToml(text: string): Record<string, unknown> {
   return root;
 }
 
+function ensureTable(root: Record<string, unknown>, dotted: string): Record<string, unknown> {
+  const parts = dotted.split(".").map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) throw new Error("empty TOML table name");
+  let current: Record<string, unknown> = root;
+  for (const part of parts) {
+    const existing = current[part];
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) current[part] = {};
+    current = current[part] as Record<string, unknown>;
+  }
+  return current;
+}
+
 function parseValue(raw: string): unknown {
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (/^-?\d+$/.test(raw)) return Number(raw);
   if (/^-?\d+\.\d+$/.test(raw)) return Number(raw);
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1).trim();
+    if (!inner) return [];
+    return splitTomlList(inner).map((item) => parseValue(item));
+  }
   if (
     (raw.startsWith('"') && raw.endsWith('"')) ||
     (raw.startsWith("'") && raw.endsWith("'"))
@@ -56,6 +69,32 @@ function parseValue(raw: string): unknown {
     return raw.slice(1, -1);
   }
   return raw;
+}
+
+function splitTomlList(inner: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (const char of inner) {
+    if (quote) {
+      current += char;
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === ",") {
+      if (current.trim()) items.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) items.push(current.trim());
+  return items;
 }
 
 export function stringifyToml(obj: Record<string, unknown>): string {
@@ -74,10 +113,21 @@ export function stringifyToml(obj: Record<string, unknown>): string {
   }
 
   for (const [key, table] of tables) {
-    if (lines.length) lines.push("");
-    lines.push(`[${key}]`);
+    const nested: Array<[string, Record<string, unknown>]> = [];
+    const scalars: Array<[string, unknown]> = [];
     for (const [k, v] of Object.entries(table)) {
-      lines.push(`${k} = ${formatValue(v)}`);
+      if (v && typeof v === "object" && !Array.isArray(v)) nested.push([k, v as Record<string, unknown>]);
+      else scalars.push([k, v]);
+    }
+    if (scalars.length) {
+      if (lines.length) lines.push("");
+      lines.push(`[${key}]`);
+      for (const [k, v] of scalars) lines.push(`${k} = ${formatValue(v)}`);
+    }
+    for (const [sub, inner] of nested) {
+      if (lines.length) lines.push("");
+      lines.push(`[${key}.${sub}]`);
+      for (const [k, v] of Object.entries(inner)) lines.push(`${k} = ${formatValue(v)}`);
     }
   }
 
@@ -95,6 +145,7 @@ export function stringifyToml(obj: Record<string, unknown>): string {
 }
 
 function formatValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => formatValue(item)).join(", ")}]`;
   if (typeof value === "string") return JSON.stringify(value);
   if (typeof value === "boolean" || typeof value === "number") return String(value);
   throw new Error(`cannot serialize ${typeof value}`);
