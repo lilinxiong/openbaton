@@ -24,14 +24,23 @@ export interface SelectionViewArtifact {
 interface ViewCandidate extends SelectionCandidate {
   scores: Record<string, number | null>;
   preferred_for: string[];
+  display_model_id: string;
 }
 
 export interface SelectionViewOptions {
   taskLabels?: Record<string, string>;
+  suggestedAssignments?: Record<string, string>;
 }
 
 function safeJson(value: unknown): string {
   return JSON.stringify(value).replaceAll("<", "\\u003c");
+}
+
+function displayModelId(candidate: SelectionCandidate): string {
+  const route = candidate.route_id.includes("/")
+    ? candidate.route_id.split("/").slice(1).join("/")
+    : candidate.route_id;
+  return candidate.reasoning_effort ? route + "@" + candidate.reasoning_effort : route;
 }
 
 function viewState(proposal: SelectionProposal, options: SelectionViewOptions = {}) {
@@ -51,6 +60,7 @@ function viewState(proposal: SelectionProposal, options: SelectionViewOptions = 
       if (!existing) {
         candidates.set(candidate.model_id, {
           ...structuredClone(candidate),
+          display_model_id: displayModelId(candidate),
           scores: { [unit.key]: candidate.task_score },
           preferred_for: candidate.model_id === unit.recommended_model_id ? [unit.key] : [],
         });
@@ -64,6 +74,18 @@ function viewState(proposal: SelectionProposal, options: SelectionViewOptions = 
     const values = [...candidates.values()].map((candidate) => candidate.scores[unit.key]).filter((value): value is number => typeof value === "number");
     return [unit.key, values.length ? Math.max(...values) : null];
   }));
+  const unitKeys = new Set(units.map((unit) => unit.key));
+  const suggestedAssignments = options.suggestedAssignments || {};
+  for (const [key, modelId] of Object.entries(suggestedAssignments)) {
+    if (!unitKeys.has(key)) throw new Error("INVALID_SELECTION_SUGGESTION: " + key + " is not a delegable unit in " + proposal.id);
+    const candidate = candidates.get(modelId);
+    if (!candidate) throw new Error("INVALID_SELECTION_SUGGESTION: " + key + "=" + modelId + " was not disclosed in " + proposal.id);
+    if (!candidate.selectable) throw new Error("INVALID_SELECTION_SUGGESTION: " + key + "=" + modelId + ": " + candidate.selection_code + ": " + candidate.selection_reason);
+  }
+  const defaultAssignments = Object.fromEntries(units.map((unit) => [
+    unit.key,
+    suggestedAssignments[unit.key] || unit.default_model_id || "",
+  ]));
   return {
     proposal_id: proposal.id,
     source: proposal.source,
@@ -75,8 +97,9 @@ function viewState(proposal: SelectionProposal, options: SelectionViewOptions = 
     quota_pools: proposal.quota_pools,
     task_exclusions: proposal.task_exclusions,
     policy_exclusions: proposal.policy_exclusions,
-    default_checked: [...new Set(units.map((unit) => unit.default_model_id).filter((value): value is string => Boolean(value)))],
-    default_assignments: Object.fromEntries(units.map((unit) => [unit.key, unit.default_model_id || ""])),
+    has_suggestions: Object.values(defaultAssignments).some(Boolean),
+    default_checked: [...new Set(Object.values(defaultAssignments).filter((value): value is string => Boolean(value)))],
+    default_assignments: defaultAssignments,
   };
 }
 
@@ -119,7 +142,7 @@ export function renderSelectionView(proposal: SelectionProposal, options: Select
       <div class="card baton-section" data-detail aria-live="polite"></div>
     </section>
     <section>
-      <div class="baton-step-heading"><h3>2. 为任务分配已勾选模型</h3><span class="text-small text-muted">只显示已勾选的精确 route/profile</span></div>
+      <div class="baton-step-heading"><h3>2. 为任务分配已勾选模型</h3><span class="text-small text-muted" data-assignment-hint>只显示已勾选的精确 route/profile</span></div>
       <div class="table-responsive"><table class="table table-sm"><thead><tr><th>单元</th><th>任务</th><th>精确 route/profile</th></tr></thead><tbody data-assignments></tbody></table></div>
     </section>
     <section>
@@ -161,10 +184,27 @@ export function renderSelectionView(proposal: SelectionProposal, options: Select
       const selectedByPool=()=>state.quota_pools.map((pool)=>({pool,items:pool.model_ids.map((id)=>byModel.get(id)).filter((candidate)=>candidate&&checked.has(candidate.model_id))})).filter((entry)=>entry.items.length);
       const renderAssignments=()=>{assignmentBody.innerHTML="";for(const unit of state.units){const tr=document.createElement("tr");const key=document.createElement("td");key.innerHTML='<strong>'+esc(unit.key)+'</strong><div class="text-small text-muted">'+esc(state.source)+'</div>';const task=document.createElement("td");task.textContent=unit.description;const choice=document.createElement("td");const select=document.createElement("select");select.className="form-select";select.setAttribute("aria-label",unit.key+" exact route/profile");const empty=document.createElement("option");empty.value="";empty.textContent="请选择 exact route/profile";select.appendChild(empty);for(const entry of selectedByPool()){const group=document.createElement("optgroup");group.label=entry.pool.label+" · "+poolQuota(entry.pool);for(const candidate of entry.items.sort((a,b)=>a.model_id.localeCompare(b.model_id))){const option=document.createElement("option");option.value=candidate.model_id;option.textContent=candidate.model_id;group.appendChild(option)}select.appendChild(group)}select.value=assignments[unit.key]||"";select.addEventListener("change",()=>{assignments[unit.key]=select.value;updateSubmit()});choice.appendChild(select);tr.append(key,task,choice);assignmentBody.appendChild(tr)}};
       const updateSubmit=()=>{const complete=state.units.filter((unit)=>checked.has(assignments[unit.key])).length;checkedCount.textContent=String(checked.size);submitButton.disabled=complete!==state.units.length;submitState.textContent="已分配 "+complete+" / "+state.units.length+" 个任务 · "+(complete===state.units.length?"可以提交":"需要选择精确 route");submitState.className=complete===state.units.length?"":"text-destructive"};
-      const render=()=>{renderGroups();renderAssignments();updateSubmit()};
+      const shortenRouteLabels=()=>{
+        for(const th of root.querySelectorAll(".baton-table thead th:nth-child(2)"))th.textContent="模型 / profile";
+        for(const button of root.querySelectorAll(".baton-route")){
+          const candidate=[...byModel.values()].find((item)=>item.model_id===button.title||item.model_id===button.textContent);
+          if(!candidate)continue;
+          button.title=candidate.model_id;
+          button.setAttribute("aria-label",candidate.model_id);
+          button.textContent=candidate.display_model_id;
+        }
+        for(const option of root.querySelectorAll("[data-assignments] option")){
+          const candidate=byModel.get(option.value);
+          if(!candidate)continue;
+          option.title=candidate.model_id;
+          option.textContent=candidate.display_model_id;
+        }
+      };
+      const render=()=>{renderGroups();renderAssignments();shortenRouteLabels();updateSubmit()};
       submitButton.addEventListener("click",async()=>{updateSubmit();if(submitButton.disabled)return;const lines=state.units.map((unit)=>unit.key+"="+assignments[unit.key]);const args=state.source==="standalone"?" --model "+assignments[state.units[0].key]:lines.map((line)=>" --route "+line).join("");const prompt="我已在 Baton proposal "+state.proposal_id+" 的模型选择界面点击“确认提交”。这是显式模型确认。\\n请严格执行以下精确 route/profile approval；禁止 silent fallback：\\n"+lines.join("\\n")+"\\n命令：baton selection approve "+state.proposal_id+" --confirm"+args;submitButton.disabled=true;submitState.textContent="正在提交精确 route/profile 确认…";try{if(!window.openai||typeof window.openai.sendFollowUpMessage!=="function")throw new Error("CURRENT_WINDOW_SUBMIT_UNAVAILABLE");await window.openai.sendFollowUpMessage({prompt,title:"确认 Baton 模型选择"});submitState.textContent="已提交，等待 Baton host 处理"}catch(error){submitButton.disabled=false;submitState.textContent="当前窗口无法提交 · "+(error instanceof Error?error.message:String(error));submitState.className="text-destructive"}});
       root.querySelector("[data-pool-count]").textContent=String(state.quota_pools.length);
       root.querySelector("[data-model-count]").textContent=String(state.candidates.length);
+      if(state.has_suggestions)root.querySelector("[data-assignment-hint]").textContent="已按披露建议预勾选并预填；只需修改要调整的项，提交仍是显式确认";
       const taskExclusions=root.querySelector("[data-task-exclusions]");for(const item of state.task_exclusions){const li=document.createElement("li");li.innerHTML='<code>'+esc(item.model_id)+'</code> · '+esc(item.code);taskExclusions.appendChild(li)}
       const policyBody=root.querySelector("[data-policy-exclusions]");for(const item of state.policy_exclusions){const tr=document.createElement("tr");for(const value of [item.family,String(item.card_count),item.code]){const td=document.createElement("td");td.textContent=value;tr.appendChild(td)}policyBody.appendChild(tr)}
       root.querySelector("[data-snapshot]").textContent="Host snapshot "+state.host_snapshot_id+" · catalog "+state.catalog_fingerprint+" · 额度耗尽的池已隐藏模型且不可选择。";

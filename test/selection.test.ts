@@ -109,6 +109,9 @@ describe("mandatory model selection disclosure", () => {
     assert.match(fragment, /Cursor API/);
     assert.match(fragment, /额度耗尽/);
     assert.match(fragment, /sendFollowUpMessage/);
+    assert.ok(fragment.includes('"display_model_id":"claude-opus-5"'));
+    assert.ok(fragment.includes('"default_checked":["cursor/claude-opus-5"]'));
+    assert.ok(fragment.includes('"default_assignments":{"standalone":"cursor/claude-opus-5"}'));
     const script = fragment.match(/<script>([\s\S]*?)<\/script>/)?.[1];
     assert.ok(script);
     assert.doesNotThrow(() => new vm.Script(script));
@@ -298,6 +301,18 @@ describe("mandatory model selection disclosure", () => {
       assert.match(fs.readFileSync(renderedPath, "utf8"), /sendFollowUpMessage/);
       assert.match(fs.readFileSync(renderedPath, "utf8"), /实施复杂的多文件仓库迁移/);
       assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
+
+      const suggestedPath = path.join(cwd, "selection-suggested.html");
+      const suggested = capture();
+      assert.equal(await run(["selection", "render", proposal.id, "--output", suggestedPath, "--task-label", "standalone=实施复杂的多文件仓库迁移", "--assign", "standalone=provider-b/cheap@low", "--json"], { cwd, env, stdout: suggested, stderr: suggested }), 0, suggested.text());
+      assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"default_checked":["provider-b/cheap@low"]'));
+      assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"default_assignments":{"standalone":"provider-b/cheap@low"}'));
+      assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"display_model_id":"cheap@low"'));
+      assert.match(fs.readFileSync(suggestedPath, "utf8"), /已按披露建议预勾选并预填/);
+
+      const invalidAssign = capture();
+      assert.equal(await run(["selection", "render", proposal.id, "--output", path.join(cwd, "selection-invalid.html"), "--task-label", "standalone=实施复杂的多文件仓库迁移", "--assign", "standalone=missing/route", "--json"], { cwd, env, stdout: invalidAssign, stderr: invalidAssign }), 1);
+      assert.match(invalidAssign.text(), /INVALID_SELECTION_SUGGESTION/);
 
       const forbidden = capture();
       assert.equal(await run(["selection", "approve", proposal.id, "--confirm", "--model", "gpt-5.6-terra@max"], { cwd, env, stdout: forbidden, stderr: forbidden }), 1);

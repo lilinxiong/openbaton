@@ -66,6 +66,20 @@ function routeAssignments(values: string[]): Map<string, string> {
   return routes;
 }
 
+function suggestedAssignments(values: string[]): Map<string, string> {
+  const assignments = new Map<string, string>();
+  for (const value of values) {
+    const split = value.indexOf("=");
+    if (split <= 0 || split === value.length - 1) throw new Error("invalid --assign assignment: " + value + "; expected TASK=EXACT_ROUTE[@PROFILE]");
+    const key = value.slice(0, split).trim();
+    const model = value.slice(split + 1).trim();
+    if (!key || !model) throw new Error("invalid --assign assignment: " + value);
+    if (assignments.has(key)) throw new Error("duplicate --assign assignment: " + key);
+    assignments.set(key, model);
+  }
+  return assignments;
+}
+
 function chineseTaskLabels(values: string[], proposal: SelectionProposal): Record<string, string> {
   const labels: Record<string, string> = {};
   const units = proposal.units.filter((unit) => !unit.director_local);
@@ -208,7 +222,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
 export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: string; stdout: WritableLike; cards: ModelCard[] }): number {
   const sub = args[0] || "show";
   const id = args[1];
-  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--confirm] [--model ID] [--route TASK=ID]");
+  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID] [--confirm] [--model ID] [--route TASK=ID]");
   const proposal = readSelectionProposal(cwd, id);
   if (sub === "show") {
     const flags = flagsOf(args.slice(2));
@@ -219,10 +233,11 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
   if (sub === "render") {
     const flags = flagsOf(args.slice(2));
     const output = one(flags, "output");
-    if (!output) throw new Error("usage: baton selection render PROPOSAL --output PATH [--task-label TASK=CHINESE_LABEL]");
+    if (!output) throw new Error("usage: baton selection render PROPOSAL --output PATH [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID]");
     if (proposal.status !== "pending_confirmation") throw new Error(`selection proposal ${proposal.id} is already ${proposal.status}`);
     const taskLabels = chineseTaskLabels(many(flags, "task-label"), proposal);
-    const artifact = writeSelectionView(proposal, output, { taskLabels });
+    const assign = Object.fromEntries(suggestedAssignments(many(flags, "assign")));
+    const artifact = writeSelectionView(proposal, output, { taskLabels, suggestedAssignments: assign });
     const result = { proposal_id: proposal.id, status: proposal.status, ...artifact };
     if (flags.json) stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     else {
@@ -231,7 +246,7 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
     }
     return 0;
   }
-  if (sub !== "approve") throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--confirm] [--model ID] [--route TASK=ID]");
+  if (sub !== "approve") throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID] [--confirm] [--model ID] [--route TASK=ID]");
   const flags = flagsOf(args.slice(2));
   if (!flags.confirm) throw new Error("MODEL_SELECTION_NOT_CONFIRMED: --confirm is required only after the user has reviewed the disclosed proposal");
   validateProposal(cwd, proposal);
