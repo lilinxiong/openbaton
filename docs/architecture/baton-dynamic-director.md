@@ -720,8 +720,6 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 - 当前干净 V1 registry 同时保留 6 个 subagent，第 7 个触发限制。
 - 父 session 可跨多轮继续动态派生不同模型。
 
-详细证据见仓库根目录 `CODEX_OPENCODEX_DYNAMIC_SUBAGENT_VERIFICATION.md`。
-
 ## 10. 实现约束
 
 1. Baton 的 host skill 是常驻 director policy；用户不需要手动调用 workflow skill。
@@ -735,7 +733,7 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 ## 11. 整体可行性判断
 
-> **当前状态（2026-08-19 RC）：`PASS / Codex 首版闭环通过`。** 144/144 tests、全局 `~/.baton` 状态、66-route Dynamic Cards、真实 8-ticket FIFO、write completion/error safety gate、OpenSpec stable-number writeback 和 provider no-fallback 日志均已通过。完整证据见 [OpenBaton Codex RC 验收报告](./openbaton-rc-validation-2026-08-19.md)。以下 11.1～11.8 保留的是实施前历史判定与验收规则，其中 `REVISE`、待集成和旧风险描述不再代表当前产品状态。
+> **当前状态（2026-08-19 RC）：`PASS / Codex 首版闭环通过`。** 144/144 tests、全局 `~/.baton` 状态、66-route Dynamic Cards、真实 8-ticket FIFO、write completion/error safety gate、OpenSpec stable-number writeback 和 provider no-fallback 日志均已通过。以下 11.1～11.8 保留的是实施前历史判定与验收规则，其中 `REVISE`、待集成和旧风险描述不再代表当前产品状态。
 
 ### 11.1 历史总体结论
 
@@ -743,7 +741,7 @@ Worker 默认 `fork_context=false`，使用自包含短 prompt 和可读取的 e
 
 2026-08-18 的验证性原型已经跑通 Conversation-to-Goal、能力快照、授权、队列、OpenSpec task round-trip 和写入型 worker 的组合闭环；但实测确认 Codex worker 共享父工作树、Git index 和 HEAD，prompt allowlist 也不是 host 强隔离。2026-08-19 已实现并实测 Artificial Analysis 本地 SQLite capability cache。OpenCodex 不锁死版本号，兼容性由运行时 capability probe 决定。
 
-因此方案不是 `BLOCKED`，可以进入正式实现；实现必须采用 parent diff gate、父 agent Git ownership、稳定 OpenSpec task number 和真实 native ticket lifecycle。完整证据见 [OpenBaton Dynamic Director 可行性验证记录](./baton-dynamic-director-feasibility-validation.md)。
+因此方案不是 `BLOCKED`，可以进入正式实现；实现必须采用 parent diff gate、父 agent Git ownership、稳定 OpenSpec task number 和真实 native ticket lifecycle。
 
 ### 11.2 能力分级
 
