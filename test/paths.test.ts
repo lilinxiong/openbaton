@@ -11,10 +11,12 @@ import {
   canonicalWorkspaceRoot,
   dispatchLockPath,
   dispatchStatePath,
+  hostCapabilitiesPath,
   receiptsDir,
   routeHealthPath,
   routeSnapshotPath,
   runsDir,
+  selectionsDir,
   spawnsDir,
   workspaceId,
 } from "../src/lib/paths.js";
@@ -43,7 +45,9 @@ describe("global Baton storage paths", () => {
     assert.equal(spawnsDir(first), path.join(firstRoot, "spawns"));
     assert.equal(runsDir(first), path.join(firstRoot, "runs"));
     assert.equal(receiptsDir(first), path.join(firstRoot, "receipts"));
+    assert.equal(selectionsDir(first), path.join(firstRoot, "selections"));
     assert.equal(dispatchStatePath(first), path.join(firstRoot, "runs", "dispatch.json"));
+    assert.equal(hostCapabilitiesPath(first), path.join(firstRoot, "runs", "host-capabilities.json"));
     assert.equal(dispatchLockPath(first), path.join(firstRoot, "tmp", "dispatch.lock"));
 
     assert.equal(routeSnapshotPath(first), routeSnapshotPath(second));

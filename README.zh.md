@@ -25,7 +25,10 @@ OpenBaton 把每个 execution unit 变成可路由、可审计的 ticket。主 a
 
 - **Dynamic Cards。** 所有 OpenCodex live provider/route 都保持可见；精确 AA mapping 生成结构化 capability 和定位推断，未映射 route 保持 `unranked`。
 - **Config 只保存 director 设置。** `~/.baton/config.toml` 只放并发/深度参数，不支持本地模型 alias 或 route override。
-- **所有 route 保持可见。** OpenCodex discovery 是完整可执行 catalog；显式选择必须使用 exact route/profile ID，session/Goal exclusion 只影响本次调度。
+- **Catalog 可见性与 subagent 资格分离。** OpenCodex discovery 仍完整可审计。内置 policy 禁止 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra` 的所有 provider route、variant 和 reasoning profile 进入 subagent 候选，proposal 会单独披露；其它 session/Goal exclusion 仍只影响本次调度。
+- **当前 host 取交集。** route 必须同时满足 OpenCodex 可执行、当前 Codex session 的 `spawn_agent` 已声明；只在 catalog 中存在的 route 仍可见，但标为 `HOST_ROUTE_UNAVAILABLE`。
+- **模型必须确认。** `spawn/apply` 先披露优选与候选 exact route、模型优势、任务分、AA 原始分、provider 剩余额度/重置时间（或明确 unknown 原因）及可调用性。用户确认或改选前不创建 ticket。
+- **额度来源与本地 fallback。** OpenCodex 已报告的 quota 永远优先；只有某个 provider 缺失或 unknown 时，Baton 才尝试调用本机已安装的 CodexBar CLI，并以 `codexbar:...` 来源保存脱敏后的百分比/reset 窗口；仍取不到就明确保持 unknown。
 - **Codex 原生 worker。** 只使用进程内 Codex subagent；Baton 不接入其他 coding CLI host，也不 shell 到 print mode。skill 安装到 `~/.codex`，Baton 状态保存在 `~/.baton`。
 - **逻辑上无限 spawn。** host/session 的并发上限是运行时能力，不写死为 6；超限作为 backpressure 回到 FIFO，不消耗 attempt。真实 `close_agent` 后才释放 slot。深度 1。
 - **具体任务优先。** Ticket 区分 `concrete` 与 `deliberative`。优先把工作拆成有 objective/deliverable/done condition 的具体单元；必须委派思考任务时使用 checkpoint 状态同步。
@@ -59,6 +62,17 @@ baton capabilities show gpt-5.6-luna --profile high
 
 Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 和 latency 证据。缺失指标保持 unknown；provider health、quota、授权和 session policy 仍是独立 gate。
 
+## 模型选择握手
+
+普通业务请求进入实施后，由 Codex director 无感执行；用户不需要知道 Baton 命令：
+
+1. 把当前 Codex `spawn_agent` 暴露的 exact model 和允许的 reasoning effort 用 `baton host sync --model ... --profile ROUTE=...` 同步给 Baton；Baton 优先读取 OpenCodex 的脱敏 quota report，只对 OpenCodex 未报告的 provider 尝试本机可调用的 CodexBar。
+2. `baton spawn` 或 `baton apply` 只创建 selection proposal，不创建 ticket。
+3. director 向用户展示优选及所有符合内置 policy 的当前可调用候选，包含优势、任务分、AA 分、剩余额度、重置时间和可调用状态；`gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` 全系列禁令单独披露。
+4. 用户保留或修改选择后，`baton selection approve ... --confirm` 才创建 immutable Receipt 和 queued ticket。host snapshot 或源任务发生变化时，旧 proposal 失效。
+
+Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。CodexBar 只提供带来源标记的本地提示，可能对应其本机所选账号，不改变 OpenCodex 对 provider/auth/route 的所有权。Baton 不保存 CodexBar 的账号邮箱/ID、login method、cookie、token 或原始错误。Provider 仍无法报告额度时显示 `unknown`，绝不当作 0 或“额度充足”。用户可以显式选择 proposal 中可调用的 `unranked` route，但不能覆盖内置禁用系列；Baton 不会自动推荐 unranked route，也不会在模型/provider 间 fallback。详见 [CodexBar quota fallback](docs/data-sources/codexbar.md)。
+
 ## 状态目录
 
 所有 Baton 自有状态都放在用户目录 `~/.baton`；Baton 不再生成项目内 `.baton`。
@@ -66,6 +80,7 @@ Dynamic Card matching 使用 AA intelligence/coding/agentic、cost、throughput 
 - `config.toml`、`SKILL.md`：用户全局 director 设置和 skill。
 - `cache/`：全局共享的 OpenCodex Route Snapshot 与 capability 数据。
 - `workspaces/<canonical-root-sha256>/`：按 workspace 隔离的 ticket、Receipt、run、lock 和 host capacity。
+- `workspaces/<canonical-root-sha256>/selections/`：待确认/已确认的模型披露与用户 approval。
 
 ## 命令
 
@@ -76,6 +91,8 @@ baton capabilities show MODEL [--profile PROFILE]
 baton routes refresh
 baton routes status
 baton routes candidates
+baton host sync --model gpt-5.6-luna --profile gpt-5.6-luna=low,medium,high,xhigh,max --model alibaba-token-plan/glm-5.2 --profile alibaba-token-plan/glm-5.2=low,medium,high,xhigh,max
+baton host status
 baton conversation promote --from-file PATH
 baton cards --ranked
 baton cards --unranked --provider kimi
@@ -83,6 +100,10 @@ baton match "fix the flaky auth tests"
 baton spawn "explore why CI is red"
 baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
 baton apply
+baton selection show sel-0001
+baton selection approve sel-0001 --confirm
+baton selection approve sel-0002 --confirm --model gpt-5.6-luna@low
+baton selection approve sel-0003 --confirm --route 1.1=gpt-5.6-luna@high
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json

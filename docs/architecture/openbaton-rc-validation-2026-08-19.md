@@ -1,5 +1,7 @@
 # OpenBaton Codex RC 验收报告
 
+> 历史快照说明：本报告记录 2026-08-19 RC。当时“不得设全局 model-family 禁令”的结论已被 2026-08-20 产品策略取代；当前实现永久禁止 `gpt-5.5`、`gpt-5.6-sol` 与 `gpt-5.6-terra` 全系列作为 subagent 候选或 dispatch route。
+
 验收日期：2026-08-19
 
 ## 结论

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { matchModelCard, requireCardId, CardMatchError } from "../src/lib/cards.js";
+import { classifyTask, matchModelCard, requireCardId, CardMatchError } from "../src/lib/cards.js";
 
 const cards = [
   { id: "example-coder", strengths: "write code, implement, fix tests, grind on a repo" },
@@ -86,5 +86,32 @@ describe("matchModelCard", () => {
       () => requireCardId("unmapped", [unranked]),
       (error) => error instanceof CardMatchError && error.code === "UNKNOWN_CARD",
     );
+  });
+
+  it("never auto-matches any built-in forbidden family even when it scores highest", () => {
+    const forbidden = {
+      id: "provider/gpt-5.6-sol-max@high", route_id: "provider/gpt-5.6-sol-max", reasoning_effort: "high",
+      strengths: "implement code repository migration", executable: true,
+    };
+    const forbidden55 = {
+      id: "provider/gpt-5.5-extra@high", route_id: "provider/gpt-5.5-extra", reasoning_effort: "high",
+      strengths: "implement code repository migration", executable: true,
+    };
+    const allowed = {
+      id: "gpt-5.6-luna@low", route_id: "gpt-5.6-luna", reasoning_effort: "low",
+      strengths: "implement code", executable: true,
+    };
+    assert.equal(matchModelCard("implement code repository migration", [forbidden, forbidden55, allowed]).model_id, allowed.id);
+    assert.equal(requireCardId(forbidden.id, [forbidden]).route_id, forbidden.route_id, "catalog lookup remains inspectable");
+    assert.equal(requireCardId(forbidden55.id, [forbidden55]).route_id, forbidden55.route_id, "gpt-5.5 stays catalog-inspectable");
+  });
+
+  it("classifies verification/report work and Chinese task language instead of producing a zero signal", () => {
+    assert.ok(classifyTask("verify and report the incident audit with evidence").intelligence >= 4);
+    const chinese = classifyTask("分析仓库并验证修复结果，尽快给出报告");
+    assert.ok(chinese.intelligence >= 3);
+    assert.ok(chinese.agentic >= 1);
+    assert.ok(chinese.coding >= 1);
+    assert.ok(chinese.speed >= 1);
   });
 });

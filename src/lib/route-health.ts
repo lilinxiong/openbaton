@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { classifyTask } from "./cards.js";
 import { routeHealthPath } from "./paths.js";
+import { isSubagentModelAllowed } from "./model-policy.js";
 import type { ModelCard } from "../types.js";
 
 export const DEFAULT_ROUTE_HEALTH_COOLDOWN_MS = 15 * 60 * 1000;
@@ -123,7 +124,7 @@ export function isCardAutoEligible(
   taskText: string,
   { host = "codex", now = new Date() }: { host?: string; now?: Date } = {},
 ): boolean {
-  if (!card.route_id) return false;
+  if (!card.route_id || !isSubagentModelAllowed(card)) return false;
   const shape = taskShape(taskText);
   const record = readRouteHealth(cwd).records.find((item) =>
     item.route_id === card.route_id

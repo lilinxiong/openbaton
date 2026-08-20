@@ -51,7 +51,7 @@ OpenBaton does not fuzzy-match route names and never treats `unranked` as a weak
 
 ## Dynamic Cards
 
-Baton joins the OpenCodex live route snapshot with these exact mappings at runtime. Ranked route/profile pairs expose structured intelligence, coding, agentic, cost, throughput, and latency evidence plus percentile-derived positioning tags. The positioning text is explicitly an inference; it is not copied back into `~/.baton/config.toml`. Unmapped routes remain visible and explicitly selectable as `unranked`, but automatic task matching cannot select them.
+Baton joins the OpenCodex live route snapshot with these exact mappings at runtime. Ranked route/profile pairs expose structured intelligence, coding, agentic, cost, throughput, and latency evidence plus percentile-derived positioning tags. The positioning text is explicitly an inference; it is not copied back into `~/.baton/config.toml`. Unmapped routes remain visible and, when allowed by the built-in subagent model policy, explicitly selectable as `unranked`; automatic task matching cannot select them.
 
 ## Snapshot behavior
 

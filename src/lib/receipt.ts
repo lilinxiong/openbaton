@@ -2,13 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { receiptsDir } from "./paths.js";
-import type { ModelCard } from "../types.js";
+import type { ModelCard, ModelSelectionApproval } from "../types.js";
 import type { GitBaseline, SafetyOperation } from "./safety.js";
 
 export type ReceiptOperation = "read" | SafetyOperation;
 
 export interface DelegationReceipt {
-  schema_version: 2;
+  schema_version: 3;
   receipt_id: string;
   ticket_id: string;
   issued_at: string;
@@ -40,6 +40,7 @@ export interface DelegationReceipt {
     staging_owner: "parent";
   };
   baseline: GitBaseline | null;
+  selection: ModelSelectionApproval | null;
 }
 
 export class ReceiptError extends Error {
@@ -56,16 +57,18 @@ export function buildReadOnlyReceipt({
   card,
   issuedAt = new Date(),
   maxAttempts = 1,
+  selection = null,
 }: {
   ticketId: string;
   card: ModelCard;
   issuedAt?: Date | string | number;
   maxAttempts?: number;
+  selection?: ModelSelectionApproval | null;
 }): DelegationReceipt {
   const timestamp = (issuedAt instanceof Date ? issuedAt : new Date(issuedAt)).toISOString();
   const attempts = Math.max(1, Math.floor(maxAttempts));
   return {
-    schema_version: 2,
+    schema_version: 3,
     receipt_id: `rcpt-${ticketId}-a1`,
     ticket_id: ticketId,
     issued_at: timestamp,
@@ -86,6 +89,7 @@ export function buildReadOnlyReceipt({
       staging_owner: "parent",
     },
     baseline: null,
+    selection: selection ? structuredClone(selection) : null,
   };
 }
 

@@ -5,7 +5,8 @@ import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
 import { directorMayRun } from "./hygiene.js";
 import { buildReadOnlyReceipt, type DelegationReceipt } from "./receipt.js";
-import type { CodedError, ModelCard, UnknownRecord } from "../types.js";
+import { assertSubagentModelAllowed } from "./model-policy.js";
+import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import {
   buildWorkerPrompt,
   compileWorkUnit,
@@ -64,6 +65,7 @@ export interface SpawnTicket extends UnknownRecord {
   error: TicketError | null;
   conclusion: string | null;
   receipt_id: string | null;
+  selection: ModelSelectionApproval | null;
   created_at: string;
   updated_at: string;
   history: TicketHistoryEntry[];
@@ -131,6 +133,7 @@ interface BuildSpawnTicketOptions {
   taskKind?: WorkUnitKind | null;
   deliverable?: string | null;
   doneWhen?: string | null;
+  selection?: ModelSelectionApproval | null;
   now?: Date | string | number;
 }
 
@@ -146,13 +149,15 @@ export function buildSpawnTicket({
   taskKind = null,
   deliverable = null,
   doneWhen = null,
+  selection = null,
   now = new Date(),
 }: BuildSpawnTicketOptions): SpawnTicket {
+  assertSubagentModelAllowed(routeId, modelId);
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
   const coordination = coordinationFor(workUnit);
   return {
-    schema_version: 3,
+    schema_version: 4,
     id,
     description,
     prompt: buildWorkerPrompt(prompt, workUnit, coordination),
@@ -176,6 +181,7 @@ export function buildSpawnTicket({
     error: null,
     conclusion: null,
     receipt_id: null,
+    selection: selection ? structuredClone(selection) : null,
     created_at: createdAt,
     updated_at: createdAt,
     history: [{ event: "ticket_queued", at: createdAt }],
@@ -194,13 +200,14 @@ interface PlanStandaloneOptions {
   taskKind?: WorkUnitKind | null;
   deliverable?: string | null;
   doneWhen?: string | null;
+  selectionApproval?: ModelSelectionApproval | null;
 }
 
 export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
   | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
-export function planStandaloneSpawn({ description, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen }: PlanStandaloneOptions): StandalonePlan {
+export function planStandaloneSpawn({ description, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null }: PlanStandaloneOptions): StandalonePlan {
   if (directorMayRun(description)) {
     return {
       director_local: true,
@@ -224,8 +231,9 @@ export function planStandaloneSpawn({ description, cards, explicitModel, queue, 
     taskKind,
     deliverable,
     doneWhen,
+    selection: selectionApproval,
   });
-  const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at });
+  const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at, selection: selectionApproval });
   ticket.receipt_id = receipt.receipt_id;
   return { director_local: false, ticket, receipt, queue: { running: 0, queued: 1 } };
 }

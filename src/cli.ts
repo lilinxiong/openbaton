@@ -5,21 +5,24 @@ import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
+import { runHost } from "./commands/host.js";
+import { printSelectionProposal, runSelection } from "./commands/selection.js";
 import { loadConfig } from "./lib/config.js";
-import { matchModelCard, requireCardId, CardMatchError } from "./lib/cards.js";
-import { planStandaloneSpawn, listSpawns, writeSpawn } from "./lib/spawn.js";
-import { applyChange, concludeSpawn, resolveApplyChange } from "./lib/apply.js";
+import { CardMatchError } from "./lib/cards.js";
+import { listSpawns } from "./lib/spawn.js";
+import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
-import { DispatchQueue } from "./lib/queue.js";
-import { buildWriteReceipt, writeReceipt } from "./lib/receipt.js";
-import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
 import { buildRouteCandidates } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
+import { readHostCapabilitySnapshot } from "./lib/host-capabilities.js";
+import { buildSelectionUnit, createSelectionProposal, listSelectionProposals, selectionSourceFingerprint } from "./lib/selection.js";
+import { directorMayRun } from "./lib/hygiene.js";
+import { FORBIDDEN_SUBAGENT_MODEL_FAMILIES, SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
 import type { ModelCard } from "./types.js";
 import type { OcxResolver, OcxRunner } from "./lib/opencodex.js";
+import type { CodexBarResolver, CodexBarRunner } from "./lib/codexbar.js";
 import type { CodedError, WritableLike } from "./types.js";
-import type { WorkUnitKind } from "./lib/work-unit.js";
 
 interface RunOptions {
   cwd?: string;
@@ -28,6 +31,8 @@ interface RunOptions {
   env?: NodeJS.ProcessEnv;
   runner?: OcxRunner;
   resolve?: OcxResolver;
+  codexBarRunner?: CodexBarRunner;
+  codexBarResolve?: CodexBarResolver;
   fetchImpl?: typeof fetch;
 }
 
@@ -48,14 +53,18 @@ Standalone: cards + native spawn + director context hygiene. Complete without Op
 Together: OpenSpec owns breakdown/status; baton owns who runs each task and keeps
 the director context clean. Apply is multi-model, uncapped, card-routed execution
 of OpenSpec tasks, with conclusions written back. Not a thin adapter.
+Built-in subagent policy forbids every gpt-5.5, gpt-5.6-sol, and gpt-5.6-terra route/profile.
 
 Usage:
   baton init [--force]                initialize Baton + Codex skill
   baton update                        refresh Codex skill + director defaults
   baton cards [--ranked|--unranked] [--provider ID] [--json]
-  baton match <text>                show which card would run
-  baton spawn <text> [--model ID] [--task-kind concrete|deliberative]
-  baton apply [change] [--route TASK=EXACT_ROUTE]  execute OpenSpec tasks
+  baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish current Codex spawn surface
+  baton match <text>                disclose preferred/candidate models without creating work
+  baton spawn <text> [--model ID]   create a model-selection proposal (no ticket)
+  baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
+  baton selection show PROPOSAL
+  baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -73,7 +82,17 @@ Usage:
   baton version | --version | -v
 `;
 
-export async function run(argv: string[], { cwd = process.cwd(), stdout = process.stdout, stderr = process.stderr, env = process.env, runner, resolve, fetchImpl }: RunOptions = {}): Promise<number> {
+export async function run(argv: string[], {
+  cwd = process.cwd(),
+  stdout = process.stdout,
+  stderr = process.stderr,
+  env = process.env,
+  runner,
+  resolve,
+  codexBarRunner,
+  codexBarResolve,
+  fetchImpl,
+}: RunOptions = {}): Promise<number> {
   const args = argv.slice();
   const cmd = args.shift() || "help";
 
@@ -97,10 +116,15 @@ export async function run(argv: string[], { cwd = process.cwd(), stdout = proces
         return cmdCards(args, cwd, stdout, env, runner, resolve);
       case "match":
         return cmdMatch(args, cwd, stdout, env, runner, resolve);
+      case "host":
+        ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
+        return runHost(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env, runner, resolve);
       case "apply":
         return await cmdApply(args, cwd, stdout, env, runner, resolve);
+      case "selection":
+        return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env, runner, resolve) });
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "capabilities":
@@ -174,14 +198,27 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   }
   try {
     const cards = resolvedCards(cwd, env, runner, resolve);
-    const hit = matchModelCard(text, cardsForAutomaticSelection(cwd, cards, text));
+    const host = readHostCapabilitySnapshot(cwd);
+    if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session");
+    const unit = buildSelectionUnit({
+      cwd, key: "preview", description: text, prompt: text, cards,
+      automaticCards: cardsForAutomaticSelection(cwd, cards, text), host,
+    });
     const flags = parseFlags(args);
-    if (flags.json) stdout.write(`${JSON.stringify({ ...hit, evidence: hit.card.capability || null }, null, 2)}\n`);
+    if (flags.json) stdout.write(`${JSON.stringify(unit, null, 2)}\n`);
     else {
-      stdout.write(`${hit.model_id}  (score ${hit.score})\n`);
-      stdout.write(`  route: ${hit.card.route_id}${hit.card.reasoning_effort ? ` @${hit.card.reasoning_effort}` : ""}\n`);
-      stdout.write(`  positioning: ${(hit.card.positioning || []).join(", ") || "unranked"}\n`);
-      if (hit.card.capability?.aa_slug) stdout.write(`  AA: ${hit.card.capability.aa_slug}\n`);
+      stdout.write(`preferred: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
+      for (const candidate of unit.candidates.filter((item) => item.selectable)) {
+        const aa = candidate.aa_scores;
+        const quota = candidate.quota.status === "unknown"
+          ? `unknown (${candidate.quota.reason})`
+          : candidate.quota.windows.map((item) => `${item.label} remaining ${item.remaining_percent.toFixed(2)}%`).join("; ");
+        stdout.write(`  candidate ${candidate.model_id}: ${candidate.strengths}\n`);
+        stdout.write(`    task score ${candidate.task_score ?? "unranked"}; AA intelligence=${aa.intelligence ?? "unknown"}, coding=${aa.coding ?? "unknown"}, agentic=${aa.agentic ?? "unknown"}; quota ${quota}; callable=yes\n`);
+      }
+      for (const exclusion of unit.policy_exclusions) {
+        stdout.write(`  policy excluded ${exclusion.family}: ${exclusion.code} (${exclusion.card_count} cards/profiles)\n`);
+      }
     }
     return 0;
   } catch (err) {
@@ -197,62 +234,52 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
-  const cfg = loadConfig(cwd, { env });
   const allCards = resolvedCards(cwd, env, runner, resolve);
-  const cards = stringFlag(flags, "model") ? allCards : cardsForAutomaticSelection(cwd, allCards, text);
   const kindFlag = stringFlag(flags, "task-kind");
   if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
     throw new Error("--task-kind must be concrete or deliberative");
   }
-  const queue = DispatchQueue.fromConfig(cfg);
-  // account for already-running tickets
-  for (const s of listSpawns(cwd)) {
-    if (s.status === "running") queue.noteStarted();
-    else if (s.status === "queued") queue.noteEnqueued();
-  }
-  const planned = planStandaloneSpawn({
-    description: text,
-    cards,
-    explicitModel: stringFlag(flags, "model"),
-    queue,
-    cwd,
-    taskKind: kindFlag as WorkUnitKind | undefined,
-    deliverable: stringFlag(flags, "deliverable"),
-    doneWhen: stringFlag(flags, "done-when"),
-  });
-  if (planned.director_local === true) {
-    stdout.write(`director-local: ${planned.reason}\n`);
-    stdout.write(`unit: ${planned.description}\n`);
+  if (directorMayRun(text)) {
+    stdout.write("director-local: tiny unit; no subagent model selection is needed\n");
+    stdout.write(`unit: ${text}\n`);
     return 0;
   }
+  const host = readHostCapabilitySnapshot(cwd);
+  if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
   const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
+  const allowed = new Set(["write", "create", "delete", "rename", "chmod"]);
+  const opsFlags = multiFlag(flags, "write-ops");
+  const operations = (opsFlags.length ? opsFlags : ["write,create"]).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (writePaths.length) {
-    const allowed = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
-    const opsFlags = multiFlag(flags, "write-ops");
-    const operations = (opsFlags.length ? opsFlags : ["write,create"]).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean) as SafetyOperation[];
     if (!operations.length || operations.some((item) => !allowed.has(item))) throw new Error("--write-ops must contain write,create,delete,rename,chmod");
-    planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline: captureBaseline(cwd), writeAllowlist: writePaths, allowedOperations: operations });
-    planned.ticket.mode = "write";
-    planned.ticket.read_only = false;
   }
-  writeReceipt(cwd, planned.receipt);
-  writeSpawn(cwd, planned.ticket);
-  const t = planned.ticket;
-  stdout.write(`spawn ${t.id}\n`);
-  stdout.write(`  model:  ${t.model_id}\n`);
-  stdout.write(`  route:  ${t.route_id || "blocked until an executable route is configured"}\n`);
-  stdout.write(`  queue:  ${t.status}\n`);
-  stdout.write(`  mode:   ${t.mode}\n`);
-  stdout.write(`  kind:   ${t.work_unit.kind} (${t.coordination.mode})\n`);
-  stdout.write(`  source: ${t.source}\n`);
-  stdout.write("host director must reserve it with `baton dispatch next --json`; queued is not running.\n");
+  const payload = {
+    description: text,
+    task_kind: kindFlag || null,
+    deliverable: stringFlag(flags, "deliverable") || null,
+    done_when: stringFlag(flags, "done-when") || null,
+    write_paths: writePaths,
+    write_operations: writePaths.length ? operations : [],
+  };
+  const unit = buildSelectionUnit({
+    cwd, key: "standalone", description: text, prompt: text, cards: allCards,
+    automaticCards: cardsForAutomaticSelection(cwd, allCards, text), host,
+    requestedModelId: stringFlag(flags, "model") || null,
+  });
+  const proposal = createSelectionProposal(cwd, {
+    source: "standalone",
+    units: [unit],
+    sourceFingerprint: selectionSourceFingerprint(payload),
+    payload,
+  });
+  if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
+  else printSelectionProposal(stdout, proposal);
   return 0;
 }
 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
   const flags = parseFlags(args);
   const change = firstPositionalArg(args);
-  const cfg = loadConfig(cwd, { env });
   const cards = resolvedCards(cwd, env, runner, resolve);
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
@@ -262,35 +289,38 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   }
   const routeAssignments = parseTaskRoutes(multiFlag(flags, "route"));
   const changeDir = resolveApplyChange(cwd, change);
-  const pendingNumbers = new Set(loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending").map((task) => task.number));
+  const tasks = loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending");
+  const pendingNumbers = new Set(tasks.map((task) => task.number));
   for (const number of routeAssignments.keys()) {
     if (!pendingNumbers.has(number)) throw new Error(`--route task is not pending in this change: ${number}`);
   }
-  const selectCard = (task: { number: string }, available: ModelCard[]) => {
-    const exact = routeAssignments.get(task.number);
-    return exact ? requireCardId(exact, available) : undefined;
-  };
-  const selectCards = (prompt: string, available: ModelCard[]) => cardsForAutomaticSelection(cwd, available, prompt);
-  const result = applyChange({ cwd, change, cfg, cards, selectCard, selectCards });
-  stdout.write(`apply ${result.changeDir}\n`);
-  if (result.error) {
-    stdout.write(`blocked: ${result.error}\n`);
-    for (const b of result.blocked) stdout.write(`  - ${b.id}: ${b.error}\n`);
-    return 1;
-  }
-  stdout.write(`  tickets: ${result.tickets.length}  director-local: ${result.local.length}  blocked: ${result.blocked.length}\n`);
-  if (result.queue) {
-    stdout.write(`  queue: running ${result.queue.running} / max ${result.queue.max_concurrent}, queued ${result.queue.queued} (never refused)\n`);
-  }
-  for (const t of result.tickets) {
-    stdout.write(`  ${t.id}  ${t.model_id}  ${t.status}  ${t.description}\n`);
-  }
-  for (const b of result.blocked) {
-    stdout.write(`  blocked ${b.id}: ${b.error}\n`);
-  }
-  stdout.write("OpenSpec remains the status source of truth. Schema-v3 tickets require the host lifecycle:\n");
-  stdout.write("  `baton dispatch next`, bind, sync checkpoint progress when required, finish, close the host agent, then `dispatch release`.\n");
-  return result.blocked.length ? 1 : 0;
+  const host = readHostCapabilitySnapshot(cwd);
+  if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
+  const units = tasks.map((task) => {
+    const prompt = formatTaskPrompt(task);
+    return buildSelectionUnit({
+      cwd,
+      key: task.number,
+      description: task.description,
+      prompt,
+      cards,
+      automaticCards: cardsForAutomaticSelection(cwd, cards, prompt),
+      host,
+      requestedModelId: routeAssignments.get(task.number) || null,
+      directorLocal: directorMayRun(task.description),
+      metadata: { line_index: task.line_index, section: task.section },
+    });
+  });
+  const taskSource = tasks.map((task) => ({ number: task.number, description: task.description, section: task.section }));
+  const proposal = createSelectionProposal(cwd, {
+    source: "openspec",
+    units,
+    sourceFingerprint: selectionSourceFingerprint(taskSource),
+    payload: { change: change || changeDir.split(/[\\/]/).at(-1), change_dir: changeDir },
+  });
+  if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
+  else printSelectionProposal(stdout, proposal);
+  return 0;
 }
 
 function cmdConclude(args: string[], cwd: string, stdout: WritableLike): number {
@@ -324,7 +354,12 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, ru
   const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
   const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
   stdout.write(`  cards: ${cards.length} OpenCodex routes (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
+  stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}  forbidden ${FORBIDDEN_SUBAGENT_MODEL_FAMILIES.join(", ")}\n`);
   stdout.write(`  max_concurrent: ${cfg.director.max_concurrent} (queue beyond this; never refuse)\n`);
+  const host = readHostCapabilitySnapshot(cwd);
+  stdout.write(`  host models: ${host?.advertised_models.length || 0}${host ? ` snapshot=${host.id}` : " (sync required)"}\n`);
+  const selections = listSelectionProposals(cwd);
+  stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
   const spawns = listSpawns(cwd);
   const running = spawns.filter((s) => s.status === "running").length;
   const queued = spawns.filter((s) => s.status === "queued").length;

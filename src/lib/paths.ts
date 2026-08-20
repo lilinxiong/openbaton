@@ -10,6 +10,7 @@ export const CONFIG_NAME = "config.toml";
 export const SKILL_NAME = "SKILL.md";
 export const SPAWNS_DIR = "spawns";
 export const RUNS_DIR = "runs";
+export const SELECTIONS_DIR = "selections";
 export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
 export const CACHE_DIR = "cache";
@@ -20,6 +21,7 @@ export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
 export const ROUTE_SNAPSHOT_NAME = "routes.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const DISPATCH_STATE_NAME = "dispatch.json";
+export const HOST_CAPABILITIES_NAME = "host-capabilities.json";
 
 /**
  * User home for host + director files.
@@ -73,6 +75,10 @@ export function runsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), RUNS_DIR);
 }
 
+export function selectionsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(batonDir(cwd, env), SELECTIONS_DIR);
+}
+
 export function receiptsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), RECEIPTS_DIR);
 }
@@ -100,6 +106,11 @@ export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
 /** Dispatcher runtime state (remembered capacity) for one workspace. */
 export function dispatchStatePath(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(runsDir(cwd, env), DISPATCH_STATE_NAME);
+}
+
+/** Current Codex-session route surface and sanitized provider quota snapshot. */
+export function hostCapabilitiesPath(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(runsDir(cwd, env), HOST_CAPABILITIES_NAME);
 }
 
 export function dispatchLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {

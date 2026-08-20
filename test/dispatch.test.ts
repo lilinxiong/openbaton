@@ -17,8 +17,10 @@ import {
   reserveNext,
 } from "../src/lib/dispatch.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
-import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
+import { dispatchStatePath, hostCapabilitiesPath, spawnsDir } from "../src/lib/paths.js";
 import { readRouteHealth } from "../src/lib/route-health.js";
+import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { readHostCapabilitySnapshot, writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
 import { isolatedHome } from "./home.js";
 
 isolatedHome("baton-dispatch-home-");
@@ -31,12 +33,14 @@ function at(offsetMs) {
 
 function makeProject() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-"));
+  publishRouteSnapshot(cwd, { models: [{ id: "codex/default", namespaced: "codex/default", provider: "codex" }] });
+  writeHostCapabilitySnapshot(cwd, { advertisedModels: ["codex/default"], quotaCatalog: { reports: [] }, now: at(0) });
   return cwd;
 }
 
 function makeTicket(id, overrides = {}) {
   return {
-    schema_version: 2,
+    schema_version: 4,
     id,
     description: "task " + id,
     prompt: "do " + id,
@@ -64,12 +68,26 @@ function makeTicket(id, overrides = {}) {
 }
 
 function writeTicket(cwd, ticket) {
+  if (ticket.selection === undefined) {
+    const host = readHostCapabilitySnapshot(cwd);
+    ticket.selection = {
+      proposal_id: "sel-test",
+      approval_id: `approval-${ticket.id}`,
+      approved_at: ticket.created_at,
+      confirmed_by: "user",
+      host_snapshot_id: host.id,
+      recommended_model_id: ticket.model_id,
+      selected_model_id: ticket.model_id,
+      changed_by_user: false,
+    };
+  }
   if (!ticket.receipt_id) {
     const receipt = buildReadOnlyReceipt({
       ticketId: ticket.id,
       card: { id: ticket.model_id, strengths: "", route_id: ticket.route_id || undefined, reasoning_effort: ticket.reasoning_effort || undefined },
       issuedAt: ticket.created_at,
       maxAttempts: ticket.max_attempts,
+      selection: ticket.selection,
     });
     ticket.receipt_id = receipt.receipt_id;
     writeReceipt(cwd, receipt);
@@ -203,6 +221,56 @@ describe("reserveNext", () => {
     assert.deepEqual(result.reserved, []);
     const codes = result.blocked.map((b) => [b.ticket_id, b.code]);
     assert.deepEqual(codes, [["t-writer", "RECEIPT_MISMATCH"], ["t-forker", "FULL_CONTEXT_NOT_ALLOWED"]]);
+  });
+
+  it("never dispatches a ticket whose model selection was not user-confirmed", () => {
+    const cwd = makeProject();
+    writeTicket(cwd, makeTicket("t-unconfirmed", { selection: null }));
+
+    const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+
+    assert.deepEqual(result.reserved, []);
+    assert.equal(result.blocked[0].code, "MODEL_SELECTION_NOT_CONFIRMED");
+    assert.equal(readTicket(cwd, "t-unconfirmed").status, "errored");
+  });
+
+  it("fails closed when an approved reasoning profile is absent from the current host surface", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-profile-"));
+    publishRouteSnapshot(cwd, { models: [{
+      id: "codex/default", namespaced: "codex/default", provider: "codex", reasoningEfforts: ["high"],
+    }] });
+    writeHostCapabilitySnapshot(cwd, {
+      advertisedModels: ["codex/default"],
+      advertisedProfiles: { "codex/default": ["high"] },
+      quotaCatalog: { reports: [] },
+      now: at(0),
+    });
+    writeTicket(cwd, makeTicket("t-profile", {
+      model_id: "codex/default@high",
+      reasoning_effort: "high",
+    }));
+
+    const host = readHostCapabilitySnapshot(cwd);
+    host.advertised_profiles["codex/default"] = [];
+    fs.writeFileSync(hostCapabilitiesPath(cwd), `${JSON.stringify(host, null, 2)}\n`, "utf8");
+
+    const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    assert.deepEqual(result.reserved, []);
+    assert.equal(result.blocked[0].code, "HOST_PROFILE_UNAVAILABLE");
+    assert.equal(readTicket(cwd, "t-profile").route_id, "codex/default");
+  });
+
+  it("never dispatches built-in forbidden family tickets, including legacy tickets", () => {
+    for (const [index, route] of ["gpt-5.5-extra", "gpt-5.6-sol", "cursor/gpt-5.6-terra"].entries()) {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-policy-"));
+      publishRouteSnapshot(cwd, { models: [{ id: route.split("/").at(-1), namespaced: route, provider: route.includes("/") ? "cursor" : "openai" }] });
+      writeHostCapabilitySnapshot(cwd, { advertisedModels: [route], quotaCatalog: { reports: [] }, now: at(0) });
+      writeTicket(cwd, makeTicket(`t-forbidden-${index}`, { model_id: `${route}@high`, route_id: route, reasoning_effort: "high" }));
+      const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+      assert.deepEqual(result.reserved, []);
+      assert.equal(result.blocked[0].code, "SUBAGENT_MODEL_FAMILY_FORBIDDEN");
+      assert.equal(readTicket(cwd, `t-forbidden-${index}`).status, "errored");
+    }
   });
 });
 

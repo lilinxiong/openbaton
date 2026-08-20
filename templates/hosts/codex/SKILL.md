@@ -11,40 +11,47 @@ You are the director. Baton supports Codex only. It consumes exact OpenCodex rou
 
 1. **One front conversation.** The host (you) is the director. The user talks here only. Nesting depth is 1 — workers never spawn children.
 
-2. **Concrete tickets before dispatch.** First refine broad work into bounded units with an objective, deliverable, and done condition. Units become dispatch tickets (`baton spawn`, `baton apply`), queued FIFO. Queued is not running: the host reserves runnable tickets with `baton dispatch next --host codex --capacity <effective-host-capacity> --json` and executes each reserved spec itself.
+2. **Concrete units before selection.** First refine broad work into bounded units with an objective, deliverable, and done condition. `baton spawn/apply` turns units into model-selection proposals. Only user-approved proposals become FIFO tickets; queued is not running. The host reserves runnable tickets with `baton dispatch next --host codex --capacity <effective-host-capacity> --json` and executes each reserved spec itself.
 
 3. **Exact OpenCodex route or blocked.** OpenCodex live routes are the complete visible set. Baton joins exact provider/route + profile with AA capability evidence. Local aliases and route overrides do not exist. Every dispatch spec carries `route_id`/`model`, optional `reasoning_effort`, `fork_context=false`, `prompt`, and the ticket id.
    - No route on the spec → blocked (`NO_EXECUTABLE_ROUTE`). Ask the user to add or narrow a card/route.
+   - Before selection, sync the current `spawn_agent` model/profile surface with repeated `--model EXACT_ROUTE` and `--profile EXACT_ROUTE=EFFORT,...`. A route/profile must be supported by both OpenCodex and this Codex session; otherwise it is `HOST_ROUTE_UNAVAILABLE` or `HOST_PROFILE_UNAVAILABLE`.
    - Never inherit the parent/host model. Never fall back to another route or provider. Never silently pick.
-   - Keep every executable OpenCodex route family visible. Apply explicit session/Goal exclusions only to the current route decision; never persist them as a global ban.
+   - Keep every executable OpenCodex route family visible in the catalog. Built-in subagent policy forbids all `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider routes, variants, and reasoning profiles from candidates, explicit selection and dispatch. Apply other session/Goal exclusions only to the current route decision.
    - Unmapped routes remain visible as `unranked`: never auto-select them, but allow exact explicit selection.
    - Keep missing capability values unknown; never coerce them to zero or invent positioning.
 
-4. **Workers are Codex-native subagents.** Codex spawns in-process with `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Never shell out to another coding CLI. The Baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`.
+4. **Model disclosure and user confirmation are mandatory.** `baton spawn/apply` creates selection proposals, not tickets. For each delegated unit, disclose the preferred and policy-eligible candidate exact routes/profiles, strengths, task score, raw AA intelligence/coding/agentic scores, provider quota remaining/reset or explicit unknown reason, and current Codex callability. Summarize built-in family exclusions and catalog routes excluded by the host.
+   - Stop for the user's model approval after disclosure. Goal/execution approval does not count as model approval. The user may keep the preferred route or change to any disclosed callable exact route, including `unranked`.
+   - Only after the reply, use `baton selection approve PROPOSAL --confirm`, with `--model ID` or repeated `--route TASK=ID` for changes. Approval is immutable evidence in the ticket and Receipt.
+   - Missing confirmation, a stale host snapshot, changed source tasks, or an unavailable route blocks ticket creation. Never silently substitute.
 
-5. **Read-only by default; writes require a Receipt.** A write worker is allowed only when the dispatch spec says `mode=write` and carries an immutable `receipt_id`, non-empty `write_allowlist`, explicit `allowed_operations`, and a captured Git baseline. The worker prompt must repeat the scope and forbid all Git mutations. Missing/mismatched Receipt means blocked; never upgrade a read-only ticket in place. Every terminal path for a write ticket runs the parent Git safety audit, including error, timeout, and close.
+5. **Workers are Codex-native subagents.** Codex spawns in-process with `spawn_agent(model=<route_id>, reasoning_effort=<effort if present>, fork_context=false)`. Never shell out to another coding CLI. The Baton CLI owns tickets, queue, and lifecycle records only — it cannot call `spawn_agent`.
 
-6. **Concrete-first delegation with checkpointed exceptions.** Prefer `work_unit.kind=concrete`. Keep open-ended planning, architecture, strategy, and unresolved decision work on the director when practical. If parallel evidence work must remain `deliberative`, require `coordination.mode=checkpointed`; sync only phase/current result/next step/blocker or decision needed. Never sync hidden reasoning or tool output.
+6. **Read-only by default; writes require a Receipt.** A write worker is allowed only when the dispatch spec says `mode=write` and carries an immutable `receipt_id`, non-empty `write_allowlist`, explicit `allowed_operations`, and a captured Git baseline. The worker prompt must repeat the scope and forbid all Git mutations. Missing/mismatched Receipt means blocked; never upgrade a read-only ticket in place. Every terminal path for a write ticket runs the parent Git safety audit, including error, timeout, and close.
 
-7. **Unlimited logical queue, runtime-bounded physical slots.** The Codex session limit comes from host runtime/config and may change; never hard-code 6. Queue the rest. `AgentLimitReached` is backpressure, not ticket failure: defer the same ticket without consuming an attempt or degrading route health, and record the observed capacity. A bound agent keeps its slot through terminal business state until `close_agent` succeeds and `dispatch release` records it.
+7. **Concrete-first delegation with checkpointed exceptions.** Prefer `work_unit.kind=concrete`. Keep open-ended planning, architecture, strategy, and unresolved decision work on the director when practical. If parallel evidence work must remain `deliberative`, require `coordination.mode=checkpointed`; sync only phase/current result/next step/blocker or decision needed. Never sync hidden reasoning or tool output.
 
-8. **Main-context hygiene.** Concrete workers return a short conclusion only. Checkpointed workers may also send compact progress state. Tool dumps, traces, transcripts, and hidden reasoning stay in the worker. Conclusions come back through `baton dispatch complete <ticket> --text "..."`; progress comes through `baton dispatch progress`.
+8. **Unlimited logical queue, runtime-bounded physical slots.** The Codex session limit comes from host runtime/config and may change; never hard-code 6. Queue the rest. `AgentLimitReached` is backpressure, not ticket failure: defer the same ticket without consuming an attempt or degrading route health, and record the observed capacity. A bound agent keeps its slot through terminal business state until `close_agent` succeeds and `dispatch release` records it.
 
-9. **OpenSpec is optional and not reimplemented.**
+9. **Main-context hygiene.** Concrete workers return a short conclusion only. Checkpointed workers may also send compact progress state. Tool dumps, traces, transcripts, and hidden reasoning stay in the worker. Conclusions come back through `baton dispatch complete <ticket> --text "..."`; progress comes through `baton dispatch progress`.
+
+10. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - Select an exact route/profile per ready task and pass repeated `--route TASK=EXACT_ROUTE[@PROFILE]`; never persist this routing choice.
    - If absent: still fully usable via `baton spawn` + dispatch.
 
-10. **Conversation-to-Goal is automatic host policy.** During ordinary dialogue, keep discussing without side effects. When the user explicitly says phrases such as “按这个执行”, “转成 Goal”, or “开始进入实施流程”, compile the current conversation into `explicit/inferred/unresolved/excluded`, show a faithful Goal Draft, and request one approval. Do not require the user to invoke this skill manually. Unresolved items block activation. With OpenSpec, hand the approved business breakdown/plan to OpenSpec; without OpenSpec, the main agent owns Goal/Plan/Tasks. Baton owns only delegation/execution.
+11. **Conversation-to-Goal is automatic host policy.** During ordinary dialogue, keep discussing without side effects. When the user explicitly says phrases such as “按这个执行”, “转成 Goal”, or “开始进入实施流程”, compile the current conversation into `explicit/inferred/unresolved/excluded`, show a faithful Goal Draft, and request one execution approval. Do not require the user to invoke this skill manually. Unresolved items block activation. With OpenSpec, hand the approved business breakdown/plan to OpenSpec; without OpenSpec, the main agent owns Goal/Plan/Tasks. Then automatically sync host routes and prepare selection proposals; model confirmation is a separate mandatory approval.
 
-11. **Route data is local-first.** Read the persisted OpenCodex Route Snapshot plus local AA capability cache from `~/.baton/cache`. Refresh `baton routes` only when the OpenCodex catalog/config fingerprint changes or the user explicitly requests refresh. A card is executable only when its exact route is in the snapshot; missing route is blocked, missing AA mapping is `unranked`, never guessed. Capability evidence informs the main agent; it never makes the decision alone.
+12. **Route data is local-first.** Read the persisted OpenCodex Route Snapshot plus local AA capability cache from `~/.baton/cache`. Refresh `baton routes` only when the OpenCodex catalog/config fingerprint changes or the user explicitly requests refresh. Effective callability is the intersection with the session-scoped Codex host snapshot. Missing route is blocked, missing host route is `HOST_ROUTE_UNAVAILABLE`, and missing AA mapping is `unranked`, never guessed. Read quota through OpenCodex first. For an absent/unknown provider only, try an installed callable local CodexBar CLI; never overwrite OpenCodex reported windows. Persist only sanitized percentage/reset windows and `codexbar:...` provenance, never account/auth/raw-output fields. Missing reports stay unknown.
 
-12. **Baton state is user-global.** Shared cache lives under `~/.baton/cache`; workspace runtime lives under `~/.baton/workspaces/<canonical-root-sha256>`. Never create project-local `.baton` state.
+13. **Baton state is user-global.** Shared cache lives under `~/.baton/cache`; workspace runtime lives under `~/.baton/workspaces/<canonical-root-sha256>`. Never create project-local `.baton` state.
 
 ## Codex runtime protocol
 
 Lifecycle per ticket:
 
+0. **Sync and confirm.** Extract every exact model route and allowed reasoning effort currently advertised by this session's `spawn_agent`, run `baton host sync` with repeated `--model`/`--profile`, then create selection proposals. Surface all disclosure fields and wait for the user's confirmation or route changes. Run `baton selection approve ... --confirm` only after that reply. No approval means no ticket and no spawn.
 1. **Reserve.** `baton dispatch next --host codex --capacity <effective-host-capacity> --json` → `{ reserved, blocked, snapshot }`. Each reserved spec also carries `work_unit` and `coordination`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
 2. **Spawn.** For each reserved spec, call `spawn_agent` with `model=<route_id>`, `reasoning_effort` only when present, and `fork_context=false`. The prompt is self-contained. If the host returns `AgentLimitReached`, stop spawning that batch and run `baton dispatch defer <ticket> --code AGENT_LIMIT_REACHED --json` for each unbound reservation; when at least one Baton agent is open, also pass `--observed-capacity <currently-open-baton-agents>`. Do not consume attempts or switch routes.
 3. **Bind.** On successful spawn: `baton dispatch bind <ticket_id> --agent-id <agent_id> --host codex --json`. The ticket is now `running`.
@@ -82,6 +89,10 @@ baton dispatch status --json
 baton routes refresh
 baton routes status
 baton routes candidates
+baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]
+baton host status
+baton selection show PROPOSAL [--json]
+baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
 baton conversation promote --from-file PATH
 baton cards [--ranked|--unranked] [--provider ID] [--json]
 baton match <text>
@@ -93,8 +104,13 @@ baton status
 ## Red lines
 
 - Do not invent a default model. Do not inherit the parent/host model. No fallback across routes or providers.
+- Do not create or dispatch a ticket before the user confirms the disclosed model proposal.
+- Do not hide preferred/candidate routes, strengths, task/AA scores, quota remaining/unknown state, or host callability.
+- Do not overwrite reported OpenCodex quota with CodexBar or persist CodexBar account/auth/raw-output fields.
+- Do not equate OpenCodex catalog visibility with current Codex host availability.
 - Do not accept local model aliases or route overrides. `--model` must be an exact OpenCodex route/profile ID.
 - Do not turn a current session's route exclusions into global policy. Routes excluded in one session remain visible in later sessions.
+- Never include or dispatch any `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` provider route, variant, or reasoning profile as a subagent model. The built-in ban cannot be overridden by user confirmation or an old proposal/ticket.
 - The baton CLI never calls `spawn_agent`; only the Codex host runtime spawns, waits, and closes agents.
 - Never dispatch `deliberative` work with terminal-only coordination, serially idle-wait on active agents, or refill before `dispatch release`.
 - Read-only is the default. Write workers require an exact immutable Receipt and must never touch Git index/HEAD/branch/commit/rebase.

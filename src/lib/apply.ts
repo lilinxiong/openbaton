@@ -21,7 +21,7 @@ import { buildSpawnTicket, nextSpawnId, writeSpawn, readSpawn } from "./spawn.js
 import { buildReadOnlyReceipt, writeReceipt } from "./receipt.js";
 import { runsDir } from "./paths.js";
 import type { SpawnTicket } from "./spawn.js";
-import type { ModelCard } from "../types.js";
+import type { ModelCard, ModelSelectionApproval } from "../types.js";
 
 export type ApplyModelCard = ModelCard;
 
@@ -136,6 +136,7 @@ interface ApplyChangeInput {
   cards: ApplyModelCard[];
   selectCard?: (task: OpenSpecTask, cards: ApplyModelCard[]) => ApplyModelCard | undefined;
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
+  selectionApprovals?: Map<string, ModelSelectionApproval>;
 }
 
 function errorMessage(error: unknown): string {
@@ -229,13 +230,13 @@ export function planApply({ tasks, cards, selectCard, selectCards }: PlanApplyIn
   return { units, blocked };
 }
 
-function formatTaskPrompt(task: OpenSpecTask): string {
+export function formatTaskPrompt(task: OpenSpecTask): string {
   const num = task.number ? ` ${task.number}` : "";
   const section = task.section ? ` in section "${task.section}"` : "";
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, cards, selectCard, selectCards }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, cards, selectCard, selectCards, selectionApprovals = new Map() }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
@@ -276,6 +277,7 @@ export function applyChange({ cwd, change, cfg, cards, selectCard, selectCards }
         number: unit.id,
         section: unit.section,
       },
+      selection: selectionApprovals.get(unit.id) || null,
     });
     const receipt = buildReadOnlyReceipt({
       ticketId: id,
@@ -288,6 +290,7 @@ export function applyChange({ cwd, change, cfg, cards, selectCard, selectCards }
       },
       issuedAt: ticket.created_at,
       maxAttempts: ticket.max_attempts,
+      selection: selectionApprovals.get(unit.id) || null,
     });
     ticket.receipt_id = receipt.receipt_id;
     writeReceipt(cwd, receipt);

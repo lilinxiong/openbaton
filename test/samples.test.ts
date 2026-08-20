@@ -73,6 +73,28 @@ describe("built-in Baton capability samples", () => {
     ]);
   });
 
+  it("verifies mandatory disclosure, confirmation, user override, and current multi-provider coverage", () => {
+    const verifier = fs.readFileSync(path.join(samples, "verify.mjs"), "utf8");
+    for (const marker of [
+      "pending_confirmation",
+      "confirmed_by",
+      "changed_by_user",
+      "recommended_model_id",
+      "task_score",
+      "aa_scores",
+      "remaining_percent",
+      "codexbar:",
+      "HOST_ROUTE_UNAVAILABLE",
+      "SUBAGENT_MODEL_FAMILY_FORBIDDEN",
+      "builtin-no-gpt-5.5-gpt-5.6-sol-terra-v2",
+      "selectedProviders",
+    ]) assert.match(verifier, new RegExp(marker));
+    const expected = fs.readFileSync(path.join(samples, "EXPECTED.md"), "utf8");
+    assert.match(expected, /No ticket exists until the user reviews and confirms/);
+    assert.match(expected, /at least two providers/i);
+    assert.match(expected, /No `gpt-5\.5`, `gpt-5\.6-sol`, or `gpt-5\.6-terra`/);
+  });
+
   it("strict-validates the embedded OpenSpec change when OpenSpec is available", { skip: !openspecCliAvailable() }, () => {
     const result = spawnSync("openspec", ["validate", "incident-audit", "--strict", "--no-interactive"], {
       cwd: withOpenSpec,

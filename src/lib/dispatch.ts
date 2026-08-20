@@ -11,6 +11,9 @@ import { auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
+import { readHostCapabilitySnapshot } from "./host-capabilities.js";
+import { readRouteSnapshot } from "./routes.js";
+import { subagentModelPolicy } from "./model-policy.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 
@@ -22,7 +25,8 @@ function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
     ticket.prompt = buildWorkerPrompt(ticket.prompt, ticket.work_unit, ticket.coordination);
   }
   if (ticket.progress === undefined) ticket.progress = null;
-  if (Number(ticket.schema_version || 1) < 3) ticket.schema_version = 3;
+  if (ticket.selection === undefined) ticket.selection = null;
+  if (Number(ticket.schema_version || 1) < 4) ticket.schema_version = 4;
   return ticket;
 }
 
@@ -207,6 +211,7 @@ export interface DispatchSpec {
   coordination: SpawnTicket["coordination"];
   attempt: number;
   max_attempts: number;
+  selection: NonNullable<SpawnTicket["selection"]>;
 }
 
 function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id: string }, receipt: DelegationReceipt): DispatchSpec {
@@ -226,6 +231,7 @@ function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id
     coordination: ticket.coordination,
     attempt: ticket.attempt,
     max_attempts: ticket.max_attempts,
+    selection: ticket.selection!,
   };
 }
 
@@ -235,6 +241,10 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
   if (!ticket.route_id) {
     code = "NO_EXECUTABLE_ROUTE";
     message = `ticket ${ticket.id} has no executable route for this host`;
+  } else if (!subagentModelPolicy(ticket.route_id, ticket.model_id).allowed) {
+    const policy = subagentModelPolicy(ticket.route_id, ticket.model_id);
+    code = policy.code;
+    message = `ticket ${ticket.id}: ${policy.reason}`;
   } else if (ticket.fork_context !== false) {
     code = "FULL_CONTEXT_NOT_ALLOWED";
     message = `ticket ${ticket.id} must use fork_context=false`;
@@ -244,13 +254,35 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
   } else if (Number(ticket.attempt || 0) >= Number(ticket.max_attempts || 1)) {
     code = "ATTEMPT_BUDGET_EXHAUSTED";
     message = `ticket ${ticket.id} exhausted its attempt budget`;
-  } else if (!ticket.receipt_id) {
+  } else if (!ticket.selection || ticket.selection.confirmed_by !== "user" || ticket.selection.selected_model_id !== ticket.model_id) {
+    code = "MODEL_SELECTION_NOT_CONFIRMED";
+    message = `ticket ${ticket.id} has no valid user-confirmed model selection`;
+  } else {
+    const host = readHostCapabilitySnapshot(cwd);
+    const catalog = readRouteSnapshot(cwd);
+    if (!host || host.id !== ticket.selection.host_snapshot_id || !catalog || catalog.fingerprint !== host.catalog_fingerprint) {
+      code = "HOST_CAPABILITIES_STALE";
+      message = `ticket ${ticket.id} was not approved against the current Codex host snapshot`;
+    } else if (!host.advertised_models.includes(ticket.route_id)) {
+      code = "HOST_ROUTE_UNAVAILABLE";
+      message = `ticket ${ticket.id} route ${ticket.route_id} is absent from the current Codex spawn surface`;
+    } else if (ticket.reasoning_effort && !(host.advertised_profiles[ticket.route_id] || []).includes(ticket.reasoning_effort)) {
+      code = "HOST_PROFILE_UNAVAILABLE";
+      message = `ticket ${ticket.id} profile ${ticket.reasoning_effort} is absent from the current Codex spawn surface`;
+    }
+  }
+  if (!code && !ticket.receipt_id) {
     code = "RECEIPT_REQUIRED";
     message = `ticket ${ticket.id} has no Delegation Receipt`;
-  } else {
+  } else if (!code) {
     try {
       const receipt = readReceipt(cwd, ticket.receipt_id);
-      if (receipt.ticket_id !== ticket.id || receipt.route.route_id !== ticket.route_id || receipt.execution.mode !== ticket.mode) {
+      if (receipt.ticket_id !== ticket.id
+        || receipt.route.route_id !== ticket.route_id
+        || receipt.execution.mode !== ticket.mode
+        || !receipt.selection
+        || receipt.selection.approval_id !== ticket.selection!.approval_id
+        || receipt.selection.selected_model_id !== ticket.model_id) {
         code = "RECEIPT_MISMATCH";
         message = `ticket ${ticket.id} does not match its Delegation Receipt`;
       }

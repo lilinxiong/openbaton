@@ -249,6 +249,14 @@ export function buildRouteCandidates(cwd: string, capabilityDbPath: string): Rou
     const byProfile = new Map<string, StoredRouteMapping>();
     for (const mapping of routeMappings) if (!byProfile.has(mapping.profile)) byProfile.set(mapping.profile, mapping);
     if (!byProfile.has("")) byProfile.set("", { routeId: canonical, profile: "", aaSlug: "", mappingSource: "explicit", note: null });
+    // OpenCodex owns the callable profile surface. Keep every exact supported
+    // route@profile visible even when AA has no mapping for it; missing evidence
+    // is unranked/unknown, never a reason to erase a user-selectable host route.
+    for (const profile of route.reasoning_efforts) {
+      if (!byProfile.has(profile)) {
+        byProfile.set(profile, { routeId: canonical, profile, aaSlug: "", mappingSource: "explicit", note: null });
+      }
+    }
     for (const [profile, mapping] of byProfile) {
       if (profile && route.reasoning_efforts.length > 0 && !route.reasoning_efforts.includes(profile)) continue;
       const result = mapping.aaSlug

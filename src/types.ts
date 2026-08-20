@@ -14,6 +14,17 @@ export interface ModelCard {
   capability?: CardCapabilityEvidence;
 }
 
+export interface ModelSelectionApproval {
+  proposal_id: string;
+  approval_id: string;
+  approved_at: string;
+  confirmed_by: "user";
+  host_snapshot_id: string;
+  recommended_model_id: string | null;
+  selected_model_id: string;
+  changed_by_user: boolean;
+}
+
 export interface CardCapabilityEvidence {
   source: "artificial-analysis";
   ranked: boolean;

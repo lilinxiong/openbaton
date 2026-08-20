@@ -29,7 +29,7 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 
 ### Concrete-first 与进度同步
 
-- Ticket schema v3 固化 `work_unit.kind=concrete|deliberative`、objective、deliverable、done condition 与 coordination policy。
+- Ticket schema v4 固化 `work_unit.kind=concrete|deliberative`、objective、deliverable、done condition、coordination policy，以及用户确认过的 exact model selection evidence。
 - 具体执行任务默认 `terminal-only`；开放式或无法确定的任务按 `deliberative/checkpointed` 处理。
 - checkpoint 只保存 phase、current result、next step、blocker/decision needed；拒绝 tool dump，并限制长度。
 - director 优先把思考型工作留在主 agent 或拆成具体 unit；必须并行委派时使用 bounded fan-in wait，并把有意义的 phase change 写入 `dispatch progress`。
@@ -57,12 +57,21 @@ OpenBaton Codex 首版已经形成安全、可解释的动态多 subagent 闭环
 - 无 executable route 为 blocked；无 AA mapping 为 `unranked`，不猜分。
 - Baton 不接受本地 alias/override；route/profile 完整集合只来自 OpenCodex snapshot。
 
+### Codex host 交集与强制模型确认
+
+- `baton host sync` 记录当前 Codex task 实际公开的 exact model 与 reasoning profile，并与 OpenCodex Route Snapshot 求交集；catalog-only 与 host-profile-unavailable 候选保持可见但不可派发。
+- 普通请求触发 `spawn`/`apply` 时只生成 selection proposal，不生成 ticket；proposal 披露优选、完整候选、模型擅长项、任务分、原始 AA 指标、剩余额度或 unknown reason，以及当前可调用性。
+- 用户必须在同一任务中显式确认，可改选任一已披露且可调用的 exact route/profile。确认写入不可变 ticket/Receipt evidence；host snapshot 或任务源变化会使 proposal 失效。
+- 未确认、route/profile 不在当前 host 交集、Receipt 不一致时均 fail-closed；禁止静默 fallback。
+- 内置 subagent policy 永久排除 `gpt-5.5`、`gpt-5.6-sol` 与 `gpt-5.6-terra` 全系列（所有 provider route、variant、reasoning profile）。Catalog/card 仍可审计，但 proposal candidate、自动优选、显式改选、旧 proposal/ticket 和 dispatch 均不能绕过；proposal 单独记录 `SUBAGENT_MODEL_FAMILY_FORBIDDEN`。
+- Quota 按 provider 使用固定优先级：OpenCodex 有有效窗口时直接采用；仅缺失/unknown 时探测本机可调用的 CodexBar CLI；仍失败则保持 unknown。CodexBar fallback 只保存百分比、reset 和 `codexbar:...` provenance，不保存账号、认证、cookie/token、原始输出或原始错误，也不改变 OpenCodex 的 provider/auth/route 所有权。
+
 ### Dynamic Cards
 
 - OpenCodex live routes 直接生成 exact route/profile cards；本地 config 不增加、重命名或隐藏模型。
 - AA intelligence/coding/agentic、cost、throughput 和 latency 形成结构化 capability vector；定位标签是 percentile-derived inference。
-- 自动匹配只选择 ranked executable cards；unranked routes 保持可见，并允许 exact `--model` 显式选择。
-- 真实无 `--model` 任务选择并执行 `xai/grok-4.6@high`；OpenCodex 日志确认单 attempt、无 fallback。
+- 自动匹配只选择 ranked executable 且符合内置 subagent policy 的 cards；unranked routes 保持可见，除 `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` 禁用系列外允许 exact `--model` 显式选择。
+- 历史 RC 曾真实执行 `xai/grok-4.6@high` 并由 OpenCodex 日志确认单 attempt、无 fallback；这只是当次 host/catalog 快照证据，不代表当前 Codex task 仍公开该 route。
 
 ### Conversation-to-Goal
 
@@ -118,5 +127,5 @@ slot                = released
 - AA Free 数据库只保存在用户全局 `~/.baton/cache`，不进入项目 Git 工作树。
 - Benchmark 是主 agent 的证据，不是自动决策器。
 - Parent 始终拥有业务裁决、验收、测试与 Git。
-- OpenCodex catalog 的所有 executable routes 保持可见；session/Goal exclusions 仅在当前调度生效，不是全局 Claude 或 provider 禁令。
-- 当前 Dynamic Cards 覆盖完整 OpenCodex live catalog；用户 config 只保存 director 设置。
+- OpenCodex catalog 的所有 executable routes 保持可见；`gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` 是内置 subagent 资格禁令，其它 session/Goal exclusions 仅在当前调度生效，不是全局 Claude 或 provider 禁令。
+- Dynamic Cards 覆盖完整 OpenCodex live catalog；真正可派发集合还必须与当前 Codex task 的 model/profile surface 求交集。用户 config 只保存 director 设置。

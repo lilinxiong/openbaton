@@ -1,5 +1,7 @@
 # Baton Dynamic Director Architecture
 
+> 当前策略补充（2026-08-20）：OpenCodex catalog 继续完整可见，但 `gpt-5.5`、`gpt-5.6-sol` 与 `gpt-5.6-terra` 的所有 provider route、variant 和 reasoning profile 永久禁止进入 subagent 候选、显式选择或 dispatch。本文中的历史 route/fallback 讨论均受此内置门禁约束。
+
 状态：Architecture Decision / Draft for implementation
 
 日期：2026-08-18

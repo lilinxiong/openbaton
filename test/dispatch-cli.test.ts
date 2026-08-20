@@ -6,6 +6,7 @@ import path from "node:path";
 import { run } from "../src/cli.js";
 import { dispatchStatePath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function capture() {
@@ -20,6 +21,17 @@ async function command(argv, options) {
   return { code, stdout: stdout.text(), stderr: stderr.text() };
 }
 
+function syncHost(cwd, models) {
+  writeHostCapabilitySnapshot(cwd, { advertisedModels: models, quotaCatalog: { reports: [] } });
+}
+
+async function approvedSpawn(argv, options) {
+  const proposed = await command([...argv, "--json"], options);
+  if (proposed.code !== 0) return proposed;
+  const id = JSON.parse(proposed.stdout).id;
+  return command(["selection", "approve", id, "--confirm", "--json"], options);
+}
+
 describe("dispatch CLI", () => {
   it("queues tickets, binds a real agent, completes it, and refills FIFO", async () => {
     await withHome(async (home) => {
@@ -27,8 +39,9 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await command(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await command(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      syncHost(cwd, ["kimi/k3[1m]"]);
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(ticket.receipt_id, "rcpt-spn-0001-a1");
       const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
@@ -63,19 +76,20 @@ describe("dispatch CLI", () => {
     });
   });
 
-  it("blocks unavailable explicit routes before ticket creation and forbids manual conclude on schema v2+", async () => {
+  it("blocks unavailable exact routes before ticket creation and forbids manual conclude on current tickets", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      syncHost(cwd, ["kimi/k3[1m]"]);
       const unavailable = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(unavailable.code, 1);
       assert.match(unavailable.stderr, /not an exact route\/profile id|no executable route/);
       const bareAlias = await command(["spawn", "implement complex unit", "--model", "k3[1m]"], { cwd, env });
       assert.equal(bareAlias.code, 1);
       assert.match(bareAlias.stderr, /not an exact route\/profile id/);
-      assert.equal((await command(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });
       assert.equal(conclude.code, 1);
@@ -92,9 +106,10 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await command(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await command(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await command(["spawn", "implement third unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      syncHost(cwd, ["kimi/k3[1m]"]);
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement third unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
       const next = await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env });
       assert.equal(next.code, 0, next.stderr);
@@ -138,7 +153,8 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await command(["spawn", "analyze the lifecycle", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      syncHost(cwd, ["kimi/k3[1m]"]);
+      assert.equal((await approvedSpawn(["spawn", "analyze the lifecycle", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env })).code, 0);
 
       const deferred = await command(["dispatch", "defer", "spn-0001", "--code", "AGENT_LIMIT_REACHED", "--observed-capacity", "1", "--json"], { cwd, env });

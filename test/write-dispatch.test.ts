@@ -8,6 +8,7 @@ import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
 
 function sink() { return { write() { return true; } }; }
 function capture() {
@@ -34,10 +35,25 @@ function readTicket(cwd: string, id: string) {
   return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), id + ".json"), "utf8"));
 }
 
+function syncModel(cwd: string) {
+  publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+  writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3[1m]"], quotaCatalog: { reports: [] } });
+}
+
+async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]): Promise<void> {
+  const proposalOut = capture();
+  const proposed = await run([...args, "--json"], { cwd, env, stdout: proposalOut, stderr: proposalOut });
+  assert.equal(proposed, 0, proposalOut.text());
+  const proposal = JSON.parse(proposalOut.text());
+  const approvalOut = capture();
+  const approved = await run(["selection", "approve", proposal.id, "--confirm", "--json"], { cwd, env, stdout: approvalOut, stderr: approvalOut });
+  assert.equal(approved, 0, approvalOut.text());
+}
+
 async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
   await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
-  publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-  await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: sink(), stderr: sink() });
+  syncModel(cwd);
+  await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
   await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
   await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
 }
@@ -48,8 +64,8 @@ describe("write dispatch safety integration", () => {
       const cwd = fixture();
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
-      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: sink(), stderr: sink() });
+      syncModel(cwd);
+      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
       await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
@@ -66,8 +82,8 @@ describe("write dispatch safety integration", () => {
       const cwd = fixture();
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
-      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: sink(), stderr: sink() });
+      syncModel(cwd);
+      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
       await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
@@ -86,16 +102,12 @@ describe("write dispatch safety integration", () => {
       const cwd = fixture();
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
-      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      const survey = capture();
-      const surveyCode = await run(["spawn", "survey the repository structure", "--model", "kimi/k3[1m]"], { cwd, env, stdout: survey, stderr: survey });
-      assert.equal(surveyCode, 0, survey.text());
+      syncModel(cwd);
+      await approvedSpawn(cwd, env, ["spawn", "survey the repository structure", "--model", "kimi/k3[1m]"]);
       assert.ok(fs.existsSync(path.join(receiptsDir(cwd), "rcpt-spn-0001-a1.json")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
-      const write = capture();
-      const writeCode = await run(["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"], { cwd, env, stdout: write, stderr: write });
-      assert.equal(writeCode, 0, write.text());
+      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
       const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), "rcpt-spn-0002-a1.json"), "utf8"));
       assert.deepEqual(receipt.baseline.dirty_entries, []);
 

@@ -184,4 +184,19 @@ describe("OpenCodex Route Snapshot", () => {
     assert.deepEqual(candidates.map((item) => item.card.id), ["provider/one", "provider/two"]);
     assert.ok(candidates.every((item) => item.card.source === "dynamic"));
   });
+
+  it("keeps every OpenCodex-supported profile visible when AA has no mapping", () => {
+    const root = cwd();
+    publishRouteSnapshot(root, { models: [{
+      id: "model-a", provider: "provider", namespaced: "provider/model-a",
+      reasoningEfforts: ["low", "high"],
+    }] });
+    const candidates = buildRouteCandidates(root, path.join(root, "missing.sqlite3"));
+    assert.deepEqual(candidates.map((item) => item.card.id), [
+      "provider/model-a",
+      "provider/model-a@high",
+      "provider/model-a@low",
+    ]);
+    assert.ok(candidates.every((item) => item.executable && item.card.capability?.unranked));
+  });
 });

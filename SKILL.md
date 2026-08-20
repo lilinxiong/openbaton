@@ -14,45 +14,53 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 2. **Dynamic Cards.** OpenCodex live routes are the complete visible set. Baton joins each exact provider/route and mapped reasoning profile with local AA capability evidence at runtime.
    - Ranked cards carry structured intelligence/coding/agentic, cost, throughput, latency, provenance, and AA-derived positioning inference.
    - Unmapped routes remain visible as `unranked`; automatic matching cannot select them, while an exact explicit `--model` may.
-   - `~/.baton/config.toml` stores director settings only. Local model aliases, route overrides, and persisted model exclusions are forbidden.
-   - No subagent default or parent-model inherit. No match/tie → blocked; never silently pick.
-   - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary and never become a global family ban.
+   - `~/.baton/config.toml` stores director settings only. Local model aliases, route overrides, and user-configured model exclusions are forbidden. The product has one built-in subagent policy: every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile is forbidden from candidates, explicit selection, tickets, and dispatch.
+   - A catalog route/profile is only callable when it is also advertised by the current Codex `spawn_agent` surface. Before planning, silently sync that session-scoped surface with repeated `--model EXACT_ROUTE` and `--profile EXACT_ROUTE=EFFORT,...`; catalog-only routes remain `HOST_ROUTE_UNAVAILABLE`, unsupported profiles remain `HOST_PROFILE_UNAVAILABLE`.
+   - Read provider quota through OpenCodex first. When one provider is absent/unknown, and a local CodexBar CLI is installed and callable, query that provider as a fallback. OpenCodex reported windows always win. Persist only sanitized percentage/reset windows and a `codexbar:...` source; never persist CodexBar account identity, login method, credentials, raw output, or raw errors. Missing/failed quota stays `unknown`; never coerce it to zero or “enough”.
+   - No subagent default or parent-model inherit. No unique positive recommendation means manual choice is required; never silently pick.
+   - Keep provider routes distinct even when they expose the same model id. Session/Goal exclusions remain temporary. The built-in `gpt-5.5`/`gpt-5.6-sol`/`gpt-5.6-terra` ban is the only global family policy and must be disclosed separately from host unavailability.
    - Preserve OpenCodex's exact `namespaced` route. A visible route is spawnable only when it is not disabled and the requested reasoning profile is supported.
    - Recent host/route/profile/task-shape failures enter a bounded cooldown for automatic matching. Explicit selection remains possible; an existing ticket never falls back.
 
-3. **Concrete tickets before host-native dispatch.** Before `baton spawn/apply`, turn broad work into bounded units with an objective, deliverable, and done condition. `baton spawn/apply` writes a queued ticket plus immutable Delegation Receipt. The host reserves with `baton dispatch next`, calls its real in-process `spawn_agent`, then binds the returned agent ID. The CLI never claims it can call host tools. Do **not** shell out to coding CLI print mode.
+3. **Model disclosure and user confirmation are mandatory.** Before any ticket exists, turn broad work into bounded units with an objective, deliverable, and done condition. `baton spawn/apply` creates only an immutable selection proposal.
+   - For every delegated unit, disclose the preferred exact route/profile, every policy-eligible current-host candidate, model strengths, task score, raw AA intelligence/coding/agentic scores, provider quota remaining/reset or explicit unknown reason, and Codex callability. Also summarize built-in family exclusions and catalog routes excluded by the current host.
+   - Stop and ask the user to approve or change the proposal. Goal/execution approval is not model approval. The user may choose any disclosed callable exact route/profile, including an `unranked` route; never accept an alias.
+   - Only after the user's reply, run `baton selection approve PROPOSAL --confirm`, adding `--model ID` for standalone or repeated `--route TASK=ID` for OpenSpec changes. The approval is bound into the ticket and immutable Delegation Receipt.
+   - No confirmation, stale host snapshot, changed source task, or unavailable selected route means blocked. Never create a ticket early and never silently substitute another route.
+
+4. **Concrete tickets before host-native dispatch.** Approved selections create queued tickets plus immutable Delegation Receipts. The host reserves with `baton dispatch next`, calls its real in-process `spawn_agent`, then binds the returned agent ID. The CLI never claims it can call host tools. Do **not** shell out to coding CLI print mode.
    - No route or Receipt → blocked. Never inherit the parent model or fallback.
    - Use `fork_context=false`; nesting depth is 1.
    - Read-only is default. Writes require an explicit allowlist/operations Receipt and pass the parent Git safety gate on every terminal path, including worker error, timeout, or close.
    - Prefer `concrete` execution units. Keep open-ended reasoning on the director when practical. A necessary `deliberative` worker must use `checkpointed` coordination and sync phase/current result/next step/blocker without exposing hidden reasoning or tool logs.
 
-4. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
+5. **Simple vs complex is dynamic.** Decide per unit. You MAY do a tiny rename/typo-style unit yourself. Implementation, explore, refactor, and similar work always leaves. This is not a static L1/L3 table.
 
-5. **Unlimited logical spawn, host-bounded physical slots.** The host/session concurrency limit is runtime capability, not a hard-coded Baton constant. Queue the rest. `AgentLimitReached` is backpressure: defer the same ticket without consuming its attempt or degrading route health. A bound terminal agent still occupies a slot until `close_agent` succeeds and `dispatch release` records it. Never refuse a unit because the cap is full.
+6. **Unlimited logical spawn, host-bounded physical slots.** The host/session concurrency limit is runtime capability, not a hard-coded Baton constant. Queue the rest. `AgentLimitReached` is backpressure: defer the same ticket without consuming its attempt or degrading route health. A bound terminal agent still occupies a slot until `close_agent` succeeds and `dispatch release` records it. Never refuse a unit because the cap is full.
 
-6. **Main-context hygiene.** Concrete children return a short conclusion only. Checkpointed children may also return compact progress state, not transcripts. Tool dumps, traces, and hidden reasoning stay in the child. The director uses bounded fan-in waits across active workers and keeps doing ready director work instead of serially waiting on each child. Host lifecycle writes success through `baton dispatch complete`; write conclusions are accepted only after the parent safety gate passes.
+7. **Main-context hygiene.** Concrete children return a short conclusion only. Checkpointed children may also return compact progress state, not transcripts. Tool dumps, traces, and hidden reasoning stay in the child. The director uses bounded fan-in waits across active workers and keeps doing ready director work instead of serially waiting on each child. Host lifecycle writes success through `baton dispatch complete`; write conclusions are accepted only after the parent safety gate passes.
 
-7. **OpenSpec is optional and not reimplemented.**
+8. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
    - The director selects an exact route/profile per ready task and passes repeated `--route TASK=EXACT_ROUTE[@PROFILE]`; task routing is never stored in config.
    - If absent: still fully usable via `baton spawn`.
 
-8. **OpenCodex is consumed, not reimplemented.** It is resolved from Baton's package/runtime environment and owns provider auth, model discovery, and route execution. baton only schedules.
+9. **OpenCodex is consumed, not reimplemented.** It is resolved from Baton's package/runtime environment and owns provider auth, model discovery, primary quota reporting, and route execution. baton only schedules. Optional local CodexBar fallback is informational and never changes provider/auth/route ownership.
    - Baton has no login, account, token-refresh, OAuth, or provider-configuration command. Authentication is completed entirely through OpenCodex outside Baton.
    - Never ask the user for a base URL, API key, account token, or credential.
 
-9. **Capability data is local-first and replaceable.** Artificial Analysis is the first `CapabilityProvider`, not a routing oracle.
+10. **Capability data is local-first and replaceable.** Artificial Analysis is the first `CapabilityProvider`, not a routing oracle.
    - Ordinary dispatch reads `~/.baton/cache/capabilities/artificial-analysis.sqlite3`; it does not query AA.
    - Remote refresh is explicit and uses a mode-0600 temporary key file. The key is never pasted into chat, stored, logged, or sent to workers.
    - Join route + profile only through explicit canonical mappings. Missing or uncertain mappings remain `unranked`; never fuzzy-match or invent a score.
    - Capability vectors drive Dynamic Card positioning and task matching. Missing values remain unknown, never zero.
    - Capability evidence does not replace route health, quota, authorization, session policy, or final acceptance.
 
-10. **Conversation promotion is dynamic.** The host watches ordinary dialogue for explicit execution intent, builds a faithful `explicit/inferred/unresolved/excluded` Draft, and asks once for approval. The user does not manually invoke Baton. OpenSpec owns breakdown/plan when present; otherwise the main agent owns them.
+11. **Conversation promotion is dynamic and triggerless.** The host watches ordinary dialogue for explicit execution intent; the user does not manually invoke Baton or ask for subagents. Build a faithful `explicit/inferred/unresolved/excluded` Goal Draft and ask once for execution approval. After approved task decomposition, automatically sync the current host surface and create selection proposals. Model confirmation remains a separate mandatory approval because the user may change routes.
 
-11. **Route Snapshot gates executability.** Join cards with the persisted OpenCodex catalog fingerprint and local capability cache. Legacy snapshots and OpenCodex runtime-version changes refresh before planning; otherwise discovery remains local-first and explicit. Missing executable route is blocked; missing capability mapping is `unranked`.
+12. **Route Snapshot gates executability.** Join cards with the persisted OpenCodex catalog fingerprint, current Codex host snapshot, and local capability cache. Legacy snapshots and OpenCodex runtime-version changes refresh before planning; otherwise discovery remains local-first and explicit. Missing executable route is blocked; missing host route is `HOST_ROUTE_UNAVAILABLE`; missing capability mapping is `unranked`.
 
-12. **Baton state is user-global.** Shared cache lives under `~/.baton/cache`; workspace runtime lives under `~/.baton/workspaces/<canonical-root-sha256>`. Never create a project-local `.baton` directory.
+13. **Baton state is user-global.** Shared cache lives under `~/.baton/cache`; workspace runtime lives under `~/.baton/workspaces/<canonical-root-sha256>`. Never create a project-local `.baton` directory.
 
 ## Commands
 
@@ -61,9 +69,13 @@ baton capabilities refresh --provider aa --key-file PATH
 baton capabilities status
 baton capabilities show ROUTE [--profile PROFILE]
 baton cards [--ranked|--unranked] [--provider ID] [--json]
+baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]
+baton host status
 baton match <text>
 baton spawn <text> [--model ID]
 baton apply [change] [--route TASK=EXACT_ROUTE[@PROFILE]]
+baton selection show PROPOSAL [--json]
+baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
@@ -80,7 +92,11 @@ baton status
 ## Red lines
 
 - Do not invent a default model.
+- Do not create, reserve, or spawn a ticket before the user confirms the disclosed selection proposal.
+- Do not treat OpenCodex catalog visibility as proof that the current Codex host can spawn a route.
+- Do not hide preferred/candidate routes, task and AA scores, strengths, quota remaining/unknown state, or callability from the user.
 - Do not accept local model aliases or route overrides; explicit selection requires an exact OpenCodex route/profile ID.
+- Never include or dispatch any `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` provider route, variant, or reasoning profile as a subagent model. This built-in family ban cannot be overridden by user confirmation or an old proposal/ticket.
 - Do not copy AA scores into config or invent positioning for unranked routes.
 - Do not fallback across routes/providers or inherit the parent model.
 - Workers never own Git index, HEAD, branch, commit, push, or rebase.
@@ -88,5 +104,6 @@ baton status
 - Do not reimplement OpenSpec.
 - Do not reimplement OpenCodex OAuth, account pool, dashboard, or proxy.
 - Do not expose a Baton login command or write provider-account configuration.
+- Do not overwrite reported OpenCodex quota with CodexBar, invoke CodexBar when no provider quota is missing, or persist CodexBar account/auth/raw-output fields.
 - Do not ask the user to paste a base URL or API key.
 - Do not dump worker tool output into this conversation.
