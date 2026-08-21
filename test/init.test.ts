@@ -27,6 +27,9 @@ describe("Codex-only init/update", () => {
       const directorSkill = fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8");
       const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
       for (const skill of [directorSkill, hostSkill]) {
+        assert.match(skill, /^description: .*mechanical ops including build, test, lint, typecheck/m);
+        assert.match(skill, /## Entry routing/);
+        assert.match(skill, /baton spawn <unchanged-request>/);
         assert.match(skill, /current-conversation inline-only/i);
         assert.match(skill, /Never open.*browser.*file:\/\//i);
       }

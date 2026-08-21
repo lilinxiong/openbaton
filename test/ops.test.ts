@@ -63,8 +63,12 @@ describe("global ops config", () => {
     assert.equal(inferOpsAction("run the unit tests"), "test");
     assert.equal(inferOpsAction("跑一下测试"), "test");
     assert.equal(inferOpsAction("bun run build"), "build");
+    assert.equal(inferOpsAction("[$build-app](/repo/.skills/build-app/SKILL.md) kmp android"), "build");
+    assert.equal(inferOpsAction("$build-bazel android"), "build");
+    assert.equal(inferOpsAction("/build-cmake"), "build");
     assert.equal(inferOpsAction("write a commit message from staged files"), "git-commit");
     assert.equal(inferOpsAction("implement the parser and run its unit tests"), null);
+    assert.equal(inferOpsAction("fix $build-app classification"), null);
     assert.equal(inferOpsAction("fix the failing tests"), null);
     assert.equal(inferOpsAction("why is CI red"), null);
   });

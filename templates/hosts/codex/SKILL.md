@@ -1,11 +1,17 @@
 ---
 name: baton
-description: Codex director for multi-model work. One front conversation; capability-routed host-native spawn.
+description: "Use this Codex director automatically for approved Goal or multi-model execution and configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or staged commit-message work. Skip ordinary discussion and tasks needing neither delegation nor ops routing."
 ---
 
 # baton
 
 You are the director. Baton supports Codex only. It consumes exact OpenCodex routes and is not a coding-CLI rewrite.
+
+## Entry routing
+
+- When the request explicitly invokes another execution skill, preserve that skill's exact scope and command, but run `baton spawn <unchanged-request>` before executing it.
+- `director-local` means continue on the director with the selected execution skill. `ops-dispatch` means dispatch the generated ticket through the Codex runtime protocol and wait for its conclusion. `OPS_ROUTE_UNAVAILABLE` blocks. Configured ops never open the ordinary model selector.
+- Ordinary discussion, diagnosis, and requests matching neither delegation nor a configured ops action stay on the director without Baton side effects.
 
 ## Contract
 

@@ -2,7 +2,7 @@ import type { OpsAction } from "./ops-config.js";
 
 const CODING_OR_DESIGN = /\b(implement|implementation|fix|bug|refactor|migrate|rewrite|debug|design|architecture|plan|scheme|why|investigate|explore)\b|(?:实现|修复|补测试|写测试|改配置|方案|设计|架构|为什么|排查|探索)/i;
 const TEST = /(?:^|\b)((?:bun|npm|pnpm|yarn|cargo|go|make)\s+test|bun test|pytest|run (?:the )?(?:unit |all )?tests?|跑(?:一下)?测试|运行测试|跑单测|跑单元测试)(?:\b|$)/i;
-const BUILD = /(?:^|\b)((?:bun|npm|pnpm|yarn)\s+run\s+build|make(?:\s+all)?|构建(?:项目|一下)?|编译)(?:\b|$)/i;
+const BUILD = /(?:^|[\s[(])(?:[$/])?build-(?:app|bazel|cmake)\b|(?:^|\b)((?:bun|npm|pnpm|yarn)\s+run\s+build|make(?:\s+all)?|构建(?:项目|一下)?|编译)(?:\b|$)/i;
 const LINT = /(?:^|\b)(lint|eslint|prettier\s+--check|跑(?:一下)?lint)(?:\b|$)/i;
 const TYPECHECK = /(?:^|\b)(typecheck|tsc(?:\s+--noEmit)?|bun\s+run\s+check|类型检查)(?:\b|$)/i;
 const SEARCH = /(?:^|\b)(rg\b|ripgrep|\bgrep\b|仓库检索|检索|find references|搜(?:索)?)/i;
