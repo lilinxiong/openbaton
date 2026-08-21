@@ -35,7 +35,7 @@ The user talks to Codex as usual. The director runs Baton; the user does not hav
 6. **Dispatch in-process.** Codex reserves with `baton dispatch next`, calls host-native `spawn_agent`, binds the returned agent id, then writes exactly one terminal result. `close_agent` plus `dispatch release` frees the physical slot; FIFO refill follows.
 7. **Keep the front conversation clean.** Concrete workers return one short conclusion. Deliberative workers may checkpoint phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay in the child.
 
-Mechanical ops can skip the selector when `<git-root>/.baton.toml` names a currently callable route. Empty means the director runs that class itself.
+Mechanical ops can skip the selector when the user-global `~/.baton/config.toml` names a currently callable route. Empty means the director runs that class itself.
 
 ## Rules that stay true
 
@@ -76,9 +76,9 @@ Quota precedence is `OpenCodex reported > local CodexBar fallback > unknown`. Co
 
 The selector is inline in the current Codex conversation and is presented in Chinese. One request produces one consolidated selector: a global Provider control first, every candidate route/profile second, all tasks grouped by path third, and one Submit last. Multiple workspace proposals use `baton selection render-bundle`. Codex translates English source tasks into Chinese display labels via `--task-label`; those labels never rewrite the source request, task, or fingerprint. Codex must emit the single returned `inline_content_reference` in the same reply. It must not open a browser, navigate to `file://`, show a file link, or create a separate selector surface. If inline rendering is unavailable, the same consolidated Chinese disclosure stays as text in this conversation.
 
-## Project ops routes
+## Global ops routes
 
-`<git-root>/.baton.toml` stores optional exact routes for two mechanical classes. There is no built-in default.
+`~/.baton/config.toml` stores optional exact routes for two mechanical classes under `[ops.runner]` and `[ops.longctx]`. The same choices apply in every workspace. There is no built-in default.
 
 | Class | When it runs | Empty means |
 | --- | --- | --- |
@@ -101,11 +101,11 @@ No fuzzy model matching. Missing metrics stay unknown. Capability evidence does 
 
 ## State
 
-Baton never creates a project-local `.baton/` runtime directory. Project ops policy is the hidden file `<git-root>/.baton.toml`.
+Baton never creates project-local `.baton/` runtime state or a project `.baton.toml`. Mechanical ops policy shares the user-global `~/.baton/config.toml` with director settings.
 
 Under `~/.baton`:
 
-- `config.toml` and `SKILL.md` — user-global director settings and skill
+- `config.toml` and `SKILL.md` — user-global director/ops settings and skill
 - `cache/` — shared OpenCodex Route Snapshot and capability data
 - `workspaces/<sha256-of-canonical-root>/` — tickets, Receipts, runs, locks, and remembered host capacity
 - `workspaces/<sha256-of-canonical-root>/selections/` — pending and approved model disclosures
@@ -147,7 +147,7 @@ baton conversation promote --from-file PATH
 baton status
 ```
 
-`baton update` refreshes the installed Codex skill and merges director defaults. `~/.baton/config.toml` stores concurrency and depth only; every executable route still comes from OpenCodex.
+`baton update` refreshes the installed Codex skill and merges global director/ops defaults without replacing configured ops routes. `~/.baton/config.toml` stores concurrency, depth, and the optional mechanical-route choices; every route value is still an exact OpenCodex route.
 
 ## Samples
 

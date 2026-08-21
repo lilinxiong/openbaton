@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { canonicalWorkspaceRoot } from "./paths.js";
-import { configuredRoute, loadProjectOpsConfig, type OpsAction, type OpsProfileId } from "./ops-config.js";
+import { loadConfig } from "./config.js";
+import { configuredRoute, type OpsAction, type OpsProfileId } from "./ops-config.js";
 import { inferOpsAction } from "./ops-task.js";
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
 import { readHostCapabilitySnapshot } from "./host-capabilities.js";
@@ -46,10 +47,15 @@ function cardForRoute(cards: ModelCard[], routeId: string, cwd: string): ModelCa
     || null;
 }
 
-export function resolveOpsDispatch(cwd: string, description: unknown, cards: ModelCard[]): OpsResolution {
+export function resolveOpsDispatch(
+  cwd: string,
+  description: unknown,
+  cards: ModelCard[],
+  { env }: { env?: NodeJS.ProcessEnv } = {},
+): OpsResolution {
   const action = inferOpsAction(description);
   if (!action) return { kind: "not-ops" };
-  const configured = configuredRoute(loadProjectOpsConfig(cwd), action);
+  const configured = configuredRoute(loadConfig(cwd, { env }).ops, action);
   if (!configured) {
     return { kind: "director", action, reason: "ops route is empty; director executes this mechanical unit" };
   }

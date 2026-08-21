@@ -9,3 +9,14 @@
 max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1
+
+# Optional user-global routes for mechanical work. Empty means the director
+# executes that class. Every non-empty value is an exact OpenCodex route.
+[ops.runner]
+route = ""
+actions = ["test", "build", "lint", "typecheck"]
+
+[ops.longctx]
+route = ""
+min_context_tokens = 1048576
+actions = ["search", "digest", "git-summarize", "git-commit"]

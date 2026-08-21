@@ -59,10 +59,10 @@ Built-in subagent policy forbids every gpt-5.5, gpt-5.6-sol, and gpt-5.6-terra r
 
 Usage:
   baton init [--force]                initialize Baton + Codex skill
-  baton update                        refresh Codex skill + director defaults
+  baton update                        refresh Codex skill + global config defaults
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish complete current Codex host surface
-  baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]  project ops routes (.baton.toml)
+  baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]  global ops routes (~/.baton/config.toml)
   baton match <text>                disclose preferred/candidate models without creating work
   baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  create one request-level model-selection proposal (no ticket)
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
@@ -172,7 +172,7 @@ async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: N
 
 function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   const result = updateProject(cwd, { env });
-  stdout.write("updated baton project files\n");
+  stdout.write("updated Baton global files\n");
   for (const a of result.actions) stdout.write(`  ${a}\n`);
   return 0;
 }
@@ -287,7 +287,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     return 0;
   }
   if (!explicitModel && !writePathsEarly.length) {
-    const ops = resolveOpsDispatch(cwd, text, allCards);
+    const ops = resolveOpsDispatch(cwd, text, allCards, { env });
     if (ops.kind === "director") {
       stdout.write(`director-local: ${ops.reason}\n`);
       stdout.write(`unit: ${text}\n`);
@@ -376,7 +376,7 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     const requested = routeAssignments.get(task.number) || null;
     let directorLocal = directorMayRun(task.description);
     if (!requested && !directorLocal) {
-      const ops = resolveOpsDispatch(cwd, task.description, cards);
+      const ops = resolveOpsDispatch(cwd, task.description, cards, { env });
       if (ops.kind === "unavailable") throw new Error(`${task.number}: ${ops.reason}`);
       if (ops.kind === "director" || ops.kind === "empty-index") directorLocal = true;
       else if (ops.kind === "dispatch") {

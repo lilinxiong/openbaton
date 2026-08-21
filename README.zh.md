@@ -35,7 +35,7 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 6. **进程内 dispatch。** Codex 用 `baton dispatch next` 预留，调用 host-native `spawn_agent`，bind 返回的 agent id，然后只写一次终态。`close_agent` 再加 `dispatch release` 才释放物理槽位，FIFO 补位。
 7. **前台保持干净。** concrete worker 只回短结论；deliberative worker 可以 checkpoint phase、current result、next step、blocker。工具倾倒和隐藏推理留在子上下文。
 
-机械任务在仓库根 `.baton.toml` 已配置且当前可调用时，可以跳过选择器。空配置表示该类由 director 自己跑。
+机械任务在用户全局 `~/.baton/config.toml` 已配置且当前可调用时，可以跳过选择器。空配置表示该类由 director 自己跑。
 
 ## 始终成立的约束
 
@@ -76,9 +76,9 @@ Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。C
 
 选择器只出现在当前 Codex 对话里，并且是中文优先。一次请求只给一张汇总选择器：先统一选 Provider，再看全部 exact route/profile，然后集中分配各路径任务，最后一个 Submit。多个 workspace proposal 使用 `baton selection render-bundle`。英文源 task 必须通过 `--task-label` 提供忠实的中文展示名；这些 label 只影响展示，不改原始 request、task 或 fingerprint。Codex 必须在同一条回复里发出唯一的 `inline_content_reference`。禁止打开浏览器、跳转 `file://`、暴露文件链接，或另开 selector 页面/窗口/任务。内联渲染不可用时，完整的汇总中文披露仍留在本对话文本里。
 
-## 项目 ops 配置
+## 全局 ops 配置
 
-仓库根的 `.baton.toml` 保存两类机械任务的可选 exact route。没有内置默认。
+`~/.baton/config.toml` 通过 `[ops.runner]` 和 `[ops.longctx]` 保存两类机械任务的可选 exact route，同一份选择作用于所有 workspace。没有内置默认。
 
 | 类别 | 何时使用 | 空表示 |
 | --- | --- | --- |
@@ -101,11 +101,11 @@ baton capabilities show gpt-5.6-luna --profile high
 
 ## 状态目录
 
-Baton 不再生成项目内 `.baton/` 运行时目录。项目 ops 策略是仓库根的隐藏文件 `.baton.toml`。
+Baton 不生成项目内 `.baton/` 运行时目录，也不再读取或生成项目 `.baton.toml`。机械任务策略与 director 设置共用用户全局 `~/.baton/config.toml`。
 
 `~/.baton` 下：
 
-- `config.toml`、`SKILL.md`：用户全局 director 设置和 skill
+- `config.toml`、`SKILL.md`：用户全局 director/ops 设置和 skill
 - `cache/`：共享的 OpenCodex Route Snapshot 与 capability 数据
 - `workspaces/<canonical-root-sha256>/`：ticket、Receipt、run、lock 和记住的 host capacity
 - `workspaces/<canonical-root-sha256>/selections/`：待确认 / 已确认的模型披露
@@ -147,7 +147,7 @@ baton conversation promote --from-file PATH
 baton status
 ```
 
-`baton update` 会刷新已安装的 Codex skill，并合并 director 默认值。`~/.baton/config.toml` 只保存并发和深度；所有可执行 route 仍来自 OpenCodex。
+`baton update` 会刷新已安装的 Codex skill，并合并全局 director/ops 默认值，不覆盖已经选择的 ops route。`~/.baton/config.toml` 保存并发、深度和可选机械任务 route；其中的 route 仍必须是 OpenCodex exact route。
 
 ## Samples
 

@@ -6,7 +6,7 @@ import path from "node:path";
 import { initProject } from "../src/commands/init.js";
 import { updateProject } from "../src/commands/update.js";
 import { HOST_SKILL_REL } from "../src/lib/hosts.js";
-import { loadConfig } from "../src/lib/config.js";
+import { emptyConfig, loadConfig } from "../src/lib/config.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function tmp() {
@@ -30,9 +30,7 @@ describe("Codex-only init/update", () => {
         assert.match(skill, /current-conversation inline-only/i);
         assert.match(skill, /Never open.*browser.*file:\/\//i);
       }
-      assert.deepEqual(loadConfig(cwd, { env }), {
-        director: { max_concurrent: 4, max_depth: 1 },
-      });
+      assert.deepEqual(loadConfig(cwd, { env }), emptyConfig());
       for (const dir of [".baton", ".codex", ".claude", ".cursor", ".agents"]) {
         assert.ok(!fs.existsSync(path.join(cwd, dir)), dir);
       }
@@ -63,12 +61,20 @@ describe("Codex-only init/update", () => {
       const env = fakeEnv(home);
       await initProject(cwd, { env });
       const config = path.join(home, ".baton", "config.toml");
-      fs.writeFileSync(config, `[director]\nmax_concurrent = 2\nmax_depth = 1\n\n[[models]]\nid = "legacy"\nroute_id = "provider/model"\nstrengths = "legacy alias"\n`);
+      fs.writeFileSync(config, `[director]\nmax_concurrent = 2\nmax_depth = 1\n\n[ops.runner]\nroute = "mimo/mimo-v2.5-pro"\nactions = ["test", "build", "lint", "typecheck"]\n\n[ops.longctx]\nroute = ""\nmin_context_tokens = 1048576\nactions = ["search", "digest", "git-summarize", "git-commit"]\n\n[[models]]\nid = "legacy"\nroute_id = "provider/model"\nstrengths = "legacy alias"\n`);
       const skill = path.join(home, HOST_SKILL_REL.codex);
       fs.writeFileSync(skill, "OLD\n");
       const result = updateProject(cwd, { env });
       assert.deepEqual(loadConfig(cwd, { env }), {
         director: { max_concurrent: 2, max_depth: 1 },
+        ops: {
+          runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
+          longctx: {
+            route: "",
+            min_context_tokens: 1048576,
+            actions: ["search", "digest", "git-summarize", "git-commit"],
+          },
+        },
       });
       assert.doesNotMatch(fs.readFileSync(config, "utf8"), /\[\[models\]\]|legacy|route_id/);
       assert.match(fs.readFileSync(skill, "utf8"), /Baton supports Codex only/);

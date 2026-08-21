@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, skillPath, configPath, displayHomePath } from "../lib/paths.js";
-import { loadConfig, saveConfig, normalizeConfig, isUnknownRecord } from "../lib/config.js";
+import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
 
@@ -15,9 +15,9 @@ export interface UpdateProjectResult {
 }
 
 /**
- * Refresh Baton-owned Codex files and director settings.
+ * Refresh Baton-owned Codex files and user-global director/ops settings.
  * Refreshes installed host SKILL copies. Does not install new hosts.
- * Director files live in ~/.baton. Never creates project .baton.
+ * Configuration lives in ~/.baton. Never creates project-local Baton config or runtime state.
  */
 export function updateProject(cwd: string, options: UpdateProjectOptions = {}): UpdateProjectResult {
   const { forceSkill = true, env } = options;
@@ -35,17 +35,21 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
 
   const destConfig = configPath(cwd, { env });
   const tmpl = parseToml(fs.readFileSync(path.join(tmplRoot, "templates", "config.toml"), "utf8"));
-  const tmplDirector = isUnknownRecord(tmpl.director) ? tmpl.director : {};
+  const defaults = normalizeConfig(tmpl);
   if (!fs.existsSync(destConfig)) {
     fs.copyFileSync(path.join(tmplRoot, "templates", "config.toml"), destConfig);
     actions.push(`wrote ${displayHomePath(destConfig, { cwd, env })} (was missing)`);
   } else {
     const current = loadConfig(cwd, { env });
     const merged = normalizeConfig({
-      director: { ...tmplDirector, ...current.director },
+      director: { ...defaults.director, ...current.director },
+      ops: {
+        runner: { ...defaults.ops.runner, ...current.ops.runner },
+        longctx: { ...defaults.ops.longctx, ...current.ops.longctx },
+      },
     });
     saveConfig(cwd, merged, { env });
-    actions.push(`merged director defaults into ${displayHomePath(destConfig, { cwd, env })} (all routes come from OpenCodex)`);
+    actions.push(`merged global director/ops defaults into ${displayHomePath(destConfig, { cwd, env })} (all routes come from OpenCodex)`);
   }
 
   const hosts = refreshInstalledHostSkills(cwd, { env });

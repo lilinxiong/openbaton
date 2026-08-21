@@ -6,12 +6,13 @@ import path from "node:path";
 import { run } from "../src/cli.js";
 import { reserveNext } from "../src/lib/dispatch.js";
 import { inferOpsAction } from "../src/lib/ops-task.js";
-import { loadProjectOpsConfig, saveProjectOpsConfig } from "../src/lib/ops-config.js";
+import { emptyConfig, loadConfig, saveConfig } from "../src/lib/config.js";
+import type { OpsConfig } from "../src/lib/ops-config.js";
 import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
 import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
-import { projectOpsConfigPath } from "../src/lib/paths.js";
+import { configPath } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { parseToml } from "../src/lib/toml.js";
 
@@ -44,7 +45,13 @@ function setupOpsWorkspace() {
   return cwd;
 }
 
-describe("project ops config", () => {
+function saveOpsConfig(cwd: string, env: NodeJS.ProcessEnv, ops: OpsConfig) {
+  let current = emptyConfig();
+  if (fs.existsSync(configPath(cwd, { env }))) current = loadConfig(cwd, { env });
+  saveConfig(cwd, { ...current, ops }, { env });
+}
+
+describe("global ops config", () => {
   it("classifies mechanical units fail-closed", () => {
     assert.equal(inferOpsAction("bun test"), "test");
     assert.equal(inferOpsAction("run the unit tests"), "test");
@@ -56,27 +63,46 @@ describe("project ops config", () => {
     assert.equal(inferOpsAction("why is CI red"), null);
   });
 
-  it("writes a hidden .baton.toml with empty routes and no defaults", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-file-"));
-    const empty = loadProjectOpsConfig(cwd);
-    assert.equal(empty.runner.route, "");
-    assert.equal(empty.longctx.route, "");
-    const file = saveProjectOpsConfig(cwd, empty);
-    assert.equal(path.basename(file), ".baton.toml");
-    assert.equal(file, projectOpsConfigPath(cwd));
-    const parsed = parseToml(fs.readFileSync(file, "utf8"));
-    assert.equal((parsed.ops as { runner: { route: string } }).runner.route, "");
-    assert.equal((parsed.ops as { longctx: { route: string } }).longctx.route, "");
+  it("stores empty routes in the shared ~/.baton/config.toml", () => {
+    withHome((home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-file-"));
+      const otherCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-other-"));
+      const env = fakeEnv(home);
+      const empty = emptyConfig();
+      const file = saveConfig(cwd, empty, { env });
+      assert.equal(file, path.join(home, ".baton", "config.toml"));
+      const parsed = parseToml(fs.readFileSync(file, "utf8"));
+      assert.equal((parsed.ops as { runner: { route: string } }).runner.route, "");
+      assert.equal((parsed.ops as { longctx: { route: string } }).longctx.route, "");
+      assert.deepEqual(loadConfig(otherCwd, { env }).ops, empty.ops);
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton.toml")));
+      assert.ok(!fs.existsSync(path.join(otherCwd, ".baton.toml")));
+    });
   });
 
   it("filters runner vs longctx from the current host intersection", () => {
-    const cwd = setupOpsWorkspace();
-    const runner = listOpsRouteChoices(cwd, "runner", []);
-    const longctx = listOpsRouteChoices(cwd, "longctx", []);
-    assert.deepEqual(runner.map((item) => item.route_id).sort(), ["kimi/k3", "mimo/mimo-v2.5-pro"]);
-    assert.ok(runner.every((item) => item.route_id !== "kimi/k3[1m]"));
-    assert.ok(!runner.some((item) => item.route_id.includes("tts") || item.route_id.includes("sol")));
-    assert.deepEqual(longctx.map((item) => item.route_id).sort(), ["alibaba-token-plan/glm-5.2", "kimi/k3[1m]"]);
+    withHome(() => {
+      const cwd = setupOpsWorkspace();
+      const runner = listOpsRouteChoices(cwd, "runner", []);
+      const longctx = listOpsRouteChoices(cwd, "longctx", []);
+      assert.deepEqual(runner.map((item) => item.route_id).sort(), ["kimi/k3", "mimo/mimo-v2.5-pro"]);
+      assert.ok(runner.every((item) => item.route_id !== "kimi/k3[1m]"));
+      assert.ok(!runner.some((item) => item.route_id.includes("tts") || item.route_id.includes("sol")));
+      assert.deepEqual(longctx.map((item) => item.route_id).sort(), ["alibaba-token-plan/glm-5.2", "kimi/k3[1m]"]);
+    });
+  });
+
+  it("ignores a legacy project .baton.toml", async () => {
+    await withHome(async (home) => {
+      const cwd = setupOpsWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      fs.writeFileSync(path.join(cwd, ".baton.toml"), "[ops.runner]\nroute = \"mimo/mimo-v2.5-pro\"\n", "utf8");
+      const out = capture();
+      assert.equal(await run(["spawn", "bun test"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      assert.match(out.text(), /director-local: ops route is empty/);
+      assert.equal(loadConfig(cwd, { env }).ops.runner.route, "");
+    });
   });
 
   it("keeps mechanical work on the director when ops routes are empty", async () => {
@@ -95,12 +121,12 @@ describe("project ops config", () => {
     await withHome(async (home) => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
-      saveProjectOpsConfig(cwd, {
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
         runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
         longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
       });
       const out = capture();
-      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       assert.equal(await run(["spawn", "bun test", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
       assert.match(out.text(), /ops-dispatch: runner test/);
       const ticket = JSON.parse(out.text().slice(out.text().indexOf("{")));
@@ -114,11 +140,11 @@ describe("project ops config", () => {
     await withHome(async (home) => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
-      saveProjectOpsConfig(cwd, {
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
         runner: { route: "xai/grok-4.6", actions: ["test", "build", "lint", "typecheck"] },
         longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
       });
-      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       const out = capture();
       assert.equal(await run(["spawn", "bun test"], { cwd, env, stdout: out, stderr: out }), 1);
       assert.match(out.text(), /OPS_ROUTE_UNAVAILABLE/);
@@ -130,6 +156,9 @@ describe("project ops config", () => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const before = loadConfig(cwd, { env });
+      before.director.max_concurrent = 2;
+      saveConfig(cwd, before, { env });
       const out = capture();
       assert.equal(await run([
         "config", "--runner", "mimo/mimo-v2.5-pro", "--longctx", "-",
@@ -153,34 +182,40 @@ describe("project ops config", () => {
       assert.match(out.text(), /0\. （空：由主 agent 执行）/);
       assert.match(out.text(), /runner: mimo\/mimo-v2\.5-pro/);
       assert.match(out.text(), /longctx: \(empty; director\)/);
-      const cfg = loadProjectOpsConfig(cwd);
-      assert.equal(cfg.runner.route, "mimo/mimo-v2.5-pro");
-      assert.equal(cfg.longctx.route, "");
-      assert.equal(path.basename(projectOpsConfigPath(cwd)), ".baton.toml");
+      const cfg = loadConfig(cwd, { env });
+      assert.equal(cfg.director.max_concurrent, 2);
+      assert.equal(cfg.ops.runner.route, "mimo/mimo-v2.5-pro");
+      assert.equal(cfg.ops.longctx.route, "");
+      assert.equal(configPath(cwd, { env }), path.join(home, ".baton", "config.toml"));
+      const otherCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-shared-"));
+      assert.equal(loadConfig(otherCwd, { env }).ops.runner.route, "mimo/mimo-v2.5-pro");
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton.toml")));
     });
   });
 
   it("resolves git-commit with no staged diff as an empty-index skip", () => {
-    const cwd = setupOpsWorkspace();
-    saveProjectOpsConfig(cwd, {
-      runner: { route: "", actions: ["test", "build", "lint", "typecheck"] },
-      longctx: { route: "kimi/k3[1m]", actions: ["search", "digest", "git-summarize", "git-commit"] },
+    withHome((home) => {
+      const cwd = setupOpsWorkspace();
+      saveOpsConfig(cwd, fakeEnv(home), {
+        runner: { route: "", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "kimi/k3[1m]", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const resolution = resolveOpsDispatch(cwd, "write a commit message from staged files", [
+        { id: "kimi/k3[1m]", route_id: "kimi/k3[1m]", strengths: "", executable: true, provider: "kimi" },
+      ]);
+      assert.equal(resolution.kind, "empty-index");
     });
-    const resolution = resolveOpsDispatch(cwd, "write a commit message from staged files", [
-      { id: "kimi/k3[1m]", route_id: "kimi/k3[1m]", strengths: "", executable: true, provider: "kimi" },
-    ]);
-    assert.equal(resolution.kind, "empty-index");
   });
 
   it("lets dispatch reserve an ops-config confirmed ticket", async () => {
     await withHome(async (home) => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
-      saveProjectOpsConfig(cwd, {
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
         runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
         longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
       });
-      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       const out = capture();
       assert.equal(await run(["spawn", "bun test", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
       const reserved = reserveNext(cwd, { host: "codex", capacity: 2 });

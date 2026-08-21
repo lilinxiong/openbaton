@@ -1,7 +1,3 @@
-import fs from "node:fs";
-import { parseToml, stringifyToml } from "./toml.js";
-import { projectOpsConfigPath } from "./paths.js";
-
 export const OPS_PROFILES = ["runner", "longctx"] as const;
 export type OpsProfileId = (typeof OPS_PROFILES)[number];
 
@@ -19,7 +15,7 @@ export interface OpsProfile {
   min_context_tokens?: number;
 }
 
-export interface ProjectOpsConfig {
+export interface OpsConfig {
   runner: OpsProfile;
   longctx: OpsProfile;
 }
@@ -49,53 +45,28 @@ function profileOf(profile: OpsProfileId, value: unknown): OpsProfile {
   return parsed;
 }
 
-export function emptyProjectOpsConfig(): ProjectOpsConfig {
+export function emptyOpsConfig(): OpsConfig {
   return {
     runner: { route: "", actions: [...RUNNER_ACTIONS] },
     longctx: { route: "", actions: [...LONGCTX_ACTIONS], min_context_tokens: LONGCTX_MIN_CONTEXT_DEFAULT },
   };
 }
 
-export function normalizeProjectOpsConfig(value: unknown): ProjectOpsConfig {
-  const root = isUnknownRecord(value) ? value : {};
-  const ops = isUnknownRecord(root.ops) ? root.ops : root;
+export function normalizeOpsConfig(value: unknown): OpsConfig {
+  const ops = isUnknownRecord(value) ? value : {};
   return {
     runner: profileOf("runner", ops.runner),
     longctx: profileOf("longctx", ops.longctx),
   };
 }
 
-export function loadProjectOpsConfig(cwd: string): ProjectOpsConfig {
-  const file = projectOpsConfigPath(cwd);
-  if (!fs.existsSync(file)) return emptyProjectOpsConfig();
-  return normalizeProjectOpsConfig(parseToml(fs.readFileSync(file, "utf8")));
-}
-
-export function saveProjectOpsConfig(cwd: string, cfg: ProjectOpsConfig): string {
-  const file = projectOpsConfigPath(cwd);
-  const normalized = normalizeProjectOpsConfig(cfg);
-  const body = stringifyToml({
-    ops: {
-      runner: { route: normalized.runner.route, actions: normalized.runner.actions },
-      longctx: {
-        route: normalized.longctx.route,
-        min_context_tokens: normalized.longctx.min_context_tokens || LONGCTX_MIN_CONTEXT_DEFAULT,
-        actions: normalized.longctx.actions,
-      },
-    },
-  });
-  const header = "# Project ops policy. Empty route = the director executes that class.\n# Not skill/runtime state; those stay in ~/.baton and ~/.codex.\n";
-  fs.writeFileSync(file, `${header}${body}`, "utf8");
-  return file;
-}
-
-export function profileForAction(cfg: ProjectOpsConfig, action: OpsAction): OpsProfileId | null {
+export function profileForAction(cfg: OpsConfig, action: OpsAction): OpsProfileId | null {
   if (cfg.runner.actions.includes(action as (typeof RUNNER_ACTIONS)[number])) return "runner";
   if (cfg.longctx.actions.includes(action as (typeof LONGCTX_ACTIONS)[number])) return "longctx";
   return null;
 }
 
-export function configuredRoute(cfg: ProjectOpsConfig, action: OpsAction): { profile: OpsProfileId; route: string } | null {
+export function configuredRoute(cfg: OpsConfig, action: OpsAction): { profile: OpsProfileId; route: string } | null {
   const profile = profileForAction(cfg, action);
   if (!profile) return null;
   const route = cfg[profile].route.trim();

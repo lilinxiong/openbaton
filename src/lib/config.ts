@@ -1,18 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { CodedError, DirectorConfig, UnknownRecord } from "../types.js";
+import type { CodedError, UnknownRecord } from "../types.js";
 import { parseToml, stringifyToml } from "./toml.js";
 import { configPath } from "./paths.js";
+import {
+  emptyOpsConfig,
+  LONGCTX_MIN_CONTEXT_DEFAULT,
+  normalizeOpsConfig,
+  type OpsConfig,
+} from "./ops-config.js";
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 export const DEFAULT_MAX_DEPTH = 1;
-
-export type Config = DirectorConfig;
 
 export interface DirectorSettings {
   max_concurrent: number;
   max_depth: number;
   runner?: string;
+}
+
+export interface Config {
+  director: DirectorSettings;
+  ops: OpsConfig;
 }
 
 export interface ConfigEnvOptions {
@@ -29,6 +38,7 @@ export function emptyConfig(): Config {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
       max_depth: DEFAULT_MAX_DEPTH,
     },
+    ops: emptyOpsConfig(),
   };
 }
 
@@ -54,6 +64,17 @@ function normalizeDirector(raw: unknown): DirectorSettings {
 function serializeConfig(cfg: Config): UnknownRecord {
   return {
     director: { ...cfg.director },
+    ops: {
+      runner: {
+        route: cfg.ops.runner.route,
+        actions: cfg.ops.runner.actions,
+      },
+      longctx: {
+        route: cfg.ops.longctx.route,
+        min_context_tokens: cfg.ops.longctx.min_context_tokens || LONGCTX_MIN_CONTEXT_DEFAULT,
+        actions: cfg.ops.longctx.actions,
+      },
+    },
   };
 }
 
@@ -61,6 +82,7 @@ export function normalizeConfig(raw: unknown): Config {
   const source = isUnknownRecord(raw) ? raw : {};
   return {
     director: normalizeDirector(source.director),
+    ops: normalizeOpsConfig(source.ops),
   };
 }
 

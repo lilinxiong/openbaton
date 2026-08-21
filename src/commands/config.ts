@@ -5,11 +5,10 @@ import { refreshRouteSnapshot } from "./routes.js";
 import { runHost } from "./host.js";
 import { readHostCapabilitySnapshot } from "../lib/host-capabilities.js";
 import {
-  emptyProjectOpsConfig,
-  loadProjectOpsConfig,
-  saveProjectOpsConfig,
+  emptyOpsConfig,
   type OpsProfileId,
 } from "../lib/ops-config.js";
+import { loadConfig, saveConfig } from "../lib/config.js";
 import { findOpsRouteChoice, listOpsRouteChoices, type OpsRouteChoice } from "../lib/ops-routes.js";
 import { resolveOcx, type OcxResolver, type OcxRunner } from "../lib/opencodex.js";
 import type { WritableLike } from "../types.js";
@@ -142,14 +141,14 @@ export async function runConfig(args: string[], {
   runnerRoute = requireChoice("runner", runnerRoute, runnerChoices);
   longctxRoute = requireChoice("longctx", longctxRoute, longctxChoices);
 
-  const current = loadProjectOpsConfig(cwd);
-  const next = emptyProjectOpsConfig();
-  next.runner.actions = current.runner.actions;
-  next.longctx.actions = current.longctx.actions;
-  next.longctx.min_context_tokens = current.longctx.min_context_tokens;
-  next.runner.route = runnerRoute;
-  next.longctx.route = longctxRoute;
-  const file = saveProjectOpsConfig(cwd, next);
+  const current = loadConfig(cwd, { env });
+  const nextOps = emptyOpsConfig();
+  nextOps.runner.actions = current.ops.runner.actions;
+  nextOps.longctx.actions = current.ops.longctx.actions;
+  nextOps.longctx.min_context_tokens = current.ops.longctx.min_context_tokens;
+  nextOps.runner.route = runnerRoute;
+  nextOps.longctx.route = longctxRoute;
+  const file = saveConfig(cwd, { ...current, ops: nextOps }, { env });
   stdout.write(`\nwrote ${file}\n`);
   stdout.write(`  runner: ${runnerRoute || "(empty; director)"}\n`);
   stdout.write(`  longctx: ${longctxRoute || "(empty; director)"}\n`);
