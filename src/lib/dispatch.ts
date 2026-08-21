@@ -13,8 +13,8 @@ import type {
 } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
 import { dispatchLockPath, dispatchStatePath } from "./paths.js";
-import { readReceipt, type DelegationReceipt } from "./receipt.js";
-import { auditWorktree, type SafetyOperation } from "./safety.js";
+import { readReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
+import { auditCommitOutcome, auditPreparedCommit, auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
@@ -34,7 +34,7 @@ function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
   if (ticket.progress === undefined) ticket.progress = null;
   if (ticket.liveness === undefined) ticket.liveness = null;
   if (ticket.selection === undefined) ticket.selection = null;
-  if (Number(ticket.schema_version || 1) < 5) ticket.schema_version = 5;
+  if (Number(ticket.schema_version || 1) < 6) ticket.schema_version = 6;
   return ticket;
 }
 
@@ -77,7 +77,7 @@ interface HostTerminalError {
   message: string;
 }
 
-interface WriteScopeRejection extends TicketError {
+interface ScopeRejection extends TicketError {
   host_error?: HostTerminalError;
 }
 
@@ -210,10 +210,15 @@ export interface DispatchSpec {
   reasoning_effort: string | null;
   fork_context: false;
   read_only: boolean;
-  mode: "read-only" | "write";
+  mode: ExecutionMode;
   receipt_id: string;
   write_allowlist: string[];
   allowed_operations: string[];
+  commit_authorization: {
+    expected_head: string;
+    expected_tree: string;
+    staged_paths: string[];
+  } | null;
   prompt: string;
   work_unit: SpawnTicket["work_unit"];
   coordination: SpawnTicket["coordination"];
@@ -234,6 +239,11 @@ function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id
     receipt_id: ticket.receipt_id,
     write_allowlist: receipt.scope.write_allowlist,
     allowed_operations: receipt.scope.allowed_operations,
+    commit_authorization: receipt.commit_baseline ? {
+      expected_head: receipt.commit_baseline.head,
+      expected_tree: receipt.commit_baseline.staged_tree,
+      staged_paths: receipt.commit_baseline.staged_paths,
+    } : null,
     prompt: ticket.prompt,
     work_unit: ticket.work_unit,
     coordination: ticket.coordination,
@@ -241,6 +251,46 @@ function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id
     max_attempts: ticket.max_attempts,
     selection: ticket.selection!,
   };
+}
+
+function receiptModeMatches(ticket: SpawnTicket, receipt: DelegationReceipt): boolean {
+  if (receipt.schema_version !== 4
+    || receipt.execution.mode !== ticket.mode
+    || receipt.execution.fork_context !== false
+    || receipt.execution.max_depth !== 1
+    || ticket.read_only !== (ticket.mode === "read-only")
+    || receipt.git_policy.worker_may_stage !== false
+    || receipt.git_policy.worker_may_branch !== false
+    || receipt.git_policy.worker_may_rebase !== false
+    || receipt.git_policy.staging_owner !== "parent") return false;
+  if (ticket.mode === "read-only") {
+    return !receipt.baseline
+      && !receipt.commit_baseline
+      && receipt.git_policy.worker_may_commit === false
+      && receipt.scope.write_allowlist.length === 0
+      && receipt.scope.allowed_operations.length === 1
+      && receipt.scope.allowed_operations[0] === "read"
+      && receipt.scope.side_effects.length === 0;
+  }
+  if (ticket.mode === "write") {
+    return Boolean(receipt.baseline)
+      && !receipt.commit_baseline
+      && receipt.git_policy.worker_may_commit === false
+      && receipt.scope.write_allowlist.length > 0
+      && receipt.scope.allowed_operations.length > 0
+      && !receipt.scope.allowed_operations.includes("read")
+      && !receipt.scope.allowed_operations.includes("commit")
+      && receipt.scope.side_effects.length === 1
+      && receipt.scope.side_effects[0] === "filesystem-write";
+  }
+  return !receipt.baseline
+    && Boolean(receipt.commit_baseline)
+    && receipt.git_policy.worker_may_commit === true
+    && receipt.scope.allowed_operations.length === 1
+    && receipt.scope.allowed_operations[0] === "commit"
+    && receipt.scope.side_effects.length === 1
+    && receipt.scope.side_effects[0] === "git-commit"
+    && JSON.stringify(receipt.scope.write_allowlist) === JSON.stringify(receipt.commit_baseline!.staged_paths);
 }
 
 function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { ticket_id: string; code: string; message: string } | null {
@@ -287,12 +337,19 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
       const receipt = readReceipt(cwd, ticket.receipt_id);
       if (receipt.ticket_id !== ticket.id
         || receipt.route.route_id !== ticket.route_id
-        || receipt.execution.mode !== ticket.mode
+        || !receiptModeMatches(ticket, receipt)
         || !receipt.selection
         || receipt.selection.approval_id !== ticket.selection!.approval_id
         || receipt.selection.selected_model_id !== ticket.model_id) {
         code = "RECEIPT_MISMATCH";
         message = `ticket ${ticket.id} does not match its Delegation Receipt`;
+      }
+      if (!code && ticket.mode === "commit-only") {
+        const verdict = auditPreparedCommit(cwd, receipt.commit_baseline!);
+        if (!verdict.accepted) {
+          code = "COMMIT_BASELINE_STALE";
+          message = verdict.violations.map((item) => item.code).join(", ");
+        }
       }
     } catch (error) {
       code = "RECEIPT_INVALID";
@@ -320,13 +377,16 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const tickets = fifoTickets(cwd);
-    const active = tickets.filter(holdsHostSlot).length;
-    let available = Math.max(0, max - active);
+    const activeTickets = tickets.filter(holdsHostSlot);
+    const active = activeTickets.length;
+    let available = activeTickets.some((ticket) => ticket.mode === "commit-only") ? 0 : Math.max(0, max - active);
     const reserved: DispatchSpec[] = [];
     const blocked: Array<{ ticket_id: string; code: string; message: string }> = [];
     for (const ticket of tickets) {
       if (ticket.status !== "queued" || available <= 0 || reserved.length >= maxTake) continue;
       normalizeTicketContract(ticket);
+      if (ticket.mode === "commit-only" && (active > 0 || reserved.length > 0)) break;
+      if (reserved.some((item) => item.mode === "commit-only")) break;
       const rejected = rejectUndispatchable(cwd, ticket, at);
       if (rejected) {
         blocked.push(rejected);
@@ -340,6 +400,10 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
       writeSpawn(cwd, ticket);
       const receipt = readReceipt(cwd, ticket.receipt_id!);
       reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string }, receipt));
+      if (ticket.mode === "commit-only") {
+        available = 0;
+        break;
+      }
       available -= 1;
     }
     rememberDispatchCapacity(cwd, max);
@@ -577,12 +641,13 @@ export function finishAgent(cwd: string, id: string, {
         : code;
       hostError = { status: terminal as HostTerminalError["status"], code, message: String(errorMessage || defaultMessage) };
     }
-    // Every terminal path of a write ticket runs the parent Git safety audit before the slot is released.
+    // Every terminal path with authorized side effects runs its parent Git safety audit before release.
     if (ticket.mode === "write") {
       if (!ticket.receipt_id) throw new DispatchError(`ticket ${id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: id });
       const receipt = readReceipt(cwd, ticket.receipt_id);
       if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
-      const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation => item !== "read");
+      const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation =>
+        ["write", "create", "delete", "rename", "chmod"].includes(item));
       const verdict = auditWorktree(cwd, receipt.baseline, { write_allowlist: receipt.scope.write_allowlist, allowed_operations: allowedOperations });
       ticket.safety_verdict = verdict as unknown as UnknownRecord;
       if (!verdict.accepted) {
@@ -594,9 +659,37 @@ export function finishAgent(cwd: string, id: string, {
             ...(hostError ? { host_status: hostError.status, host_error_code: hostError.code } : {}),
           },
         });
-        const rejection: WriteScopeRejection = {
+        const rejection: ScopeRejection = {
           code: "WRITE_SCOPE_VIOLATION",
           message: verdict.violations.map((item) => item.code + ":" + (item.path || "repository")).join(", "),
+        };
+        if (hostError) rejection.host_error = hostError;
+        ticket.error = rejection;
+        ticket.conclusion = null;
+        ticket.finished_at = at;
+        writeSpawn(cwd, ticket);
+        if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at);
+        return ticket;
+      }
+    }
+    if (ticket.mode === "commit-only") {
+      if (!ticket.receipt_id) throw new DispatchError(`ticket ${id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: id });
+      const receipt = readReceipt(cwd, ticket.receipt_id);
+      if (!receipt.commit_baseline) throw new DispatchError(`ticket ${id} has no commit baseline`, "COMMIT_BASELINE_REQUIRED", { ticketId: id });
+      const verdict = auditCommitOutcome(cwd, receipt.commit_baseline, { requireCommit: terminal === "completed" });
+      ticket.safety_verdict = verdict as unknown as UnknownRecord;
+      if (!verdict.accepted) {
+        transition(ticket, expected, "errored", {
+          at,
+          event: "commit_safety_gate_rejected",
+          detail: {
+            error_code: "COMMIT_SCOPE_VIOLATION",
+            ...(hostError ? { host_status: hostError.status, host_error_code: hostError.code } : {}),
+          },
+        });
+        const rejection: ScopeRejection = {
+          code: "COMMIT_SCOPE_VIOLATION",
+          message: verdict.violations.map((item) => `${item.code}:repository`).join(", "),
         };
         if (hostError) rejection.host_error = hostError;
         ticket.error = rejection;

@@ -11,7 +11,7 @@ import { loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
-import { resolveOpsDispatch } from "./lib/ops-dispatch.js";
+import { authorizeCommitOpsPlan, resolveOpsDispatch } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
@@ -291,18 +291,19 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     }
     if (ops.kind === "unavailable") throw new Error(ops.reason);
     if (ops.kind === "dispatch") {
-      const planned = planStandaloneSpawn({
+      let planned = planStandaloneSpawn({
         description: text,
         cards: allCards,
         explicitModel: ops.card.id,
         cwd,
-        taskKind: kindFlag === "deliberative" ? "deliberative" : "concrete",
+        taskKind: ops.action === "git-commit" ? "concrete" : kindFlag === "deliberative" ? "deliberative" : "concrete",
         deliverable: stringFlag(flags, "deliverable") || null,
         doneWhen: stringFlag(flags, "done-when") || null,
         selectionApproval: ops.approval,
       });
+      if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
       const ticket = persistStandalonePlan(cwd, planned);
-      stdout.write(`ops-dispatch: ${ops.profile} ${ops.action} → ${ops.card.id}\n`);
+      stdout.write(`ops-dispatch: ${ops.profile} ${ops.action}${ops.action === "git-commit" ? " (commit-only)" : ""} → ${ops.card.id}\n`);
       stdout.write(`  ticket ${ticket.id}  wait for the worker conclusion (success or failure)\n`);
       if (flags.json) stdout.write(`${JSON.stringify(ticket, null, 2)}\n`);
       return 0;
@@ -367,7 +368,7 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
       if (ops.kind === "unavailable") throw new Error(`${task.number}: ${ops.reason}`);
       if (ops.kind === "director" || ops.kind === "empty-index") directorLocal = true;
       else if (ops.kind === "dispatch") {
-        const planned = planStandaloneSpawn({
+        let planned = planStandaloneSpawn({
           description: task.description,
           cards,
           explicitModel: ops.card.id,
@@ -375,6 +376,7 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
           taskKind: "concrete",
           selectionApproval: ops.approval,
         });
+        if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
         const ticket = persistStandalonePlan(cwd, planned);
         dispatched.push({ number: task.number, ticket, action: ops.action, profile: ops.profile });
         continue;

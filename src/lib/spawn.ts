@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
 import { directorMayRun } from "./hygiene.js";
-import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt } from "./receipt.js";
+import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
 import { assertSubagentModelAllowed } from "./model-policy.js";
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import {
@@ -65,7 +65,7 @@ export interface SpawnTicket extends UnknownRecord {
   route_id: string | null;
   reasoning_effort: string | null;
   fork_context: false;
-  mode: "read-only" | "write";
+  mode: ExecutionMode;
   read_only: boolean;
   source: string;
   openspec: UnknownRecord | null;
@@ -170,7 +170,7 @@ export function buildSpawnTicket({
   const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
   const coordination = coordinationFor(workUnit);
   return {
-    schema_version: 5,
+    schema_version: 6,
     id,
     description,
     prompt: buildWorkerPrompt(prompt, workUnit, coordination),

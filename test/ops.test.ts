@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
 import { runConfig } from "../src/commands/config.js";
 import { reserveNext } from "../src/lib/dispatch.js";
@@ -14,6 +15,7 @@ import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { normalizeProviderQuotas } from "../src/lib/provider-quotas.js";
 import { configPath } from "../src/lib/paths.js";
+import { readReceipt } from "../src/lib/receipt.js";
 import { withHome, fakeEnv } from "./home.js";
 import { parseToml } from "../src/lib/toml.js";
 
@@ -47,6 +49,23 @@ function setupOpsWorkspace() {
   return setupOpsCatalog(true);
 }
 
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" });
+}
+
+function setupCommitWorkspace() {
+  const cwd = setupOpsWorkspace();
+  git(cwd, "init", "-q");
+  git(cwd, "config", "user.email", "validation@example.invalid");
+  git(cwd, "config", "user.name", "Validation");
+  fs.writeFileSync(path.join(cwd, "change.txt"), "base\n");
+  git(cwd, "add", "change.txt");
+  git(cwd, "commit", "-q", "-m", "baseline");
+  fs.appendFileSync(path.join(cwd, "change.txt"), "staged\n");
+  git(cwd, "add", "change.txt");
+  return cwd;
+}
+
 function saveOpsConfig(cwd: string, env: NodeJS.ProcessEnv, ops: OpsConfig) {
   let current = emptyConfig();
   if (fs.existsSync(configPath(cwd, { env }))) current = loadConfig(cwd, { env });
@@ -62,7 +81,10 @@ describe("global ops config", () => {
     assert.equal(inferOpsAction("[$build-app](/repo/.skills/build-app/SKILL.md) kmp android"), "build");
     assert.equal(inferOpsAction("$build-bazel android"), "build");
     assert.equal(inferOpsAction("/build-cmake"), "build");
-    assert.equal(inferOpsAction("write a commit message from staged files"), "git-commit");
+    assert.equal(inferOpsAction("write a commit message from staged files"), "git-summarize");
+    assert.equal(inferOpsAction("git commit staged changes"), "git-commit");
+    assert.equal(inferOpsAction("提交吧"), "git-commit");
+    assert.equal(inferOpsAction("不要提交"), null);
     assert.equal(inferOpsAction("implement the parser and run its unit tests"), null);
     assert.equal(inferOpsAction("fix $build-app classification"), null);
     assert.equal(inferOpsAction("fix the failing tests"), null);
@@ -285,10 +307,42 @@ describe("global ops config", () => {
         runner: { route: "", actions: ["test", "build", "lint", "typecheck"] },
         longctx: { route: "kimi/k3[1m]", actions: ["search", "digest", "git-summarize", "git-commit"] },
       });
-      const resolution = resolveOpsDispatch(cwd, "write a commit message from staged files", [
+      const resolution = resolveOpsDispatch(cwd, "git commit staged changes", [
         { id: "kimi/k3[1m]", route_id: "kimi/k3[1m]", strengths: "", executable: true, provider: "kimi" },
       ]);
       assert.equal(resolution.kind, "empty-index");
+    });
+  });
+
+  it("creates a commit-only Receipt from the exact parent-staged tree", async () => {
+    await withHome(async (home) => {
+      const cwd = setupCommitWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "kimi/k3[1m]", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const out = capture();
+      assert.equal(await run(["spawn", "git commit staged changes", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      assert.match(out.text(), /git-commit \(commit-only\)/);
+      const ticket = JSON.parse(out.text().slice(out.text().indexOf("{")));
+      const receipt = readReceipt(cwd, ticket.receipt_id);
+      assert.equal(ticket.mode, "commit-only");
+      assert.equal(ticket.read_only, false);
+      assert.equal(receipt.execution.mode, "commit-only");
+      assert.equal(receipt.git_policy.worker_may_stage, false);
+      assert.equal(receipt.git_policy.worker_may_commit, true);
+      assert.deepEqual(receipt.scope.allowed_operations, ["commit"]);
+      assert.deepEqual(receipt.scope.write_allowlist, ["change.txt"]);
+      assert.match(ticket.prompt, /run exactly one git commit/);
+      assert.match(ticket.prompt, /Do not run reset.*push/);
+
+      const reserved = reserveNext(cwd, { host: "codex", capacity: 4 });
+      assert.equal(reserved.reserved.length, 1);
+      assert.equal(reserved.reserved[0].mode, "commit-only");
+      assert.equal(reserved.reserved[0].commit_authorization.expected_head, receipt.commit_baseline.head);
+      assert.equal(reserved.reserved[0].commit_authorization.expected_tree, receipt.commit_baseline.staged_tree);
     });
   });
 

@@ -3,12 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { receiptsDir } from "./paths.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
-import type { GitBaseline, SafetyOperation } from "./safety.js";
+import type { CommitBaseline, GitBaseline, SafetyOperation } from "./safety.js";
 
-export type ReceiptOperation = "read" | SafetyOperation;
+export type ReceiptOperation = "read" | "commit" | SafetyOperation;
+export type ExecutionMode = "read-only" | "write" | "commit-only";
 
 export interface DelegationReceipt {
-  schema_version: 3;
+  schema_version: 4;
   receipt_id: string;
   ticket_id: string;
   issued_at: string;
@@ -19,7 +20,7 @@ export interface DelegationReceipt {
     provider: string | null;
   };
   execution: {
-    mode: "read-only" | "write";
+    mode: ExecutionMode;
     fork_context: false;
     max_depth: 1;
   };
@@ -34,12 +35,13 @@ export interface DelegationReceipt {
   };
   git_policy: {
     worker_may_stage: false;
-    worker_may_commit: false;
+    worker_may_commit: boolean;
     worker_may_branch: false;
     worker_may_rebase: false;
     staging_owner: "parent";
   };
   baseline: GitBaseline | null;
+  commit_baseline: CommitBaseline | null;
   selection: ModelSelectionApproval | null;
 }
 
@@ -68,7 +70,7 @@ export function buildReadOnlyReceipt({
   const timestamp = (issuedAt instanceof Date ? issuedAt : new Date(issuedAt)).toISOString();
   const attempts = Math.max(1, Math.floor(maxAttempts));
   return {
-    schema_version: 3,
+    schema_version: 4,
     receipt_id: `rcpt-${ticketId}-a1`,
     ticket_id: ticketId,
     issued_at: timestamp,
@@ -89,6 +91,7 @@ export function buildReadOnlyReceipt({
       staging_owner: "parent",
     },
     baseline: null,
+    commit_baseline: null,
     selection: selection ? structuredClone(selection) : null,
   };
 }
@@ -116,6 +119,37 @@ export function buildWriteReceipt({
       side_effects: ["filesystem-write"],
     },
     baseline,
+    commit_baseline: null,
+  };
+}
+
+export function buildCommitReceipt({
+  base,
+  baseline,
+}: {
+  base: DelegationReceipt;
+  baseline: CommitBaseline;
+}): DelegationReceipt {
+  if (!baseline.staged_paths.length) {
+    throw new ReceiptError("commit-only Receipt requires staged paths", "STAGED_DIFF_REQUIRED");
+  }
+  return {
+    ...structuredClone(base),
+    execution: { ...base.execution, mode: "commit-only" },
+    scope: {
+      write_allowlist: [...baseline.staged_paths],
+      allowed_operations: ["commit"],
+      side_effects: ["git-commit"],
+    },
+    git_policy: {
+      worker_may_stage: false,
+      worker_may_commit: true,
+      worker_may_branch: false,
+      worker_may_rebase: false,
+      staging_owner: "parent",
+    },
+    baseline: null,
+    commit_baseline: structuredClone(baseline),
   };
 }
 

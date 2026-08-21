@@ -55,7 +55,7 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 - **不编造 unranked。** profile 缺失或 `-fast` / `-highspeed` 等 serving variant 回退到基础分时标记 `reference_only`，不参与自动优选。用户可以选已披露且可调用的 `unranked` route，但不能覆盖禁用系列。
 - **逻辑工作不封顶。** host/session 并发上限是运行时能力，不写死为 6。超限把同一张 ticket 放回 FIFO，不消耗 attempt。终态 agent 在 close + release 成功前仍占槽位。深度为 1。
 - **不按计时判定 worker 死亡。** 重复 wait-call timeout 或没有 progress 文本，都不能把仍在 running 的 agent 判死。Baton 单独记录 host liveness，只有当前 exact agent 被探测为 `not_found` 后才允许 ticket timeout。
-- **Worker 永不拥有 Git。** 不 stage、commit、branch、rebase、push。写 ticket 必须有显式 allowlist，并在每条终态路径（含 error / timeout / close）走父 agent 的 Git safety gate。
+- **Git 始终由 parent gate。** 普通 worker 不 stage、commit、branch、rebase、push。唯一例外是独占的 `commit-only` ticket：它只能消费 parent 精确 staged 的 tree 创建一个受审计 commit，仍不能 stage、amend、切分支、rebase、tag 或 push。write 与 commit-only ticket 的每条终态路径都必须通过 parent safety gate。
 
 ## OpenSpec
 
@@ -92,9 +92,11 @@ Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。C
 | 类别 | 何时使用 | 空表示 |
 | --- | --- | --- |
 | `runner` | 会结束的 test / build / lint / typecheck | 由 director 自己跑 |
-| `longctx` | 检索 / 消化 / git-summarize，以及给已 staged 文件写 commit message；大约需要 1M 上下文 | 由 director 自己跑 |
+| `longctx` | 检索 / 消化 / git-summarize，以及提交已 staged 的精确变更集；大约需要 1M 上下文 | 由 director 自己跑 |
 
-`baton config` 直接通过 OpenCodex 刷新 route / quota snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex session snapshot。Dispatch 只校验配置 route 仍存在于已同步 OpenCodex snapshot，不存在时返回 `OPS_ROUTE_UNAVAILABLE`。它不会 inherit 父模型。要等 worker 结论，包括命令失败。Worker 从不 `git commit`。
+`baton config` 直接通过 OpenCodex 刷新 route / quota snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex session snapshot。Dispatch 只校验配置 route 仍存在于已同步 OpenCodex snapshot，不存在时返回 `OPS_ROUTE_UNAVAILABLE`。它不会 inherit 父模型。要等 worker 结论，包括命令失败。
+
+单纯“写 commit message”仍是只读 `git-summarize`。真正的“提交吧 / `git commit staged changes`”会创建独占的 `commit-only` ticket：director 必须先完成精确 staging，Receipt 冻结 parent HEAD、staged tree、路径、refs 和 reflog；worker 只能读取 Git 证据并执行一次 `git commit`，不能 `add`、`amend`、切分支、rebase、tag 或 push。所有终态都由 director 复验 commit parent/tree、refs、reflog、index 和工作区。普通 write worker 仍禁止任何 Git mutation。
 
 ## 能力缓存
 

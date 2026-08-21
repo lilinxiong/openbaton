@@ -55,7 +55,7 @@ Mechanical ops can skip the selector when the user-global `~/.baton/config.toml`
 - **Unranked is not invented.** Missing-profile and serving-variant (`-fast` / `-highspeed`) base scores are `reference_only` and cannot drive automatic recommendation. A user may pick a disclosed callable `unranked` route. Forbidden families cannot be overridden.
 - **Logical work is uncapped.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns the same ticket to FIFO without consuming its attempt. A terminal agent still occupies a slot until close and release succeed. Depth is 1.
 - **No timer-based worker death.** Repeated wait-call timeouts and missing progress text never make a running agent dead. Baton records host liveness separately and allows ticket timeout only after the current exact agent is probed as `not_found`.
-- **Workers never own Git.** They do not stage, commit, branch, rebase, or push. Write tickets need an explicit allowlist and pass the parent Git safety gate on every terminal path, including error, timeout, and close.
+- **Git remains parent-gated.** Ordinary workers never stage, commit, branch, rebase, or push. The sole exception is an exclusive `commit-only` ticket over an exact parent-staged tree; it may create one audited commit but still cannot stage, amend, branch, rebase, tag, or push. Write and commit-only tickets pass their parent safety gate on every terminal path.
 
 ## OpenSpec
 
@@ -92,9 +92,11 @@ The selector is inline in the current Codex conversation and is presented in Chi
 | Class | When it runs | Empty means |
 | --- | --- | --- |
 | `runner` | terminating test / build / lint / typecheck | the director runs it |
-| `longctx` | search / digest / git-summarize, and a commit message from already-staged files; needs about 1M context | the director runs it |
+| `longctx` | search / digest / git-summarize, and committing an exact already-staged change set; needs about 1M context | the director runs it |
 
-`baton config` refreshes the route/quota snapshot directly through OpenCodex, lists policy-eligible executable routes, and interactively writes the global choices. It does not depend on a Codex session snapshot. Dispatch validates that the configured route still exists in the synced OpenCodex snapshot and fails with `OPS_ROUTE_UNAVAILABLE` otherwise. It never inherits the parent model. Wait for the worker conclusion, including command failure. Workers never `git commit`.
+`baton config` refreshes the route/quota snapshot directly through OpenCodex, lists policy-eligible executable routes, and interactively writes the global choices. It does not depend on a Codex session snapshot. Dispatch validates that the configured route still exists in the synced OpenCodex snapshot and fails with `OPS_ROUTE_UNAVAILABLE` otherwise. It never inherits the parent model. Wait for the worker conclusion, including command failure.
+
+A request to only write a commit message remains a read-only `git-summarize` operation. An actual “commit it” / `git commit staged changes` request creates an exclusive `commit-only` ticket: the director must stage the exact set first, and the Receipt freezes the parent HEAD, staged tree, paths, refs, and reflog. The worker may inspect read-only Git evidence and execute exactly one `git commit`; it may not add, amend, switch branches, rebase, tag, or push. Every terminal path is audited by the director against the commit parent/tree, refs, reflog, index, and worktree. Ordinary write workers still cannot perform Git mutations.
 
 ## Capability cache
 

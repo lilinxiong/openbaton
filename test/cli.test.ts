@@ -203,7 +203,7 @@ describe("cli run()", () => {
       assert.equal(await run(["selection", "approve", proposal.id, "--confirm", "--json"], { cwd, stdout: approved, stderr: err, env }), 0, err.text());
       const body = JSON.parse(approved.text());
       assert.equal(body.tickets[0].selection.confirmed_by, "user");
-      assert.equal(body.tickets[0].schema_version, 5);
+      assert.equal(body.tickets[0].schema_version, 6);
     });
   });
 });

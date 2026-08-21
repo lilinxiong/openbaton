@@ -5,6 +5,9 @@ import { configuredRoute, type OpsAction, type OpsProfileId } from "./ops-config
 import { inferOpsAction } from "./ops-task.js";
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
 import { readRouteSnapshot } from "./routes.js";
+import { buildCommitReceipt } from "./receipt.js";
+import { captureCommitBaseline } from "./safety.js";
+import type { StandalonePlan } from "./spawn.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 
 export type OpsResolution =
@@ -52,11 +55,11 @@ export function resolveOpsDispatch(
 ): OpsResolution {
   const action = inferOpsAction(description);
   if (!action) return { kind: "not-ops" };
+  if (action === "git-commit" && !hasStagedDiff(cwd)) return { kind: "empty-index", action };
   const configured = configuredRoute(loadConfig(cwd, { env }).ops, action);
   if (!configured) {
     return { kind: "director", action, reason: "ops route is empty; director executes this mechanical unit" };
   }
-  if (action === "git-commit" && !hasStagedDiff(cwd)) return { kind: "empty-index", action };
   const choices = listOpsRouteChoices(cwd, configured.profile, cards);
   if (!findOpsRouteChoice(choices, configured.route)) {
     return {
@@ -97,4 +100,27 @@ export function resolveOpsDispatch(
     card,
     approval,
   };
+}
+
+export function authorizeCommitOpsPlan(cwd: string, planned: StandalonePlan): StandalonePlan {
+  if (planned.director_local === true) throw new Error("commit-only ops dispatch unexpectedly stayed on the director");
+  const baseline = captureCommitBaseline(cwd);
+  planned.ticket.mode = "commit-only";
+  planned.ticket.read_only = false;
+  planned.ticket.prompt = [
+    planned.ticket.prompt,
+    "",
+    "[Baton commit-only authorization]",
+    "The director already staged the complete authorized change set.",
+    `expected parent HEAD: ${baseline.head}`,
+    `expected staged tree: ${baseline.staged_tree}`,
+    "authorized staged paths:",
+    ...baseline.staged_paths.map((item) => `- ${JSON.stringify(item)}`),
+    "Inspect only read-only Git evidence such as status, diff --cached, and log; choose one concise repository-style message; then run exactly one git commit.",
+    "Do not edit files or alter the index before committing. Do not use git add, commit -a/--all, --amend, --only, --include, or a pathspec.",
+    "Do not run reset, restore, checkout, switch, branch, merge, rebase, cherry-pick, revert, tag, stash, clean, or push.",
+    "Return only the commit id, subject, and concise verification evidence.",
+  ].join("\n");
+  planned.receipt = buildCommitReceipt({ base: planned.receipt, baseline });
+  return planned;
 }

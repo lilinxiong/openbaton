@@ -7,8 +7,9 @@ const LINT = /(?:^|\b)(lint|eslint|prettier\s+--check|跑(?:一下)?lint)(?:\b|$
 const TYPECHECK = /(?:^|\b)(typecheck|tsc(?:\s+--noEmit)?|bun\s+run\s+check|类型检查)(?:\b|$)/i;
 const SEARCH = /(?:^|\b)(rg\b|ripgrep|\bgrep\b|仓库检索|检索|find references|搜(?:索)?)/i;
 const DIGEST = /(?:消化|(?:summarize|digest).*(?:log|output|coverage|artifact)|看(?:一下)?(?:这份)?(?:日志|产物|coverage))/i;
-const GIT_SUMMARIZE = /(?:^|\b)(git\s+(?:status|log|diff)|git\s*摘要|暂存区摘要)/i;
-const GIT_COMMIT = /(?:commit message|写(?:一个)?\s*commit|提交说明|根据\s*staged|已暂存.*(?:message|说明))/i;
+const GIT_SUMMARIZE = /(?:^|\b)(git\s+(?:status|log|diff)|git\s*摘要|暂存区摘要|commit message|写(?:一个)?\s*commit(?: message)?|提交说明|根据\s*staged.*(?:message|说明)|已暂存.*(?:message|说明))/i;
+const GIT_COMMIT = /(?:^|\b)git\s+commit(?:\s|$)|\bcommit\s+(?:the\s+)?staged(?:\s+changes?)?\b|(?:^|[，,。.!！?？\s])(?:请)?提交(?:吧|已暂存(?:的)?(?:改动|修改|文件)?|这些改动)(?:$|[，,。.!！?？\s])|把已暂存.*提交/i;
+const NO_COMMIT = /(?:不要|不允许|禁止)提交|(?:do not|don't|never)\s+commit/i;
 
 const MAX_OPS_CHARS = 160;
 
@@ -25,6 +26,7 @@ export function inferOpsAction(description: unknown): OpsAction | null {
   const text = String(description || "").trim();
   if (!text || text.length > MAX_OPS_CHARS) return null;
   if (CODING_OR_DESIGN.test(text)) return null;
+  if (NO_COMMIT.test(text)) return null;
   const hits = ([
     ["test", TEST],
     ["build", BUILD],
