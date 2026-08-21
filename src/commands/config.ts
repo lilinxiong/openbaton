@@ -2,14 +2,16 @@ import readline from "node:readline/promises";
 import { artificialAnalysisDbPath } from "../lib/paths.js";
 import { buildRouteCandidates } from "../lib/routes.js";
 import { refreshRouteSnapshot } from "./routes.js";
-import { runHost } from "./host.js";
-import { readHostCapabilitySnapshot } from "../lib/host-capabilities.js";
 import {
   emptyOpsConfig,
   type OpsProfileId,
 } from "../lib/ops-config.js";
 import { loadConfig, saveConfig } from "../lib/config.js";
-import { findOpsRouteChoice, listOpsRouteChoices, type OpsRouteChoice } from "../lib/ops-routes.js";
+import {
+  findOpsRouteChoice,
+  listOpsRouteChoices,
+  type OpsRouteChoice,
+} from "../lib/ops-routes.js";
 import { resolveOcx, type OcxResolver, type OcxRunner } from "../lib/opencodex.js";
 import type { WritableLike } from "../types.js";
 
@@ -47,19 +49,22 @@ function cards(cwd: string) {
 }
 
 function formatChoice(item: OpsRouteChoice, profile: OpsProfileId): string {
-  const quota = item.remaining_percent == null ? "quota unknown" : `quota ${item.remaining_percent.toFixed(0)}%`;
   const context = profile === "longctx" && item.context_window != null ? `  ${item.context_window}` : "";
-  return `${item.route_id}    ${quota}${context}`;
+  return `${item.route_id}${context}`;
 }
 
-function printChoices(stdout: WritableLike, profile: OpsProfileId, choices: OpsRouteChoice[]): void {
-  if (profile === "runner") stdout.write("runner — 跑 test/build/lint（当前可调用）\n");
-  else stdout.write("longctx — 检索/消化/写 commit message（≥1M，当前可调用）\n");
+function printChoices(
+  stdout: WritableLike,
+  profile: OpsProfileId,
+  choices: OpsRouteChoice[],
+): void {
+  if (profile === "runner") stdout.write("runner — 跑 test/build/lint（OpenCodex routes）\n");
+  else stdout.write("longctx — 检索/消化/写 commit message（≥1M，OpenCodex routes）\n");
   stdout.write("  0. （空：由主 agent 执行）\n");
   if (!choices.length) {
     stdout.write(profile === "longctx"
-      ? "  （当前 host 没有 ≥1M 的可调用 route）\n"
-      : "  （当前 host 没有可调用的 runner route）\n");
+      ? "  （OpenCodex snapshot 中没有符合 policy 的 ≥1M route）\n"
+      : "  （OpenCodex snapshot 中没有符合 policy 的 runner route）\n");
     return;
   }
   choices.forEach((item, index) => {
@@ -102,27 +107,11 @@ export async function runConfig(args: string[], {
   resolve,
   readLine,
 }: ConfigCommandOptions): Promise<number> {
-  const models = repeated(args, "model");
-  const profiles = repeated(args, "profile");
-  if (models.length) {
-    const hostArgs = ["sync", ...models.flatMap((model) => ["--model", model])];
-    for (const profile of profiles) hostArgs.push("--profile", profile);
-    const code = runHost(hostArgs, { cwd, stdout: { write() {} }, env, runner, resolve });
-    if (code !== 0 && !readHostCapabilitySnapshot(cwd)) {
-      throw new Error("HOST_CAPABILITIES_REQUIRED: baton config could not sync the current Codex host surface");
-    }
-  }
-  try {
-    refreshRouteSnapshot({ cwd, stdout: { write() {} }, env, runner, resolve: resolve || resolveOcx });
-  } catch (error) {
-    if (!cards(cwd).length) throw error;
-  }
-  if (!readHostCapabilitySnapshot(cwd)) {
-    throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync, or pass --model EXACT_ROUTE to baton config");
-  }
+  refreshRouteSnapshot({ cwd, stdout: { write() {} }, env, runner, resolve: resolve || resolveOcx });
   const available = cards(cwd);
-  const runnerChoices = listOpsRouteChoices(cwd, "runner", available);
-  const longctxChoices = listOpsRouteChoices(cwd, "longctx", available);
+  const runnerChoices = listOpsRouteChoices(cwd, "runner", available, { scope: "catalog" });
+  const longctxChoices = listOpsRouteChoices(cwd, "longctx", available, { scope: "catalog" });
+  stdout.write("models: OpenCodex live snapshot\n\n");
   printChoices(stdout, "runner", runnerChoices);
   stdout.write("\n");
   printChoices(stdout, "longctx", longctxChoices);

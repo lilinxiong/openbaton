@@ -85,7 +85,7 @@ Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。C
 | `runner` | 会结束的 test / build / lint / typecheck | 由 director 自己跑 |
 | `longctx` | 检索 / 消化 / git-summarize，以及给已 staged 文件写 commit message；大约需要 1M 上下文 | 由 director 自己跑 |
 
-`baton config` 会同步当前 host surface，并只列出当前可调用、按类过滤后的选项。已配置但当前不可调用则是 `OPS_ROUTE_UNAVAILABLE`，不 inherit 父模型。要等 worker 结论，包括命令失败。Worker 从不 `git commit`。
+`baton config` 直接通过 OpenCodex 刷新 live model snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex host snapshot。Dispatch 会另外按当前 Codex session 校验，已配置但当前不可调用则是 `OPS_ROUTE_UNAVAILABLE`，不会 inherit 父模型。要等 worker 结论，包括命令失败。Worker 从不 `git commit`。
 
 ## 能力缓存
 
@@ -115,7 +115,7 @@ Baton 不生成项目内 `.baton/` 运行时目录，也不再读取或生成项
 ```
 baton init [--force]
 baton update
-baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]
+baton config [--runner ROUTE|-] [--longctx ROUTE|-]
 
 baton routes refresh|status|candidates
 baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]

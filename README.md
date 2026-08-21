@@ -85,7 +85,7 @@ The selector is inline in the current Codex conversation and is presented in Chi
 | `runner` | terminating test / build / lint / typecheck | the director runs it |
 | `longctx` | search / digest / git-summarize, and a commit message from already-staged files; needs about 1M context | the director runs it |
 
-`baton config` syncs the current host surface and lists currently callable, class-filtered options. A configured but currently uncallable route is `OPS_ROUTE_UNAVAILABLE`; it is never a parent-model inherit. Wait for the worker conclusion, including command failure. Workers never `git commit`.
+`baton config` refreshes the live model snapshot directly through OpenCodex, lists policy-eligible executable routes, and interactively writes the global choices. It does not depend on a Codex host snapshot. Dispatch separately validates the configured route against the current Codex session and fails with `OPS_ROUTE_UNAVAILABLE` when it is not callable. It never inherits the parent model. Wait for the worker conclusion, including command failure. Workers never `git commit`.
 
 ## Capability cache
 
@@ -115,7 +115,7 @@ Under `~/.baton`:
 ```
 baton init [--force]
 baton update
-baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]
+baton config [--runner ROUTE|-] [--longctx ROUTE|-]
 
 baton routes refresh|status|candidates
 baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]

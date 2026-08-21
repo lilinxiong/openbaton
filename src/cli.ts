@@ -62,7 +62,7 @@ Usage:
   baton update                        refresh Codex skill + global config defaults
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish complete current Codex host surface
-  baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]  global ops routes (~/.baton/config.toml)
+  baton config [--runner ROUTE|-] [--longctx ROUTE|-]  choose global ops routes from OpenCodex (~/.baton/config.toml)
   baton match <text>                disclose preferred/candidate models without creating work
   baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  create one request-level model-selection proposal (no ticket)
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
@@ -125,8 +125,7 @@ export async function run(argv: string[], {
         ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
         return runHost(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
       case "config":
-        ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
-        return runConfig(args, { cwd, stdout, env, runner, resolve });
+        return await runConfig(args, { cwd, stdout, env, runner, resolve });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env, runner, resolve);
       case "apply":

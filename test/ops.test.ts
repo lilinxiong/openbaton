@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
+import { runConfig } from "../src/commands/config.js";
 import { reserveNext } from "../src/lib/dispatch.js";
 import { inferOpsAction } from "../src/lib/ops-task.js";
 import { emptyConfig, loadConfig, saveConfig } from "../src/lib/config.js";
@@ -21,7 +22,7 @@ function capture() {
   return { write(value: unknown) { chunks.push(String(value)); }, text() { return chunks.join(""); } };
 }
 
-function setupOpsWorkspace() {
+function setupOpsCatalog() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-"));
   publishRouteSnapshot(cwd, { models: [
     { id: "k3", provider: "kimi", namespaced: "kimi/k3", contextWindow: 262_144 },
@@ -31,6 +32,11 @@ function setupOpsWorkspace() {
     { id: "mimo-v2.5-tts", provider: "mimo", namespaced: "mimo/mimo-v2.5-tts", contextWindow: 262_144 },
     { id: "gpt-5.6-sol", provider: "openai", namespaced: "gpt-5.6-sol", native: true, contextWindow: 256_000 },
   ] });
+  return cwd;
+}
+
+function setupOpsWorkspace() {
+  const cwd = setupOpsCatalog();
   writeHostCapabilitySnapshot(cwd, {
     advertisedModels: [
       "kimi/k3", "kimi/k3[1m]", "mimo/mimo-v2.5-pro", "alibaba-token-plan/glm-5.2",
@@ -88,6 +94,72 @@ describe("global ops config", () => {
       assert.deepEqual(runner.map((item) => item.route_id).sort(), ["kimi/k3", "mimo/mimo-v2.5-pro"]);
       assert.ok(runner.every((item) => item.route_id !== "kimi/k3[1m]"));
       assert.ok(!runner.some((item) => item.route_id.includes("tts") || item.route_id.includes("sol")));
+      assert.deepEqual(longctx.map((item) => item.route_id).sort(), ["alibaba-token-plan/glm-5.2", "kimi/k3[1m]"]);
+    });
+  });
+
+  it("keeps dispatch filtering fail-closed when the host surface is absent", () => {
+    withHome(() => {
+      const cwd = setupOpsCatalog();
+      assert.deepEqual(listOpsRouteChoices(cwd, "runner", []), []);
+      assert.deepEqual(listOpsRouteChoices(cwd, "longctx", []), []);
+    });
+  });
+
+  it("keeps bare baton config interactive from OpenCodex alone", async () => {
+    await withHome(async (home) => {
+      const cwd = setupOpsCatalog();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const answers = ["1", "0"];
+      let promptCount = 0;
+      const opencodexCalls: string[][] = [];
+      const out = capture();
+      assert.equal(await runConfig([], {
+        cwd,
+        env,
+        stdout: out,
+        resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
+        runner: ({ args }) => {
+          opencodexCalls.push(args);
+          return {
+            status: 0,
+            stdout: args[0] === "--version"
+              ? "opencodex 2.26.0\n"
+              : JSON.stringify({ models: [
+                { id: "k3", provider: "kimi", namespaced: "kimi/k3", contextWindow: 262_144 },
+                { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
+                { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro", contextWindow: 262_144 },
+                { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2", contextWindow: 1_000_000 },
+              ] }),
+            stderr: "",
+            error: null,
+          };
+        },
+        readLine: async () => {
+          promptCount += 1;
+          return answers.shift() || "0";
+        },
+      }), 0, out.text());
+      assert.equal(promptCount, 2);
+      assert.ok(opencodexCalls.some((args) => args.join(" ") === "models live --json"));
+      assert.match(out.text(), /models: OpenCodex live snapshot/);
+      assert.doesNotMatch(out.text(), /host/);
+      assert.match(out.text(), /wrote .*\.baton\/config\.toml/);
+      const cfg = loadConfig(cwd, { env });
+      assert.equal(cfg.ops.runner.route, "kimi/k3");
+      assert.equal(cfg.ops.longctx.route, "");
+      assert.ok(!fs.existsSync(path.join(cwd, ".baton.toml")));
+    });
+  });
+
+  it("does not let a narrower host snapshot filter OpenCodex config choices", () => {
+    withHome(() => {
+      const cwd = setupOpsCatalog();
+      writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3"] });
+      const runner = listOpsRouteChoices(cwd, "runner", [], { scope: "catalog" });
+      const longctx = listOpsRouteChoices(cwd, "longctx", [], { scope: "catalog" });
+      assert.deepEqual(runner.map((item) => item.route_id).sort(), ["kimi/k3", "mimo/mimo-v2.5-pro"]);
       assert.deepEqual(longctx.map((item) => item.route_id).sort(), ["alibaba-token-plan/glm-5.2", "kimi/k3[1m]"]);
     });
   });
@@ -151,7 +223,7 @@ describe("global ops config", () => {
     });
   });
 
-  it("writes filtered choices through baton config flags without inventing a default", async () => {
+  it("writes OpenCodex choices through baton config flags without inventing a default", async () => {
     await withHome(async (home) => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
@@ -190,6 +262,24 @@ describe("global ops config", () => {
       const otherCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-shared-"));
       assert.equal(loadConfig(otherCwd, { env }).ops.runner.route, "mimo/mimo-v2.5-pro");
       assert.ok(!fs.existsSync(path.join(cwd, ".baton.toml")));
+    });
+  });
+
+  it("reports OpenCodex discovery failure through the CLI error boundary", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-config-error-"));
+      const env = fakeEnv(home);
+      const stderr = capture();
+      assert.equal(await run(["config"], {
+        cwd,
+        env,
+        stdout: capture(),
+        stderr,
+        resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
+        runner: () => ({ status: 1, stdout: "", stderr: "offline", error: null }),
+      }), 1);
+      assert.match(stderr.text(), /OpenCodex model discovery failed/);
+      assert.doesNotMatch(stderr.text(), /at runConfig|Node\.js/);
     });
   });
 
