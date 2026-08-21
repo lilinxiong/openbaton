@@ -13,6 +13,14 @@ baton init
 
 From a source checkout: `bun install && bun run baton -- <command>`. Requires Node.js 22.5+ or Bun 1.3.14+.
 
+To update the locally linked Baton from this checkout:
+
+```sh
+python3 scripts/update_local_baton.py
+```
+
+The script installs locked dependencies, runs tests and type checking, builds, runs `bun link`, and finishes with `baton update`. It does not pull Git or refresh OpenCodex routes/cache. Use `--skip-install --skip-tests` for a quick local update or `--dry-run` to preview the commands.
+
 Chinese: [README.zh.md](README.zh.md)
 
 ## What it is

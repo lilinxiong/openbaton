@@ -13,6 +13,14 @@ baton init
 
 源码 checkout：`bun install && bun run baton -- <command>`。需要 Node.js 22.5+ 或 Bun 1.3.14+。
 
+从当前源码更新本机链接的 Baton：
+
+```sh
+python3 scripts/update_local_baton.py
+```
+
+脚本依次安装锁定依赖、执行测试与类型检查、构建、`bun link` 和 `baton update`。它不拉取 Git、不刷新 OpenCodex route/cache；日常快速更新可加 `--skip-install --skip-tests`，预览命令可加 `--dry-run`。
+
 English: [README.md](README.md)
 
 ## 它是什么
