@@ -50,7 +50,7 @@ You are the director. Baton supports Codex only. This skill pack plus `init` ins
 
 6. **Unlimited logical spawn, host-bounded physical slots.** The host/session concurrency limit is runtime capability, not a hard-coded Baton constant. Queue the rest. `AgentLimitReached` is backpressure: defer the same ticket without consuming its attempt or degrading route health. A bound terminal agent still occupies a slot until `close_agent` succeeds and `dispatch release` records it. Never refuse a unit because the cap is full.
 
-7. **Main-context hygiene.** Concrete children return a short conclusion only. Checkpointed children may also return compact progress state, not transcripts. Tool dumps, traces, and hidden reasoning stay in the child. The director uses bounded fan-in waits across active workers and keeps doing ready director work instead of serially waiting on each child. Host lifecycle writes success through `baton dispatch complete`; write conclusions are accepted only after the parent safety gate passes.
+7. **Main-context hygiene and activity-driven waits.** Concrete children return a short conclusion only. Checkpointed children may also return compact progress state, not transcripts. Tool dumps, traces, and hidden reasoning stay in the child. The director uses bounded fan-in waits across active workers and keeps doing ready director work instead of serially waiting on each child. A wait-call timeout is polling cadence only, never ticket-timeout evidence. After each probe, persist the exact bound agent's host state with `baton dispatch probe`; `pending_init`, `running`, new output, or a heartbeat means keep waiting without a time/window limit. Business `progress` and host `liveness` are separate. `baton dispatch timeout` is allowed only when the latest matching probe is `not_found` and its sequence is supplied. Host lifecycle writes success through `baton dispatch complete`; write conclusions are accepted only after the parent safety gate passes.
 
 8. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
@@ -92,9 +92,12 @@ baton selection approve PROPOSAL --confirm [--route TASK=ID] [--provider ID] [--
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
+baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
 baton dispatch progress TICKET --phase PHASE --text "short status" --json
 baton dispatch complete TICKET --text "short outcome" --json
-baton dispatch fail|timeout|close TICKET --json
+baton dispatch fail TICKET --json
+baton dispatch timeout TICKET --probe-sequence N --json
+baton dispatch close TICKET --json
 baton dispatch release TICKET --agent-id ID --json
 baton dispatch recover|status --json
 baton routes refresh|status|candidates
@@ -117,6 +120,7 @@ baton status
 - Do not fallback across routes/providers or inherit the parent model.
 - Workers never own Git index, HEAD, branch, commit, push, or rebase.
 - Never dispatch an open-ended reasoning task with terminal-only coordination, and never treat terminal ticket state as proof that the host slot was released.
+- Never count wait windows or elapsed wall time toward worker timeout. While the exact agent is `pending_init`/`running` or emitting output/heartbeats, keep waiting; an unchanged polling window is not a failure and should not be narrated as a countdown.
 - Do not reimplement OpenSpec.
 - Do not reimplement OpenCodex OAuth, account pool, dashboard, or proxy.
 - Do not expose a Baton login command or write provider-account configuration.

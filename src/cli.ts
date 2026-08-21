@@ -75,10 +75,12 @@ Usage:
   baton dispatch next --host codex --capacity N --json
   baton dispatch bind TICKET --agent-id ID --host codex --json
   baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+  baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --phase PHASE --text "short status" --json
   baton dispatch complete TICKET --text "short conclusion" --json
   baton dispatch release TICKET --agent-id ID --json
-  baton dispatch fail|timeout|close TICKET --json
+  baton dispatch fail|close TICKET --json
+  baton dispatch timeout TICKET --probe-sequence N --json
   baton dispatch recover|status --json
   baton status                      director queue + OpenSpec status if present
   baton help | --help | -h

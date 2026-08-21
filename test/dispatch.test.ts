@@ -13,6 +13,7 @@ import {
   persistedCapacity,
   recoverDispatches,
   releaseAgent,
+  reportAgentProbe,
   reportAgentProgress,
   reserveNext,
 } from "../src/lib/dispatch.js";
@@ -38,7 +39,7 @@ function makeProject() {
 
 function makeTicket(id, overrides = {}) {
   return {
-    schema_version: 4,
+    schema_version: 5,
     id,
     description: "task " + id,
     prompt: "do " + id,
@@ -58,6 +59,7 @@ function makeTicket(id, overrides = {}) {
     host: null,
     error: null,
     conclusion: null,
+    liveness: null,
     created_at: at(0),
     updated_at: at(0),
     history: [{ event: "ticket_queued", at: at(0) }],
@@ -378,10 +380,30 @@ describe("finishAgent", () => {
     assert.equal(spawnFailed.status, "errored");
     assert.deepEqual(spawnFailed.error, { code: "SPAWN_FAILED", message: "host refused the spawn" });
 
-    // Timeout from running.
-    const timedOut = finishAgent(cwd, "t-0002", { status: "timed_out", errorMessage: "no events for 10m", now: at(40) });
+    // Elapsed time alone cannot time out a running agent. The host must first
+    // report that this exact bound agent is no longer present.
+    expectDispatchError(
+      () => finishAgent(cwd, "t-0002", { status: "timed_out", probeSequence: 1, now: at(40) }),
+      "TIMEOUT_REQUIRES_NOT_FOUND_PROBE",
+    );
+    const runningProbe = reportAgentProbe(cwd, "t-0002", {
+      agentId: "agent-2", state: "running", now: at(40),
+    });
+    expectDispatchError(
+      () => finishAgent(cwd, "t-0002", { status: "timed_out", probeSequence: runningProbe.liveness?.sequence, now: at(41) }),
+      "TIMEOUT_REQUIRES_NOT_FOUND_PROBE",
+    );
+    const missingProbe = reportAgentProbe(cwd, "t-0002", {
+      agentId: "agent-2", state: "not_found", now: at(42),
+    });
+    const timedOut = finishAgent(cwd, "t-0002", {
+      status: "timed_out",
+      probeSequence: missingProbe.liveness?.sequence,
+      now: at(43),
+    });
     assert.equal(timedOut.status, "timed_out");
     assert.equal(timedOut.error.code, "AGENT_TIMEOUT");
+    assert.match(timedOut.error.message, /host probe .* not_found/);
     const timeoutHealth = readRouteHealth(cwd).records.find((record) => record.error_code === "AGENT_TIMEOUT");
     assert.equal(timeoutHealth?.route_id, "codex/default");
     assert.equal(timeoutHealth?.status, "degraded");
@@ -568,7 +590,42 @@ describe("host backpressure and progress", () => {
     });
     assert.equal(progress.progress?.sequence, 1);
     assert.equal(progress.progress?.summary, "mapped the lifecycle states");
+    assert.equal(progress.liveness?.state, "running");
+    assert.equal(progress.liveness?.activity, "output");
     assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(60_029) }).progress_due, []);
     assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(60_030) }).progress_due, ["t-0001"]);
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(60_029) }).probe_due, []);
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(60_030) }).probe_due, ["t-0001"]);
+  });
+
+  it("persists host probes without rewriting business progress or timing out a live agent", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1, { description: "build the Android target", prompt: "build the Android target" });
+    reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-build", host: "codex", now: at(20) });
+
+    const first = reportAgentProbe(cwd, "t-0001", {
+      agentId: "agent-build", state: "running", activity: "status", now: at(300_000),
+    });
+    assert.equal(first.status, "running");
+    assert.equal(first.progress, null);
+    assert.equal(first.liveness?.state, "running");
+    assert.equal(first.liveness?.sequence, 2);
+    assert.ok(first.history.some((entry) => entry.event === "agent_probe" && entry.state === "running"));
+    expectDispatchError(
+      () => finishAgent(cwd, "t-0001", {
+        status: "timed_out", probeSequence: first.liveness?.sequence, now: at(600_000),
+      }),
+      "TIMEOUT_REQUIRES_NOT_FOUND_PROBE",
+    );
+    assert.equal(readTicket(cwd, "t-0001").status, "running");
+
+    const heartbeat = reportAgentProbe(cwd, "t-0001", {
+      agentId: "agent-build", state: "running", activity: "heartbeat", now: at(600_000),
+    });
+    assert.equal(heartbeat.liveness?.sequence, 3);
+    assert.equal(heartbeat.progress, null);
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(659_999) }).probe_due, []);
+    assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(660_000) }).probe_due, ["t-0001"]);
   });
 });

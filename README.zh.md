@@ -33,7 +33,8 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 4. **一次披露、一次确认。** Provider 是整次请求的一个全局多选；下面统一展示全部候选和全部任务分配。同一前台请求涉及多个 workspace 时，把各自 proposal 合成一个 bundle，只保留一个 Submit。Submit 之前，ticket 数和 subagent 数都是 0。
 5. **才铸 ticket。** `baton selection approve ... --confirm` 创建 queued ticket 和不可变 Delegation Receipt。bundle Submit 会把同一个 confirmation id 和全局 Provider 选择写入全部 proposal。OpenCodex catalog snapshot 或源任务变化会使旧 proposal 失效。
 6. **进程内 dispatch。** Codex 用 `baton dispatch next` 预留，调用 host-native `spawn_agent`，bind 返回的 agent id，然后只写一次终态。`close_agent` 再加 `dispatch release` 才释放物理槽位，FIFO 补位。
-7. **前台保持干净。** concrete worker 只回短结论；deliberative worker 可以 checkpoint phase、current result、next step、blocker。工具倾倒和隐藏推理留在子上下文。
+7. **按活动性等待，不按耗时判死。** 有界 `wait_agent` 窗口只用于轮询。用 `baton dispatch probe` 持久化 exact agent 的 host 状态；只要仍是 `pending_init` / `running`，或者有 output / heartbeat，就无限续等同一 ticket。业务 progress 单独保存。只有最新匹配 probe 为 `not_found` 并提供其 sequence，才允许 timeout。
+8. **前台保持干净。** concrete worker 只回短结论；deliberative worker 可以 checkpoint phase、current result、next step、blocker。工具倾倒和隐藏推理留在子上下文。
 
 机械任务在用户全局 `~/.baton/config.toml` 已配置且 route 存在于已同步 OpenCodex snapshot 时，可以跳过选择器。空配置表示该类由 director 自己跑。
 
@@ -45,6 +46,7 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 - **Catalog 可见性与 subagent 资格分离。** OpenCodex discovery 仍完整可审计。内置 policy 禁止 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra` 的所有 provider route、variant 和 reasoning profile 进入候选、确认、ticket 和 dispatch。proposal 会单独披露这些排除。其它 session / Goal exclusion 只影响本次调度。
 - **不编造 unranked。** profile 缺失或 `-fast` / `-highspeed` 等 serving variant 回退到基础分时标记 `reference_only`，不参与自动优选。用户可以选已披露且可调用的 `unranked` route，但不能覆盖禁用系列。
 - **逻辑工作不封顶。** host/session 并发上限是运行时能力，不写死为 6。超限把同一张 ticket 放回 FIFO，不消耗 attempt。终态 agent 在 close + release 成功前仍占槽位。深度为 1。
+- **不按计时判定 worker 死亡。** 重复 wait-call timeout 或没有 progress 文本，都不能把仍在 running 的 agent 判死。Baton 单独记录 host liveness，只有当前 exact agent 被探测为 `not_found` 后才允许 ticket timeout。
 - **Worker 永不拥有 Git。** 不 stage、commit、branch、rebase、push。写 ticket 必须有显式 allowlist，并在每条终态路径（含 error / timeout / close）走父 agent 的 Git safety gate。
 
 ## OpenSpec
@@ -134,9 +136,12 @@ baton selection approve PROPOSAL --confirm [--route TASK=ID] [--provider ID] [--
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
 baton dispatch progress TICKET --phase PHASE --text "short status" --json
 baton dispatch complete TICKET --text "short conclusion" --json
-baton dispatch fail|timeout|close TICKET --json
+baton dispatch fail TICKET --json
+baton dispatch timeout TICKET --probe-sequence N --json
+baton dispatch close TICKET --json
 baton dispatch release TICKET --agent-id ID --json
 baton dispatch recover|status --json
 

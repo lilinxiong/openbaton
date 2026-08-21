@@ -43,7 +43,7 @@ You are the director. Baton supports Codex only. It consumes exact OpenCodex rou
 
 8. **Unlimited logical queue, runtime-bounded physical slots.** The Codex session limit comes from host runtime/config and may change; never hard-code 6. Queue the rest. `AgentLimitReached` is backpressure, not ticket failure: defer the same ticket without consuming an attempt or degrading route health, and record the observed capacity. A bound agent keeps its slot through terminal business state until `close_agent` succeeds and `dispatch release` records it.
 
-9. **Main-context hygiene.** Concrete workers return a short conclusion only. Checkpointed workers may also send compact progress state. Tool dumps, traces, transcripts, and hidden reasoning stay in the worker. Conclusions come back through `baton dispatch complete <ticket> --text "..."`; progress comes through `baton dispatch progress`.
+9. **Main-context hygiene.** Concrete workers return a short conclusion only. Checkpointed workers may also send compact progress state. Tool dumps, traces, transcripts, and hidden reasoning stay in the worker. Conclusions come back through `baton dispatch complete <ticket> --text "..."`; meaningful business progress comes through `baton dispatch progress`, while host activity is recorded separately through `baton dispatch probe` and never rewrites progress/blocker state.
 
 10. **OpenSpec is optional and not reimplemented.**
    - If `openspec` is on PATH or `openspec/` exists: consume tasks and status; write conclusions / checkbox flips back. Do not invent propose/specs/design/tasks/archive.
@@ -64,11 +64,11 @@ Lifecycle per ticket:
 1. **Reserve.** `baton dispatch next --host codex --capacity <effective-host-capacity> --json` → `{ reserved, blocked, snapshot }`. Each reserved spec also carries `work_unit` and `coordination`. If `reserved` is empty and `blocked` is not, surface the block reason to the user — do not improvise a route or retry blindly.
 2. **Spawn.** For each reserved spec, call `spawn_agent` with `model=<route_id>`, `reasoning_effort` only when present, and `fork_context=false`. The prompt is self-contained. If the host returns `AgentLimitReached`, stop spawning that batch and run `baton dispatch defer <ticket> --code AGENT_LIMIT_REACHED --json` for each unbound reservation; when at least one Baton agent is open, also pass `--observed-capacity <currently-open-baton-agents>`. Do not consume attempts or switch routes.
 3. **Bind.** On successful spawn: `baton dispatch bind <ticket_id> --agent-id <agent_id> --host codex --json`. The ticket is now `running`.
-4. **Coordinate without idle serial waits.** Continue ready director work after dispatch. When coordination is needed, wait on all active agent IDs in one bounded fan-in window of at most 60 seconds rather than waiting on each ID serially. For `checkpointed` tickets, persist meaningful phase changes with `baton dispatch progress`; if `progress_due` is non-empty, use `send_input` once to request the compact status contract. Surface blockers/decision requests immediately. After three consecutive fan-in windows with no terminal state and no new host/provider progress, record timeout; never switch routes as part of that terminal path.
+4. **Coordinate with activity probes, never a wall-clock deadline.** Continue ready director work after dispatch. When coordination is needed, call `wait_agent` once for all active agent IDs in a bounded fan-in window rather than waiting on each ID serially. The window bound is polling cadence only: `timed_out=true` from the wait call is not a Baton ticket timeout. Inspect every returned exact-agent status and persist it with `baton dispatch probe TICKET --agent-id ID --state STATE`; use `--activity output` or `heartbeat` when observed. `pending_init`, `running`, new output, or a heartbeat proves activity and requires another wait, with no elapsed-time or window-count limit. For `checkpointed` tickets, persist only meaningful phase changes with `baton dispatch progress`; if `progress_due` is non-empty, use `send_input` once to request the compact status contract. Surface blockers/decision requests immediately. Do not narrate unchanged windows as a first/second/final countdown. A terminal result ends the wait; `not_found` may become timeout only after its exact probe sequence is recorded, while `interrupted`/`shutdown` use the corresponding close/failure path. Never switch routes.
 5. **Finish.** Exactly one terminal write per ticket. Every terminal write for a write-mode ticket runs the parent Git safety gate; violations turn the ticket into `errored/WRITE_SCOPE_VIOLATION`, preserve host failure evidence, and reject the conclusion:
    - success → `baton dispatch complete <ticket> --text "short conclusion" --json`
    - error → `baton dispatch fail <ticket> --code CODE --message MSG --json`
-   - timeout → `baton dispatch timeout <ticket> [--message MSG] --json`
+   - verified disappearance → after `baton dispatch probe ... --state not_found`, run `baton dispatch timeout <ticket> --probe-sequence N [--message MSG] --json`
    - closed/aborted → `baton dispatch close <ticket> [--message MSG] --json`
 6. **Close.** Always call `close_agent` after recording the terminal result. A terminal ticket still holds its physical slot at this point.
 7. **Release.** Only after `close_agent` succeeds, run `baton dispatch release <ticket> --agent-id <agent_id> --json`. If close fails or the host restarts, leave it in `awaiting_release`.
@@ -77,7 +77,7 @@ Lifecycle per ticket:
 Restart / resume:
 
 - Run `baton dispatch recover --json` first. It returns `resumable`, `needs_close` (terminal agents whose slots are not released), and `expired`.
-- Resume waiting on the `resumable` agent ids. Do **not** re-spawn them.
+- Probe and resume waiting on the `resumable` agent ids. Do **not** re-spawn them or infer timeout from state age.
 - Close and release every `needs_close` agent before reserving more tickets.
 - Then continue the normal loop; only new reservations spawn new agents.
 
@@ -87,10 +87,11 @@ Restart / resume:
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
+baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
 baton dispatch progress TICKET --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
 baton dispatch complete TICKET --text "short conclusion" --json
 baton dispatch fail TICKET --code CODE --message MSG --json
-baton dispatch timeout TICKET [--message MSG] --json
+baton dispatch timeout TICKET --probe-sequence N [--message MSG] --json
 baton dispatch close TICKET [--message MSG] --json
 baton dispatch release TICKET --agent-id ID --json
 baton dispatch recover [--stale-ms N] --json
@@ -125,6 +126,7 @@ baton status
 - Never include or dispatch any `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` provider route, variant, or reasoning profile as a subagent model. The built-in ban cannot be overridden by user confirmation or an old proposal/ticket.
 - The baton CLI never calls `spawn_agent`; only the Codex host runtime spawns, waits, and closes agents.
 - Never dispatch `deliberative` work with terminal-only coordination, serially idle-wait on active agents, or refill before `dispatch release`.
+- Never convert repeated wait-call timeouts, elapsed wall time, or absent progress text into ticket timeout. While the exact agent is `pending_init`/`running` or has output/heartbeat activity, wait indefinitely; only the latest matching `not_found` probe can authorize timeout.
 - Read-only is the default. Write workers require an exact immutable Receipt and must never touch Git index/HEAD/branch/commit/rebase.
 - Do not reimplement OpenSpec.
 - Do not dump worker tool output into this conversation.

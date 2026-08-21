@@ -3,7 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { sanitizeConclusion, sanitizeProgress } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn } from "./spawn.js";
-import type { SpawnTicket, TicketError, TicketProgressPhase, TicketStatus } from "./spawn.js";
+import type {
+  AgentProbeActivity,
+  AgentProbeState,
+  SpawnTicket,
+  TicketError,
+  TicketProgressPhase,
+  TicketStatus,
+} from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
 import { dispatchLockPath, dispatchStatePath } from "./paths.js";
 import { readReceipt, type DelegationReceipt } from "./receipt.js";
@@ -15,6 +22,7 @@ import { readRouteSnapshot } from "./routes.js";
 import { subagentModelPolicy } from "./model-policy.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
+export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
 
 function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
   const needsContract = !ticket.work_unit;
@@ -24,8 +32,9 @@ function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
     ticket.prompt = buildWorkerPrompt(ticket.prompt, ticket.work_unit, ticket.coordination);
   }
   if (ticket.progress === undefined) ticket.progress = null;
+  if (ticket.liveness === undefined) ticket.liveness = null;
   if (ticket.selection === undefined) ticket.selection = null;
-  if (Number(ticket.schema_version || 1) < 4) ticket.schema_version = 4;
+  if (Number(ticket.schema_version || 1) < 5) ticket.schema_version = 5;
   return ticket;
 }
 
@@ -340,6 +349,26 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
 
 interface BindOptions { agentId: string; host?: string; now?: TimeInput }
 
+const AGENT_PROBE_STATES = new Set<AgentProbeState>(["pending_init", "running", "interrupted", "shutdown", "not_found"]);
+const AGENT_PROBE_ACTIVITIES = new Set<AgentProbeActivity>(["status", "output", "heartbeat"]);
+const LIVE_AGENT_PROBE_STATES = new Set<AgentProbeState>(["pending_init", "running"]);
+
+function updateTicketLiveness(
+  ticket: SpawnTicket,
+  agentId: string,
+  state: AgentProbeState,
+  activity: AgentProbeActivity,
+  at: string,
+): void {
+  ticket.liveness = {
+    sequence: Number(ticket.liveness?.sequence || 0) + 1,
+    agent_id: agentId,
+    state,
+    activity,
+    observed_at: at,
+  };
+}
+
 export function bindAgent(cwd: string, id: string, { agentId, host = "codex", now }: BindOptions): SpawnTicket {
   const workerId = String(agentId || "").trim();
   if (!workerId) throw new DispatchError("agentId is required", "AGENT_ID_REQUIRED", { ticketId: id });
@@ -353,6 +382,7 @@ export function bindAgent(cwd: string, id: string, { agentId, host = "codex", no
     ticket.agent_id = workerId;
     ticket.host = host;
     ticket.started_at = at;
+    updateTicketLiveness(ticket, workerId, "running", "status", at);
     writeSpawn(cwd, ticket);
     return ticket;
   });
@@ -396,6 +426,51 @@ export function deferDispatch(cwd: string, id: string, {
 
 const PROGRESS_PHASES = new Set<TicketProgressPhase>(["starting", "working", "waiting", "blocked", "checkpoint"]);
 
+interface ProbeOptions {
+  agentId: string;
+  state: AgentProbeState;
+  activity?: AgentProbeActivity;
+  now?: TimeInput;
+}
+
+/**
+ * Persist the host runtime's current view of a bound agent. This is a liveness
+ * signal only: it never changes business progress or ticket terminal state.
+ */
+export function reportAgentProbe(cwd: string, id: string, {
+  agentId,
+  state,
+  activity = "status",
+  now,
+}: ProbeOptions): SpawnTicket {
+  const workerId = String(agentId || "").trim();
+  if (!workerId) throw new DispatchError("agentId is required", "AGENT_ID_REQUIRED", { ticketId: id });
+  if (!AGENT_PROBE_STATES.has(state)) throw new DispatchError(`invalid agent probe state: ${state}`, "INVALID_AGENT_PROBE_STATE", { ticketId: id });
+  if (!AGENT_PROBE_ACTIVITIES.has(activity)) throw new DispatchError(`invalid agent probe activity: ${activity}`, "INVALID_AGENT_PROBE_ACTIVITY", { ticketId: id });
+  if (!LIVE_AGENT_PROBE_STATES.has(state) && activity !== "status") {
+    throw new DispatchError(`agent probe state ${state} cannot report ${activity} activity`, "INVALID_AGENT_PROBE_ACTIVITY", { ticketId: id });
+  }
+  return withLock(cwd, () => {
+    const at = instant(now).toISOString();
+    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    if (ticket.status !== "running") {
+      throw new DispatchError(`ticket ${id} is not running`, "PROBE_REQUIRES_RUNNING", { ticketId: id, currentStatus: ticket.status });
+    }
+    if (!ticket.agent_id || ticket.agent_id !== workerId) {
+      throw new DispatchError(`ticket ${id} is bound to ${ticket.agent_id || "no agent"}, not ${workerId}`, "AGENT_ID_MISMATCH", { ticketId: id });
+    }
+    updateTicketLiveness(ticket, workerId, state, activity, at);
+    history(ticket, "agent_probe", at, {
+      sequence: ticket.liveness!.sequence,
+      agent_id: workerId,
+      state,
+      activity,
+    });
+    writeSpawn(cwd, ticket);
+    return ticket;
+  });
+}
+
 interface ProgressOptions {
   phase: TicketProgressPhase;
   summary: string;
@@ -437,10 +512,12 @@ export function reportAgentProgress(cwd: string, id: string, {
       needs_director: Boolean(needsDirector),
       reported_at: at,
     };
+    if (ticket.agent_id) updateTicketLiveness(ticket, ticket.agent_id, "running", "output", at);
     history(ticket, "agent_progress", at, {
       sequence: ticket.progress.sequence,
       phase,
       needs_director: ticket.progress.needs_director,
+      liveness_sequence: ticket.liveness?.sequence || null,
     });
     writeSpawn(cwd, ticket);
     return ticket;
@@ -452,10 +529,18 @@ interface FinishOptions {
   conclusion?: string | null;
   errorCode?: string | null;
   errorMessage?: string | null;
+  probeSequence?: number | null;
   now?: TimeInput;
 }
 
-export function finishAgent(cwd: string, id: string, { status, conclusion = null, errorCode = null, errorMessage = null, now }: FinishOptions): SpawnTicket {
+export function finishAgent(cwd: string, id: string, {
+  status,
+  conclusion = null,
+  errorCode = null,
+  errorMessage = null,
+  probeSequence = null,
+  now,
+}: FinishOptions): SpawnTicket {
   const terminal = String(status || "").trim();
   if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
   return withLock(cwd, () => {
@@ -464,12 +549,33 @@ export function finishAgent(cwd: string, id: string, { status, conclusion = null
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
+    if (terminal === "timed_out") {
+      const expectedSequence = Number(probeSequence);
+      const probe = ticket.liveness;
+      if (ticket.status !== "running"
+        || !ticket.agent_id
+        || !Number.isInteger(expectedSequence)
+        || expectedSequence < 1
+        || !probe
+        || probe.sequence !== expectedSequence
+        || probe.agent_id !== ticket.agent_id
+        || probe.state !== "not_found") {
+        throw new DispatchError(
+          `ticket ${id} timeout requires its latest exact-agent host probe to be not_found; elapsed wait time is never timeout evidence`,
+          "TIMEOUT_REQUIRES_NOT_FOUND_PROBE",
+          { ticketId: id, currentStatus: ticket.status },
+        );
+      }
+    }
     const expected: TicketStatus | TicketStatus[] = terminal === "completed" ? "running" : ["dispatching", "running"];
     if (terminal === "completed" && !ticket.agent_id) throw new DispatchError(`ticket ${id} has no bound agent`, "AGENT_NOT_BOUND", { ticketId: id });
     let hostError: HostTerminalError | null = null;
     if (terminal !== "completed") {
       const code = String(errorCode || (terminal === "timed_out" ? "AGENT_TIMEOUT" : terminal === "closed" ? "AGENT_CLOSED" : "AGENT_ERROR"));
-      hostError = { status: terminal as HostTerminalError["status"], code, message: String(errorMessage || code) };
+      const defaultMessage = terminal === "timed_out"
+        ? `host probe ${ticket.liveness!.sequence} reported agent ${ticket.agent_id} not_found`
+        : code;
+      hostError = { status: terminal as HostTerminalError["status"], code, message: String(errorMessage || defaultMessage) };
     }
     // Every terminal path of a write ticket runs the parent Git safety audit before the slot is released.
     if (ticket.mode === "write") {
@@ -601,6 +707,12 @@ export function dispatchSnapshot(cwd: string, { capacity, now }: { capacity?: nu
     const last = Date.parse(ticket.progress?.reported_at || ticket.started_at || ticket.updated_at || ticket.created_at || "");
     return Number.isFinite(last) && currentMs - last >= interval;
   }).map((ticket) => ticket.id);
+  const probeDue = tickets.filter((ticket) => {
+    if (ticket.status !== "running") return false;
+    if (ticket.liveness && !LIVE_AGENT_PROBE_STATES.has(ticket.liveness.state)) return false;
+    const last = Date.parse(ticket.liveness?.observed_at || ticket.started_at || ticket.updated_at || ticket.created_at || "");
+    return !Number.isFinite(last) || currentMs - last >= DEFAULT_AGENT_PROBE_INTERVAL_MS;
+  }).map((ticket) => ticket.id);
   return {
     capacity: max,
     active: active.length,
@@ -616,6 +728,11 @@ export function dispatchSnapshot(cwd: string, { capacity, now }: { capacity?: nu
       progress: ticket.progress || null,
     })),
     progress_due: progressDue,
+    running_liveness: tickets.filter((ticket) => ticket.status === "running").map((ticket) => ({
+      ticket_id: ticket.id,
+      liveness: ticket.liveness || null,
+    })),
+    probe_due: probeDue,
     awaiting_release: tickets.filter((ticket) => TERMINAL_TICKET_STATUSES.has(ticket.status) && holdsHostSlot(ticket))
       .map((ticket) => ({ ticket_id: ticket.id, agent_id: ticket.agent_id, status: ticket.status })),
     terminal: tickets.filter((ticket) => TERMINAL_TICKET_STATUSES.has(ticket.status)).map((ticket) => ({ ticket_id: ticket.id, status: ticket.status, error: ticket.error || null })),

@@ -56,6 +56,15 @@ async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
 }
 
+async function reportMissingWriteAgent(cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
+  const out = capture();
+  const code = await run([
+    "dispatch", "probe", "spn-0001", "--agent-id", "agent-write", "--state", "not_found", "--json",
+  ], { cwd, env, stdout: out, stderr: out });
+  assert.equal(code, 0, out.text());
+  return JSON.parse(out.text()).ticket.liveness.sequence;
+}
+
 describe("write dispatch safety integration", () => {
   it("completes an allowlisted write after the parent gate passes", async () => {
     await withHome(async (home) => {
@@ -155,13 +164,17 @@ describe("write dispatch safety integration", () => {
       const env = fakeEnv(home);
       await boundWriteTicket(cwd, env);
       fs.appendFileSync(path.join(cwd, "denied.txt"), "WORKER_OUT_OF_SCOPE\n");
+      const probeSequence = await reportMissingWriteAgent(cwd, env);
       const out = capture();
-      const code = await run(["dispatch", "timeout", "spn-0001", "--message", "no events for 10m", "--json"], { cwd, env, stdout: out, stderr: out });
+      const code = await run([
+        "dispatch", "timeout", "spn-0001", "--probe-sequence", String(probeSequence),
+        "--message", "host probe reported the agent missing", "--json",
+      ], { cwd, env, stdout: out, stderr: out });
       assert.equal(code, 0, out.text());
       const ticket = readTicket(cwd, "spn-0001");
       assert.equal(ticket.status, "errored");
       assert.equal(ticket.error.code, "WRITE_SCOPE_VIOLATION");
-      assert.deepEqual(ticket.error.host_error, { status: "timed_out", code: "AGENT_TIMEOUT", message: "no events for 10m" });
+      assert.deepEqual(ticket.error.host_error, { status: "timed_out", code: "AGENT_TIMEOUT", message: "host probe reported the agent missing" });
       assert.equal(ticket.conclusion, null);
     });
   });
@@ -188,12 +201,16 @@ describe("write dispatch safety integration", () => {
       const env = fakeEnv(home);
       await boundWriteTicket(cwd, env);
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
+      const probeSequence = await reportMissingWriteAgent(cwd, env);
       const out = capture();
-      const code = await run(["dispatch", "timeout", "spn-0001", "--message", "no events for 10m", "--json"], { cwd, env, stdout: out, stderr: out });
+      const code = await run([
+        "dispatch", "timeout", "spn-0001", "--probe-sequence", String(probeSequence),
+        "--message", "host probe reported the agent missing", "--json",
+      ], { cwd, env, stdout: out, stderr: out });
       assert.equal(code, 0, out.text());
       const ticket = readTicket(cwd, "spn-0001");
       assert.equal(ticket.status, "timed_out");
-      assert.deepEqual(ticket.error, { code: "AGENT_TIMEOUT", message: "no events for 10m" });
+      assert.deepEqual(ticket.error, { code: "AGENT_TIMEOUT", message: "host probe reported the agent missing" });
       assert.equal(ticket.safety_verdict.accepted, true);
     });
   });

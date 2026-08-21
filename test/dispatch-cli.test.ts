@@ -166,4 +166,42 @@ describe("dispatch CLI", () => {
       assert.equal(body.ticket.progress.needs_director, true);
     });
   });
+
+  it("uses exact-agent probes as liveness evidence and rejects time-only timeout", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
+      const env = fakeEnv(home);
+      await command(["init"], { cwd, env });
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      assert.equal((await approvedSpawn(["spawn", "build the Android target", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env })).code, 0);
+      assert.equal((await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-build", "--json"], { cwd, env })).code, 0);
+
+      const live = await command([
+        "dispatch", "probe", "spn-0001", "--agent-id", "agent-build", "--state", "running", "--activity", "status", "--json",
+      ], { cwd, env });
+      assert.equal(live.code, 0, live.stderr);
+      const liveBody = JSON.parse(live.stdout);
+      assert.equal(liveBody.ticket.status, "running");
+      assert.equal(liveBody.ticket.liveness.state, "running");
+      assert.equal(liveBody.ticket.progress, null);
+
+      const timeOnly = await command([
+        "dispatch", "timeout", "spn-0001", "--probe-sequence", String(liveBody.ticket.liveness.sequence), "--json",
+      ], { cwd, env });
+      assert.equal(timeOnly.code, 1);
+      assert.match(timeOnly.stderr, /elapsed wait time is never timeout evidence/);
+
+      const missing = await command([
+        "dispatch", "probe", "spn-0001", "--agent-id", "agent-build", "--state", "not_found", "--json",
+      ], { cwd, env });
+      assert.equal(missing.code, 0, missing.stderr);
+      const missingBody = JSON.parse(missing.stdout);
+      const timedOut = await command([
+        "dispatch", "timeout", "spn-0001", "--probe-sequence", String(missingBody.ticket.liveness.sequence), "--json",
+      ], { cwd, env });
+      assert.equal(timedOut.code, 0, timedOut.stderr);
+      assert.equal(JSON.parse(timedOut.stdout).ticket.status, "timed_out");
+    });
+  });
 });

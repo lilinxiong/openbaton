@@ -40,6 +40,18 @@ export interface TicketProgress {
   reported_at: string;
 }
 
+export type AgentProbeState = "pending_init" | "running" | "interrupted" | "shutdown" | "not_found";
+export type AgentProbeActivity = "status" | "output" | "heartbeat";
+
+/** Host-observed liveness is separate from business progress and terminal state. */
+export interface TicketLiveness {
+  sequence: number;
+  agent_id: string;
+  state: AgentProbeState;
+  activity: AgentProbeActivity;
+  observed_at: string;
+}
+
 export interface SpawnTicket extends UnknownRecord {
   schema_version: number;
   id: string;
@@ -48,6 +60,7 @@ export interface SpawnTicket extends UnknownRecord {
   work_unit: WorkUnitContract;
   coordination: CoordinationPolicy;
   progress: TicketProgress | null;
+  liveness: TicketLiveness | null;
   model_id: string;
   route_id: string | null;
   reasoning_effort: string | null;
@@ -157,13 +170,14 @@ export function buildSpawnTicket({
   const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
   const coordination = coordinationFor(workUnit);
   return {
-    schema_version: 4,
+    schema_version: 5,
     id,
     description,
     prompt: buildWorkerPrompt(prompt, workUnit, coordination),
     work_unit: workUnit,
     coordination,
     progress: null,
+    liveness: null,
     model_id: modelId,
     route_id: routeId,
     reasoning_effort: reasoningEffort,

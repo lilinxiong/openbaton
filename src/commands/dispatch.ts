@@ -6,6 +6,7 @@ import {
   finishAgent,
   persistedCapacity,
   releaseAgent,
+  reportAgentProbe,
   reportAgentProgress,
   recoverDispatches,
   reserveNext,
@@ -16,10 +17,11 @@ const USAGE = `usage:
   baton dispatch next --host codex [--capacity N] [--limit N] --json
   baton dispatch bind TICKET --agent-id ID --host codex --json
   baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+  baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
   baton dispatch complete TICKET --text "short conclusion" --json
   baton dispatch fail TICKET --code CODE --message MESSAGE --json
-  baton dispatch timeout TICKET [--message MESSAGE] --json
+  baton dispatch timeout TICKET --probe-sequence N [--message MESSAGE] --json
   baton dispatch close TICKET [--message MESSAGE] --json
   baton dispatch release TICKET [--agent-id ID] --json
   baton dispatch recover [--stale-ms N] --json
@@ -27,6 +29,7 @@ const USAGE = `usage:
 
 dispatch next remembers --capacity under ~/.baton/workspaces/<id>/runs/; later bind/complete/status/recover
 calls inherit it without repeating the flag.
+recover --stale-ms applies only to an unbound dispatch reservation. A bound running agent is probed and resumed, never expired by age.
 `;
 
 type FlagMap = Record<string, string | boolean>;
@@ -116,6 +119,20 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
     return 0;
   }
 
+  if (sub === "probe") {
+    const id = values[0];
+    const agentId = stringFlag(flags, "agent-id");
+    const state = stringFlag(flags, "state");
+    if (!id || !agentId || !state) throw new Error(USAGE.trim());
+    const ticket = reportAgentProbe(cwd, id, {
+      agentId,
+      state: state as Parameters<typeof reportAgentProbe>[2]["state"],
+      activity: (stringFlag(flags, "activity") || "status") as Parameters<typeof reportAgentProbe>[2]["activity"],
+    });
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    return 0;
+  }
+
   if (sub === "progress") {
     const id = values[0];
     const phase = stringFlag(flags, "phase");
@@ -143,12 +160,15 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
   if (["fail", "timeout", "close"].includes(sub)) {
     const id = values[0];
     if (!id) throw new Error(USAGE.trim());
+    const timeoutProbeSequence = sub === "timeout" ? stringFlag(flags, "probe-sequence") : undefined;
+    if (sub === "timeout" && !timeoutProbeSequence) throw new Error(USAGE.trim());
     const status = sub === "fail" ? "errored" : sub === "timeout" ? "timed_out" : "closed";
     const ticket = finishAgent(cwd, id, {
       status,
       conclusion: stringFlag(flags, "text") || null,
       errorCode: stringFlag(flags, "code") || null,
       errorMessage: stringFlag(flags, "message") || null,
+      probeSequence: timeoutProbeSequence ? Number(timeoutProbeSequence) : null,
     });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;

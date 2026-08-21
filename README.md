@@ -33,7 +33,8 @@ The user talks to Codex as usual. The director runs Baton; the user does not hav
 4. **Disclose once and confirm once.** Provider is one global multi-select. Below it, the director shows every candidate and all task assignments together. Multiple workspace proposals from the same front request are rendered as one bundle with one Submit. Until that Submit, ticket count and subagent count stay at zero.
 5. **Mint tickets.** `baton selection approve ... --confirm` creates queued tickets and immutable Delegation Receipts. A bundled Submit binds the same confirmation id and global Provider choice into every proposal. A changed OpenCodex catalog snapshot or source task invalidates the proposal.
 6. **Dispatch in-process.** Codex reserves with `baton dispatch next`, calls host-native `spawn_agent`, binds the returned agent id, then writes exactly one terminal result. `close_agent` plus `dispatch release` frees the physical slot; FIFO refill follows.
-7. **Keep the front conversation clean.** Concrete workers return one short conclusion. Deliberative workers may checkpoint phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay in the child.
+7. **Wait by activity, not elapsed time.** Bounded `wait_agent` windows are polling cadence only. Persist exact-agent host state with `baton dispatch probe`; `pending_init`, `running`, output, or heartbeat activity keeps the same ticket alive indefinitely. Business progress stays separate. Timeout requires the latest matching `not_found` probe sequence.
+8. **Keep the front conversation clean.** Concrete workers return one short conclusion. Deliberative workers may checkpoint phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay in the child.
 
 Mechanical ops can skip the selector when the user-global `~/.baton/config.toml` names an executable route in the synced OpenCodex snapshot. Empty means the director runs that class itself.
 
@@ -45,6 +46,7 @@ Mechanical ops can skip the selector when the user-global `~/.baton/config.toml`
 - **Catalog and eligibility are separate.** OpenCodex discovery stays fully inspectable. Built-in policy forbids every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile from candidates, confirmation, tickets, and dispatch. Proposals disclose those exclusions. Other session or Goal exclusions remain temporary.
 - **Unranked is not invented.** Missing-profile and serving-variant (`-fast` / `-highspeed`) base scores are `reference_only` and cannot drive automatic recommendation. A user may pick a disclosed callable `unranked` route. Forbidden families cannot be overridden.
 - **Logical work is uncapped.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns the same ticket to FIFO without consuming its attempt. A terminal agent still occupies a slot until close and release succeed. Depth is 1.
+- **No timer-based worker death.** Repeated wait-call timeouts and missing progress text never make a running agent dead. Baton records host liveness separately and allows ticket timeout only after the current exact agent is probed as `not_found`.
 - **Workers never own Git.** They do not stage, commit, branch, rebase, or push. Write tickets need an explicit allowlist and pass the parent Git safety gate on every terminal path, including error, timeout, and close.
 
 ## OpenSpec
@@ -134,9 +136,12 @@ baton selection approve PROPOSAL --confirm [--route TASK=ID] [--provider ID] [--
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json
 baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
 baton dispatch progress TICKET --phase PHASE --text "short status" --json
 baton dispatch complete TICKET --text "short conclusion" --json
-baton dispatch fail|timeout|close TICKET --json
+baton dispatch fail TICKET --json
+baton dispatch timeout TICKET --probe-sequence N --json
+baton dispatch close TICKET --json
 baton dispatch release TICKET --agent-id ID --json
 baton dispatch recover|status --json
 
