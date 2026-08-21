@@ -175,7 +175,7 @@ function verifyModelSelection(items, selections) {
   const routeSnapshot = path.join(home, ".baton", "cache", "routes.json");
   assert(fs.existsSync(routeSnapshot), "Baton must persist one OpenCodex route/quota snapshot");
   const catalog = JSON.parse(fs.readFileSync(routeSnapshot, "utf8"));
-  assert(catalog.schema_version === 3, "route snapshot must use the combined route/quota schema");
+  assert(catalog.schema_version === 4, "route snapshot must use the route/quota/fast-capability schema");
   assert(catalog.routes?.some((route) => !route.disabled), "route snapshot must contain executable OpenCodex routes");
   assert(catalog.provider_quotas.every((quota) => !Object.hasOwn(quota, "accounts")), "route quota disclosure must not contain provider credentials/accounts");
   assert(!hasSensitiveQuotaKey(catalog.provider_quotas), "route quota disclosure must not persist CodexBar account/auth fields");

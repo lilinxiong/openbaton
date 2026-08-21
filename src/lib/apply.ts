@@ -120,6 +120,7 @@ export class ApplyError extends Error {
 interface PlanApplyInput {
   tasks: OpenSpecTask[];
   cards: ApplyModelCard[];
+  includeTask?: (task: OpenSpecTask) => boolean;
   selectCard?: (task: OpenSpecTask, cards: ApplyModelCard[]) => ApplyModelCard | undefined;
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
 }
@@ -134,6 +135,7 @@ interface ApplyChangeInput {
   change?: string | null;
   cfg: ApplyConfig;
   cards: ApplyModelCard[];
+  includeTask?: (task: OpenSpecTask) => boolean;
   selectCard?: (task: OpenSpecTask, cards: ApplyModelCard[]) => ApplyModelCard | undefined;
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
   selectionApprovals?: Map<string, ModelSelectionApproval>;
@@ -183,11 +185,12 @@ export function resolveApplyChange(cwd: string, change?: string | null): string 
   );
 }
 
-export function planApply({ tasks, cards, selectCard, selectCards }: PlanApplyInput): PlanApplyResult {
+export function planApply({ tasks, cards, includeTask, selectCard, selectCards }: PlanApplyInput): PlanApplyResult {
   const units: ApplyUnit[] = [];
   const blocked: BlockedApplyTask[] = [];
   for (const task of tasks) {
     if (task.status !== "pending") continue;
+    if (includeTask && !includeTask(task)) continue;
     const prompt = formatTaskPrompt(task);
     if (directorMayRun(task.description)) {
       units.push({
@@ -236,11 +239,11 @@ export function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, cards, selectCard, selectCards, selectionApprovals = new Map() }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map() }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
-  const { units, blocked } = planApply({ tasks, cards, selectCard, selectCards });
+  const { units, blocked } = planApply({ tasks, cards, includeTask, selectCard, selectCards });
   if (blocked.length && units.length === 0) {
     return {
       changeDir,

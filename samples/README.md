@@ -1,6 +1,6 @@
 # Baton capability samples
 
-This sample validates the same read-only incident audit and mandatory model-selection handshake through two paths:
+This sample explicitly enables free model selection and validates the same read-only incident audit and manual model-selection handshake through two paths:
 
 - `standalone`: the workspace has no `openspec/`; the Codex director must derive five bounded units in one request-level proposal from an ordinary request.
 - `openspec`: the workspace contains a strict-valid OpenSpec change with five stable tasks; Baton must consume those tasks and write conclusions back by task number.
@@ -18,6 +18,7 @@ bun link
 baton update
 baton routes refresh
 baton cards --ranked
+baton config model-selection on
 ```
 
 At least one ranked executable exact route/profile must be visible. `bun link` is required only when testing this source checkout; a normally installed package already provides `baton` on `PATH`.
@@ -26,7 +27,9 @@ OpenCodex owns its runtime/provider synchronization. Baton then runs one on-dema
 
 Quota uses `OpenCodex reported > local CodexBar fallback > unknown`. A sample run must preserve source/reason, never overwrite an OpenCodex reported window, and never persist CodexBar account/auth/raw-output fields. CodexBar is optional; absence or provider failure remains an explicit unknown state.
 
-## Required confirmation interaction
+## Required opt-in confirmation interaction
+
+The product default is `model_selection=off`; normal standalone and OpenSpec work uses Baton's automatic recommendation. This sample is specifically the manual-selector acceptance flow, so enable it with `baton config model-selection on` before bootstrapping. Turn it off again with `baton config model-selection off` after the sample if desired.
 
 The pasted business request is intentionally trigger-neutral. Codex must not ask the user to invoke Baton. It should first break down the work and present comparison-table model-selection disclosure containing:
 

@@ -6,7 +6,13 @@ import { runDispatch } from "./commands/dispatch.js";
 import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { runConfig } from "./commands/config.js";
-import { printSelectionProposal, runSelection } from "./commands/selection.js";
+import {
+  approveRecommendedSelection,
+  assertRecommendedSelectionAvailable,
+  printSelectionProposal,
+  runSelection,
+  type SelectionApprovalOutput,
+} from "./commands/selection.js";
 import { loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
@@ -16,7 +22,13 @@ import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
-import { buildSelectionUnit, createSelectionProposal, listSelectionProposals, selectionSourceFingerprint } from "./lib/selection.js";
+import {
+  buildSelectionUnit,
+  createSelectionProposal,
+  listSelectionProposals,
+  selectionSourceFingerprint,
+  type SelectionProposal,
+} from "./lib/selection.js";
 import { directorMayRun } from "./lib/hygiene.js";
 import { FORBIDDEN_SUBAGENT_MODEL_FAMILIES, SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
 import type { ModelCard } from "./types.js";
@@ -61,9 +73,10 @@ Usage:
   baton routes refresh|status|candidates  refresh Baton once from synchronized OpenCodex state
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton config [--runner ROUTE|-] [--longctx ROUTE|-]  choose global ops routes from OpenCodex (~/.baton/config.toml)
+  baton config model-selection on|off|status  opt in/out of manual model choice (default: off)
   baton match <text>                disclose preferred/candidate models without creating work
-  baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  route configured ops units; propose the remaining units once
-  baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
+  baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  auto-recommend remaining units; --model requires model-selection on
+  baton apply [change] [--route TASK=EXACT_ROUTE]  auto-recommend OpenSpec units; --route requires model-selection on
   baton selection show PROPOSAL
   baton selection render PROPOSAL --output PATH --task-label TASK=中文 [--assign TASK=ID]  return one Chinese current-conversation selector
   baton selection render-bundle --proposal SCOPE=WORKSPACE#PROPOSAL ... --output PATH  combine proposals into one Submit
@@ -128,7 +141,7 @@ export async function run(argv: string[], {
       case "apply":
         return await cmdApply(args, cwd, stdout, env, runner, resolve);
       case "selection":
-        return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env, runner, resolve) });
+        return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env, runner, resolve), env });
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "capabilities":
@@ -236,6 +249,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--model ID]");
+  const cfg = loadConfig(cwd, { env });
   const allCards = resolvedCards(cwd, env, runner, resolve);
   const kindFlag = stringFlag(flags, "task-kind");
   if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
@@ -243,6 +257,9 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   }
   const unitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
   const explicitModel = stringFlag(flags, "model") || null;
+  if (explicitModel && !cfg.director.model_selection) {
+    throw new Error("MODEL_SELECTION_DISABLED: --model requires `baton config model-selection on`; model selection is off, so Baton uses its recommendation");
+  }
   const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (unitDefinitions.length) {
     if (writePathsEarly.length) throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
@@ -295,6 +312,11 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         dispatched.push({ key: item.key, action: ops.action, profile: ops.profile, ticket });
         continue;
       }
+      const directorLocal = directorMayRun(item.description);
+      if (directorLocal) {
+        local.push({ key: item.key, action: "director-local", reason: "tiny unit; no subagent model selection is needed" });
+        continue;
+      }
       units.push(buildSelectionUnit({
         cwd,
         key: item.key,
@@ -303,22 +325,28 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         cards: allCards,
         automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description),
         requestedModelId: explicitModel,
-        directorLocal: directorMayRun(item.description),
+        directorLocal: false,
         metadata: { request_index: index },
       }));
     }
+    if (!cfg.director.model_selection) assertRecommendedSelectionAvailable(units);
     const proposal = units.length ? createSelectionProposal(cwd, {
       source: "standalone",
       units,
       sourceFingerprint: selectionSourceFingerprint(source),
       payload: source,
     }) : null;
+    const approval = proposal && !cfg.director.model_selection
+      ? approveRecommendedSelection({ cwd, proposal, cards: allCards, env })
+      : null;
     if (flags.json) {
       const handled = dispatched.length || local.length || skipped.length;
       stdout.write(`${JSON.stringify(proposal && !handled
-        ? proposal
+        ? approval ? { selection_mode: "baton-recommendation", ...approval } : proposal
         : {
-          proposal,
+          ...(approval
+            ? { selection_mode: "baton-recommendation", recommendation: approval }
+            : { proposal }),
           dispatched: dispatched.map((item) => ({ key: item.key, action: item.action, profile: item.profile, ticket: item.ticket })),
           director_local: local,
           skipped,
@@ -329,7 +357,8 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       }
       for (const item of local) stdout.write(`director-local ${item.key}: ${item.action}; ${item.reason}\n`);
       for (const item of skipped) stdout.write(`ops-skip ${item.key}: ${item.action}; ${item.reason}\n`);
-      if (proposal) printSelectionProposal(stdout, proposal);
+      if (proposal && approval) printAutomaticRecommendation(stdout, proposal, approval);
+      else if (proposal) printSelectionProposal(stdout, proposal);
     }
     return 0;
   }
@@ -390,13 +419,18 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     automaticCards: cardsForAutomaticSelection(cwd, allCards, text),
     requestedModelId: explicitModel,
   });
+  if (!cfg.director.model_selection) assertRecommendedSelectionAvailable([unit]);
   const proposal = createSelectionProposal(cwd, {
     source: "standalone",
     units: [unit],
     sourceFingerprint: selectionSourceFingerprint(payload),
     payload,
   });
-  if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
+  if (!cfg.director.model_selection) {
+    const approval = approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
+    if (flags.json) stdout.write(`${JSON.stringify({ selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
+    else printAutomaticRecommendation(stdout, proposal, approval);
+  } else if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
   else printSelectionProposal(stdout, proposal);
   return 0;
 }
@@ -404,6 +438,10 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
   const flags = parseFlags(args);
   const change = firstPositionalArg(args);
+  const cfg = loadConfig(cwd, { env });
+  if (multiFlag(flags, "route").length && !cfg.director.model_selection) {
+    throw new Error("MODEL_SELECTION_DISABLED: --route requires `baton config model-selection on`; model selection is off, so Baton uses its recommendation");
+  }
   const cards = resolvedCards(cwd, env, runner, resolve);
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
@@ -463,13 +501,21 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     return 0;
   }
   const taskSource = tasks.map((task) => ({ number: task.number, description: task.description, section: task.section }));
+  if (!cfg.director.model_selection) assertRecommendedSelectionAvailable(units);
   const proposal = createSelectionProposal(cwd, {
     source: "openspec",
     units,
     sourceFingerprint: selectionSourceFingerprint(taskSource),
     payload: { change: change || changeDir.split(/[\\/]/).at(-1), change_dir: changeDir },
   });
-  if (flags.json) {
+  if (!cfg.director.model_selection) {
+    const approval = approveRecommendedSelection({ cwd, proposal, cards, env });
+    if (flags.json) {
+      stdout.write(`${JSON.stringify(dispatched.length
+        ? { selection_mode: "baton-recommendation", recommendation: approval, dispatched: dispatched.map((item) => item.ticket) }
+        : { selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
+    } else printAutomaticRecommendation(stdout, proposal, approval);
+  } else if (flags.json) {
     stdout.write(`${JSON.stringify(dispatched.length ? { proposal, dispatched: dispatched.map((item) => item.ticket) } : proposal, null, 2)}\n`);
   } else printSelectionProposal(stdout, proposal);
   return 0;
@@ -507,6 +553,7 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, ru
   const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
   stdout.write(`  cards: ${cards.length} OpenCodex routes (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
   stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}  forbidden ${FORBIDDEN_SUBAGENT_MODEL_FAMILIES.join(", ")}\n`);
+  stdout.write(`  model selection: ${cfg.director.model_selection ? "on (user choice enabled)" : "off (Baton recommendation automatic)"}\n`);
   stdout.write(`  max_concurrent: ${cfg.director.max_concurrent} (queue beyond this; never refuse)\n`);
   const snapshot = readRouteSnapshot(cwd);
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
@@ -528,6 +575,21 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, ru
   const os = readOpenSpecStatus(cwd);
   stdout.write(`  openspec (${os.source}): ${os.text}\n`);
   return 0;
+}
+
+function printAutomaticRecommendation(stdout: WritableLike, proposal: SelectionProposal, output: SelectionApprovalOutput): void {
+  stdout.write(`auto-approved ${proposal.id} by Baton recommendation\n`);
+  for (const unit of proposal.units) {
+    if (unit.director_local) {
+      stdout.write(`  ${unit.key}: director-local\n`);
+      continue;
+    }
+    const selected = output.approvals.find((approval) => approval.key === unit.key)?.selected_model_id || unit.recommended_model_id;
+    const candidate = unit.candidates.find((item) => item.model_id === selected);
+    const speed = candidate?.speed_optimized ? `; fast=${candidate.speed_signals.join("+")}` : "";
+    stdout.write(`  ${unit.key}: ${selected} (score=${candidate?.task_score ?? "fallback"}; effort=${unit.target_reasoning_effort}; context=${unit.estimated_context_tokens}${speed})\n`);
+  }
+  for (const ticket of output.tickets) stdout.write(`  ticket ${ticket.id} queued; dispatch remains host-owned\n`);
 }
 
 function parseFlags(args: string[]): FlagMap {

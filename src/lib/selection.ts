@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { scoreCard } from "./cards.js";
+import { classifyTask, scoreCard } from "./cards.js";
 import { quotaForProvider, type ProviderQuotaDisclosure } from "./provider-quotas.js";
 import { selectionsDir } from "./paths.js";
 import { readRouteSnapshot, type RouteSnapshot } from "./routes.js";
@@ -19,7 +19,7 @@ import {
   type SelectionQuotaPool,
 } from "./quota-pools.js";
 import { taskCapabilityExclusion, type TaskCapabilityExclusion } from "./task-suitability.js";
-import type { CardCapabilityEvidence, ModelCard, UnknownRecord } from "../types.js";
+import type { CardCapabilityEvidence, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 
 export type SelectionProposalStatus = "pending_confirmation" | "approved";
 
@@ -27,6 +27,11 @@ export interface SelectionCandidate {
   model_id: string;
   route_id: string;
   reasoning_effort: string | null;
+  reasoning_effort_configurable: boolean;
+  effective_reasoning_effort: string | null;
+  context_window: number | null;
+  speed_optimized: boolean;
+  speed_signals: Array<"route-name" | "opencodex-config">;
   provider: string | null;
   selectable: boolean;
   selection_code: "AVAILABLE" | "QUOTA_POOL_EXHAUSTED";
@@ -65,7 +70,11 @@ export interface SelectionUnit {
   recommended_model_id: string | null;
   requested_model_id: string | null;
   default_model_id: string | null;
-  recommendation_reason: "UNIQUE_HIGHEST_TASK_SCORE" | "AMBIGUOUS_TOP_SCORE" | "NO_POSITIVE_TASK_SCORE" | "NO_SELECTABLE_RANKED_CANDIDATE" | "DIRECTOR_LOCAL";
+  recommendation_reason: "UNIQUE_HIGHEST_TASK_SCORE" | "DETERMINISTIC_TOP_SCORE_TIEBREAK" | "GENERAL_CAPABILITY_FALLBACK" | "AMBIGUOUS_TOP_SCORE" | "NO_POSITIVE_TASK_SCORE" | "NO_SELECTABLE_RANKED_CANDIDATE" | "DIRECTOR_LOCAL";
+  target_reasoning_effort: "low" | "medium" | "high" | "xhigh" | "max";
+  complexity_reason: "simple" | "standard" | "complex" | "very-complex";
+  estimated_context_tokens: number;
+  context_estimate_reason: "explicit" | "large-scope" | "small-scope" | "standard";
   requires_manual_choice: boolean;
   candidates: SelectionCandidate[];
   task_exclusions: TaskCapabilityExclusion[];
@@ -92,6 +101,7 @@ export interface SelectionProposal {
     confirmation_id: string;
     scope: "proposal" | "bundle";
     confirmed_at: string;
+    confirmed_by?: ModelSelectionApproval["confirmed_by"];
     selected_provider_ids: string[];
     global_provider_ids: string[];
     unit_keys: string[];
@@ -100,6 +110,7 @@ export interface SelectionProposal {
     key: string;
     approval_id: string;
     confirmation_id?: string;
+    confirmed_by?: ModelSelectionApproval["confirmed_by"];
     recommended_model_id: string | null;
     selected_model_id: string;
     changed_by_user: boolean;
@@ -140,20 +151,36 @@ function candidateFor(
   const selectable = quotaPool.selectable;
   const ranked = card.capability?.ranked === true;
   const referenceOnly = card.capability?.reference_only === true;
+  const referenceReasons = card.capability?.reference_reasons || [];
+  const deterministicVariantReference = referenceOnly
+    && referenceReasons.length > 0
+    && referenceReasons.every((reason) => [
+      "BASE_PROFILE_REFERENCE",
+      "DEFAULT_PROFILE_REFERENCE",
+      "SERVING_VARIANT_BASE_MODEL_REFERENCE",
+    ].includes(reason));
+  const speedSignals: SelectionCandidate["speed_signals"] = [];
+  if (/(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(card.route_id)) speedSignals.push("route-name");
+  if (route.supports_service_tier === true) speedSignals.push("opencodex-config");
   return {
     model_id: card.id,
     route_id: card.route_id,
     reasoning_effort: card.reasoning_effort || null,
+    reasoning_effort_configurable: route.reasoning_efforts.length > 0,
+    effective_reasoning_effort: card.reasoning_effort || route.default_reasoning_effort || card.capability?.reference_profile || null,
+    context_window: route.context_window,
+    speed_optimized: speedSignals.length > 0,
+    speed_signals: speedSignals,
     provider: card.provider || null,
     selectable,
     selection_code: quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
     selection_reason: quotaPool.status === "exhausted"
       ? `${quotaPool.label} quota is exhausted`
       : "route/profile is executable in the synced OpenCodex snapshot",
-    automatic_eligible: selectable && ranked && !referenceOnly && automaticIds.has(card.id),
+    automatic_eligible: selectable && ranked && (!referenceOnly || deterministicVariantReference) && automaticIds.has(card.id),
     ranked,
     reference_only: referenceOnly,
-    reference_reasons: card.capability?.reference_reasons || [],
+    reference_reasons: referenceReasons,
     reference_route_id: card.capability?.reference_route_id ?? null,
     reference_profile: card.capability?.reference_profile ?? null,
     aa_slug: card.capability?.aa_slug ?? null,
@@ -168,6 +195,151 @@ function candidateFor(
     quota_pool_status: quotaPool.status,
     quota_pool_remaining_percent: quotaPool.remaining_percent,
   };
+}
+
+export interface TaskContextEstimate {
+  tokens: number;
+  reason: SelectionUnit["context_estimate_reason"];
+}
+
+export interface TaskComplexityEstimate {
+  effort: SelectionUnit["target_reasoning_effort"];
+  reason: SelectionUnit["complexity_reason"];
+}
+
+export function estimateTaskComplexity(text: unknown): TaskComplexityEstimate {
+  const value = String(text || "").toLowerCase();
+  const dimensions = classifyTask(value);
+  if (/\b(?:tiny|small|typo|rename-only|routine)\b|小改|简单任务|拼写|仅重命名|常规/.test(value)
+    && dimensions.agentic === 0 && dimensions.intelligence === 0) {
+    return { effort: "low", reason: "simple" };
+  }
+  if (/\b(?:monorepo|multi-file|cross-module|migration|migrate|architecture|repository-wide|codebase-wide|complex integration)\b|全仓(?:库)?|多文件|跨模块|迁移|架构|复杂集成/.test(value)
+    || dimensions.agentic >= 2
+    || (dimensions.agentic >= 1 && dimensions.intelligence >= 1 && dimensions.coding >= 1)) {
+    return { effort: "max", reason: "very-complex" };
+  }
+  if (dimensions.agentic + dimensions.intelligence + dimensions.coding >= 2
+    || /\b(?:debug|investigate|refactor|review|audit|verify)\b|调试|排查|重构|审查|审计|验证/.test(value)) {
+    return { effort: "high", reason: "complex" };
+  }
+  return { effort: "medium", reason: "standard" };
+}
+
+export function estimateTaskContext(text: unknown): TaskContextEstimate {
+  const value = String(text || "").toLowerCase();
+  const explicit = value.match(/(?:context|上下文)(?:\s*(?:window|窗口))?\s*(?:of|为|是|[:=])?\s*(\d+(?:\.\d+)?)\s*([km])/i)
+    || value.match(/(\d+(?:\.\d+)?)\s*([km])\s*(?:context|上下文)/i);
+  if (explicit) {
+    const scale = explicit[2].toLowerCase() === "m" ? 1_000_000 : 1_000;
+    return { tokens: Math.max(1, Math.round(Number(explicit[1]) * scale)), reason: "explicit" };
+  }
+  if (/\b(?:whole|entire|all|large)\s+(?:repo|repository|codebase)\b|\b(?:repo|repository|codebase)-wide\b|\b(?:monorepo|multi-file|cross-module|migration|migrate|long[- ]context|search and digest|comprehensive audit)\b|全仓(?:库)?|整个仓库|全量|大型仓库|多文件|跨模块|迁移|长上下文|全面审计|检索并汇总/.test(value)
+    || value.length >= 200_000) {
+    return { tokens: 1_000_000, reason: "large-scope" };
+  }
+  if (/\b(?:tiny|small|single-file|one-file|typo|rename-only)\b|小改|简单任务|单文件|拼写|仅重命名/.test(value)) {
+    return { tokens: 128_000, reason: "small-scope" };
+  }
+  return { tokens: 262_144, reason: "standard" };
+}
+
+function compareNullableDescending(left: number | null, right: number | null): number {
+  if (left == null && right == null) return 0;
+  if (left == null) return 1;
+  if (right == null) return -1;
+  return right - left;
+}
+
+function compareNullableAscending(left: number | null, right: number | null): number {
+  if (left == null && right == null) return 0;
+  if (left == null) return 1;
+  if (right == null) return -1;
+  return left - right;
+}
+
+const EFFORT_RANK: Record<string, number> = {
+  none: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+  ultra: 7,
+};
+
+function normalizedEffort(value: string | null | undefined): string | null {
+  const effort = String(value || "").trim().toLowerCase();
+  return Object.hasOwn(EFFORT_RANK, effort) ? effort : null;
+}
+
+function inferEffectiveReasoningEfforts(candidates: SelectionCandidate[]): void {
+  const byAaSlug = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    if (!candidate.aa_slug) continue;
+    const effort = normalizedEffort(candidate.effective_reasoning_effort);
+    if (!effort) continue;
+    const values = byAaSlug.get(candidate.aa_slug) || new Set<string>();
+    values.add(effort);
+    byAaSlug.set(candidate.aa_slug, values);
+  }
+  for (const candidate of candidates) {
+    if (normalizedEffort(candidate.effective_reasoning_effort)
+      || candidate.reasoning_effort_configurable
+      || !candidate.aa_slug) continue;
+    const values = byAaSlug.get(candidate.aa_slug);
+    if (values?.size === 1) candidate.effective_reasoning_effort = [...values][0];
+  }
+}
+
+function compareEffortFit(left: string | null, right: string | null, target: SelectionUnit["target_reasoning_effort"]): number {
+  const targetRank = EFFORT_RANK[target];
+  const fit = (value: string | null) => {
+    const effort = normalizedEffort(value);
+    if (!effort) return { rank: 0, distance: Number.POSITIVE_INFINITY };
+    const valueRank = EFFORT_RANK[effort];
+    if (valueRank >= targetRank) return { rank: 2, distance: valueRank - targetRank };
+    return { rank: 1, distance: targetRank - valueRank };
+  };
+  const leftFit = fit(left);
+  const rightFit = fit(right);
+  return rightFit.rank - leftFit.rank || leftFit.distance - rightFit.distance;
+}
+
+/** Stable, evidence-backed ordering when task scores do not identify one winner. */
+function compareContextFit(left: number | null, right: number | null, target: number): number {
+  const fit = (window: number | null) => {
+    if (window == null) return { rank: 0, distance: Number.POSITIVE_INFINITY };
+    if (window >= target) return { rank: 2, distance: window - target };
+    return { rank: 1, distance: target - window };
+  };
+  const leftFit = fit(left);
+  const rightFit = fit(right);
+  return rightFit.rank - leftFit.rank || leftFit.distance - rightFit.distance;
+}
+
+function recommendationTieBreak(
+  left: SelectionCandidate,
+  right: SelectionCandidate,
+  targetEffort: SelectionUnit["target_reasoning_effort"],
+  estimatedContextTokens: number,
+): number {
+  const quotaRank: Record<QuotaPoolStatus, number> = { available: 2, unknown: 1, exhausted: 0 };
+  const leftCapability = [left.aa_scores.coding, left.aa_scores.agentic, left.aa_scores.intelligence]
+    .reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  const rightCapability = [right.aa_scores.coding, right.aa_scores.agentic, right.aa_scores.intelligence]
+    .reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  return compareEffortFit(left.effective_reasoning_effort, right.effective_reasoning_effort, targetEffort)
+    || compareContextFit(left.context_window, right.context_window, estimatedContextTokens)
+    || Number(right.speed_optimized) - Number(left.speed_optimized)
+    || quotaRank[right.quota_pool_status] - quotaRank[left.quota_pool_status]
+    || compareNullableDescending(left.quota_pool_remaining_percent, right.quota_pool_remaining_percent)
+    || rightCapability - leftCapability
+    || compareNullableAscending(left.aa_scores.cost_per_task, right.aa_scores.cost_per_task)
+    || compareNullableDescending(left.aa_scores.output_tokens_per_second, right.aa_scores.output_tokens_per_second)
+    || compareNullableAscending(left.aa_scores.time_to_first_answer_seconds, right.aa_scores.time_to_first_answer_seconds)
+    || left.model_id.localeCompare(right.model_id);
 }
 
 export function buildSelectionUnit({
@@ -191,11 +363,18 @@ export function buildSelectionUnit({
   directorLocal?: boolean;
   metadata?: UnknownRecord;
 }): SelectionUnit {
+  const contextEstimate = estimateTaskContext(prompt);
+  const complexityEstimate = estimateTaskComplexity(prompt);
   if (directorLocal) {
     return {
       key, description, prompt, director_local: true,
       recommended_model_id: null, requested_model_id: null, default_model_id: null,
-      recommendation_reason: "DIRECTOR_LOCAL", requires_manual_choice: false, candidates: [], task_exclusions: [], policy_exclusions: [], metadata,
+      recommendation_reason: "DIRECTOR_LOCAL",
+      target_reasoning_effort: complexityEstimate.effort,
+      complexity_reason: complexityEstimate.reason,
+      estimated_context_tokens: contextEstimate.tokens,
+      context_estimate_reason: contextEstimate.reason,
+      requires_manual_choice: false, candidates: [], task_exclusions: [], policy_exclusions: [], metadata,
     };
   }
   const policyExclusions = summarizeSubagentModelPolicyExclusions(cards);
@@ -210,20 +389,24 @@ export function buildSelectionUnit({
   const automaticIds = new Set((automaticCards || cards).filter(isSubagentModelAllowed).map((card) => card.id));
   const candidates = eligibleCards
     .map((card) => candidateFor(prompt, card, snapshot, automaticIds))
-    .filter((item): item is SelectionCandidate => item !== null)
-    .sort((a, b) => Number(b.selectable) - Number(a.selectable)
+    .filter((item): item is SelectionCandidate => item !== null);
+  inferEffectiveReasoningEfforts(candidates);
+  candidates.sort((a, b) => Number(b.selectable) - Number(a.selectable)
       || Number(b.automatic_eligible) - Number(a.automatic_eligible)
       || (b.task_score ?? -1) - (a.task_score ?? -1)
-      || a.model_id.localeCompare(b.model_id));
-  const ranked = candidates.filter((item) => item.automatic_eligible && (item.task_score || 0) > 0);
+      || recommendationTieBreak(a, b, complexityEstimate.effort, contextEstimate.tokens));
+  const automatic = candidates.filter((item) => item.automatic_eligible);
+  const ranked = automatic.filter((item) => (item.task_score || 0) > 0);
   const topScore = ranked[0]?.task_score ?? null;
-  const top = topScore == null ? [] : ranked.filter((item) => item.task_score === topScore);
-  const recommended = top.length === 1 ? top[0].model_id : null;
+  const top = topScore == null ? [] : ranked
+    .filter((item) => item.task_score === topScore)
+    .sort((left, right) => recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
+  const fallback = automatic.slice().sort((left, right) => recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
+  const recommended = top[0]?.model_id || fallback[0]?.model_id || null;
   let reason: SelectionUnit["recommendation_reason"];
-  if (!ranked.length) reason = candidates.some((item) => item.selectable && item.ranked && !item.reference_only)
-    ? "NO_POSITIVE_TASK_SCORE"
-    : "NO_SELECTABLE_RANKED_CANDIDATE";
-  else if (top.length > 1) reason = "AMBIGUOUS_TOP_SCORE";
+  if (!automatic.length) reason = "NO_SELECTABLE_RANKED_CANDIDATE";
+  else if (!ranked.length) reason = "GENERAL_CAPABILITY_FALLBACK";
+  else if (top.length > 1) reason = "DETERMINISTIC_TOP_SCORE_TIEBREAK";
   else reason = "UNIQUE_HIGHEST_TASK_SCORE";
 
   if (requestedModelId) {
@@ -242,6 +425,10 @@ export function buildSelectionUnit({
     requested_model_id: requestedModelId,
     default_model_id: defaultModel,
     recommendation_reason: reason,
+    target_reasoning_effort: complexityEstimate.effort,
+    complexity_reason: complexityEstimate.reason,
+    estimated_context_tokens: contextEstimate.tokens,
+    context_estimate_reason: contextEstimate.reason,
     requires_manual_choice: defaultModel == null,
     candidates,
     task_exclusions: taskExclusions,
@@ -359,9 +546,32 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   if (value.schema_version !== 2) {
     throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates OpenCodex-only route selection; create a new proposal`);
   }
+  const snapshot = readRouteSnapshot(cwd);
   for (const unit of value.units || []) {
+    const contextEstimate = estimateTaskContext(unit.prompt || unit.description);
+    const complexityEstimate = estimateTaskComplexity(unit.prompt || unit.description);
+    if (!unit.target_reasoning_effort) unit.target_reasoning_effort = complexityEstimate.effort;
+    if (!unit.complexity_reason) unit.complexity_reason = complexityEstimate.reason;
+    if (!Number.isFinite(unit.estimated_context_tokens)) unit.estimated_context_tokens = contextEstimate.tokens;
+    if (!unit.context_estimate_reason) unit.context_estimate_reason = contextEstimate.reason;
     if (!Array.isArray(unit.task_exclusions)) unit.task_exclusions = [];
     for (const candidate of unit.candidates || []) {
+      if (candidate.context_window === undefined) {
+        candidate.context_window = snapshot?.routes.find((route) => route.route_id === candidate.route_id)?.context_window ?? null;
+      }
+      const route = snapshot?.routes.find((item) => item.route_id === candidate.route_id);
+      if (candidate.reasoning_effort_configurable === undefined) {
+        candidate.reasoning_effort_configurable = Boolean(route?.reasoning_efforts.length);
+      }
+      if (candidate.effective_reasoning_effort === undefined) {
+        candidate.effective_reasoning_effort = candidate.reasoning_effort || route?.default_reasoning_effort || candidate.reference_profile || null;
+      }
+      if (!Array.isArray(candidate.speed_signals)) {
+        candidate.speed_signals = [];
+        if (/(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(candidate.route_id)) candidate.speed_signals.push("route-name");
+        if (route?.supports_service_tier === true) candidate.speed_signals.push("opencodex-config");
+      }
+      candidate.speed_optimized = candidate.speed_signals.length > 0;
       const pool = quotaPoolForCandidate(candidate);
       candidate.quota_pool_id ||= pool.id;
       candidate.quota_pool_label ||= pool.label;
@@ -380,6 +590,7 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
         candidate.automatic_eligible = false;
       }
     }
+    inferEffectiveReasoningEfforts(unit.candidates || []);
   }
   if (!Array.isArray(value.quota_pools)) value.quota_pools = proposalQuotaPools(value.units || []);
   if (!Array.isArray(value.task_exclusions)) value.task_exclusions = taskExclusionSummary(value.units || []);

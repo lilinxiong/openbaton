@@ -21,7 +21,7 @@ export interface ModelSelectionApproval {
   confirmation_scope?: "proposal" | "bundle";
   unit_key?: string;
   approved_at: string;
-  confirmed_by: "user" | "ops-config";
+  confirmed_by: "user" | "ops-config" | "baton-recommendation";
   catalog_fingerprint: string;
   recommended_model_id: string | null;
   selected_model_id: string;

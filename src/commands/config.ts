@@ -101,6 +101,28 @@ function requireChoice(profile: OpsProfileId, route: string, choices: OpsRouteCh
   return route;
 }
 
+function runModelSelectionConfig(
+  args: string[],
+  { cwd, stdout, env }: Pick<ConfigCommandOptions, "cwd" | "stdout" | "env">,
+): number {
+  const action = args.find((item) => !item.startsWith("--")) || "status";
+  if (!["on", "off", "status"].includes(action)) {
+    throw new Error("usage: baton config model-selection on|off|status [--json]");
+  }
+  const current = loadConfig(cwd, { env });
+  if (action !== "status") {
+    current.director.model_selection = action === "on";
+    saveConfig(cwd, current, { env });
+  }
+  const enabled = current.director.model_selection;
+  if (args.includes("--json")) {
+    stdout.write(`${JSON.stringify({ model_selection: enabled })}\n`);
+  } else {
+    stdout.write(`model selection: ${enabled ? "on (user choice enabled)" : "off (Baton recommendation automatic)"}\n`);
+  }
+  return 0;
+}
+
 export async function runConfig(args: string[], {
   cwd,
   stdout,
@@ -112,6 +134,9 @@ export async function runConfig(args: string[], {
   codexBarResolve,
   readLine,
 }: ConfigCommandOptions): Promise<number> {
+  if (args[0] === "model-selection") {
+    return runModelSelectionConfig(args.slice(1), { cwd, stdout, env });
+  }
   refreshRouteSnapshot({
     cwd,
     stdout: { write() {} },

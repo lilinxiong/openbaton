@@ -34,7 +34,7 @@ function card(id: string, route: string, provider: string, coding: number, agent
   };
 }
 
-describe("mandatory model selection disclosure", () => {
+describe("model selection policy", () => {
   it("groups quota pools, adapts Cursor API/Auto, hides exhausted pools, and filters non-agent routes", () => withHome(() => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-pools-"));
     publishRouteSnapshot(cwd, { models: [
@@ -154,11 +154,10 @@ describe("mandatory model selection disclosure", () => {
       cwd, key: "standalone", description: "implement complex multi-file migration",
       prompt: "implement complex multi-file migration", cards, automaticCards: cards,
     });
-    assert.equal(unit.recommended_model_id, null);
-    assert.equal(unit.recommendation_reason, "AMBIGUOUS_TOP_SCORE");
-    assert.deepEqual(unit.candidates.filter((item) => item.selectable).map((item) => item.model_id), [
-      "kimi/k3@max", "openai/strong@high", "openai/strong@ultra", "alibaba-token-plan/cheap@low",
-    ]);
+    assert.equal(unit.recommended_model_id, "kimi/k3@max");
+    assert.equal(unit.recommendation_reason, "DETERMINISTIC_TOP_SCORE_TIEBREAK");
+    assert.equal(unit.target_reasoning_effort, "max");
+    assert.equal(unit.estimated_context_tokens, 1_000_000);
     assert.equal(unit.candidates.find((item) => item.model_id === "kimi/k3@max")?.selection_code, "AVAILABLE");
     assert.equal(unit.candidates.find((item) => item.model_id === "openai/strong@ultra")?.selection_code, "AVAILABLE");
     assert.equal(unit.candidates.some((item) => /gpt-(?:5\.5|5\.6-(?:sol|terra))/.test(item.model_id)), false);
@@ -178,7 +177,7 @@ describe("mandatory model selection disclosure", () => {
     }), new RegExp(SUBAGENT_MODEL_FAMILY_FORBIDDEN));
   }));
 
-  it("discloses a reference score and AA data without making it automatically eligible", () => withHome(() => {
+  it("keeps deterministic serving variants reference-only but allows them in automatic recommendation", () => withHome(() => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-reference-"));
     publishRouteSnapshot(cwd, { models: [
       { id: "exact", provider: "provider", namespaced: "provider/exact" },
@@ -208,9 +207,11 @@ describe("mandatory model selection disclosure", () => {
       automaticCards: [exact, reference],
     });
     const disclosed = unit.candidates.find((candidate) => candidate.model_id === reference.id)!;
-    assert.equal(unit.recommended_model_id, exact.id);
+    assert.equal(unit.recommended_model_id, reference.id);
     assert.equal(disclosed.selectable, true);
-    assert.equal(disclosed.automatic_eligible, false);
+    assert.equal(disclosed.automatic_eligible, true);
+    assert.equal(disclosed.speed_optimized, true);
+    assert.deepEqual(disclosed.speed_signals, ["route-name"]);
     assert.equal(disclosed.reference_only, true);
     assert.equal(disclosed.reference_route_id, "provider/base");
     assert.equal(disclosed.reference_profile, "");
@@ -219,11 +220,75 @@ describe("mandatory model selection disclosure", () => {
     assert.equal(disclosed.aa_data?.pricing.price_1m_input_tokens, 1);
   }));
 
+  it("orders equal task scores by reasoning strength, then the smallest fitting context", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-shape-"));
+    publishRouteSnapshot(cwd, { models: [
+      { id: "low-256", provider: "provider", namespaced: "provider/low-256", reasoningEfforts: ["low"], contextWindow: 262_144 },
+      { id: "max-256", provider: "provider", namespaced: "provider/max-256", reasoningEfforts: ["max"], contextWindow: 262_144 },
+      { id: "max-1m", provider: "provider", namespaced: "provider/max-1m", reasoningEfforts: ["max"], contextWindow: 1_048_576 },
+    ] });
+    const candidates = [
+      card("provider/low-256@low", "provider/low-256", "provider", 80, 80, 0.8),
+      card("provider/max-256@max", "provider/max-256", "provider", 80, 80, 0.8),
+      card("provider/max-1m@max", "provider/max-1m", "provider", 80, 80, 0.8),
+    ];
+
+    const simple = buildSelectionUnit({
+      cwd,
+      key: "simple",
+      description: "修复一个简单的单文件拼写错误",
+      prompt: "修复一个简单的单文件拼写错误",
+      cards: candidates,
+      automaticCards: candidates,
+    });
+    assert.equal(simple.target_reasoning_effort, "low");
+    assert.equal(simple.estimated_context_tokens, 128_000);
+    assert.equal(simple.recommended_model_id, "provider/low-256@low");
+
+    const complex = buildSelectionUnit({
+      cwd,
+      key: "complex",
+      description: "implement a complex multi-file repository migration",
+      prompt: "implement a complex multi-file repository migration",
+      cards: candidates,
+      automaticCards: candidates,
+    });
+    assert.equal(complex.target_reasoning_effort, "max");
+    assert.equal(complex.estimated_context_tokens, 1_000_000);
+    assert.equal(complex.recommended_model_id, "provider/max-1m@max");
+  }));
+
+  it("distinguishes named fast routes from OpenCodex service-tier config and prefers either after context", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-fast-"));
+    publishRouteSnapshot(cwd, { models: [
+      { id: "plain", provider: "provider", namespaced: "provider/plain", reasoningEfforts: ["medium"], contextWindow: 262_144, supportsServiceTier: false },
+      { id: "named-fast", provider: "provider", namespaced: "provider/named-fast", reasoningEfforts: ["medium"], contextWindow: 262_144, supportsServiceTier: false },
+      { id: "configured", provider: "provider", namespaced: "provider/configured", reasoningEfforts: ["medium"], contextWindow: 262_144, supportsServiceTier: true },
+    ] });
+    const plain = card("provider/plain@medium", "provider/plain", "provider", 80, 80, 0.8);
+    const named = card("provider/named-fast@medium", "provider/named-fast", "provider", 80, 80, 0.8);
+    const configured = card("provider/configured@medium", "provider/configured", "provider", 80, 80, 0.8);
+    const all = [plain, named, configured];
+    const unit = buildSelectionUnit({
+      cwd,
+      key: "fast",
+      description: "implement a routine feature",
+      prompt: "implement a routine feature",
+      cards: all,
+      automaticCards: [plain, configured],
+    });
+    assert.equal(unit.recommended_model_id, configured.id);
+    assert.deepEqual(unit.candidates.find((candidate) => candidate.model_id === named.id)?.speed_signals, ["route-name"]);
+    assert.deepEqual(unit.candidates.find((candidate) => candidate.model_id === configured.id)?.speed_signals, ["opencodex-config"]);
+    assert.equal(unit.candidates.find((candidate) => candidate.model_id === plain.id)?.speed_optimized, false);
+  }));
+
   it("requires confirmation, permits an exact user override, and binds the approval into ticket and Receipt", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-cli-"));
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       publishRouteSnapshot(cwd, { models: [
         { id: "strong", provider: "provider-a", namespaced: "provider-a/strong", reasoningEfforts: ["high"] },
         { id: "cheap", provider: "provider-b", namespaced: "provider-b/cheap", reasoningEfforts: ["low"] },
@@ -251,8 +316,8 @@ describe("mandatory model selection disclosure", () => {
       assert.match(disclosed.text(), /\[confirmation required\]/);
       assert.match(disclosed.text(), /preferred: provider-a\/strong@high/);
       assert.match(disclosed.text(), /candidates:/);
-      assert.match(disclosed.text(), /\| Candidate \| Preferred \| Provider \| Evidence \| Task score \| AA I\/C\/A \|/);
-      assert.match(disclosed.text(), /\| provider-a\/strong@high \| yes \| provider-a \| exact \| \d+ \| 90\/95\/90 \|/);
+      assert.match(disclosed.text(), /\| Candidate \| Preferred \| Provider \| Effort \| Context \| Fast \| Evidence \| Task score \| AA I\/C\/A \|/);
+      assert.match(disclosed.text(), /\| provider-a\/strong@high \| yes \| provider-a \| high \| unknown \| no \| exact \| \d+ \| 90\/95\/90 \|/);
       assert.match(disclosed.text(), /\| Quota pool \| Provider \| Status \| Source \| Remaining\/reset or unknown reason \| Models \| Observed at \|/);
       assert.match(disclosed.text(), /PROVIDER_QUOTA_NOT_REPORTED/);
       assert.match(disclosed.text(), /AVAILABLE/);
@@ -329,6 +394,7 @@ describe("mandatory model selection disclosure", () => {
       const env = fakeEnv(home);
       for (const cwd of [standaloneCwd, openspecCwd]) {
         assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+        assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       }
       publishRouteSnapshot(standaloneCwd, {
         models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }],
@@ -451,6 +517,7 @@ describe("mandatory model selection disclosure", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-stale-"));
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: capture(), stderr: capture() });
+      await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() });
       publishRouteSnapshot(cwd, { models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }] });
       const out = capture();
       assert.equal(await run(["spawn", "implement the repository migration", "--model", "kimi/k3", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());

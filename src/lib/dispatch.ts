@@ -312,9 +312,9 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
   } else if (Number(ticket.attempt || 0) >= Number(ticket.max_attempts || 1)) {
     code = "ATTEMPT_BUDGET_EXHAUSTED";
     message = `ticket ${ticket.id} exhausted its attempt budget`;
-  } else if (!ticket.selection || !["user", "ops-config"].includes(ticket.selection.confirmed_by) || ticket.selection.selected_model_id !== ticket.model_id) {
+  } else if (!ticket.selection || !["user", "ops-config", "baton-recommendation"].includes(ticket.selection.confirmed_by) || ticket.selection.selected_model_id !== ticket.model_id) {
     code = "MODEL_SELECTION_NOT_CONFIRMED";
-    message = `ticket ${ticket.id} has no valid user-confirmed or ops-config model selection`;
+    message = `ticket ${ticket.id} has no valid user-confirmed, Baton-recommended, or ops-config model selection`;
   } else {
     const catalog = readRouteSnapshot(cwd);
     const route = catalog?.routes.find((item) => !item.disabled && item.route_id === ticket.route_id);

@@ -9,6 +9,9 @@
 max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1
+# Free model selection is opt-in. When false, Baton queues the exact route/profile
+# selected by its recommendation policy without opening the selector.
+model_selection = false
 
 # Optional user-global routes for mechanical work. Empty means the director
 # executes that class. Every non-empty value is an exact OpenCodex route.

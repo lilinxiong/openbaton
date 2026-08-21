@@ -16,6 +16,7 @@ export const DEFAULT_MAX_DEPTH = 1;
 export interface DirectorSettings {
   max_concurrent: number;
   max_depth: number;
+  model_selection: boolean;
   runner?: string;
 }
 
@@ -37,6 +38,7 @@ export function emptyConfig(): Config {
     director: {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
       max_depth: DEFAULT_MAX_DEPTH,
+      model_selection: false,
     },
     ops: emptyOpsConfig(),
   };
@@ -55,6 +57,7 @@ function normalizeDirector(raw: unknown): DirectorSettings {
   const settings: DirectorSettings = {
     max_concurrent: Number.isFinite(max) && max > 0 ? Math.floor(max) : DEFAULT_MAX_CONCURRENT,
     max_depth: Number.isFinite(depth) && depth >= 1 ? Math.floor(depth) : DEFAULT_MAX_DEPTH,
+    model_selection: director.model_selection === true,
   };
   const runner = optionalTrimmedString(director.runner);
   if (runner) settings.runner = runner;

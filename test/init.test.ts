@@ -69,7 +69,7 @@ describe("Codex-only init/update", () => {
       fs.writeFileSync(skill, "OLD\n");
       const result = updateProject(cwd, { env });
       assert.deepEqual(loadConfig(cwd, { env }), {
-        director: { max_concurrent: 2, max_depth: 1 },
+        director: { max_concurrent: 2, max_depth: 1, model_selection: false },
         ops: {
           runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
           longctx: {

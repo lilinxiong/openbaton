@@ -107,25 +107,64 @@ describe("cli run()", () => {
       const missOut = capture();
       const miss = await run(["match", "paint the barn purple"], { cwd, stdout: missOut, stderr: capture(), env });
       assert.equal(miss, 0);
-      assert.match(missOut.text(), /preferred: none/);
+      assert.match(missOut.text(), /preferred: kimi\/kimi-k2\.7-code-highspeed \(GENERAL_CAPABILITY_FALLBACK\)/);
 
       const spawnOut = capture();
       const spawned = await run(["spawn", "code completion routine feature development", "--json"], { cwd, stdout: spawnOut, stderr: capture(), env });
       assert.equal(spawned, 0);
-      const proposal = JSON.parse(spawnOut.text());
-      assert.equal(proposal.status, "pending_confirmation");
-      assert.equal(proposal.units[0].recommended_model_id, "kimi/kimi-k2.7-code-highspeed");
-      assert.equal(proposal.units[0].candidates[0].quota.windows[0].remaining_percent, 95);
-      assert.ok(!fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")));
-      const unconfirmed = capture();
-      assert.equal(await run(["selection", "approve", proposal.id], { cwd, stdout: unconfirmed, stderr: unconfirmed, env }), 1);
-      assert.match(unconfirmed.text(), /MODEL_SELECTION_NOT_CONFIRMED/);
-      assert.equal(await run(["selection", "approve", proposal.id, "--confirm", "--json"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      const approval = JSON.parse(spawnOut.text());
+      assert.equal(approval.selection_mode, "baton-recommendation");
+      assert.equal(approval.status, "approved");
+      assert.equal(approval.approvals[0].selected_model_id, "kimi/kimi-k2.7-code-highspeed");
+      assert.equal(approval.approvals[0].confirmed_by, "baton-recommendation");
+      assert.equal(approval.tickets[0].selection.confirmed_by, "baton-recommendation");
       assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
+      const dispatchOut = capture();
+      assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], {
+        cwd, stdout: dispatchOut, stderr: dispatchOut, env,
+      }), 0, dispatchOut.text());
+      assert.deepEqual(JSON.parse(dispatchOut.text()).reserved.map((item) => item.ticket_id), ["spn-0001"]);
+
       const addRoute = await run(["cards", "add", "--id", "reviewer"], { cwd, stdout: capture(), stderr: capture(), env });
       assert.equal(addRoute, 1);
+    });
+  });
+
+  it("keeps all tiny multi-unit work local without creating a selection proposal", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-local-units-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "handle these tiny housekeeping notes",
+        "--unit", "status=status current state",
+        "--unit", "typo=typo in summary",
+        "--json",
+      ], { cwd, stdout: out, stderr: out, env }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.equal(result.proposal, null);
+      assert.deepEqual(result.director_local.map((item) => item.key), ["status", "typo"]);
+      assert.ok(!fs.existsSync(spawnsDir(cwd)));
+    });
+  });
+
+  it("fails closed before proposal or ticket creation when no ranked recommendation exists", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-no-ranked-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "unknown-model", provider: "unknown" }] });
+
+      const out = capture();
+      assert.equal(await run(["spawn", "implement a repository migration", "--json"], {
+        cwd, stdout: out, stderr: out, env,
+      }), 1);
+      assert.match(out.text(), /MODEL_RECOMMENDATION_UNAVAILABLE/);
+      assert.ok(!fs.existsSync(spawnsDir(cwd)));
     });
   });
 
@@ -143,6 +182,7 @@ describe("cli run()", () => {
       git(cwd, "commit", "-q", "-m", "baseline");
 
       assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      assert.equal(await run(["config", "model-selection", "on"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       const out = capture();
       const code = await run([
@@ -159,11 +199,60 @@ describe("cli run()", () => {
     });
   });
 
+  it("keeps OpenSpec model selection off by default and auto-approves the recommendation", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-openspec-auto-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      const switchOut = capture();
+      assert.equal(await run(["config", "model-selection", "status", "--json"], { cwd, stdout: switchOut, stderr: switchOut, env }), 0);
+      assert.deepEqual(JSON.parse(switchOut.text()), { model_selection: false });
+      const changeDir = path.join(cwd, "openspec", "changes", "auto-demo");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), "## 1. Work\n\n- [ ] 1.1 implement a complex repository migration\n");
+      publishRouteSnapshot(cwd, { models: [{
+        id: "grok-4.6", provider: "xai", namespaced: "xai/grok-4.6", disabled: false,
+        reasoningEfforts: ["high"], contextWindow: 1_000_000,
+      }] });
+      writeCapabilitySnapshot({
+        dbPath: artificialAnalysisDbPath(cwd),
+        metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-21T00:00:00Z" },
+        models: [{
+          id: "aa-grok", slug: "grok-4-6", name: "Grok 4.6",
+          evaluations: {
+            artificial_analysis_intelligence_index: 80,
+            artificial_analysis_coding_index: 90,
+            artificial_analysis_agentic_index: 85,
+          },
+          pricing: {}, performance: {}, cost: {},
+        }],
+        mappings: [{ routeId: "xai/grok-4.6", profile: "high", aaSlug: "grok-4-6" }],
+      });
+
+      const rejected = capture();
+      assert.equal(await run(["apply", "auto-demo", "--route", "1.1=xai/grok-4.6@high"], { cwd, stdout: rejected, stderr: rejected, env }), 1);
+      assert.match(rejected.text(), /MODEL_SELECTION_DISABLED/);
+      assert.ok(!fs.existsSync(path.join(spawnsDir(cwd), "os-0001.json")));
+
+      const out = capture();
+      assert.equal(await run(["apply", "auto-demo", "--json"], { cwd, stdout: out, stderr: out, env }), 0, out.text());
+      const approval = JSON.parse(out.text());
+      assert.equal(approval.selection_mode, "baton-recommendation");
+      assert.equal(approval.status, "approved");
+      assert.equal(approval.confirmation.confirmed_by, "baton-recommendation");
+      assert.equal(approval.approvals[0].selected_model_id, "xai/grok-4.6@high");
+      assert.equal(approval.tickets[0].selection.confirmed_by, "baton-recommendation");
+      assert.equal(approval.tickets[0].selection.changed_by_user, false);
+      assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "os-0001.json")));
+    });
+  });
+
   it("prints the current host lifecycle after OpenSpec apply, never legacy conclude", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-openspec-"));
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
+      assert.equal(await run(["config", "model-selection", "on"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
       const changeDir = path.join(cwd, "openspec", "changes", "demo");
       fs.mkdirSync(changeDir, { recursive: true });
       fs.writeFileSync(path.join(changeDir, "tasks.md"), "## 1. Work\n\n- [ ] 1.1 implement a complex repository migration\n");

@@ -92,7 +92,7 @@ export function ensureRouteSnapshotFresh(options: RouteCommandOptions): void {
   if (schema == null && !fs.existsSync(routeSnapshotPath(options.cwd))) return;
   const resolved = resolvedEngine(options);
   if (!resolved || resolved.source === "bunx") return;
-  if (schema !== 3) {
+  if (schema !== 4) {
     refreshRouteSnapshot({ ...options, resolve: () => resolved });
     return;
   }

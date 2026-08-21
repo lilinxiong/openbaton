@@ -109,8 +109,29 @@ describe("global ops config", () => {
       assert.equal((parsed.ops as { runner: { route: string } }).runner.route, "");
       assert.equal((parsed.ops as { longctx: { route: string } }).longctx.route, "");
       assert.deepEqual(loadConfig(otherCwd, { env }).ops, empty.ops);
+      assert.equal(loadConfig(otherCwd, { env }).director.model_selection, false);
       assert.ok(!fs.existsSync(path.join(cwd, ".baton.toml")));
       assert.ok(!fs.existsSync(path.join(otherCwd, ".baton.toml")));
+    });
+  });
+
+  it("toggles free model selection globally without changing configured ops routes", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-model-selection-config-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "kimi/k3[1m]", min_context_tokens: 1_048_576, actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+
+      assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(loadConfig(cwd, { env }).director.model_selection, true);
+      assert.equal(await run(["config", "model-selection", "off"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.director.model_selection, false);
+      assert.equal(config.ops.runner.route, "mimo/mimo-v2.5-pro");
+      assert.equal(config.ops.longctx.route, "kimi/k3[1m]");
     });
   });
 
@@ -264,6 +285,7 @@ describe("global ops config", () => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       saveOpsConfig(cwd, env, {
         runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
         longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
@@ -289,6 +311,7 @@ describe("global ops config", () => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       saveOpsConfig(cwd, env, {
         runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
         longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },

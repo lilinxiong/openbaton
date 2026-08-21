@@ -21,6 +21,8 @@ async function command(argv, options) {
 }
 
 async function approvedSpawn(argv, options) {
+  const enabled = await command(["config", "model-selection", "on"], options);
+  if (enabled.code !== 0) return enabled;
   const proposed = await command([...argv, "--json"], options);
   if (proposed.code !== 0) return proposed;
   const id = JSON.parse(proposed.stdout).id;
@@ -76,6 +78,10 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      const disabled = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
+      assert.equal(disabled.code, 1);
+      assert.match(disabled.stderr, /MODEL_SELECTION_DISABLED/);
+      assert.equal((await command(["config", "model-selection", "on"], { cwd, env })).code, 0);
       const unavailable = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(unavailable.code, 1);
       assert.match(unavailable.stderr, /not an exact route\/profile id|no executable route/);

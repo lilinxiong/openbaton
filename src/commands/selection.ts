@@ -3,7 +3,7 @@ import { loadConfig } from "../lib/config.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
-import { planStandaloneSpawn, writeSpawn } from "../lib/spawn.js";
+import { planStandaloneSpawn, writeSpawn, type SpawnTicket } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
 import { buildWriteReceipt, writeReceipt } from "../lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "../lib/safety.js";
@@ -27,6 +27,7 @@ interface ApprovalContext {
   confirmation_id: string;
   scope: "proposal" | "bundle";
   confirmed_at: string;
+  confirmed_by: ModelSelectionApproval["confirmed_by"];
   selected_provider_ids: string[];
   global_provider_ids: string[];
 }
@@ -161,7 +162,7 @@ function approvalFor(
     confirmation_scope: context.scope,
     unit_key: key,
     approved_at: context.confirmed_at,
-    confirmed_by: "user",
+    confirmed_by: context.confirmed_by,
     catalog_fingerprint: proposal.catalog_fingerprint,
     recommended_model_id: recommended,
     selected_model_id: selected,
@@ -219,7 +220,12 @@ function sameStrings(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-function approvalContext(proposal: SelectionProposal, candidates: SelectionCandidate[], flags: FlagMap): ApprovalContext {
+function approvalContext(
+  proposal: SelectionProposal,
+  candidates: SelectionCandidate[],
+  flags: FlagMap,
+  confirmedBy: ModelSelectionApproval["confirmed_by"] = "user",
+): ApprovalContext {
   const selectedProviders = sortedUnique(candidates.map((candidate) => candidate.provider || "unknown"));
   const declaredProviders = sortedUnique(many(flags, "provider"));
   if (declaredProviders.length && !sameStrings(declaredProviders, selectedProviders)) {
@@ -243,6 +249,7 @@ function approvalContext(proposal: SelectionProposal, candidates: SelectionCandi
     confirmation_id: confirmationId,
     scope,
     confirmed_at: new Date().toISOString(),
+    confirmed_by: confirmedBy,
     selected_provider_ids: selectedProviders,
     global_provider_ids: effectiveGlobalProviders,
   };
@@ -262,7 +269,13 @@ function validateProposal(cwd: string, proposal: SelectionProposal): void {
   }
 }
 
-function approveStandalone(cwd: string, proposal: SelectionProposal, cards: ModelCard[], flags: FlagMap) {
+function approveStandalone(
+  cwd: string,
+  proposal: SelectionProposal,
+  cards: ModelCard[],
+  flags: FlagMap,
+  confirmedBy: ModelSelectionApproval["confirmed_by"] = "user",
+) {
   const units = proposal.units.filter((item) => !item.director_local);
   if (!units.length) throw new Error(`proposal ${proposal.id} has no delegated unit`);
   const overrides = routeAssignments(many(flags, "route"));
@@ -275,7 +288,7 @@ function approveStandalone(cwd: string, proposal: SelectionProposal, cards: Mode
     unit,
     candidate: selectedCandidate(proposal, unit.key, overrides.get(unit.key) || modelOverride),
   }));
-  const context = approvalContext(proposal, choices.map((item) => item.candidate), flags);
+  const context = approvalContext(proposal, choices.map((item) => item.candidate), flags, confirmedBy);
   const writePaths = Array.isArray(proposal.payload.write_paths) ? proposal.payload.write_paths.map(String) : [];
   if (writePaths.length && units.length > 1) throw new Error("multi-unit standalone write approval is not supported; use separately scoped write proposals");
   const tickets = [];
@@ -312,7 +325,14 @@ function approveStandalone(cwd: string, proposal: SelectionProposal, cards: Mode
   return { tickets, approvals, local: [], confirmation: context };
 }
 
-function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelCard[], flags: FlagMap) {
+function approveOpenSpec(
+  cwd: string,
+  proposal: SelectionProposal,
+  cards: ModelCard[],
+  flags: FlagMap,
+  confirmedBy: ModelSelectionApproval["confirmed_by"] = "user",
+  env: NodeJS.ProcessEnv = process.env,
+) {
   const overrides = routeAssignments(many(flags, "route"));
   for (const key of overrides.keys()) {
     if (!proposal.units.some((unit) => unit.key === key && !unit.director_local)) throw new Error(`--route task is not delegable in ${proposal.id}: ${key}`);
@@ -322,9 +342,10 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     if (unit.director_local) continue;
     candidates.set(unit.key, selectedCandidate(proposal, unit.key, overrides.get(unit.key)));
   }
-  const context = approvalContext(proposal, [...candidates.values()], flags);
+  const context = approvalContext(proposal, [...candidates.values()], flags, confirmedBy);
   const selected = new Map<string, ModelCard>();
   const approvals = new Map<string, ModelSelectionApproval>();
+  const includedTasks = new Set(proposal.units.map((unit) => unit.key));
   for (const unit of proposal.units) {
     if (unit.director_local) continue;
     const candidate = candidates.get(unit.key)!;
@@ -334,8 +355,9 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
   const result = applyChange({
     cwd,
     change: String(proposal.payload.change),
-    cfg: loadConfig(cwd),
+    cfg: loadConfig(cwd, { env }),
     cards,
+    includeTask: (task) => includedTasks.has(task.number),
     selectCard: (task) => selected.get(task.number),
     selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt),
     selectionApprovals: approvals,
@@ -349,9 +371,124 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
   };
 }
 
-export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: string; stdout: WritableLike; cards: ModelCard[] }): number {
+interface SelectionExecutionResult {
+  tickets: SpawnTicket[];
+  approvals: Array<{ key: string; approval: ModelSelectionApproval }>;
+  local: unknown[];
+  confirmation: ApprovalContext;
+}
+
+export interface SelectionApprovalOutput {
+  proposal_id: string;
+  status: "approved";
+  confirmation: NonNullable<SelectionProposal["confirmation"]>;
+  approvals: SelectionProposal["approvals"];
+  tickets: SpawnTicket[];
+  director_local: unknown[];
+}
+
+function finalizeSelectionApproval(
+  cwd: string,
+  proposal: SelectionProposal,
+  result: SelectionExecutionResult,
+): SelectionApprovalOutput {
+  proposal.status = "approved";
+  proposal.approved_at = result.confirmation.confirmed_at;
+  proposal.confirmation = {
+    confirmation_id: result.confirmation.confirmation_id,
+    scope: result.confirmation.scope,
+    confirmed_at: result.confirmation.confirmed_at,
+    confirmed_by: result.confirmation.confirmed_by,
+    selected_provider_ids: result.confirmation.selected_provider_ids,
+    global_provider_ids: result.confirmation.global_provider_ids,
+    unit_keys: result.approvals.map(({ key }) => key),
+  };
+  if (!Array.isArray(proposal.history)) proposal.history = [{ event: "pending_confirmation", at: proposal.created_at }];
+  proposal.history.push({ event: "approved", at: proposal.approved_at });
+  proposal.approvals = result.approvals.map(({ key, approval }) => ({
+    key,
+    approval_id: approval.approval_id,
+    confirmation_id: approval.confirmation_id,
+    confirmed_by: approval.confirmed_by,
+    recommended_model_id: approval.recommended_model_id,
+    selected_model_id: approval.selected_model_id,
+    changed_by_user: approval.changed_by_user,
+    selected_provider_ids: approval.selected_provider_ids,
+    global_provider_ids: approval.global_provider_ids,
+  }));
+  writeSelectionProposal(cwd, proposal);
+  return {
+    proposal_id: proposal.id,
+    status: proposal.status,
+    confirmation: proposal.confirmation,
+    approvals: proposal.approvals,
+    tickets: result.tickets,
+    director_local: result.local,
+  };
+}
+
+export function assertRecommendedSelectionAvailable(units: SelectionProposal["units"]): void {
+  for (const unit of units) {
+    if (unit.director_local) continue;
+    const candidate = unit.recommended_model_id
+      ? unit.candidates.find((item) => item.model_id === unit.recommended_model_id)
+      : null;
+    if (!candidate?.selectable || !candidate.automatic_eligible) {
+      throw new Error(
+        `MODEL_RECOMMENDATION_UNAVAILABLE: ${unit.key} has no automatic exact ranked recommendation (${unit.recommendation_reason}). `
+        + "Run `baton config model-selection on` to choose a disclosed route/profile manually.",
+      );
+    }
+  }
+}
+
+export function approveRecommendedSelection({
+  cwd,
+  proposal,
+  cards,
+  env = process.env,
+}: {
+  cwd: string;
+  proposal: SelectionProposal;
+  cards: ModelCard[];
+  env?: NodeJS.ProcessEnv;
+}): SelectionApprovalOutput {
+  validateProposal(cwd, proposal);
+  assertRecommendedSelectionAvailable(proposal.units);
+  const assignments = proposal.units
+    .filter((unit) => !unit.director_local)
+    .map((unit) => `${unit.key}=${unit.recommended_model_id}`);
+  const flags: FlagMap = {
+    route: assignments,
+    "confirmation-id": `confirmation-${proposal.id}-recommendation`,
+    "confirmation-scope": "proposal",
+  };
+  const result = proposal.source === "standalone"
+    ? approveStandalone(cwd, proposal, cards, flags, "baton-recommendation")
+    : approveOpenSpec(cwd, proposal, cards, flags, "baton-recommendation", env);
+  return finalizeSelectionApproval(cwd, proposal, result);
+}
+
+function assertManualSelectionEnabled(cwd: string, env: NodeJS.ProcessEnv): void {
+  if (!loadConfig(cwd, { env }).director.model_selection) {
+    throw new Error("MODEL_SELECTION_DISABLED: free model selection is off; run `baton config model-selection on` first");
+  }
+}
+
+export function runSelection(args: string[], {
+  cwd,
+  stdout,
+  cards,
+  env = process.env,
+}: {
+  cwd: string;
+  stdout: WritableLike;
+  cards: ModelCard[];
+  env?: NodeJS.ProcessEnv;
+}): number {
   const sub = args[0] || "show";
   if (sub === "render-bundle") {
+    assertManualSelectionEnabled(cwd, env);
     const flags = flagsOf(args.slice(1));
     const output = one(flags, "output");
     if (!output) throw new Error("usage: baton selection render-bundle --proposal SCOPE=WORKSPACE#PROPOSAL ... --output PATH [--task-label SCOPE/TASK=CHINESE_LABEL] [--assign SCOPE/TASK=ID]");
@@ -398,6 +535,7 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
     return 0;
   }
   if (sub === "render") {
+    assertManualSelectionEnabled(cwd, env);
     const flags = flagsOf(args.slice(2));
     const output = one(flags, "output");
     if (!output) throw new Error("usage: baton selection render PROPOSAL --output PATH [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID]");
@@ -414,43 +552,14 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
     return 0;
   }
   if (sub !== "approve") throw new Error("usage: baton selection show|render|render-bundle|approve ...");
+  assertManualSelectionEnabled(cwd, env);
   const flags = flagsOf(args.slice(2));
   if (!flags.confirm) throw new Error("MODEL_SELECTION_NOT_CONFIRMED: --confirm is required only after the user has reviewed the disclosed proposal");
   validateProposal(cwd, proposal);
   const result = proposal.source === "standalone"
     ? approveStandalone(cwd, proposal, cards, flags)
-    : approveOpenSpec(cwd, proposal, cards, flags);
-  proposal.status = "approved";
-  proposal.approved_at = result.confirmation.confirmed_at;
-  proposal.confirmation = {
-    confirmation_id: result.confirmation.confirmation_id,
-    scope: result.confirmation.scope,
-    confirmed_at: result.confirmation.confirmed_at,
-    selected_provider_ids: result.confirmation.selected_provider_ids,
-    global_provider_ids: result.confirmation.global_provider_ids,
-    unit_keys: result.approvals.map(({ key }) => key),
-  };
-  if (!Array.isArray(proposal.history)) proposal.history = [{ event: "pending_confirmation", at: proposal.created_at }];
-  proposal.history.push({ event: "approved", at: proposal.approved_at });
-  proposal.approvals = result.approvals.map(({ key, approval }) => ({
-    key,
-    approval_id: approval.approval_id,
-    confirmation_id: approval.confirmation_id,
-    recommended_model_id: approval.recommended_model_id,
-    selected_model_id: approval.selected_model_id,
-    changed_by_user: approval.changed_by_user,
-    selected_provider_ids: approval.selected_provider_ids,
-    global_provider_ids: approval.global_provider_ids,
-  }));
-  writeSelectionProposal(cwd, proposal);
-  const output = {
-    proposal_id: proposal.id,
-    status: proposal.status,
-    confirmation: proposal.confirmation,
-    approvals: proposal.approvals,
-    tickets: result.tickets,
-    director_local: result.local,
-  };
+    : approveOpenSpec(cwd, proposal, cards, flags, "user", env);
+  const output = finalizeSelectionApproval(cwd, proposal, result);
   if (flags.json) stdout.write(`${JSON.stringify(output, null, 2)}\n`);
   else {
     stdout.write(`approved ${proposal.id}\n`);
@@ -502,14 +611,17 @@ function printCandidateTable(stdout: WritableLike, proposal: SelectionProposal, 
       continue;
     }
     stdout.write("\n");
-    stdout.write(tableRow(["Candidate", "Preferred", "Provider", "Evidence", "Task score", "AA I/C/A", "Cost/task", "Tok/s", "TTFA (s)", "Strengths", "Callability"]));
-    stdout.write(tableRow(["---", "---", "---", "---", "---:", "---", "---:", "---:", "---:", "---", "---"]));
+    stdout.write(tableRow(["Candidate", "Preferred", "Provider", "Effort", "Context", "Fast", "Evidence", "Task score", "AA I/C/A", "Cost/task", "Tok/s", "TTFA (s)", "Strengths", "Callability"]));
+    stdout.write(tableRow(["---", "---", "---", "---", "---:", "---", "---", "---:", "---", "---:", "---:", "---:", "---", "---"]));
     for (const candidate of candidates.filter((item) => item.selectable)) {
       const aa = candidate.aa_scores;
       stdout.write(tableRow([
         candidate.model_id,
         candidate.model_id === unit.recommended_model_id ? "yes" : "",
         candidate.provider || "unknown",
+        candidate.effective_reasoning_effort || "unknown",
+        candidate.context_window ?? "unknown",
+        candidate.speed_signals.length ? candidate.speed_signals.join("+") : "no",
         evidenceText(candidate),
         candidate.task_score ?? "unranked",
         `${metric(aa.intelligence)}/${metric(aa.coding)}/${metric(aa.agentic)}`,
@@ -576,6 +688,8 @@ export function printSelectionProposal(stdout: WritableLike, proposal: Selection
       continue;
     }
     stdout.write(`  preferred: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
+    stdout.write(`  target effort: ${unit.target_reasoning_effort} (${unit.complexity_reason})\n`);
+    stdout.write(`  estimated context: ${unit.estimated_context_tokens} tokens (${unit.context_estimate_reason})\n`);
     if (unit.requested_model_id) stdout.write(`  user requested: ${unit.requested_model_id}\n`);
     printCandidateTable(stdout, proposal, unit);
   }

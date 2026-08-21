@@ -39,6 +39,9 @@ function syncModel(cwd: string) {
 }
 
 async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]): Promise<void> {
+  const configOut = capture();
+  const enabled = await run(["config", "model-selection", "on"], { cwd, env, stdout: configOut, stderr: configOut });
+  assert.equal(enabled, 0, configOut.text());
   const proposalOut = capture();
   const proposed = await run([...args, "--json"], { cwd, env, stdout: proposalOut, stderr: proposalOut });
   assert.equal(proposed, 0, proposalOut.text());

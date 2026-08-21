@@ -33,11 +33,13 @@ describe("OpenCodex Route Snapshot", () => {
   it("persists OpenCodex contextWindow on each route", () => {
     const root = cwd();
     const published = publishRouteSnapshot(root, { models: [
-      { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
+      { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576, supportsServiceTier: true },
       { id: "k3", provider: "kimi", namespaced: "kimi/k3", context_window: 262_144 },
     ] });
     assert.equal(published.snapshot.routes.find((route) => route.route_id === "kimi/k3[1m]")?.context_window, 1_048_576);
+    assert.equal(published.snapshot.routes.find((route) => route.route_id === "kimi/k3[1m]")?.supports_service_tier, true);
     assert.equal(published.snapshot.routes.find((route) => route.route_id === "kimi/k3")?.context_window, 262_144);
+    assert.equal(published.snapshot.routes.find((route) => route.route_id === "kimi/k3")?.supports_service_tier, null);
   });
 
   it("refreshes from injectable OpenCodex and keeps unavailable cards non-executable", () => {
@@ -60,7 +62,7 @@ describe("OpenCodex Route Snapshot", () => {
     });
     assert.equal(code, 0);
     const refreshed = JSON.parse(stdout.text()).snapshot;
-    assert.equal(refreshed.schema_version, 3);
+    assert.equal(refreshed.schema_version, 4);
     assert.equal(refreshed.engine_version, "opencodex 2.26.0");
     assert.equal(refreshed.routes[0].id, "kimi/k3-256k");
     const candidates = buildRouteCandidates(root, path.join(root, "missing.sqlite3"));

@@ -38,8 +38,8 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 1. **拆工作。** 普通请求先收成有 objective / deliverable / done condition 的具体 unit。很小的 rename、typo 可以由 director 自己做；实施、探索一类工作必须离开。
 2. **Baton 按需同步一次。** OpenCodex 负责自身 runtime / provider 同步。Baton 只在本地 snapshot 缺失、过期或用户明确要求时，从 OpenCodex 刷新一次 route / profile / quota snapshot；不再做 per-session host sync。
 3. **先按 unit 路由，再进入选择。** CLI 输入形状不参与路由策略。Baton 用每个 unit 自身描述和未改写的 request 上下文共同判断；命中全局配置的机械 unit 可以直接生成 ops-config ticket，其余普通 unit 仍汇总为一份 request-level proposal。
-4. **一次披露、一次确认。** Provider 是整次请求的一个全局多选；下面统一展示全部候选和全部任务分配。同一前台请求涉及多个 workspace 时，把各自 proposal 合成一个 bundle，只保留一个 Submit。selector 里的 unit 在 Submit 前不能生成 ticket 或 subagent；另行披露的全局配置 ops 可以通过 `confirmed_by=ops-config` 已经排队或运行。
-5. **才铸 ticket。** `baton selection approve ... --confirm` 创建 queued ticket 和不可变 Delegation Receipt。bundle Submit 会把同一个 confirmation id 和全局 Provider 选择写入全部 proposal。OpenCodex catalog snapshot 或源任务变化会使旧 proposal 失效。
+4. **默认自动推荐。** 自由选择模型默认关闭。Baton 按任务分、推理强度、上下文窗口和 fast 吞吐选出一个 ranked exact route/profile，写入 `confirmed_by=baton-recommendation` 后直接创建 ticket，不展示 selector。
+5. **只有显式开启才展示选择器。** `baton config model-selection on` 会恢复汇总 Provider / 模型 / 任务选择器与一次 Submit。无论自动推荐还是人工确认，OpenCodex catalog snapshot 或源任务变化都会使 proposal 失效。
 6. **进程内 dispatch。** Codex 用 `baton dispatch next` 预留，调用 host-native `spawn_agent`，bind 返回的 agent id，然后只写一次终态。`close_agent` 再加 `dispatch release` 才释放物理槽位，FIFO 补位。
 7. **按活动性等待，不按耗时判死。** 有界 `wait_agent` 窗口只用于轮询。用 `baton dispatch probe` 持久化 exact agent 的 host 状态；只要仍是 `pending_init` / `running`，或者有 output / heartbeat，就无限续等同一 ticket。业务 progress 单独保存。只有最新匹配 probe 为 `not_found` 并提供其 sequence，才允许 timeout。
 8. **前台保持干净。** concrete worker 只回短结论；deliberative worker 可以 checkpoint phase、current result、next step、blocker。工具倾倒和隐藏推理留在子上下文。
@@ -52,7 +52,7 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 - **route 可用性归 OpenCodex。** Baton 只选择已同步 OpenCodex snapshot 里的精确、非 disabled route/profile，不再拿 session model list 做二次过滤。若 host-native spawn 在实际执行时仍拒绝该 route，director 原样报告执行错误，绝不换 route。
 - **没有静默替换。** 不 inherit 父模型，不在 route/provider 间 fallback，不接受本地 alias 或 override。显式选择必须是精确的 OpenCodex route/profile id。
 - **Catalog 可见性与 subagent 资格分离。** OpenCodex discovery 仍完整可审计。内置 policy 禁止 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra` 的所有 provider route、variant 和 reasoning profile 进入候选、确认、ticket 和 dispatch。proposal 会单独披露这些排除。其它 session / Goal exclusion 只影响本次调度。
-- **不编造 unranked。** profile 缺失或 `-fast` / `-highspeed` 等 serving variant 回退到基础分时标记 `reference_only`，不参与自动优选。用户可以选已披露且可调用的 `unranked` route，但不能覆盖禁用系列。
+- **不编造 unranked。** 真正未映射或身份不确定的 route 不参与自动推荐。确定性的 profile / base / serving variant 可以使用底层模型的 ranked 证据，但必须保留 `reference_only` provenance。自由选择开启后，用户可以显式选择已披露且可调用的 `unranked` route；禁用系列仍不可覆盖。
 - **逻辑工作不封顶。** host/session 并发上限是运行时能力，不写死为 6。超限把同一张 ticket 放回 FIFO，不消耗 attempt。终态 agent 在 close + release 成功前仍占槽位。深度为 1。
 - **不按计时判定 worker 死亡。** 重复 wait-call timeout 或没有 progress 文本，都不能把仍在 running 的 agent 判死。Baton 单独记录 host liveness，只有当前 exact agent 被探测为 `not_found` 后才允许 ticket timeout。
 - **Git 始终由 parent gate。** 普通 worker 不 stage、commit、branch、rebase、push。唯一例外是独占的 `commit-only` ticket：它只能消费 parent 精确 staged 的 tree 创建一个受审计 commit，仍不能 stage、amend、切分支、rebase、tag 或 push。write 与 commit-only ticket 的每条终态路径都必须通过 parent safety gate。
@@ -73,9 +73,27 @@ Baton 没有 login、账号、token 或 credential 命令。不要往这个项�
 
 ## 模型选择
 
-`spawn` / `apply` 会为每个委派 unit 披露：
+自由选择模型是用户全局配置，默认关闭：
 
-- 评分有唯一正分胜者时的优选 exact route/profile，否则明确进入手工选择
+```sh
+baton config model-selection status
+baton config model-selection on
+baton config model-selection off
+```
+
+关闭时，`spawn` / `apply` 自动批准 Baton 的推荐；显式 `--model` / `--route` 以及 `selection render` / `selection approve` 都会被拒绝。approved proposal 保留完整决策证据，ticket / Receipt 保留 `confirmed_by=baton-recommendation` 的批准证据。没有合格的 ranked 推荐时直接阻断，不拿 `unranked` 凑默认值。
+
+自动推荐严格按以下顺序：
+
+1. 任务分最高优先；
+2. 根据任务复杂度匹配推理强度（`low` / `medium` / `high` / `xhigh` / `max`）；
+3. 选择能容纳任务的最小上下文窗口；若都不够，选当前最大窗口；
+4. 同等条件优先 fast 吞吐。分别识别 route 名称里的 `fast` / `highspeed`，以及 OpenCodex 实际目录中的 `supportsServiceTier=true` 配置，并保留来源；
+5. 最后才用额度、其余能力/成本/性能证据和稳定 exact id 解平局。
+
+开启自由选择后，`spawn` / `apply` 才会为每个委派 unit 披露：
+
+- Baton 优选 exact route/profile、目标推理强度、上下文估算和 fast 证据来源
 - 所有符合内置 policy、在 OpenCodex snapshot 中可执行的候选，含优势、任务分、AA 原始分/现有数据、参考分来源、剩余额度或明确 unknown 原因、以及 snapshot callability
 - 内置的 `gpt-5.5` / `gpt-5.6-sol` / `gpt-5.6-terra` 系列禁令
 
@@ -83,7 +101,7 @@ Baton 没有 login、账号、token 或 credential 命令。不要往这个项�
 
 Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。CodexBar 只是带来源标记的本地提示，可能对应其本机所选账号，不会覆盖 OpenCodex 已报告窗口，也不改变 provider / auth / route 所有权。Baton 只保存脱敏后的百分比/reset 窗口和 `codexbar:...` 来源。未报告额度绝不当作 0 或“够用”。详见 [CodexBar quota fallback](docs/data-sources/codexbar.md)。
 
-选择器只出现在当前 Codex 对话里，并且是中文优先。一次请求只给一张汇总选择器：先统一选 Provider，再看全部 exact route/profile，然后集中分配各路径任务，最后一个 Submit。多个 workspace proposal 使用 `baton selection render-bundle`。英文源 task 必须通过 `--task-label` 提供忠实的中文展示名；这些 label 只影响展示，不改原始 request、task 或 fingerprint。Codex 必须在同一条回复里发出唯一的 `inline_content_reference`。禁止打开浏览器、跳转 `file://`、暴露文件链接，或另开 selector 页面/窗口/任务。内联渲染不可用时，完整的汇总中文披露仍留在本对话文本里。
+开关开启时，选择器只出现在当前 Codex 对话里，并且是中文优先。一次请求只给一张汇总选择器：先统一选 Provider，再看全部 exact route/profile，然后集中分配各路径任务，最后一个 Submit。多个 workspace proposal 使用 `baton selection render-bundle`。英文源 task 必须通过 `--task-label` 提供忠实的中文展示名；这些 label 只影响展示，不改原始 request、task 或 fingerprint。Codex 必须在同一条回复里发出唯一的 `inline_content_reference`。禁止打开浏览器、跳转 `file://`、暴露文件链接，或另开 selector 页面/窗口/任务。
 
 ## 全局 ops 配置
 
@@ -96,7 +114,7 @@ Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。C
 
 `baton config` 直接通过 OpenCodex 刷新 route / quota snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex session snapshot。Dispatch 只校验配置 route 仍存在于已同步 OpenCodex snapshot，不存在时返回 `OPS_ROUTE_UNAVAILABLE`。它不会 inherit 父模型。要等 worker 结论，包括命令失败。
 
-`spawn` 会逐个 work unit 解析 ops，`--unit` 只表达结构，不再强制进入 selector。unit 自身动作与无歧义的 request 级动作可以互相补充上下文；两者冲突时仍走普通模型选择。显式 `--model` 始终关闭 ops-config 自动路由。混合请求可以先派发已配置的机械 unit，再把剩余 unit 合并到一张 selector；同一请求最多只能创建一个 `commit-only` unit。
+`spawn` 会逐个 work unit 解析 ops，`--unit` 只表达结构。unit 自身动作与无歧义的 request 级动作可以互相补充上下文；两者冲突时走普通推荐/选择路径。显式 `--model` 仅在自由选择开启时可用，并会关闭该 unit 的 ops-config 自动路由。混合请求可以先派发已配置的机械 unit，再自动推荐其余 unit；开关开启时则把其余 unit 合并到一张 selector。
 
 单纯“写 commit message”仍是只读 `git-summarize`。真正的“提交吧 / `git commit staged changes`”会创建独占的 `commit-only` ticket：director 必须先完成精确 staging，Receipt 冻结 parent HEAD、staged tree、路径、refs 和 reflog；worker 只能读取 Git 证据并执行一次 `git commit`，不能 `add`、`amend`、切分支、rebase、tag 或 push。所有终态都由 director 复验 commit parent/tree、refs、reflog、index 和工作区。普通 write worker 仍禁止任何 Git mutation。
 
@@ -129,6 +147,7 @@ Baton 不生成项目内 `.baton/` 运行时目录，也不再读取或生成项
 baton init [--force]
 baton update
 baton config [--runner ROUTE|-] [--longctx ROUTE|-]
+baton config model-selection on|off|status [--json]
 
 baton routes refresh|status|candidates
 baton cards [--ranked|--unranked] [--provider ID] [--json]
@@ -161,7 +180,7 @@ baton conversation promote --from-file PATH
 baton status
 ```
 
-`baton update` 会刷新已安装的 Codex skill，并合并全局 director/ops 默认值，不覆盖已经选择的 ops route。`~/.baton/config.toml` 保存并发、深度和可选机械任务 route；其中的 route 仍必须是 OpenCodex exact route。
+`baton update` 会刷新已安装的 Codex skill，并合并全局默认值，不覆盖已经选择的 ops route。`~/.baton/config.toml` 保存并发、深度、默认关闭的自由选择开关和可选机械任务 route；其中的 route 仍必须是 OpenCodex exact route。
 
 ## Samples
 

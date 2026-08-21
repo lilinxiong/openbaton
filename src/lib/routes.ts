@@ -23,10 +23,12 @@ export interface ExecutableRoute {
   reasoning_efforts: string[];
   default_reasoning_effort: string | null;
   context_window: number | null;
+  /** Effective per-model fast/service-tier support reported by OpenCodex. */
+  supports_service_tier: boolean | null;
 }
 
 export interface RouteSnapshot {
-  schema_version: 3;
+  schema_version: 4;
   generation: number;
   fingerprint: string;
   fetched_at: string;
@@ -76,6 +78,8 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
     const routeId = exactRouteId(record, id, provider);
     const reasoningEfforts = strings(record?.reasoningEfforts ?? record?.reasoning_efforts);
     const defaultReasoningEffort = String(record?.defaultReasoningEffort ?? record?.default_reasoning_effort ?? "").trim() || null;
+    const supportsServiceTierRaw = record?.supportsServiceTier ?? record?.supports_service_tier;
+    const supportsServiceTier = typeof supportsServiceTierRaw === "boolean" ? supportsServiceTierRaw : null;
     byId.set(`${provider || ""}\0${routeId}`, {
       id,
       provider,
@@ -85,6 +89,7 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
       reasoning_efforts: reasoningEfforts,
       default_reasoning_effort: defaultReasoningEffort,
       context_window: contextWindow(record),
+      supports_service_tier: supportsServiceTier,
     });
   }
   return [...byId.values()].sort((a, b) => a.route_id.localeCompare(b.route_id) || String(a.provider || "").localeCompare(String(b.provider || "")));
@@ -108,7 +113,7 @@ export function publishRouteSnapshot(
   let previous: Partial<RouteSnapshot> | null = null;
   if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
   const normalizedEngineVersion = String(engineVersion || "").trim() || null;
-  const sameCatalog = previous?.schema_version === 3
+  const sameCatalog = previous?.schema_version === 4
     && previous.fingerprint === fingerprint
     && previous.engine_version === normalizedEngineVersion;
   const quotaUpdate = providerQuotas !== undefined || quotaRefreshError !== undefined;
@@ -116,7 +121,7 @@ export function publishRouteSnapshot(
     return { changed: false, snapshot: previous as RouteSnapshot };
   }
   const snapshot: RouteSnapshot = {
-    schema_version: 3,
+    schema_version: 4,
     generation: sameCatalog ? Number(previous?.generation || 1) : Number(previous?.generation || 0) + 1,
     fingerprint,
     fetched_at: now.toISOString(),
@@ -139,7 +144,7 @@ export function readRouteSnapshot(cwd: string): RouteSnapshot | null {
   const file = routeSnapshotPath(cwd);
   if (!fs.existsSync(file)) return null;
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
-  if (parsed.schema_version !== 3 || !Array.isArray(parsed.routes) || !Array.isArray(parsed.provider_quotas)) return null;
+  if (parsed.schema_version !== 4 || !Array.isArray(parsed.routes) || !Array.isArray(parsed.provider_quotas)) return null;
   return parsed as RouteSnapshot;
 }
 
