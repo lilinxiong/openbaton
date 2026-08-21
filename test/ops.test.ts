@@ -12,7 +12,7 @@ import type { OpsConfig } from "../src/lib/ops-config.js";
 import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
 import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
+import { normalizeProviderQuotas } from "../src/lib/provider-quotas.js";
 import { configPath } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { parseToml } from "../src/lib/toml.js";
@@ -22,33 +22,29 @@ function capture() {
   return { write(value: unknown) { chunks.push(String(value)); }, text() { return chunks.join(""); } };
 }
 
-function setupOpsCatalog() {
+const OPS_MODELS = [
+  { id: "k3", provider: "kimi", namespaced: "kimi/k3", contextWindow: 262_144 },
+  { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
+  { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro", contextWindow: 262_144 },
+  { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2", contextWindow: 1_000_000 },
+  { id: "mimo-v2.5-tts", provider: "mimo", namespaced: "mimo/mimo-v2.5-tts", contextWindow: 262_144 },
+  { id: "gpt-5.6-sol", provider: "openai", namespaced: "gpt-5.6-sol", native: true, contextWindow: 256_000 },
+];
+
+function setupOpsCatalog(withQuota = false) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-"));
-  publishRouteSnapshot(cwd, { models: [
-    { id: "k3", provider: "kimi", namespaced: "kimi/k3", contextWindow: 262_144 },
-    { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
-    { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro", contextWindow: 262_144 },
-    { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2", contextWindow: 1_000_000 },
-    { id: "mimo-v2.5-tts", provider: "mimo", namespaced: "mimo/mimo-v2.5-tts", contextWindow: 262_144 },
-    { id: "gpt-5.6-sol", provider: "openai", namespaced: "gpt-5.6-sol", native: true, contextWindow: 256_000 },
-  ] });
+  publishRouteSnapshot(cwd, { models: OPS_MODELS }, new Date(), withQuota ? {
+    providerQuotas: normalizeProviderQuotas({ reports: [
+      { provider: "kimi", quota: { weeklyPercent: 16 } },
+      { provider: "mimo", quota: { weeklyPercent: 4 } },
+      { provider: "alibaba-token-plan", quota: { weeklyPercent: 1 } },
+    ] }),
+  } : {});
   return cwd;
 }
 
 function setupOpsWorkspace() {
-  const cwd = setupOpsCatalog();
-  writeHostCapabilitySnapshot(cwd, {
-    advertisedModels: [
-      "kimi/k3", "kimi/k3[1m]", "mimo/mimo-v2.5-pro", "alibaba-token-plan/glm-5.2",
-      "mimo/mimo-v2.5-tts", "gpt-5.6-sol",
-    ],
-    quotaCatalog: { reports: [
-      { provider: "kimi", quota: { weeklyPercent: 16 } },
-      { provider: "mimo", quota: { weeklyPercent: 4 } },
-      { provider: "alibaba-token-plan", quota: { weeklyPercent: 1 } },
-    ] },
-  });
-  return cwd;
+  return setupOpsCatalog(true);
 }
 
 function saveOpsConfig(cwd: string, env: NodeJS.ProcessEnv, ops: OpsConfig) {
@@ -90,7 +86,7 @@ describe("global ops config", () => {
     });
   });
 
-  it("filters runner vs longctx from the current host intersection", () => {
+  it("filters runner vs longctx from the synced OpenCodex snapshot", () => {
     withHome(() => {
       const cwd = setupOpsWorkspace();
       const runner = listOpsRouteChoices(cwd, "runner", []);
@@ -102,11 +98,11 @@ describe("global ops config", () => {
     });
   });
 
-  it("keeps dispatch filtering fail-closed when the host surface is absent", () => {
+  it("does not require a session host surface for dispatch choices", () => {
     withHome(() => {
       const cwd = setupOpsCatalog();
-      assert.deepEqual(listOpsRouteChoices(cwd, "runner", []), []);
-      assert.deepEqual(listOpsRouteChoices(cwd, "longctx", []), []);
+      assert.deepEqual(listOpsRouteChoices(cwd, "runner", []).map((item) => item.route_id).sort(), ["kimi/k3", "mimo/mimo-v2.5-pro"]);
+      assert.deepEqual(listOpsRouteChoices(cwd, "longctx", []).map((item) => item.route_id).sort(), ["alibaba-token-plan/glm-5.2", "kimi/k3[1m]"]);
     });
   });
 
@@ -128,14 +124,11 @@ describe("global ops config", () => {
           opencodexCalls.push(args);
           return {
             status: 0,
-            stdout: args[0] === "--version"
+            stdout: args.join(" ") === "--version"
               ? "opencodex 2.26.0\n"
-              : JSON.stringify({ models: [
-                { id: "k3", provider: "kimi", namespaced: "kimi/k3", contextWindow: 262_144 },
-                { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
-                { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro", contextWindow: 262_144 },
-                { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2", contextWindow: 1_000_000 },
-              ] }),
+              : args.join(" ") === "models live --json"
+                ? JSON.stringify({ models: OPS_MODELS.slice(0, 4) })
+                : JSON.stringify({ reports: [] }),
             stderr: "",
             error: null,
           };
@@ -144,6 +137,7 @@ describe("global ops config", () => {
           promptCount += 1;
           return answers.shift() || "0";
         },
+        codexBarResolve: () => null,
       }), 0, out.text());
       assert.equal(promptCount, 2);
       assert.ok(opencodexCalls.some((args) => args.join(" ") === "models live --json"));
@@ -157,12 +151,11 @@ describe("global ops config", () => {
     });
   });
 
-  it("does not let a narrower host snapshot filter OpenCodex config choices", () => {
+  it("uses the same OpenCodex choices without a per-session sync step", () => {
     withHome(() => {
       const cwd = setupOpsCatalog();
-      writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3"] });
-      const runner = listOpsRouteChoices(cwd, "runner", [], { scope: "catalog" });
-      const longctx = listOpsRouteChoices(cwd, "longctx", [], { scope: "catalog" });
+      const runner = listOpsRouteChoices(cwd, "runner", []);
+      const longctx = listOpsRouteChoices(cwd, "longctx", []);
       assert.deepEqual(runner.map((item) => item.route_id).sort(), ["kimi/k3", "mimo/mimo-v2.5-pro"]);
       assert.deepEqual(longctx.map((item) => item.route_id).sort(), ["alibaba-token-plan/glm-5.2", "kimi/k3[1m]"]);
     });
@@ -212,7 +205,7 @@ describe("global ops config", () => {
     });
   });
 
-  it("fails closed when a configured ops route is not currently callable", async () => {
+  it("fails closed when a configured ops route is absent from the synced OpenCodex snapshot", async () => {
     await withHome(async (home) => {
       const cwd = setupOpsWorkspace();
       const env = fakeEnv(home);
@@ -243,17 +236,15 @@ describe("global ops config", () => {
         resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
         runner: ({ args }) => ({
           status: 0,
-          stdout: args[0] === "--version"
+          stdout: args.join(" ") === "--version"
             ? "opencodex 2.26.0\n"
-            : JSON.stringify({ models: [
-              { id: "k3", provider: "kimi", namespaced: "kimi/k3", contextWindow: 262_144 },
-              { id: "k3[1m]", provider: "kimi", namespaced: "kimi/k3[1m]", contextWindow: 1_048_576 },
-              { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro", contextWindow: 262_144 },
-              { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2", contextWindow: 1_000_000 },
-            ] }),
+            : args.join(" ") === "models live --json"
+              ? JSON.stringify({ models: OPS_MODELS.slice(0, 4) })
+              : JSON.stringify({ reports: [] }),
           stderr: "",
           error: null,
         }),
+        codexBarResolve: () => null,
       }), 0, out.text());
       assert.match(out.text(), /0\. （空：由主 agent 执行）/);
       assert.match(out.text(), /runner: mimo\/mimo-v2\.5-pro/);

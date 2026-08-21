@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { findBinaryOnPath } from "./opencodex.js";
-import type { ProviderQuotaDisclosure, QuotaWindow } from "./host-capabilities.js";
+import type { ProviderQuotaDisclosure, QuotaWindow } from "./provider-quotas.js";
 
 export interface CodexBarRunResult {
   status: number;

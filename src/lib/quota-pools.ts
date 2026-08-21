@@ -1,4 +1,4 @@
-import type { ProviderQuotaDisclosure, QuotaWindow } from "./host-capabilities.js";
+import type { ProviderQuotaDisclosure, QuotaWindow } from "./provider-quotas.js";
 
 export type QuotaPoolStatus = "available" | "unknown" | "exhausted";
 export type CursorQuotaMode = "api" | "auto";

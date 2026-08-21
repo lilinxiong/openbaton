@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { routeSnapshotPath } from "./paths.js";
+import type { ProviderQuotaDisclosure } from "./provider-quotas.js";
 import {
   listStoredRouteMappings,
   loadRouteMappings,
@@ -25,13 +26,15 @@ export interface ExecutableRoute {
 }
 
 export interface RouteSnapshot {
-  schema_version: 2;
+  schema_version: 3;
   generation: number;
   fingerprint: string;
   fetched_at: string;
   source: "opencodex";
   engine_version: string | null;
   routes: ExecutableRoute[];
+  quota_refresh_error: string | null;
+  provider_quotas: ProviderQuotaDisclosure[];
 }
 
 function stableRoutes(routes: ExecutableRoute[]): string {
@@ -87,13 +90,17 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
   return [...byId.values()].sort((a, b) => a.route_id.localeCompare(b.route_id) || String(a.provider || "").localeCompare(String(b.provider || "")));
 }
 
-interface PublishRouteSnapshotOptions { engineVersion?: string | null }
+interface PublishRouteSnapshotOptions {
+  engineVersion?: string | null;
+  providerQuotas?: ProviderQuotaDisclosure[];
+  quotaRefreshError?: string | null;
+}
 
 export function publishRouteSnapshot(
   cwd: string,
   catalog: unknown,
   now: Date = new Date(),
-  { engineVersion = null }: PublishRouteSnapshotOptions = {},
+  { engineVersion = null, providerQuotas, quotaRefreshError }: PublishRouteSnapshotOptions = {},
 ): { changed: boolean; snapshot: RouteSnapshot } {
   const routes = normalizeRouteCatalog(catalog);
   const fingerprint = crypto.createHash("sha256").update(stableRoutes(routes)).digest("hex");
@@ -101,17 +108,23 @@ export function publishRouteSnapshot(
   let previous: Partial<RouteSnapshot> | null = null;
   if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
   const normalizedEngineVersion = String(engineVersion || "").trim() || null;
-  if (previous?.schema_version === 2 && previous.fingerprint === fingerprint && previous.engine_version === normalizedEngineVersion) {
+  const sameCatalog = previous?.schema_version === 3
+    && previous.fingerprint === fingerprint
+    && previous.engine_version === normalizedEngineVersion;
+  const quotaUpdate = providerQuotas !== undefined || quotaRefreshError !== undefined;
+  if (sameCatalog && !quotaUpdate) {
     return { changed: false, snapshot: previous as RouteSnapshot };
   }
   const snapshot: RouteSnapshot = {
-    schema_version: 2,
-    generation: Number(previous?.generation || 0) + 1,
+    schema_version: 3,
+    generation: sameCatalog ? Number(previous?.generation || 1) : Number(previous?.generation || 0) + 1,
     fingerprint,
     fetched_at: now.toISOString(),
     source: "opencodex",
     engine_version: normalizedEngineVersion,
     routes,
+    quota_refresh_error: quotaUpdate ? String(quotaRefreshError || "").trim() || null : previous?.quota_refresh_error || null,
+    provider_quotas: quotaUpdate ? structuredClone(providerQuotas || []) : structuredClone(previous?.provider_quotas || []),
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
@@ -119,14 +132,14 @@ export function publishRouteSnapshot(
     fs.writeFileSync(temp, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temp, file);
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
-  return { changed: true, snapshot };
+  return { changed: !sameCatalog, snapshot };
 }
 
 export function readRouteSnapshot(cwd: string): RouteSnapshot | null {
   const file = routeSnapshotPath(cwd);
   if (!fs.existsSync(file)) return null;
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
-  if (parsed.schema_version !== 2 || !Array.isArray(parsed.routes)) return null;
+  if (parsed.schema_version !== 3 || !Array.isArray(parsed.routes) || !Array.isArray(parsed.provider_quotas)) return null;
   return parsed as RouteSnapshot;
 }
 

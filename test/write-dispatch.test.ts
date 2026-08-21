@@ -8,7 +8,6 @@ import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
 
 function sink() { return { write() { return true; } }; }
 function capture() {
@@ -37,7 +36,6 @@ function readTicket(cwd: string, id: string) {
 
 function syncModel(cwd: string) {
   publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-  writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3[1m]"], quotaCatalog: { reports: [] } });
 }
 
 async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]): Promise<void> {

@@ -5,7 +5,6 @@ import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
-import { runHost } from "./commands/host.js";
 import { runConfig } from "./commands/config.js";
 import { printSelectionProposal, runSelection } from "./commands/selection.js";
 import { loadConfig } from "./lib/config.js";
@@ -14,10 +13,9 @@ import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/sp
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { resolveOpsDispatch } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
-import { buildRouteCandidates } from "./lib/routes.js";
+import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
-import { readHostCapabilitySnapshot } from "./lib/host-capabilities.js";
 import { buildSelectionUnit, createSelectionProposal, listSelectionProposals, selectionSourceFingerprint } from "./lib/selection.js";
 import { directorMayRun } from "./lib/hygiene.js";
 import { FORBIDDEN_SUBAGENT_MODEL_FAMILIES, SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
@@ -60,8 +58,8 @@ Built-in subagent policy forbids every gpt-5.5, gpt-5.6-sol, and gpt-5.6-terra r
 Usage:
   baton init [--force]                initialize Baton + Codex skill
   baton update                        refresh Codex skill + global config defaults
+  baton routes refresh|status|candidates  refresh Baton once from synchronized OpenCodex state
   baton cards [--ranked|--unranked] [--provider ID] [--json]
-  baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish complete current Codex host surface
   baton config [--runner ROUTE|-] [--longctx ROUTE|-]  choose global ops routes from OpenCodex (~/.baton/config.toml)
   baton match <text>                disclose preferred/candidate models without creating work
   baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  create one request-level model-selection proposal (no ticket)
@@ -121,11 +119,8 @@ export async function run(argv: string[], {
         return cmdCards(args, cwd, stdout, env, runner, resolve);
       case "match":
         return cmdMatch(args, cwd, stdout, env, runner, resolve);
-      case "host":
-        ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
-        return runHost(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
       case "config":
-        return await runConfig(args, { cwd, stdout, env, runner, resolve });
+        return await runConfig(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env, runner, resolve);
       case "apply":
@@ -139,7 +134,7 @@ export async function run(argv: string[], {
       case "dispatch":
         return runDispatch(args, { cwd, stdout, env });
       case "routes":
-        return runRoutes(args, { cwd, stdout, env, runner, resolve });
+        return runRoutes(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
       case "conversation":
         return runConversation(args, { stdout });
       case "status":
@@ -205,11 +200,9 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   }
   try {
     const cards = resolvedCards(cwd, env, runner, resolve);
-    const host = readHostCapabilitySnapshot(cwd);
-    if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session");
     const unit = buildSelectionUnit({
       cwd, key: "preview", description: text, prompt: text, cards,
-      automaticCards: cardsForAutomaticSelection(cwd, cards, text), host,
+      automaticCards: cardsForAutomaticSelection(cwd, cards, text),
     });
     const flags = parseFlags(args);
     if (flags.json) stdout.write(`${JSON.stringify(unit, null, 2)}\n`);
@@ -251,8 +244,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (unitDefinitions.length) {
     if (writePathsEarly.length) throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
-    const host = readHostCapabilitySnapshot(cwd);
-    if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
     const source = {
       source_shape: "multi-unit-v1",
       description: text,
@@ -265,7 +256,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       prompt: item.description,
       cards: allCards,
       automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description),
-      host,
       requestedModelId: explicitModel,
       directorLocal: directorMayRun(item.description),
       metadata: { request_index: index },
@@ -316,8 +306,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       return 0;
     }
   }
-  const host = readHostCapabilitySnapshot(cwd);
-  if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
   const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   const allowed = new Set(["write", "create", "delete", "rename", "chmod"]);
   const opsFlags = multiFlag(flags, "write-ops");
@@ -335,7 +323,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   };
   const unit = buildSelectionUnit({
     cwd, key: "standalone", description: text, prompt: text, cards: allCards,
-    automaticCards: cardsForAutomaticSelection(cwd, allCards, text), host,
+    automaticCards: cardsForAutomaticSelection(cwd, allCards, text),
     requestedModelId: explicitModel,
   });
   const proposal = createSelectionProposal(cwd, {
@@ -366,8 +354,6 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   for (const number of routeAssignments.keys()) {
     if (!pendingNumbers.has(number)) throw new Error(`--route task is not pending in this change: ${number}`);
   }
-  const host = readHostCapabilitySnapshot(cwd);
-  if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
   const units = [];
   const dispatched = [];
   for (const task of tasks) {
@@ -399,7 +385,6 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
       prompt,
       cards,
       automaticCards: cardsForAutomaticSelection(cwd, cards, prompt),
-      host,
       requestedModelId: requested,
       directorLocal,
       metadata: { line_index: task.line_index, section: task.section },
@@ -458,8 +443,9 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, ru
   stdout.write(`  cards: ${cards.length} OpenCodex routes (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
   stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}  forbidden ${FORBIDDEN_SUBAGENT_MODEL_FAMILIES.join(", ")}\n`);
   stdout.write(`  max_concurrent: ${cfg.director.max_concurrent} (queue beyond this; never refuse)\n`);
-  const host = readHostCapabilitySnapshot(cwd);
-  stdout.write(`  host models: ${host?.advertised_models.length || 0}${host ? ` snapshot=${host.id}` : " (sync required)"}\n`);
+  const snapshot = readRouteSnapshot(cwd);
+  const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
+  stdout.write(`  OpenCodex routes: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton routes refresh)"}\n`);
   const selections = listSelectionProposals(cwd);
   stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
   const spawns = listSpawns(cwd);

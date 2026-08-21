@@ -12,7 +12,7 @@ import {
   queryCodexBarQuota,
   resolveCodexBar,
 } from "../src/lib/codexbar.js";
-import { mergeProviderQuotaFallbacks, unknownProviderQuota } from "../src/lib/host-capabilities.js";
+import { mergeProviderQuotaFallbacks, unknownProviderQuota } from "../src/lib/provider-quotas.js";
 
 describe("CodexBar quota fallback", () => {
   it("maps OpenCodex provider ids and discovers a callable CLI on PATH", () => {

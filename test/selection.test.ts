@@ -8,7 +8,7 @@ import { run } from "../src/cli.js";
 import { buildSelectionUnit, createSelectionProposal, readSelectionProposal, selectionSourceFingerprint, writeSelectionProposal } from "../src/lib/selection.js";
 import { SUBAGENT_MODEL_FAMILY_FORBIDDEN, SUBAGENT_MODEL_POLICY_ID } from "../src/lib/model-policy.js";
 import { renderSelectionView } from "../src/lib/selection-view.js";
-import { normalizeProviderQuotas, writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
+import { normalizeProviderQuotas } from "../src/lib/provider-quotas.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { artificialAnalysisDbPath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
@@ -44,13 +44,8 @@ describe("mandatory model selection disclosure", () => {
       { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
       { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
       { id: "mimo-v2.5-tts", provider: "mimo", namespaced: "mimo/mimo-v2.5-tts" },
-    ] });
-    const host = writeHostCapabilitySnapshot(cwd, {
-      advertisedModels: [
-        "cursor/claude-opus-5", "cursor/grok-4.6", "cursor/composer-2.5",
-        "alibaba-token-plan/glm-5.2", "mimo/mimo-v2.5-pro", "mimo/mimo-v2.5-tts",
-      ],
-      quotaCatalog: { reports: [{
+    ] }, new Date(), {
+      providerQuotas: normalizeProviderQuotas({ reports: [{
         provider: "cursor",
         source: "cursor:period-usage",
         quota: {
@@ -60,7 +55,7 @@ describe("mandatory model selection disclosure", () => {
             { label: "API usage", percent: 93.72 },
           ],
         },
-      }] },
+      }] }),
     });
     const cards = [
       card("cursor/claude-opus-5", "cursor/claude-opus-5", "cursor", 90, 90, 1),
@@ -77,7 +72,6 @@ describe("mandatory model selection disclosure", () => {
       prompt: "audit incident JSON and produce a report",
       cards,
       automaticCards: cards,
-      host,
     });
     assert.equal(unit.candidates.some((candidate) => candidate.model_id === "mimo/mimo-v2.5-tts"), false);
     assert.deepEqual(unit.task_exclusions.map((item) => item.model_id), ["mimo/mimo-v2.5-tts"]);
@@ -122,7 +116,6 @@ describe("mandatory model selection disclosure", () => {
       prompt: unit.prompt,
       cards,
       automaticCards: cards,
-      host,
       requestedModelId: "cursor/grok-4.6",
     }), /QUOTA_POOL_EXHAUSTED/);
   }));
@@ -139,20 +132,14 @@ describe("mandatory model selection disclosure", () => {
     assert.equal(cursor.reverse_engineered, true);
   });
 
-  it("recommends only from the OpenCodex/Codex intersection and discloses unavailable providers and unknown quota", () => withHome(() => {
+  it("recommends from the synced OpenCodex snapshot and keeps unknown quota explicit", () => withHome(() => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-"));
     publishRouteSnapshot(cwd, { models: [
-      { id: "strong", provider: "openai", namespaced: "openai/strong" },
-      { id: "cheap", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/cheap" },
-      { id: "k3", provider: "kimi", namespaced: "kimi/k3" },
-    ] });
-    const host = writeHostCapabilitySnapshot(cwd, {
-      advertisedModels: ["openai/strong", "alibaba-token-plan/cheap", "gpt-5.5", "gpt-5.6-sol", "cursor/gpt-5.6-terra"],
-      advertisedProfiles: {
-        "openai/strong": ["high"], "alibaba-token-plan/cheap": ["low"],
-        "gpt-5.5": ["high"], "gpt-5.6-sol": ["max"], "cursor/gpt-5.6-terra": ["high"],
-      },
-      quotaCatalog: { reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 87 } }] },
+      { id: "strong", provider: "openai", namespaced: "openai/strong", reasoningEfforts: ["high", "ultra"] },
+      { id: "cheap", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/cheap", reasoningEfforts: ["low"] },
+      { id: "k3", provider: "kimi", namespaced: "kimi/k3", reasoningEfforts: ["max"] },
+    ] }, new Date(), {
+      providerQuotas: normalizeProviderQuotas({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 87 } }] }),
     });
     const cards = [
       card("openai/strong@high", "openai/strong", "openai", 95, 92, 1),
@@ -165,14 +152,15 @@ describe("mandatory model selection disclosure", () => {
     ];
     const unit = buildSelectionUnit({
       cwd, key: "standalone", description: "implement complex multi-file migration",
-      prompt: "implement complex multi-file migration", cards, automaticCards: cards, host,
+      prompt: "implement complex multi-file migration", cards, automaticCards: cards,
     });
-    assert.equal(unit.recommended_model_id, "openai/strong@high");
+    assert.equal(unit.recommended_model_id, null);
+    assert.equal(unit.recommendation_reason, "AMBIGUOUS_TOP_SCORE");
     assert.deepEqual(unit.candidates.filter((item) => item.selectable).map((item) => item.model_id), [
-      "openai/strong@high", "alibaba-token-plan/cheap@low",
+      "kimi/k3@max", "openai/strong@high", "openai/strong@ultra", "alibaba-token-plan/cheap@low",
     ]);
-    assert.equal(unit.candidates.find((item) => item.model_id === "kimi/k3@max")?.host.code, "HOST_ROUTE_UNAVAILABLE");
-    assert.equal(unit.candidates.find((item) => item.model_id === "openai/strong@ultra")?.host.code, "HOST_PROFILE_UNAVAILABLE");
+    assert.equal(unit.candidates.find((item) => item.model_id === "kimi/k3@max")?.selection_code, "AVAILABLE");
+    assert.equal(unit.candidates.find((item) => item.model_id === "openai/strong@ultra")?.selection_code, "AVAILABLE");
     assert.equal(unit.candidates.some((item) => /gpt-(?:5\.5|5\.6-(?:sol|terra))/.test(item.model_id)), false);
     assert.deepEqual(unit.policy_exclusions.map((item) => item.family), ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"]);
     assert.equal(unit.candidates.find((item) => item.provider === "openai")?.quota.windows[0].remaining_percent, 13);
@@ -181,13 +169,11 @@ describe("mandatory model selection disclosure", () => {
       source: "standalone", units: [unit], sourceFingerprint: selectionSourceFingerprint({ description: unit.description }),
       payload: { description: unit.description },
     });
-    assert.deepEqual(proposal.unavailable_by_provider.map((item) => item.provider), ["kimi", "openai"]);
-    assert.equal(proposal.unavailable_by_provider.find((item) => item.provider === "openai")?.code, "HOST_PROFILE_UNAVAILABLE");
     assert.equal(readSelectionProposal(cwd, proposal.id).status, "pending_confirmation");
     assert.equal(proposal.model_policy_id, SUBAGENT_MODEL_POLICY_ID);
     assert.deepEqual(proposal.policy_exclusions.map((item) => item.family), ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"]);
     assert.throws(() => buildSelectionUnit({
-      cwd, key: "blocked", description: "implement", prompt: "implement", cards, host,
+      cwd, key: "blocked", description: "implement", prompt: "implement", cards,
       requestedModelId: "gpt-5.5@high",
     }), new RegExp(SUBAGENT_MODEL_FAMILY_FORBIDDEN));
   }));
@@ -198,10 +184,6 @@ describe("mandatory model selection disclosure", () => {
       { id: "exact", provider: "provider", namespaced: "provider/exact" },
       { id: "fast", provider: "provider", namespaced: "provider/fast" },
     ] });
-    const host = writeHostCapabilitySnapshot(cwd, {
-      advertisedModels: ["provider/exact", "provider/fast"],
-      quotaCatalog: { reports: [] },
-    });
     const exact = card("provider/exact", "provider/exact", "provider", 60, 60, 0.5);
     const reference = card("provider/fast", "provider/fast", "provider", 99, 99, 1);
     reference.capability.reference_only = true;
@@ -224,7 +206,6 @@ describe("mandatory model selection disclosure", () => {
       prompt: "implement a repository migration",
       cards: [exact, reference],
       automaticCards: [exact, reference],
-      host,
     });
     const disclosed = unit.candidates.find((candidate) => candidate.model_id === reference.id)!;
     assert.equal(unit.recommended_model_id, exact.id);
@@ -258,11 +239,6 @@ describe("mandatory model selection disclosure", () => {
           { routeId: "strong", profile: "high", aaSlug: "aa-strong" },
           { routeId: "cheap", profile: "low", aaSlug: "aa-cheap" },
         ],
-      });
-      writeHostCapabilitySnapshot(cwd, {
-        advertisedModels: ["provider-a/strong", "provider-b/cheap"],
-        advertisedProfiles: { "provider-a/strong": ["high"], "provider-b/cheap": ["low"] },
-        quotaCatalog: { reports: [] },
       });
       const proposedOut = capture();
       assert.equal(await run(["spawn", "implement a complex multi-file repository migration", "--json"], { cwd, env, stdout: proposedOut, stderr: capture() }), 0);
@@ -357,12 +333,6 @@ describe("mandatory model selection disclosure", () => {
       publishRouteSnapshot(standaloneCwd, {
         models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }],
       });
-      for (const cwd of [standaloneCwd, openspecCwd]) {
-        writeHostCapabilitySnapshot(cwd, {
-          advertisedModels: ["kimi/k3"],
-          quotaCatalog: { reports: [] },
-        });
-      }
 
       const standaloneOut = capture();
       assert.equal(await run([
@@ -476,42 +446,45 @@ describe("mandatory model selection disclosure", () => {
     });
   });
 
-  it("invalidates a pending proposal when the Codex host snapshot changes", async () => {
+  it("invalidates a pending proposal when the synced OpenCodex catalog changes", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-stale-"));
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: capture(), stderr: capture() });
       publishRouteSnapshot(cwd, { models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }] });
-      writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3"], quotaCatalog: { reports: [] } });
       const out = capture();
       assert.equal(await run(["spawn", "implement the repository migration", "--model", "kimi/k3", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
       const proposal = JSON.parse(out.text());
-      writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3"], quotaCatalog: { reports: [] } });
+      publishRouteSnapshot(cwd, { models: [
+        { id: "k3", provider: "kimi", namespaced: "kimi/k3" },
+        { id: "grok-4.6", provider: "xai", namespaced: "xai/grok-4.6" },
+      ] });
       const approval = capture();
       assert.equal(await run(["selection", "approve", proposal.id, "--confirm"], { cwd, env, stdout: approval, stderr: approval }), 1);
-      assert.match(approval.text(), /HOST_CAPABILITIES_STALE/);
+      assert.match(approval.text(), /ROUTE_SNAPSHOT_STALE/);
       assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
     });
   });
 
-  it("syncs the host route intersection and sanitized quota through the CLI", async () => {
+  it("syncs routes, profiles, and sanitized quota from OpenCodex in one on-demand refresh", async () => {
     await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-sync-"));
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-route-sync-"));
       const env = fakeEnv(home);
-      publishRouteSnapshot(cwd, { models: [{ id: "sol", provider: "openai", namespaced: "openai/sol", reasoningEfforts: ["low", "high"] }] });
       const out = capture();
-      const runner = (input) => ({
-        status: 0,
-        stdout: input.args[0] === "provider" ? JSON.stringify({ reports: [{ provider: "openai", quota: { weeklyPercent: 25 } }] }) : "",
-        stderr: "",
-        error: null,
-      });
+      const runner = (input) => {
+        const key = input.args.join(" ");
+        const stdout = key === "--version"
+          ? "opencodex 2.26.0\n"
+          : key === "models live --json"
+            ? JSON.stringify({ models: [{ id: "sol", provider: "openai", namespaced: "openai/sol", reasoningEfforts: ["low", "high"] }] })
+            : JSON.stringify({ reports: [{ provider: "openai", quota: { weeklyPercent: 25 } }] });
+        return { status: 0, stdout, stderr: "", error: null };
+      };
       const resolve = () => ({ source: "path" as const, command: "ocx", prefixArgs: [] });
-      assert.equal(await run(["host", "sync", "--model", "openai/sol", "--profile", "openai/sol=low,high", "--model", "kimi/k3"], { cwd, env, stdout: out, stderr: out, runner, resolve }), 0, out.text());
+      assert.equal(await run(["routes", "refresh"], { cwd, env, stdout: out, stderr: out, runner, resolve }), 0, out.text());
       const result = JSON.parse(out.text());
-      assert.deepEqual(result.effective_models, ["openai/sol"]);
-      assert.deepEqual(result.host_only_models, ["kimi/k3"]);
-      assert.deepEqual(result.effective_profiles, { "openai/sol": ["high", "low"] });
+      assert.deepEqual(result.snapshot.routes.map((route) => route.route_id), ["openai/sol"]);
+      assert.deepEqual(result.snapshot.routes[0].reasoning_efforts, ["high", "low"]);
       assert.equal(result.snapshot.provider_quotas[0].windows[0].remaining_percent, 75);
     });
   });
@@ -520,17 +493,19 @@ describe("mandatory model selection disclosure", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-codexbar-"));
       const env = fakeEnv(home);
-      publishRouteSnapshot(cwd, { models: [
-        { id: "strong", provider: "openai", namespaced: "openai/strong" },
-        { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
-      ] });
       const out = capture();
-      const runner = () => ({
-        status: 0,
-        stdout: JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] }),
-        stderr: "",
-        error: null,
-      });
+      const runner = (input) => {
+        const key = input.args.join(" ");
+        const stdout = key === "--version"
+          ? "opencodex 2.26.0\n"
+          : key === "models live --json"
+            ? JSON.stringify({ models: [
+              { id: "strong", provider: "openai", namespaced: "openai/strong" },
+              { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
+            ] })
+            : JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] });
+        return { status: 0, stdout, stderr: "", error: null };
+      };
       const resolve = () => ({ source: "path" as const, command: "ocx", prefixArgs: [] });
       const queried = [];
       const codexBarRunner = (input) => {
@@ -546,11 +521,7 @@ describe("mandatory model selection disclosure", () => {
           error: null,
         };
       };
-      assert.equal(await run([
-        "host", "sync",
-        "--model", "openai/strong",
-        "--model", "alibaba-token-plan/glm-5.2",
-      ], {
+      assert.equal(await run(["routes", "refresh"], {
         cwd, env, stdout: out, stderr: out, runner, resolve,
         codexBarResolve: () => "/Applications/CodexBarCLI",
         codexBarRunner,
@@ -588,27 +559,24 @@ describe("mandatory model selection disclosure", () => {
           usageRows: [{ percentLeft: 96.27, id: "primary", title: "Credits" }],
         }],
       })}\n`);
-      publishRouteSnapshot(cwd, { models: [
-        { id: "strong", provider: "openai", namespaced: "openai/strong" },
-        { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
-        { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
-      ] });
       const queried = [];
       const out = capture();
-      assert.equal(await run([
-        "host", "sync",
-        "--model", "openai/strong",
-        "--model", "alibaba-token-plan/glm-5.2",
-        "--model", "mimo/mimo-v2.5-pro",
-      ], {
+      assert.equal(await run(["routes", "refresh"], {
         cwd, env, stdout: out, stderr: out,
         resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
-        runner: () => ({
-          status: 0,
-          stdout: JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] }),
-          stderr: "",
-          error: null,
-        }),
+        runner: (input) => {
+          const key = input.args.join(" ");
+          const stdout = key === "--version"
+            ? "opencodex 2.26.0\n"
+            : key === "models live --json"
+              ? JSON.stringify({ models: [
+                { id: "strong", provider: "openai", namespaced: "openai/strong" },
+                { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
+                { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
+              ] })
+              : JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] });
+          return { status: 0, stdout, stderr: "", error: null };
+        },
         codexBarResolve: () => "/Applications/CodexBarCLI",
         codexBarRunner: (input) => {
           queried.push(input.args[input.args.indexOf("--provider") + 1]);
@@ -635,15 +603,20 @@ describe("mandatory model selection disclosure", () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-no-codexbar-"));
       const env = fakeEnv(home);
-      publishRouteSnapshot(cwd, { models: [
-        { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
-      ] });
       let called = false;
       const out = capture();
-      assert.equal(await run(["host", "sync", "--model", "alibaba-token-plan/glm-5.2"], {
+      assert.equal(await run(["routes", "refresh"], {
         cwd, env, stdout: out, stderr: out,
         resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
-        runner: () => ({ status: 0, stdout: JSON.stringify({ reports: [] }), stderr: "", error: null }),
+        runner: (input) => {
+          const key = input.args.join(" ");
+          const stdout = key === "--version"
+            ? "opencodex 2.26.0\n"
+            : key === "models live --json"
+              ? JSON.stringify({ models: [{ id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" }] })
+              : JSON.stringify({ reports: [] });
+          return { status: 0, stdout, stderr: "", error: null };
+        },
         codexBarResolve: () => null,
         codexBarRunner: () => {
           called = true;

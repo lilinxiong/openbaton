@@ -1,6 +1,6 @@
 # CodexBar quota fallback
 
-Baton treats OpenCodex as the primary provider quota source. During `baton host sync`, local CodexBar data is considered only for a provider whose OpenCodex report is absent or contains no usable percentage window. The fallback is informational: it is meant to match what the CodexBar GUI currently shows, not to re-probe the provider.
+Baton treats OpenCodex as the primary provider quota source. During the same on-demand `baton routes refresh` that captures routes and profiles, local CodexBar data is considered only for a provider whose OpenCodex report is absent or contains no usable percentage window. The fallback is informational: it is meant to match what the CodexBar GUI currently shows, not to re-probe the provider.
 
 ## Precedence
 

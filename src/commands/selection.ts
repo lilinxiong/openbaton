@@ -1,7 +1,7 @@
 import path from "node:path";
 import { loadConfig } from "../lib/config.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
-import { readHostCapabilitySnapshot } from "../lib/host-capabilities.js";
+import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
 import { planStandaloneSpawn, writeSpawn } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
@@ -162,7 +162,7 @@ function approvalFor(
     unit_key: key,
     approved_at: context.confirmed_at,
     confirmed_by: "user",
-    host_snapshot_id: proposal.host_snapshot_id,
+    catalog_fingerprint: proposal.catalog_fingerprint,
     recommended_model_id: recommended,
     selected_model_id: selected,
     changed_by_user: selected !== recommended,
@@ -253,9 +253,9 @@ function validateProposal(cwd: string, proposal: SelectionProposal): void {
   if (proposal.model_policy_id !== SUBAGENT_MODEL_POLICY_ID) {
     throw new Error("MODEL_POLICY_CHANGED: this proposal predates the current subagent model-family policy; create a new proposal");
   }
-  const host = readHostCapabilitySnapshot(cwd);
-  if (!host || host.id !== proposal.host_snapshot_id || host.catalog_fingerprint !== proposal.catalog_fingerprint) {
-    throw new Error("HOST_CAPABILITIES_STALE: sync the current Codex model surface and create a new proposal");
+  const snapshot = readRouteSnapshot(cwd);
+  if (!snapshot || snapshot.fingerprint !== proposal.catalog_fingerprint) {
+    throw new Error("ROUTE_SNAPSHOT_STALE: refresh Baton from OpenCodex and create a new proposal");
   }
   if (currentSourceFingerprint(proposal) !== proposal.source_fingerprint) {
     throw new Error("SELECTION_SOURCE_CHANGED: task input changed after disclosure; create a new proposal");
@@ -517,7 +517,7 @@ function printCandidateTable(stdout: WritableLike, proposal: SelectionProposal, 
         metric(aa.output_tokens_per_second),
         metric(aa.time_to_first_answer_seconds),
         candidate.strengths,
-        `${candidate.host.code}: ${candidate.host.reason}`,
+        `${candidate.selection_code}: ${candidate.selection_reason}`,
       ]));
     }
   }
@@ -567,7 +567,7 @@ function printQuotaTable(stdout: WritableLike, proposal: SelectionProposal): voi
 
 export function printSelectionProposal(stdout: WritableLike, proposal: SelectionProposal): void {
   stdout.write(`model selection proposal ${proposal.id} [confirmation required]\n`);
-  stdout.write(`  host snapshot: ${proposal.host_snapshot_id}\n`);
+  stdout.write(`  OpenCodex catalog: ${proposal.catalog_fingerprint}\n`);
   stdout.write(`  model policy: ${proposal.model_policy_id || "legacy/stale"}\n`);
   for (const unit of proposal.units) {
     stdout.write(`\n${unit.key}: ${unit.description}\n`);
@@ -595,12 +595,6 @@ export function printSelectionProposal(stdout: WritableLike, proposal: Selection
       const routes = item.routes.length ? item.routes.join(", ") : "no currently catalogued route";
       stdout.write(tableRow([item.family, routes, item.code, item.card_count]));
     }
-  }
-  if (proposal.unavailable_by_provider.length) {
-    stdout.write("\nvisible in OpenCodex but unavailable to this Codex host:\n\n");
-    stdout.write(tableRow(["Provider", "Routes", "Code", "Cards/profiles"]));
-    stdout.write(tableRow(["---", "---", "---", "---:"]));
-    for (const item of proposal.unavailable_by_provider) stdout.write(tableRow([item.provider, item.routes.join(", "), item.code, item.card_count]));
   }
   stdout.write(`\nNo ticket exists yet. Approve unchanged: baton selection approve ${proposal.id} --confirm\n`);
   stdout.write(`Change a standalone choice with --model ID, or an OpenSpec choice with repeated --route TASK=ID.\n`);

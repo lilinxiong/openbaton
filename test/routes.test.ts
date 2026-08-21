@@ -47,16 +47,20 @@ describe("OpenCodex Route Snapshot", () => {
       cwd: root,
       stdout,
       resolve: () => ({ source: "path", command: "/fake/ocx", prefixArgs: [] }),
-      runner: ({ args }) => ({
-        status: 0,
-        stdout: args[0] === "--version" ? "opencodex 2.26.0\n" : JSON.stringify({ liveModels: ["kimi/k3-256k"] }),
-        stderr: "",
-        error: null,
-      }),
+      runner: ({ args }) => {
+        const key = args.join(" ");
+        const stdout = key === "--version"
+          ? "opencodex 2.26.0\n"
+          : key === "models live --json"
+            ? JSON.stringify({ liveModels: ["kimi/k3-256k"] })
+            : JSON.stringify({ reports: [] });
+        return { status: 0, stdout, stderr: "", error: null };
+      },
+      codexBarResolve: () => null,
     });
     assert.equal(code, 0);
     const refreshed = JSON.parse(stdout.text()).snapshot;
-    assert.equal(refreshed.schema_version, 2);
+    assert.equal(refreshed.schema_version, 3);
     assert.equal(refreshed.engine_version, "opencodex 2.26.0");
     assert.equal(refreshed.routes[0].id, "kimi/k3-256k");
     const candidates = buildRouteCandidates(root, path.join(root, "missing.sqlite3"));
@@ -226,8 +230,8 @@ describe("OpenCodex Route Snapshot", () => {
     const root = cwd();
     const file = routeSnapshotPath(root);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ schema_version: 1, generation: 1, routes: [{ id: "gpt-5.6-sol", provider: "openai" }] }));
-    assert.equal(routeSnapshotSchemaVersion(root), 1);
+    fs.writeFileSync(file, JSON.stringify({ schema_version: 2, generation: 1, routes: [{ id: "gpt-5.6-sol", provider: "openai" }] }));
+    assert.equal(routeSnapshotSchemaVersion(root), 2);
     assert.equal(readRouteSnapshot(root), null);
   });
 
@@ -243,17 +247,21 @@ describe("OpenCodex Route Snapshot", () => {
       resolve: () => ({ source: "path", command: "/fake/ocx", prefixArgs: [] }),
       runner: ({ args }) => {
         calls.push(args);
+        const key = args.join(" ");
         return {
           status: 0,
-          stdout: args[0] === "--version"
+          stdout: key === "--version"
             ? "opencodex 2.26.0\n"
-            : JSON.stringify([{ provider: "openai", id: "gpt-5.6-sol", namespaced: "gpt-5.6-sol", native: true }]),
+            : key === "models live --json"
+              ? JSON.stringify([{ provider: "openai", id: "gpt-5.6-sol", namespaced: "gpt-5.6-sol", native: true }])
+              : JSON.stringify({ reports: [] }),
           stderr: "",
           error: null,
         };
       },
+      codexBarResolve: () => null,
     });
-    assert.deepEqual(calls, [["--version"], ["--version"], ["models", "live", "--json"]]);
+    assert.deepEqual(calls, [["--version"], ["--version"], ["models", "live", "--json"], ["provider", "quota", "--json"]]);
     assert.equal(readRouteSnapshot(root)?.engine_version, "opencodex 2.26.0");
     assert.equal(readRouteSnapshot(root)?.routes[0].route_id, "gpt-5.6-sol");
   });

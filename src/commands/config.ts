@@ -13,6 +13,7 @@ import {
   type OpsRouteChoice,
 } from "../lib/ops-routes.js";
 import { resolveOcx, type OcxResolver, type OcxRunner } from "../lib/opencodex.js";
+import type { CodexBarResolver, CodexBarRunner } from "../lib/codexbar.js";
 import type { WritableLike } from "../types.js";
 
 export interface ConfigCommandOptions {
@@ -22,6 +23,8 @@ export interface ConfigCommandOptions {
   env?: NodeJS.ProcessEnv;
   runner?: OcxRunner;
   resolve?: OcxResolver;
+  codexBarRunner?: CodexBarRunner;
+  codexBarResolve?: CodexBarResolver;
   readLine?: () => Promise<string>;
 }
 
@@ -93,7 +96,7 @@ async function defaultReadLine(stdin: NodeJS.ReadableStream, stdout: WritableLik
 function requireChoice(profile: OpsProfileId, route: string, choices: OpsRouteChoice[]): string {
   if (!route) return "";
   if (!findOpsRouteChoice(choices, route)) {
-    throw new Error(`OPS_ROUTE_UNAVAILABLE: ${profile} route ${route} is not in the current filtered host list`);
+    throw new Error(`OPS_ROUTE_UNAVAILABLE: ${profile} route ${route} is not in the filtered OpenCodex snapshot`);
   }
   return route;
 }
@@ -105,12 +108,22 @@ export async function runConfig(args: string[], {
   env = process.env,
   runner,
   resolve,
+  codexBarRunner,
+  codexBarResolve,
   readLine,
 }: ConfigCommandOptions): Promise<number> {
-  refreshRouteSnapshot({ cwd, stdout: { write() {} }, env, runner, resolve: resolve || resolveOcx });
+  refreshRouteSnapshot({
+    cwd,
+    stdout: { write() {} },
+    env,
+    runner,
+    resolve: resolve || resolveOcx,
+    codexBarRunner,
+    codexBarResolve,
+  });
   const available = cards(cwd);
-  const runnerChoices = listOpsRouteChoices(cwd, "runner", available, { scope: "catalog" });
-  const longctxChoices = listOpsRouteChoices(cwd, "longctx", available, { scope: "catalog" });
+  const runnerChoices = listOpsRouteChoices(cwd, "runner", available);
+  const longctxChoices = listOpsRouteChoices(cwd, "longctx", available);
   stdout.write("models: OpenCodex live snapshot\n\n");
   printChoices(stdout, "runner", runnerChoices);
   stdout.write("\n");

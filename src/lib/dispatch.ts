@@ -11,7 +11,6 @@ import { auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
-import { readHostCapabilitySnapshot } from "./host-capabilities.js";
 import { readRouteSnapshot } from "./routes.js";
 import { subagentModelPolicy } from "./model-policy.js";
 
@@ -258,17 +257,17 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
     code = "MODEL_SELECTION_NOT_CONFIRMED";
     message = `ticket ${ticket.id} has no valid user-confirmed or ops-config model selection`;
   } else {
-    const host = readHostCapabilitySnapshot(cwd);
     const catalog = readRouteSnapshot(cwd);
-    if (!host || host.id !== ticket.selection.host_snapshot_id || !catalog || catalog.fingerprint !== host.catalog_fingerprint) {
-      code = "HOST_CAPABILITIES_STALE";
-      message = `ticket ${ticket.id} was not approved against the current Codex host snapshot`;
-    } else if (!host.advertised_models.includes(ticket.route_id)) {
-      code = "HOST_ROUTE_UNAVAILABLE";
-      message = `ticket ${ticket.id} route ${ticket.route_id} is absent from the current Codex host surface`;
-    } else if (ticket.reasoning_effort && !(host.advertised_profiles[ticket.route_id] || []).includes(ticket.reasoning_effort)) {
-      code = "HOST_PROFILE_UNAVAILABLE";
-      message = `ticket ${ticket.id} profile ${ticket.reasoning_effort} is absent from the current Codex host surface`;
+    const route = catalog?.routes.find((item) => !item.disabled && item.route_id === ticket.route_id);
+    if (!catalog) {
+      code = "ROUTE_SNAPSHOT_REQUIRED";
+      message = `ticket ${ticket.id} requires a Baton route snapshot synced from OpenCodex`;
+    } else if (!route) {
+      code = "OPEN_CODEX_ROUTE_UNAVAILABLE";
+      message = `ticket ${ticket.id} route ${ticket.route_id} is absent or disabled in the synced OpenCodex snapshot`;
+    } else if (ticket.reasoning_effort && !route.reasoning_efforts.includes(ticket.reasoning_effort)) {
+      code = "OPEN_CODEX_PROFILE_UNAVAILABLE";
+      message = `ticket ${ticket.id} profile ${ticket.reasoning_effort} is absent from the synced OpenCodex snapshot`;
     }
   }
   if (!code && !ticket.receipt_id) {

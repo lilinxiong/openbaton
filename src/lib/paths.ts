@@ -21,7 +21,6 @@ export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
 export const ROUTE_SNAPSHOT_NAME = "routes.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const DISPATCH_STATE_NAME = "dispatch.json";
-export const HOST_CAPABILITIES_NAME = "host-capabilities.json";
 
 /**
  * User home for host + director files.
@@ -106,11 +105,6 @@ export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
 /** Dispatcher runtime state (remembered capacity) for one workspace. */
 export function dispatchStatePath(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(runsDir(cwd, env), DISPATCH_STATE_NAME);
-}
-
-/** Current Codex-session route surface and sanitized provider quota snapshot. */
-export function hostCapabilitiesPath(cwd: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(runsDir(cwd, env), HOST_CAPABILITIES_NAME);
 }
 
 export function dispatchLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {

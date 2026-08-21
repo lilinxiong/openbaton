@@ -28,19 +28,19 @@ Baton turns each unit into a routed, auditable ticket. Workers can analyze, impl
 The user talks to Codex as usual. The director runs Baton; the user does not have to type these commands.
 
 1. **Split the work.** An ordinary request is refined into bounded units with an objective, deliverable, and done condition. Tiny rename or typo work may stay on the director. Implementation, exploration, and similar work always leaves.
-2. **Sync this Codex session.** Before proposing models, Codex publishes the complete current calling-host model and reasoning-effort surface with `baton host sync`. An abbreviated `spawn_agent` override list is not that surface.
+2. **Sync Baton on demand.** OpenCodex owns runtime/provider synchronization. Baton refreshes one persisted route/profile/quota snapshot from OpenCodex only when it is missing or stale, or when the user explicitly requests it. There is no per-session host sync.
 3. **Propose once, do not ticket.** One ordinary request becomes one request-level proposal containing all of its bounded units. `baton spawn --unit ...` or `baton apply` writes that proposal only.
 4. **Disclose once and confirm once.** Provider is one global multi-select. Below it, the director shows every candidate and all task assignments together. Multiple workspace proposals from the same front request are rendered as one bundle with one Submit. Until that Submit, ticket count and subagent count stay at zero.
-5. **Mint tickets.** `baton selection approve ... --confirm` creates queued tickets and immutable Delegation Receipts. A bundled Submit binds the same confirmation id and global Provider choice into every proposal. A changed host snapshot or source task invalidates the proposal.
+5. **Mint tickets.** `baton selection approve ... --confirm` creates queued tickets and immutable Delegation Receipts. A bundled Submit binds the same confirmation id and global Provider choice into every proposal. A changed OpenCodex catalog snapshot or source task invalidates the proposal.
 6. **Dispatch in-process.** Codex reserves with `baton dispatch next`, calls host-native `spawn_agent`, binds the returned agent id, then writes exactly one terminal result. `close_agent` plus `dispatch release` frees the physical slot; FIFO refill follows.
 7. **Keep the front conversation clean.** Concrete workers return one short conclusion. Deliberative workers may checkpoint phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay in the child.
 
-Mechanical ops can skip the selector when the user-global `~/.baton/config.toml` names a currently callable route. Empty means the director runs that class itself.
+Mechanical ops can skip the selector when the user-global `~/.baton/config.toml` names an executable route in the synced OpenCodex snapshot. Empty means the director runs that class itself.
 
 ## Rules that stay true
 
 - **Codex only.** The skill installs into `~/.codex`. Baton state lives under `~/.baton`. There is no other coding-CLI host, no print-mode shell-out, and no Baton login.
-- **Visible is not spawnable.** A route must be executable in OpenCodex **and** advertised by this Codex session. Catalog-only routes stay visible as `HOST_ROUTE_UNAVAILABLE`.
+- **OpenCodex owns route availability.** Baton selects only exact, non-disabled routes/profiles from its synced OpenCodex snapshot. It does not prefilter them through a session model list. If host-native spawn still rejects a selected route, the director reports that execution error and never substitutes another route.
 - **No silent substitution.** No parent-model inherit, no route/provider fallback, no local aliases or overrides. Explicit selection uses an exact OpenCodex route/profile id.
 - **Catalog and eligibility are separate.** OpenCodex discovery stays fully inspectable. Built-in policy forbids every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile from candidates, confirmation, tickets, and dispatch. Proposals disclose those exclusions. Other session or Goal exclusions remain temporary.
 - **Unranked is not invented.** Missing-profile and serving-variant (`-fast` / `-highspeed`) base scores are `reference_only` and cannot drive automatic recommendation. A user may pick a disclosed callable `unranked` route. Forbidden families cannot be overridden.
@@ -66,9 +66,8 @@ Baton has no login, account, token, or credential command. Do not paste a base U
 `spawn` / `apply` disclose, for every delegated unit:
 
 - preferred exact route/profile when scoring has a unique positive winner, otherwise an explicit manual-choice state
-- every policy-eligible currently callable candidate, with strengths, task score, raw/available Artificial Analysis data, reference-only provenance, remaining quota or an explicit unknown reason, and Codex callability
+- every policy-eligible executable OpenCodex candidate, with strengths, task score, raw/available Artificial Analysis data, reference-only provenance, remaining quota or an explicit unknown reason, and snapshot callability
 - the built-in `gpt-5.5` / `gpt-5.6-sol` / `gpt-5.6-terra` family exclusions
-- OpenCodex routes this Codex session cannot spawn
 
 Candidates are grouped by quota pool, not shown as one flat list. Most providers are one pool. Cursor is two: `cursor-auto` (Grok and Composer series, monthly/Auto allowance) and `cursor-api` (every other Cursor route, reported API usage). Available pools sort by remaining quota, unknown pools follow, and exhausted pools are disabled, collapsed, and last. ASR, TTS, voice-clone, and voice-design routes are disclosed as `TASK_CAPABILITY_MISMATCH` for text-reasoning work.
 
@@ -85,7 +84,7 @@ The selector is inline in the current Codex conversation and is presented in Chi
 | `runner` | terminating test / build / lint / typecheck | the director runs it |
 | `longctx` | search / digest / git-summarize, and a commit message from already-staged files; needs about 1M context | the director runs it |
 
-`baton config` refreshes the live model snapshot directly through OpenCodex, lists policy-eligible executable routes, and interactively writes the global choices. It does not depend on a Codex host snapshot. Dispatch separately validates the configured route against the current Codex session and fails with `OPS_ROUTE_UNAVAILABLE` when it is not callable. It never inherits the parent model. Wait for the worker conclusion, including command failure. Workers never `git commit`.
+`baton config` refreshes the route/quota snapshot directly through OpenCodex, lists policy-eligible executable routes, and interactively writes the global choices. It does not depend on a Codex session snapshot. Dispatch validates that the configured route still exists in the synced OpenCodex snapshot and fails with `OPS_ROUTE_UNAVAILABLE` otherwise. It never inherits the parent model. Wait for the worker conclusion, including command failure. Workers never `git commit`.
 
 ## Capability cache
 
@@ -118,8 +117,6 @@ baton update
 baton config [--runner ROUTE|-] [--longctx ROUTE|-]
 
 baton routes refresh|status|candidates
-baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]
-baton host status
 baton cards [--ranked|--unranked] [--provider ID] [--json]
 baton match "fix the flaky auth tests"
 baton capabilities refresh --provider aa --key-file PATH

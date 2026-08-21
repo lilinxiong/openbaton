@@ -95,7 +95,7 @@ describe("built-in Baton capability samples", () => {
       "aa_data",
       "remaining_percent",
       "codexbar:",
-      "HOST_ROUTE_UNAVAILABLE",
+      "catalog_fingerprint",
       "SUBAGENT_MODEL_FAMILY_FORBIDDEN",
       "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3",
       "selectedProviders",

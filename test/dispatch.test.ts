@@ -17,10 +17,9 @@ import {
   reserveNext,
 } from "../src/lib/dispatch.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
-import { dispatchStatePath, hostCapabilitiesPath, spawnsDir } from "../src/lib/paths.js";
+import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
 import { readRouteHealth } from "../src/lib/route-health.js";
-import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { readHostCapabilitySnapshot, writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
+import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { isolatedHome } from "./home.js";
 
 isolatedHome("baton-dispatch-home-");
@@ -34,7 +33,6 @@ function at(offsetMs) {
 function makeProject() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-"));
   publishRouteSnapshot(cwd, { models: [{ id: "codex/default", namespaced: "codex/default", provider: "codex" }] });
-  writeHostCapabilitySnapshot(cwd, { advertisedModels: ["codex/default"], quotaCatalog: { reports: [] }, now: at(0) });
   return cwd;
 }
 
@@ -69,13 +67,12 @@ function makeTicket(id, overrides = {}) {
 
 function writeTicket(cwd, ticket) {
   if (ticket.selection === undefined) {
-    const host = readHostCapabilitySnapshot(cwd);
     ticket.selection = {
       proposal_id: "sel-test",
       approval_id: `approval-${ticket.id}`,
       approved_at: ticket.created_at,
       confirmed_by: "user",
-      host_snapshot_id: host.id,
+      catalog_fingerprint: readRouteSnapshot(cwd).fingerprint,
       recommended_model_id: ticket.model_id,
       selected_model_id: ticket.model_id,
       changed_by_user: false,
@@ -234,29 +231,23 @@ describe("reserveNext", () => {
     assert.equal(readTicket(cwd, "t-unconfirmed").status, "errored");
   });
 
-  it("fails closed when an approved reasoning profile is absent from the current host surface", () => {
+  it("fails closed when an approved reasoning profile disappears from the synced OpenCodex snapshot", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-profile-"));
     publishRouteSnapshot(cwd, { models: [{
       id: "codex/default", namespaced: "codex/default", provider: "codex", reasoningEfforts: ["high"],
     }] });
-    writeHostCapabilitySnapshot(cwd, {
-      advertisedModels: ["codex/default"],
-      advertisedProfiles: { "codex/default": ["high"] },
-      quotaCatalog: { reports: [] },
-      now: at(0),
-    });
     writeTicket(cwd, makeTicket("t-profile", {
       model_id: "codex/default@high",
       reasoning_effort: "high",
     }));
 
-    const host = readHostCapabilitySnapshot(cwd);
-    host.advertised_profiles["codex/default"] = [];
-    fs.writeFileSync(hostCapabilitiesPath(cwd), `${JSON.stringify(host, null, 2)}\n`, "utf8");
+    publishRouteSnapshot(cwd, { models: [{
+      id: "codex/default", namespaced: "codex/default", provider: "codex", reasoningEfforts: [],
+    }] });
 
     const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     assert.deepEqual(result.reserved, []);
-    assert.equal(result.blocked[0].code, "HOST_PROFILE_UNAVAILABLE");
+    assert.equal(result.blocked[0].code, "OPEN_CODEX_PROFILE_UNAVAILABLE");
     assert.equal(readTicket(cwd, "t-profile").route_id, "codex/default");
   });
 
@@ -264,7 +255,6 @@ describe("reserveNext", () => {
     for (const [index, route] of ["gpt-5.5-extra", "gpt-5.6-sol", "cursor/gpt-5.6-terra"].entries()) {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-policy-"));
       publishRouteSnapshot(cwd, { models: [{ id: route.split("/").at(-1), namespaced: route, provider: route.includes("/") ? "cursor" : "openai" }] });
-      writeHostCapabilitySnapshot(cwd, { advertisedModels: [route], quotaCatalog: { reports: [] }, now: at(0) });
       writeTicket(cwd, makeTicket(`t-forbidden-${index}`, { model_id: `${route}@high`, route_id: route, reasoning_effort: "high" }));
       const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
       assert.deepEqual(result.reserved, []);

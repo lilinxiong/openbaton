@@ -9,7 +9,7 @@ import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { artificialAnalysisDbPath } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { writeHostCapabilitySnapshot } from "../src/lib/host-capabilities.js";
+import { normalizeProviderQuotas } from "../src/lib/provider-quotas.js";
 import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
 import { withHome, fakeEnv } from "./home.js";
 
@@ -67,7 +67,12 @@ describe("cli run()", () => {
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
       assert.ok(!fs.existsSync(path.join(cwd, ".grok")));
 
-      publishRouteSnapshot(cwd, { models: [{ id: "kimi-k2.7-code-highspeed", provider: "kimi" }] });
+      publishRouteSnapshot(cwd, { models: [{ id: "kimi-k2.7-code-highspeed", provider: "kimi" }] }, new Date(), {
+        providerQuotas: normalizeProviderQuotas({ reports: [{
+          provider: "kimi", label: "Kimi", source: "kimi:usages",
+          quota: { fiveHourPercent: 5, weeklyPercent: 9, updatedAt: Date.now() },
+        }] }),
+      });
       writeCapabilitySnapshot({
         dbPath: artificialAnalysisDbPath(cwd),
         metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
@@ -82,11 +87,6 @@ describe("cli run()", () => {
         }],
         mappings: [{ routeId: "kimi/kimi-k2.7-code-highspeed", aaSlug: "kimi-k2-7-code" }],
       });
-      writeHostCapabilitySnapshot(cwd, {
-        advertisedModels: ["kimi/kimi-k2.7-code-highspeed"],
-        quotaCatalog: { reports: [{ provider: "kimi", label: "Kimi", source: "kimi:usages", quota: { fiveHourPercent: 5, weeklyPercent: 9, updatedAt: Date.now() } }] },
-      });
-
       const hitOut = capture();
       const hit = await run(["match", "code completion routine feature development"], { cwd, stdout: hitOut, stderr: capture(), env });
       assert.equal(hit, 0);
@@ -144,7 +144,6 @@ describe("cli run()", () => {
 
       assert.equal(await run(["init"], { cwd, stdout: capture(), stderr: capture(), env }), 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      writeHostCapabilitySnapshot(cwd, { advertisedModels: ["kimi/k3[1m]"], quotaCatalog: { reports: [] } });
       const out = capture();
       const code = await run([
         "spawn", "implement the multi file unit", "--model", "kimi/k3[1m]",
@@ -173,6 +172,10 @@ describe("cli run()", () => {
           id: "grok-4.6", provider: "xai", namespaced: "xai/grok-4.6", disabled: false,
           reasoningEfforts: ["high"],
         }],
+      }, new Date(), {
+        providerQuotas: normalizeProviderQuotas({ reports: [{
+          provider: "xai", quota: { weeklyPercent: 4, weeklyResetAt: Date.now() + 60_000 },
+        }] }),
       });
       writeCapabilitySnapshot({
         dbPath: artificialAnalysisDbPath(cwd),
@@ -188,12 +191,6 @@ describe("cli run()", () => {
         }],
         mappings: [{ routeId: "xai/grok-4.6", profile: "high", aaSlug: "grok-4-6" }],
       });
-      writeHostCapabilitySnapshot(cwd, {
-        advertisedModels: ["xai/grok-4.6"],
-        advertisedProfiles: { "xai/grok-4.6": ["high"] },
-        quotaCatalog: { reports: [{ provider: "xai", quota: { weeklyPercent: 4, weeklyResetAt: Date.now() + 60_000 } }] },
-      });
-
       const out = capture();
       const err = capture();
       const code = await run(["apply", "demo", "--route", "1.1=xai/grok-4.6@high", "--json"], { cwd, stdout: out, stderr: err, env });

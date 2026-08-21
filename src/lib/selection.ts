@@ -2,15 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { scoreCard } from "./cards.js";
-import {
-  hostRouteAvailability,
-  quotaForProvider,
-  readHostCapabilitySnapshot,
-  type HostCapabilitySnapshot,
-  type HostRouteAvailability,
-  type ProviderQuotaDisclosure,
-} from "./host-capabilities.js";
+import { quotaForProvider, type ProviderQuotaDisclosure } from "./provider-quotas.js";
 import { selectionsDir } from "./paths.js";
+import { readRouteSnapshot, type RouteSnapshot } from "./routes.js";
 import {
   SUBAGENT_MODEL_POLICY_ID,
   assertSubagentModelAllowed,
@@ -35,7 +29,7 @@ export interface SelectionCandidate {
   reasoning_effort: string | null;
   provider: string | null;
   selectable: boolean;
-  selection_code: HostRouteAvailability["code"] | "QUOTA_POOL_EXHAUSTED";
+  selection_code: "AVAILABLE" | "QUOTA_POOL_EXHAUSTED";
   selection_reason: string;
   automatic_eligible: boolean;
   ranked: boolean;
@@ -61,7 +55,6 @@ export interface SelectionCandidate {
   quota_pool_label: string;
   quota_pool_status: QuotaPoolStatus;
   quota_pool_remaining_percent: number | null;
-  host: HostRouteAvailability;
 }
 
 export interface SelectionUnit {
@@ -81,13 +74,12 @@ export interface SelectionUnit {
 }
 
 export interface SelectionProposal {
-  schema_version: 1;
+  schema_version: 2;
   id: string;
   status: SelectionProposalStatus;
   source: "standalone" | "openspec";
   created_at: string;
   approved_at: string | null;
-  host_snapshot_id: string;
   catalog_fingerprint: string;
   source_fingerprint: string;
   model_policy_id: string;
@@ -95,7 +87,6 @@ export interface SelectionProposal {
   quota_pools: SelectionQuotaPool[];
   task_exclusions: TaskCapabilityExclusion[];
   policy_exclusions: SubagentModelPolicyExclusion[];
-  unavailable_by_provider: Array<{ provider: string; card_count: number; routes: string[]; code: string }>;
   payload: UnknownRecord;
   confirmation?: {
     confirmation_id: string;
@@ -130,22 +121,23 @@ function evidenceScores(capability?: CardCapabilityEvidence) {
 }
 
 function candidateFor(
-  cwd: string,
   prompt: string,
   card: ModelCard,
-  host: HostCapabilitySnapshot,
+  snapshot: RouteSnapshot,
   automaticIds: Set<string>,
 ): SelectionCandidate | null {
   if (!card.route_id || card.executable === false) return null;
-  const availability = hostRouteAvailability(cwd, card, host);
-  const quota = quotaForProvider(host, card.provider);
+  const route = snapshot.routes.find((item) => !item.disabled && item.route_id === card.route_id);
+  if (!route) return null;
+  if (card.reasoning_effort && !route.reasoning_efforts.includes(card.reasoning_effort)) return null;
+  const quota = quotaForProvider(snapshot, card.provider);
   const quotaPool = quotaPoolForCandidate({
     model_id: card.id,
     route_id: card.route_id,
     provider: card.provider || null,
     quota,
   });
-  const selectable = availability.available && quotaPool.selectable;
+  const selectable = quotaPool.selectable;
   const ranked = card.capability?.ranked === true;
   const referenceOnly = card.capability?.reference_only === true;
   return {
@@ -154,8 +146,10 @@ function candidateFor(
     reasoning_effort: card.reasoning_effort || null,
     provider: card.provider || null,
     selectable,
-    selection_code: !availability.available ? availability.code : quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
-    selection_reason: !availability.available ? availability.reason : quotaPool.status === "exhausted" ? `${quotaPool.label} quota is exhausted` : "route is callable and its quota pool is not exhausted",
+    selection_code: quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
+    selection_reason: quotaPool.status === "exhausted"
+      ? `${quotaPool.label} quota is exhausted`
+      : "route/profile is executable in the synced OpenCodex snapshot",
     automatic_eligible: selectable && ranked && !referenceOnly && automaticIds.has(card.id),
     ranked,
     reference_only: referenceOnly,
@@ -173,7 +167,6 @@ function candidateFor(
     quota_pool_label: quotaPool.label,
     quota_pool_status: quotaPool.status,
     quota_pool_remaining_percent: quotaPool.remaining_percent,
-    host: availability,
   };
 }
 
@@ -184,7 +177,6 @@ export function buildSelectionUnit({
   prompt,
   cards,
   automaticCards,
-  host,
   requestedModelId = null,
   directorLocal = false,
   metadata = {},
@@ -195,7 +187,6 @@ export function buildSelectionUnit({
   prompt: string;
   cards: ModelCard[];
   automaticCards?: ModelCard[];
-  host: HostCapabilitySnapshot;
   requestedModelId?: string | null;
   directorLocal?: boolean;
   metadata?: UnknownRecord;
@@ -208,6 +199,8 @@ export function buildSelectionUnit({
     };
   }
   const policyExclusions = summarizeSubagentModelPolicyExclusions(cards);
+  const snapshot = readRouteSnapshot(cwd);
+  if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton routes refresh before model selection");
   const policyEligibleCards = cards.filter(isSubagentModelAllowed);
   const taskExclusions = policyEligibleCards
     .map(taskCapabilityExclusion)
@@ -216,7 +209,7 @@ export function buildSelectionUnit({
   const eligibleCards = policyEligibleCards.filter((card) => !excludedIds.has(card.id));
   const automaticIds = new Set((automaticCards || cards).filter(isSubagentModelAllowed).map((card) => card.id));
   const candidates = eligibleCards
-    .map((card) => candidateFor(cwd, prompt, card, host, automaticIds))
+    .map((card) => candidateFor(prompt, card, snapshot, automaticIds))
     .filter((item): item is SelectionCandidate => item !== null)
     .sort((a, b) => Number(b.selectable) - Number(a.selectable)
       || Number(b.automatic_eligible) - Number(a.automatic_eligible)
@@ -285,7 +278,7 @@ function proposalQuotaPools(units: SelectionUnit[]): SelectionQuotaPool[] {
   const candidates = new Map<string, SelectionCandidate>();
   for (const unit of units) {
     for (const candidate of unit.candidates) {
-      if (candidate.host.available && !candidates.has(candidate.model_id)) candidates.set(candidate.model_id, candidate);
+      if (!candidates.has(candidate.model_id)) candidates.set(candidate.model_id, candidate);
     }
   }
   return buildSelectionQuotaPools([...candidates.values()]);
@@ -302,27 +295,6 @@ function nextProposalId(cwd: string): string {
   return `sel-${String(max + 1).padStart(4, "0")}`;
 }
 
-function unavailableSummary(units: SelectionUnit[]): SelectionProposal["unavailable_by_provider"] {
-  const groups = new Map<string, { cards: Set<string>; routes: Set<string>; codes: Set<string> }>();
-  for (const unit of units) {
-    for (const candidate of unit.candidates) {
-      if (candidate.host.available || candidate.host.code === "NO_EXECUTABLE_ROUTE") continue;
-      const provider = candidate.provider || "unknown";
-      const group = groups.get(provider) || { cards: new Set(), routes: new Set(), codes: new Set() };
-      group.cards.add(candidate.model_id);
-      group.routes.add(candidate.route_id);
-      group.codes.add(candidate.host.code);
-      groups.set(provider, group);
-    }
-  }
-  return [...groups.entries()].map(([provider, group]) => ({
-    provider,
-    card_count: group.cards.size,
-    routes: [...group.routes].sort(),
-    code: [...group.codes].sort().join(","),
-  })).sort((a, b) => a.provider.localeCompare(b.provider));
-}
-
 export function createSelectionProposal(cwd: string, {
   source,
   units,
@@ -336,25 +308,23 @@ export function createSelectionProposal(cwd: string, {
   payload?: UnknownRecord;
   now?: Date | string | number;
 }): SelectionProposal {
-  const host = readHostCapabilitySnapshot(cwd);
-  if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
+  const snapshot = readRouteSnapshot(cwd);
+  if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton routes refresh before model selection");
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const proposal: SelectionProposal = {
-    schema_version: 1,
+    schema_version: 2,
     id: nextProposalId(cwd),
     status: "pending_confirmation",
     source,
     created_at: createdAt,
     approved_at: null,
-    host_snapshot_id: host.id,
-    catalog_fingerprint: host.catalog_fingerprint,
+    catalog_fingerprint: snapshot.fingerprint,
     source_fingerprint: sourceFingerprint,
     model_policy_id: SUBAGENT_MODEL_POLICY_ID,
     units,
     quota_pools: proposalQuotaPools(units),
     task_exclusions: taskExclusionSummary(units),
     policy_exclusions: policyExclusionSummary(units),
-    unavailable_by_provider: unavailableSummary(units),
     payload,
     confirmation: null,
     approvals: [],
@@ -386,7 +356,9 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   const file = path.join(selectionsDir(cwd), `${id}.json`);
   if (!fs.existsSync(file)) throw new Error(`selection proposal not found: ${id}`);
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as SelectionProposal;
-  if (value.schema_version !== 1) throw new Error(`unsupported selection proposal schema: ${value.schema_version}`);
+  if (value.schema_version !== 2) {
+    throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates OpenCodex-only route selection; create a new proposal`);
+  }
   for (const unit of value.units || []) {
     if (!Array.isArray(unit.task_exclusions)) unit.task_exclusions = [];
     for (const candidate of unit.candidates || []) {
@@ -396,16 +368,14 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
       candidate.quota_pool_status ||= pool.status;
       if (candidate.quota_pool_remaining_percent === undefined) candidate.quota_pool_remaining_percent = pool.remaining_percent;
       if (!candidate.selection_code) {
-        candidate.selection_code = !candidate.host.available
-          ? candidate.host.code
-          : pool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE";
+        candidate.selection_code = pool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE";
       }
       if (!candidate.selection_reason) {
-        candidate.selection_reason = !candidate.host.available
-          ? candidate.host.reason
-          : pool.status === "exhausted" ? `${pool.label} quota is exhausted` : "route is callable and its quota pool is not exhausted";
+        candidate.selection_reason = pool.status === "exhausted"
+          ? `${pool.label} quota is exhausted`
+          : "route/profile is executable in the synced OpenCodex snapshot";
       }
-      if (pool.status === "exhausted" && candidate.host.available) {
+      if (pool.status === "exhausted") {
         candidate.selectable = false;
         candidate.automatic_eligible = false;
       }

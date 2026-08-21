@@ -22,7 +22,7 @@ baton cards --ranked
 
 At least one ranked executable exact route/profile must be visible. `bun link` is required only when testing this source checkout; a normally installed package already provides `baton` on `PATH`.
 
-The current Codex task must derive the complete current calling-host model and reasoning-effort surface from the model selector/tool schema and silently run `baton host sync` before it proposes models. Do not manually maintain a model list or truncate it to a shorter `spawn_agent` optional-override hint. OpenCodex may expose more catalog routes/profiles than the current Codex task can spawn; the proposal must show that difference.
+OpenCodex owns its runtime/provider synchronization. Baton then runs one on-demand `baton routes refresh` when its persisted snapshot is missing or stale; it does not derive or publish a per-session Codex model surface. The proposal uses the exact executable routes and profiles in that OpenCodex snapshot.
 
 Quota uses `OpenCodex reported > local CodexBar fallback > unknown`. A sample run must preserve source/reason, never overwrite an OpenCodex reported window, and never persist CodexBar account/auth/raw-output fields. CodexBar is optional; absence or provider failure remains an explicit unknown state.
 
@@ -31,15 +31,14 @@ Quota uses `OpenCodex reported > local CodexBar fallback > unknown`. A sample ru
 The pasted business request is intentionally trigger-neutral. Codex must not ask the user to invoke Baton. It should first break down the work and present comparison-table model-selection disclosure containing:
 
 - one preferred exact route/profile when scoring has a unique positive winner, otherwise an explicit manual-choice state;
-- all policy-eligible currently callable candidates, strengths, task score, raw/available AA data, reference-only status/provenance, remaining quota/reset or an explicit unknown reason, and callability;
-- an auditable built-in exclusion for every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` route/profile; none of those families may appear as a candidate or ticket even if the Codex host advertises it;
-- OpenCodex providers/routes unavailable from the current Codex host.
+- all policy-eligible executable OpenCodex candidates, strengths, task score, raw/available AA data, reference-only status/provenance, remaining quota/reset or an explicit unknown reason, and snapshot callability;
+- an auditable built-in exclusion for every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` route/profile; none of those families may appear as a candidate or ticket.
 
 At this point no ticket may exist. When both paths are tested in one front conversation, Codex combines the standalone proposal and OpenSpec proposal into one selector. Provider is one global multi-select for the entire request; the two path groups and all ten task assignments appear below it. Reply with one Submit that:
 
 1. keeps any suitable preferred choices;
 2. changes or manually selects at least one disclosed exact candidate;
-3. uses at least two providers across the paired bundle when at least two providers are callable in this Codex session.
+3. uses at least two providers across the paired bundle when at least two providers are selectable in the synced OpenCodex snapshot.
 
 That single Submit sends one confirmation id to both proposals. Codex should then approve both and execute the tickets. Never ask it to choose an unavailable route, and never accept fallback.
 
@@ -63,7 +62,7 @@ Expected properties:
 - five standalone tickets are created from the ordinary request;
 - one five-unit standalone selection proposal is approved before those tickets exist;
 - every ticket carries immutable user model-approval evidence; at least one choice differs from the recommendation/manual default;
-- candidate disclosure covers strengths, task/AA scores and available data, reference-only provenance, quota, callability, and unavailable providers;
+- candidate disclosure covers strengths, task/AA scores and available data, reference-only provenance, quota, and OpenCodex snapshot callability;
 - every proposal discloses all three built-in family bans, and no candidate or ticket belongs to any of those families;
 - if at least two providers are callable, selected tickets across the paired bundle cover at least two providers;
 - four are `concrete/terminal-only` and one is `deliberative/checkpointed`;

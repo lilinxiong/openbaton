@@ -28,19 +28,19 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 用户照常和 Codex 说话。director 自己跑 Baton，用户不必手打这些命令。
 
 1. **拆工作。** 普通请求先收成有 objective / deliverable / done condition 的具体 unit。很小的 rename、typo 可以由 director 自己做；实施、探索一类工作必须离开。
-2. **同步当前 Codex session。** 提出模型前，Codex 用 `baton host sync` 发布当前 calling-host 的完整 model / reasoning-effort surface。更短的 `spawn_agent` override 列表不是这份 surface。
+2. **Baton 按需同步一次。** OpenCodex 负责自身 runtime / provider 同步。Baton 只在本地 snapshot 缺失、过期或用户明确要求时，从 OpenCodex 刷新一次 route / profile / quota snapshot；不再做 per-session host sync。
 3. **一次出 proposal，不出 ticket。** 一次普通请求只生成一个 request-level proposal，里面汇总所有有边界的工作单元。`baton spawn --unit ...` 或 `baton apply` 此时只写 proposal。
 4. **一次披露、一次确认。** Provider 是整次请求的一个全局多选；下面统一展示全部候选和全部任务分配。同一前台请求涉及多个 workspace 时，把各自 proposal 合成一个 bundle，只保留一个 Submit。Submit 之前，ticket 数和 subagent 数都是 0。
-5. **才铸 ticket。** `baton selection approve ... --confirm` 创建 queued ticket 和不可变 Delegation Receipt。bundle Submit 会把同一个 confirmation id 和全局 Provider 选择写入全部 proposal。host snapshot 或源任务变化会使旧 proposal 失效。
+5. **才铸 ticket。** `baton selection approve ... --confirm` 创建 queued ticket 和不可变 Delegation Receipt。bundle Submit 会把同一个 confirmation id 和全局 Provider 选择写入全部 proposal。OpenCodex catalog snapshot 或源任务变化会使旧 proposal 失效。
 6. **进程内 dispatch。** Codex 用 `baton dispatch next` 预留，调用 host-native `spawn_agent`，bind 返回的 agent id，然后只写一次终态。`close_agent` 再加 `dispatch release` 才释放物理槽位，FIFO 补位。
 7. **前台保持干净。** concrete worker 只回短结论；deliberative worker 可以 checkpoint phase、current result、next step、blocker。工具倾倒和隐藏推理留在子上下文。
 
-机械任务在用户全局 `~/.baton/config.toml` 已配置且当前可调用时，可以跳过选择器。空配置表示该类由 director 自己跑。
+机械任务在用户全局 `~/.baton/config.toml` 已配置且 route 存在于已同步 OpenCodex snapshot 时，可以跳过选择器。空配置表示该类由 director 自己跑。
 
 ## 始终成立的约束
 
 - **只支持 Codex。** skill 装到 `~/.codex`，Baton 状态在 `~/.baton`。不接入其他 coding CLI host，不 shell 到 print mode，也没有 Baton login。
-- **可见不等于可 spawn。** route 必须同时在 OpenCodex 可执行，且被当前 Codex session 声明。只在 catalog 里的 route 仍可见，标为 `HOST_ROUTE_UNAVAILABLE`。
+- **route 可用性归 OpenCodex。** Baton 只选择已同步 OpenCodex snapshot 里的精确、非 disabled route/profile，不再拿 session model list 做二次过滤。若 host-native spawn 在实际执行时仍拒绝该 route，director 原样报告执行错误，绝不换 route。
 - **没有静默替换。** 不 inherit 父模型，不在 route/provider 间 fallback，不接受本地 alias 或 override。显式选择必须是精确的 OpenCodex route/profile id。
 - **Catalog 可见性与 subagent 资格分离。** OpenCodex discovery 仍完整可审计。内置 policy 禁止 `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra` 的所有 provider route、variant 和 reasoning profile 进入候选、确认、ticket 和 dispatch。proposal 会单独披露这些排除。其它 session / Goal exclusion 只影响本次调度。
 - **不编造 unranked。** profile 缺失或 `-fast` / `-highspeed` 等 serving variant 回退到基础分时标记 `reference_only`，不参与自动优选。用户可以选已披露且可调用的 `unranked` route，但不能覆盖禁用系列。
@@ -66,9 +66,8 @@ Baton 没有 login、账号、token 或 credential 命令。不要往这个项�
 `spawn` / `apply` 会为每个委派 unit 披露：
 
 - 评分有唯一正分胜者时的优选 exact route/profile，否则明确进入手工选择
-- 所有符合内置 policy、当前可调用的候选，含优势、任务分、AA 原始分/现有数据、参考分来源、剩余额度或明确 unknown 原因、以及 Codex 可调用性
+- 所有符合内置 policy、在 OpenCodex snapshot 中可执行的候选，含优势、任务分、AA 原始分/现有数据、参考分来源、剩余额度或明确 unknown 原因、以及 snapshot callability
 - 内置的 `gpt-5.5` / `gpt-5.6-sol` / `gpt-5.6-terra` 系列禁令
-- 当前 Codex session 无法 spawn 的 OpenCodex route
 
 候选按 quota pool 分组，不摊成一张平铺列表。普通 provider 一组；Cursor 拆成 `cursor-auto`（仅 Grok / Composer 系列，月度/Auto 额度）和 `cursor-api`（其他 Cursor route，API usage）。有额度的组按剩余额度排序，unknown 其次，额度为 0 的组置灰、折叠并排在最后。ASR / TTS / voice-clone / voice-design 对文本推理任务记为 `TASK_CAPABILITY_MISMATCH`。
 
@@ -85,7 +84,7 @@ Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。C
 | `runner` | 会结束的 test / build / lint / typecheck | 由 director 自己跑 |
 | `longctx` | 检索 / 消化 / git-summarize，以及给已 staged 文件写 commit message；大约需要 1M 上下文 | 由 director 自己跑 |
 
-`baton config` 直接通过 OpenCodex 刷新 live model snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex host snapshot。Dispatch 会另外按当前 Codex session 校验，已配置但当前不可调用则是 `OPS_ROUTE_UNAVAILABLE`，不会 inherit 父模型。要等 worker 结论，包括命令失败。Worker 从不 `git commit`。
+`baton config` 直接通过 OpenCodex 刷新 route / quota snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex session snapshot。Dispatch 只校验配置 route 仍存在于已同步 OpenCodex snapshot，不存在时返回 `OPS_ROUTE_UNAVAILABLE`。它不会 inherit 父模型。要等 worker 结论，包括命令失败。Worker 从不 `git commit`。
 
 ## 能力缓存
 
@@ -118,8 +117,6 @@ baton update
 baton config [--runner ROUTE|-] [--longctx ROUTE|-]
 
 baton routes refresh|status|candidates
-baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]
-baton host status
 baton cards [--ranked|--unranked] [--provider ID] [--json]
 baton match "fix the flaky auth tests"
 baton capabilities refresh --provider aa --key-file PATH

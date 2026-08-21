@@ -1,9 +1,8 @@
 import { isSubagentModelAllowed } from "./model-policy.js";
 import { taskCapabilityExclusion } from "./task-suitability.js";
-import { quotaForProvider } from "./host-capabilities.js";
+import { quotaForProvider } from "./provider-quotas.js";
 import { quotaPoolForCandidate } from "./quota-pools.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
-import { readHostCapabilitySnapshot } from "./host-capabilities.js";
 import { LONGCTX_CONTEXT_FLOOR, type OpsProfileId } from "./ops-config.js";
 import type { ModelCard } from "../types.js";
 
@@ -14,8 +13,6 @@ export interface OpsRouteChoice {
   remaining_percent: number | null;
   quota_label: string | null;
 }
-
-export type OpsRouteChoiceScope = "current-host" | "catalog";
 
 function routeContext(route: ExecutableRoute): number | null {
   const value = Number(route.context_window);
@@ -38,13 +35,11 @@ function remainingFor(
   cwd: string,
   cards: ModelCard[],
   route: ExecutableRoute,
-  scope: OpsRouteChoiceScope,
 ): { remaining_percent: number | null; quota_label: string | null; exhausted: boolean } {
-  if (scope === "catalog") return { remaining_percent: null, quota_label: null, exhausted: false };
-  const host = readHostCapabilitySnapshot(cwd);
-  if (!host) return { remaining_percent: null, quota_label: null, exhausted: false };
+  const snapshot = readRouteSnapshot(cwd);
+  if (!snapshot) return { remaining_percent: null, quota_label: null, exhausted: false };
   const card = cardForRoute(cards, route.route_id);
-  const quota = quotaForProvider(host, route.provider || card?.provider);
+  const quota = quotaForProvider(snapshot, route.provider || card?.provider);
   const pool = quotaPoolForCandidate({
     model_id: card?.id || route.route_id,
     route_id: route.route_id,
@@ -62,13 +57,8 @@ function commonEligible(
   cwd: string,
   cards: ModelCard[],
   route: ExecutableRoute,
-  scope: OpsRouteChoiceScope,
 ): boolean {
   if (route.disabled) return false;
-  if (scope === "current-host") {
-    const host = readHostCapabilitySnapshot(cwd);
-    if (!host?.advertised_models.includes(route.route_id)) return false;
-  }
   const card = cardForRoute(cards, route.route_id) || {
     id: route.route_id,
     route_id: route.route_id,
@@ -79,24 +69,23 @@ function commonEligible(
   if (card.executable === false) return false;
   if (!isSubagentModelAllowed(card)) return false;
   if (taskCapabilityExclusion(card)) return false;
-  return !remainingFor(cwd, cards, route, scope).exhausted;
+  return !remainingFor(cwd, cards, route).exhausted;
 }
 
 export function listOpsRouteChoices(
   cwd: string,
   profile: OpsProfileId,
   cards: ModelCard[],
-  { scope = "current-host" }: { scope?: OpsRouteChoiceScope } = {},
 ): OpsRouteChoice[] {
   const snapshot = readRouteSnapshot(cwd);
-  const routes = (snapshot?.routes || []).filter((route) => commonEligible(cwd, cards, route, scope));
+  const routes = (snapshot?.routes || []).filter((route) => commonEligible(cwd, cards, route));
   const filtered = profile === "longctx"
     ? routes.filter(isLongContextRoute)
     : routes.filter((route) => !isLongContextRoute(route));
 
   const unique = new Map<string, OpsRouteChoice>();
   for (const route of filtered) {
-    const quota = remainingFor(cwd, cards, route, scope);
+    const quota = remainingFor(cwd, cards, route);
     unique.set(route.route_id, {
       route_id: route.route_id,
       provider: route.provider,

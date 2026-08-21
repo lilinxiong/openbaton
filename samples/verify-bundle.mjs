@@ -37,7 +37,7 @@ for (const { proposal, tickets, mode } of [standalone, openspec]) {
   for (const ticket of tickets) {
     const unit = proposal.units.find((item) => item.key === ticket.selection?.unit_key);
     const candidate = unit?.candidates.find((item) => item.model_id === ticket.model_id);
-    assert(candidate?.selectable && candidate.host?.code === "AVAILABLE", `${mode}/${ticket.id} selected route must have been disclosed as callable`);
+    assert(candidate?.selectable && candidate.selection_code === "AVAILABLE", `${mode}/${ticket.id} selected route must have been disclosed as callable`);
     selectedProviders.add(candidate.provider || "unknown");
   }
 }

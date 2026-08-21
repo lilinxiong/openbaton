@@ -52,7 +52,7 @@ assert(tickets.every((ticket) => {
   return ticket.model_id === expected;
 }), "model_id must be the exact route/profile id");
 
-verifyModelSelection(tickets, proposals, batonWorkspace);
+verifyModelSelection(tickets, proposals);
 
 const concrete = tickets.filter((ticket) => ticket.work_unit?.kind === "concrete");
 const deliberative = tickets.filter((ticket) => ticket.work_unit?.kind === "deliberative");
@@ -101,7 +101,7 @@ function verifyQueueRefill(items, runtimeRoot) {
   assert(releases.length > 0 && reservations.some((at) => at >= releases[0]), "queued work must refill only after a slot release");
 }
 
-function verifyModelSelection(items, selections, runtimeRoot) {
+function verifyModelSelection(items, selections) {
   const delegatedUnits = selections.flatMap((proposal) => proposal.units.filter((unit) => !unit.director_local));
   assert(delegatedUnits.length === items.length, `expected ${items.length} disclosed delegated units, got ${delegatedUnits.length}`);
   assert(selections.length === 1, `one business request must create exactly one ${mode} proposal, got ${selections.length}`);
@@ -120,8 +120,8 @@ function verifyModelSelection(items, selections, runtimeRoot) {
 
   const byId = new Map(selections.map((proposal) => [proposal.id, proposal]));
   for (const proposal of selections) {
-    assert(proposal.host_snapshot_id, `${proposal.id} must bind a Codex host snapshot`);
-    assert(Array.isArray(proposal.unavailable_by_provider), `${proposal.id} must disclose host-unavailable providers`);
+    assert(proposal.schema_version === 2, `${proposal.id} must use the OpenCodex-only selection schema`);
+    assert(proposal.catalog_fingerprint, `${proposal.id} must bind the synced OpenCodex catalog`);
     for (const unit of proposal.units) {
       assert(Object.hasOwn(unit, "recommended_model_id"), `${proposal.id}/${unit.key} must disclose preferred model state`);
       if (unit.director_local) continue;
@@ -148,7 +148,7 @@ function verifyModelSelection(items, selections, runtimeRoot) {
         assert(["reported", "unknown"].includes(candidate.quota.status), `${candidate.model_id} must disclose quota state`);
         if (candidate.quota.status === "unknown") assert(candidate.quota.reason, `${candidate.model_id} unknown quota needs a reason`);
         else assert(candidate.quota.windows.every((window) => Number.isFinite(window.remaining_percent)), `${candidate.model_id} reported quota needs remaining percentages`);
-        assert(candidate.host.code, `${candidate.model_id} must disclose Codex callability`);
+        assert(candidate.selection_code, `${candidate.model_id} must disclose OpenCodex callability`);
       }
     }
   }
@@ -160,34 +160,27 @@ function verifyModelSelection(items, selections, runtimeRoot) {
     assert(selection.selected_model_id === ticket.model_id, `${ticket.id} approval must match exact selected model`);
     const proposal = byId.get(selection.proposal_id);
     assert(proposal, `${ticket.id} references missing proposal ${selection.proposal_id}`);
-    assert(proposal.host_snapshot_id === selection.host_snapshot_id, `${ticket.id} host snapshot must match its proposal`);
+    assert(proposal.catalog_fingerprint === selection.catalog_fingerprint, `${ticket.id} catalog fingerprint must match its proposal`);
     const approval = proposal.approvals.find((item) => item.approval_id === selection.approval_id);
     assert(approval?.selected_model_id === ticket.model_id, `${ticket.id} proposal approval must match the ticket`);
     const unitKey = selection.unit_key || (mode === "openspec" ? ticket.openspec?.number : null);
     const unit = proposal.units.find((item) => item.key === unitKey);
     const candidate = unit?.candidates.find((item) => item.model_id === ticket.model_id);
-    assert(candidate?.selectable && candidate.host.code === "AVAILABLE", `${ticket.id} selected route must have been disclosed as callable`);
+    assert(candidate?.selectable && candidate.selection_code === "AVAILABLE", `${ticket.id} selected route must have been disclosed as callable`);
     assert(proposal.confirmation.global_provider_ids.includes(candidate.provider), `${ticket.id} selected provider must belong to the bundle-level global Provider choice`);
     assert(Date.parse(ticket.created_at) >= Date.parse(proposal.created_at), `${ticket.id} must not predate model disclosure`);
   }
   assert(items.some((ticket) => ticket.selection?.changed_by_user), "at least one ticket must exercise user route choice/override");
 
-  const hostSnapshot = path.join(runtimeRoot, "runs", "host-capabilities.json");
-  assert(fs.existsSync(hostSnapshot), "current Codex host capability snapshot must be persisted");
-  const host = JSON.parse(fs.readFileSync(hostSnapshot, "utf8"));
-  assert(host.advertised_models.length > 0, "host snapshot must contain exact Codex spawn models");
-  assert(host.provider_quotas.every((quota) => !Object.hasOwn(quota, "accounts")), "host quota disclosure must not contain provider credentials/accounts");
-  assert(!hasSensitiveQuotaKey(host.provider_quotas), "host quota disclosure must not persist CodexBar account/auth fields");
-  assert(host.provider_quotas.every((quota) => quota.source == null || typeof quota.source === "string"), "every quota source must be explicit or null");
-  assert(host.provider_quotas.filter((quota) => quota.source?.startsWith("codexbar:")).every((quota) => quota.status === "reported" || quota.reason?.startsWith("CODEXBAR_")), "CodexBar fallback must preserve sanitized provenance and failure reason");
   const routeSnapshot = path.join(home, ".baton", "cache", "routes.json");
-  if (fs.existsSync(routeSnapshot)) {
-    const catalog = JSON.parse(fs.readFileSync(routeSnapshot, "utf8"));
-    const catalogOnly = catalog.routes?.some((route) => !route.disabled && !host.advertised_models.includes(route.route_id));
-    if (catalogOnly) {
-      assert(selections.some((proposal) => proposal.unavailable_by_provider.some((item) => item.code.includes("HOST_ROUTE_UNAVAILABLE"))), "catalog-only routes must be disclosed as HOST_ROUTE_UNAVAILABLE");
-    }
-  }
+  assert(fs.existsSync(routeSnapshot), "Baton must persist one OpenCodex route/quota snapshot");
+  const catalog = JSON.parse(fs.readFileSync(routeSnapshot, "utf8"));
+  assert(catalog.schema_version === 3, "route snapshot must use the combined route/quota schema");
+  assert(catalog.routes?.some((route) => !route.disabled), "route snapshot must contain executable OpenCodex routes");
+  assert(catalog.provider_quotas.every((quota) => !Object.hasOwn(quota, "accounts")), "route quota disclosure must not contain provider credentials/accounts");
+  assert(!hasSensitiveQuotaKey(catalog.provider_quotas), "route quota disclosure must not persist CodexBar account/auth fields");
+  assert(catalog.provider_quotas.every((quota) => quota.source == null || typeof quota.source === "string"), "every quota source must be explicit or null");
+  assert(catalog.provider_quotas.filter((quota) => quota.source?.startsWith("codexbar:")).every((quota) => quota.status === "reported" || quota.reason?.startsWith("CODEXBAR_")), "CodexBar fallback must preserve sanitized provenance and failure reason");
 }
 
 function proposalConfirmation(selections, proposalId) {

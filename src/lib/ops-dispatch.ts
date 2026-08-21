@@ -4,7 +4,6 @@ import { loadConfig } from "./config.js";
 import { configuredRoute, type OpsAction, type OpsProfileId } from "./ops-config.js";
 import { inferOpsAction } from "./ops-task.js";
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
-import { readHostCapabilitySnapshot } from "./host-capabilities.js";
 import { readRouteSnapshot } from "./routes.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 
@@ -35,12 +34,10 @@ export function hasStagedDiff(cwd: string): boolean {
 }
 
 function cardForRoute(cards: ModelCard[], routeId: string, cwd: string): ModelCard | null {
-  const host = readHostCapabilitySnapshot(cwd);
-  const advertised = host?.advertised_profiles[routeId] || [];
   const snapshot = readRouteSnapshot(cwd);
   const route = snapshot?.routes.find((item) => item.route_id === routeId);
   const preferred = route?.default_reasoning_effort;
-  const effort = preferred && advertised.includes(preferred) ? preferred : advertised[0];
+  const effort = preferred && route?.reasoning_efforts.includes(preferred) ? preferred : route?.reasoning_efforts[0];
   return (effort && cards.find((card) => card.route_id === routeId && card.reasoning_effort === effort))
     || cards.find((card) => card.route_id === routeId && !card.reasoning_effort)
     || cards.find((card) => card.route_id === routeId)
@@ -60,16 +57,6 @@ export function resolveOpsDispatch(
     return { kind: "director", action, reason: "ops route is empty; director executes this mechanical unit" };
   }
   if (action === "git-commit" && !hasStagedDiff(cwd)) return { kind: "empty-index", action };
-  const host = readHostCapabilitySnapshot(cwd);
-  if (!host) {
-    return {
-      kind: "unavailable",
-      action,
-      profile: configured.profile,
-      route: configured.route,
-      reason: "HOST_CAPABILITIES_REQUIRED: run baton host sync before dispatching a configured ops route",
-    };
-  }
   const choices = listOpsRouteChoices(cwd, configured.profile, cards);
   if (!findOpsRouteChoice(choices, configured.route)) {
     return {
@@ -77,7 +64,7 @@ export function resolveOpsDispatch(
       action,
       profile: configured.profile,
       route: configured.route,
-      reason: `OPS_ROUTE_UNAVAILABLE: ${configured.profile} route ${configured.route} is not callable on the current host`,
+      reason: `OPS_ROUTE_UNAVAILABLE: ${configured.profile} route ${configured.route} is not executable in the synced OpenCodex snapshot`,
     };
   }
   const card = cardForRoute(cards, configured.route, cwd);
@@ -95,7 +82,7 @@ export function resolveOpsDispatch(
     approval_id: `ops-${configured.profile}-${action}`,
     approved_at: new Date().toISOString(),
     confirmed_by: "ops-config",
-    host_snapshot_id: host.id,
+    catalog_fingerprint: readRouteSnapshot(cwd)?.fingerprint || "",
     recommended_model_id: card.id,
     selected_model_id: card.id,
     changed_by_user: false,

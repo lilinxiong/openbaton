@@ -22,7 +22,7 @@ export interface ModelSelectionApproval {
   unit_key?: string;
   approved_at: string;
   confirmed_by: "user" | "ops-config";
-  host_snapshot_id: string;
+  catalog_fingerprint: string;
   recommended_model_id: string | null;
   selected_model_id: string;
   changed_by_user: boolean;
