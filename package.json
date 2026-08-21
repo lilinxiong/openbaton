@@ -36,7 +36,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@bitkyc08/opencodex": "^2.22.0"
+    "@bitkyc08/opencodex": "^2.28.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

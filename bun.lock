@@ -14,7 +14,7 @@
     },
   },
   "packages": {
-    "@bitkyc08/opencodex": ["@bitkyc08/opencodex@2.27.0", "https://nexus3.bilibili.co/repository/npm-public/@bitkyc08/opencodex/-/opencodex-2.27.0.tgz", { "dependencies": { "@bufbuild/protobuf": "^2.14.0", "@modelcontextprotocol/sdk": "^1.30.0", "@napi-rs/keyring": "1.3.0", "bun": "1.3.14", "zod": "4.4.3" }, "bin": { "opencodex": "bin/ocx.mjs", "ocx": "bin/ocx.mjs" } }, "sha512-ge9PxJXnkbUYB7q9mMnt/fZhKltuw+TS1DHAqbJftF3ll82RKp7Im2U0YNi/F1okjyhg4H79DuLkVUV9ZATz/Q=="],
+    "@bitkyc08/opencodex": ["@bitkyc08/opencodex@2.28.0", "https://nexus3.bilibili.co/repository/npm-public/@bitkyc08/opencodex/-/opencodex-2.28.0.tgz", { "dependencies": { "@bufbuild/protobuf": "^2.14.0", "@modelcontextprotocol/sdk": "^1.30.0", "@napi-rs/keyring": "1.3.0", "bun": "1.3.14", "zod": "4.4.3" }, "bin": { "opencodex": "bin/ocx.mjs", "ocx": "bin/ocx.mjs" } }, "sha512-V/lMcehRY+UI/ypDLoCiZYTia2OWA7tZoAibnCj1ay1vzrwhNzDcmf1ZTZ97RhrH07dhq4J9It5RT6v1/DvBZg=="],
 
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.0", "https://nexus3.bilibili.co/repository/npm-public/@bufbuild/protobuf/-/protobuf-2.14.0.tgz", {}, "sha512-C3UGsiCwSprE2NKIIFA3hCDlpXTMCAXRZuEVp88L1GY36Y41+rYL5fryE+nOFhp4p4JPQvdV8PQ4DWgHgeTE+w=="],
 
