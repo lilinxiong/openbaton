@@ -103,8 +103,8 @@ describe("mandatory model selection disclosure", () => {
     const fragment = renderSelectionView(proposal);
     assert.doesNotMatch(fragment, /<!doctype|<html|<body/i);
     assert.match(fragment, /data-baton-presentation="current_conversation_inline_only"/);
-    assert.match(fragment, /额度池中选择模型/);
-    assert.match(fragment, /Baton 模型选择/);
+    assert.match(fragment, /全局选择 Provider/);
+    assert.match(fragment, /Baton 汇总模型选择/);
     assert.match(fragment, /模型擅长项/);
     assert.match(fragment, /Cursor API/);
     assert.match(fragment, /额度耗尽/);
@@ -308,7 +308,7 @@ describe("mandatory model selection disclosure", () => {
       assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"default_checked":["provider-b/cheap@low"]'));
       assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"default_assignments":{"standalone":"provider-b/cheap@low"}'));
       assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"display_model_id":"cheap@low"'));
-      assert.match(fs.readFileSync(suggestedPath, "utf8"), /已按披露建议预勾选并预填/);
+      assert.match(fs.readFileSync(suggestedPath, "utf8"), /已按汇总建议预选 Provider、route\/profile 和任务分配/);
 
       const invalidAssign = capture();
       assert.equal(await run(["selection", "render", proposal.id, "--output", path.join(cwd, "selection-invalid.html"), "--task-label", "standalone=实施复杂的多文件仓库迁移", "--assign", "standalone=missing/route", "--json"], { cwd, env, stdout: invalidAssign, stderr: invalidAssign }), 1);
@@ -343,6 +343,136 @@ describe("mandatory model selection disclosure", () => {
       const dispatch = capture();
       assert.equal(await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: dispatch, stderr: dispatch }), 0);
       assert.equal(JSON.parse(dispatch.text()).reserved[0].selection.approval_id, ticket.selection.approval_id);
+    });
+  });
+
+  it("creates one multi-unit standalone proposal and bundles standalone plus OpenSpec behind one Submit", async () => {
+    await withHome(async (home) => {
+      const standaloneCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-bundle-standalone-"));
+      const openspecCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-bundle-openspec-"));
+      const env = fakeEnv(home);
+      for (const cwd of [standaloneCwd, openspecCwd]) {
+        assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      }
+      publishRouteSnapshot(standaloneCwd, {
+        models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }],
+      });
+      for (const cwd of [standaloneCwd, openspecCwd]) {
+        writeHostCapabilitySnapshot(cwd, {
+          advertisedModels: ["kimi/k3"],
+          quotaCatalog: { reports: [] },
+        });
+      }
+
+      const standaloneOut = capture();
+      assert.equal(await run([
+        "spawn",
+        "Inspect the incident dataset and return an evidence-backed audit.",
+        "--unit", "audit=Audit the incident records and identify anomalies",
+        "--unit", "report=Produce the final evidence-backed report",
+        "--model", "kimi/k3",
+        "--json",
+      ], { cwd: standaloneCwd, env, stdout: standaloneOut, stderr: standaloneOut }), 0, standaloneOut.text());
+      const standaloneProposal = JSON.parse(standaloneOut.text());
+      assert.equal(standaloneProposal.status, "pending_confirmation");
+      assert.equal(standaloneProposal.payload.source_shape, "multi-unit-v1");
+      assert.equal(standaloneProposal.payload.description, "Inspect the incident dataset and return an evidence-backed audit.");
+      assert.deepEqual(standaloneProposal.units.map((unit: { key: string }) => unit.key), ["audit", "report"]);
+
+      const changeDir = path.join(openspecCwd, "openspec", "changes", "bundle-demo");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), "## 1. Audit\n\n- [ ] 1.1 Audit the incident records\n- [ ] 1.2 Produce the final report\n");
+      const openspecOut = capture();
+      assert.equal(await run([
+        "apply", "bundle-demo",
+        "--route", "1.1=kimi/k3",
+        "--route", "1.2=kimi/k3",
+        "--json",
+      ], { cwd: openspecCwd, env, stdout: openspecOut, stderr: openspecOut }), 0, openspecOut.text());
+      const openspecProposal = JSON.parse(openspecOut.text());
+      assert.equal(openspecProposal.units.length, 2);
+      assert.equal(fs.existsSync(spawnsDir(standaloneCwd)), false);
+      assert.equal(fs.existsSync(spawnsDir(openspecCwd)), false);
+
+      const bundlePath = path.join(standaloneCwd, "selection-bundle.html");
+      const rendered = capture();
+      assert.equal(await run([
+        "selection", "render-bundle",
+        "--proposal", `standalone=${standaloneCwd}#${standaloneProposal.id}`,
+        "--proposal", `openspec=${openspecCwd}#${openspecProposal.id}`,
+        "--output", bundlePath,
+        "--task-label", "standalone/audit=审计事件记录并识别异常",
+        "--task-label", "standalone/report=生成带证据的最终报告",
+        "--task-label", "openspec/1.1=审计事件记录",
+        "--task-label", "openspec/1.2=生成最终报告",
+        "--json",
+      ], { cwd: standaloneCwd, env, stdout: rendered, stderr: rendered }), 0, rendered.text());
+      const artifact = JSON.parse(rendered.text());
+      assert.equal(artifact.proposals.length, 2);
+      assert.equal(artifact.presentation, "current_conversation_inline_only");
+      const html = fs.readFileSync(bundlePath, "utf8");
+      assert.match(html, /Baton 汇总模型选择/);
+      assert.match(html, /全局选择 Provider/);
+      assert.match(html, /一次提交全部确认/);
+      assert.match(html, /"source":"bundle"/);
+      assert.equal((html.match(/await window\.openai\.sendFollowUpMessage/g) || []).length, 1);
+      assert.equal((html.match(/<button[^>]+data-submit>/g) || []).length, 1);
+      assert.match(html, new RegExp(standaloneCwd.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(html, new RegExp(openspecCwd.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+      assert.ok(script);
+      assert.doesNotThrow(() => new vm.Script(script));
+      const confirmationId = html.match(/"confirmation_id":"([^"]+)"/)?.[1];
+      assert.match(confirmationId || "", /^confirmation-bundle-/);
+
+      const missingGlobalProvider = capture();
+      assert.equal(await run([
+        "selection", "approve", standaloneProposal.id,
+        "--confirm",
+        "--confirmation-id", confirmationId!,
+        "--confirmation-scope", "bundle",
+        "--route", "audit=kimi/k3",
+        "--route", "report=kimi/k3",
+      ], { cwd: standaloneCwd, env, stdout: missingGlobalProvider, stderr: missingGlobalProvider }), 1);
+      assert.match(missingGlobalProvider.text(), /requires explicit --provider and --global-provider/);
+      assert.equal(fs.existsSync(spawnsDir(standaloneCwd)), false);
+
+      const common = [
+        "--confirm",
+        "--confirmation-id", confirmationId!,
+        "--confirmation-scope", "bundle",
+        "--provider", "kimi",
+        "--global-provider", "kimi",
+        "--json",
+      ];
+      const standaloneApproved = capture();
+      assert.equal(await run([
+        "selection", "approve", standaloneProposal.id,
+        ...common,
+        "--route", "audit=kimi/k3",
+        "--route", "report=kimi/k3",
+      ], { cwd: standaloneCwd, env, stdout: standaloneApproved, stderr: standaloneApproved }), 0, standaloneApproved.text());
+      const openspecApproved = capture();
+      assert.equal(await run([
+        "selection", "approve", openspecProposal.id,
+        ...common,
+        "--route", "1.1=kimi/k3",
+        "--route", "1.2=kimi/k3",
+      ], { cwd: openspecCwd, env, stdout: openspecApproved, stderr: openspecApproved }), 0, openspecApproved.text());
+
+      const storedStandalone = readSelectionProposal(standaloneCwd, standaloneProposal.id);
+      const storedOpenSpec = readSelectionProposal(openspecCwd, openspecProposal.id);
+      assert.equal(storedStandalone.confirmation?.confirmation_id, confirmationId);
+      assert.equal(storedOpenSpec.confirmation?.confirmation_id, confirmationId);
+      assert.equal(storedStandalone.confirmation?.scope, "bundle");
+      assert.equal(storedOpenSpec.confirmation?.scope, "bundle");
+      for (const cwd of [standaloneCwd, openspecCwd]) {
+        const tickets = fs.readdirSync(spawnsDir(cwd)).filter((name) => name.endsWith(".json"))
+          .map((name) => JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), name), "utf8")));
+        assert.equal(tickets.length, 2);
+        assert.ok(tickets.every((ticket) => ticket.selection.confirmation_id === confirmationId));
+        assert.ok(tickets.every((ticket) => ticket.selection.confirmation_scope === "bundle"));
+      }
     });
   });
 

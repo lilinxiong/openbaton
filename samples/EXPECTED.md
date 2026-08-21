@@ -3,9 +3,10 @@
 ## Baton routing acceptance
 
 - Model selection is triggered from the ordinary request without Baton-specific wording.
-- No ticket exists until the user reviews and confirms the model proposal.
+- Each ordinary business request creates one proposal containing all of its units; no ticket exists until the user reviews the combined selector and clicks its single Submit.
+- The paired standalone/OpenSpec run uses one global Provider choice and one confirmation id across both proposals.
 - Every delegated unit discloses preferred/candidate exact routes, strengths, task score, raw AA scores, remaining quota/reset or explicit unknown reason, and current Codex callability.
-- At least one choice exercises user override/manual selection; when two providers are callable, the run uses at least two providers.
+- At least one choice exercises user override/manual selection; when two providers are callable, the paired bundle uses at least two providers across its selected tickets.
 - Catalog-only routes stay visible as host-unavailable and never silently replace the approved route.
 - No `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` route/profile appears in subagent candidates or tickets; each proposal records all three built-in family exclusions.
 

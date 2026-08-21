@@ -1,3 +1,4 @@
+import path from "node:path";
 import { loadConfig } from "../lib/config.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { readHostCapabilitySnapshot } from "../lib/host-capabilities.js";
@@ -17,10 +18,18 @@ import {
 import type { SelectionQuotaPool } from "../lib/quota-pools.js";
 import type { ModelCard, ModelSelectionApproval, WritableLike } from "../types.js";
 import { SUBAGENT_MODEL_POLICY_ID, assertSubagentModelAllowed } from "../lib/model-policy.js";
-import { writeSelectionView } from "../lib/selection-view.js";
+import { writeSelectionBundle, writeSelectionView, type SelectionBundleInput } from "../lib/selection-view.js";
 
 type FlagValue = string | boolean;
 type FlagMap = Record<string, FlagValue | FlagValue[]>;
+
+interface ApprovalContext {
+  confirmation_id: string;
+  scope: "proposal" | "bundle";
+  confirmed_at: string;
+  selected_provider_ids: string[];
+  global_provider_ids: string[];
+}
 
 function flagsOf(args: string[]): FlagMap {
   const flags: FlagMap = {};
@@ -80,6 +89,42 @@ function suggestedAssignments(values: string[]): Map<string, string> {
   return assignments;
 }
 
+function scopedValues(values: string[], flag: string): Map<string, string[]> {
+  const scoped = new Map<string, string[]>();
+  for (const value of values) {
+    const equals = value.indexOf("=");
+    const slash = value.indexOf("/");
+    if (slash <= 0 || equals <= slash + 1 || equals === value.length - 1) {
+      throw new Error(`invalid --${flag}: ${value}; expected SCOPE/TASK=VALUE`);
+    }
+    const scope = value.slice(0, slash).trim();
+    const local = value.slice(slash + 1);
+    const items = scoped.get(scope) || [];
+    items.push(local);
+    scoped.set(scope, items);
+  }
+  return scoped;
+}
+
+function bundleProposalRefs(values: string[], cwd: string): Array<{ scope: string; cwd: string; proposal_id: string }> {
+  if (values.length < 2) throw new Error("selection render-bundle requires at least two --proposal SCOPE=WORKSPACE#PROPOSAL values");
+  const refs: Array<{ scope: string; cwd: string; proposal_id: string }> = [];
+  const scopes = new Set<string>();
+  for (const value of values) {
+    const equals = value.indexOf("=");
+    const hash = value.lastIndexOf("#");
+    const scope = equals > 0 ? value.slice(0, equals).trim() : "";
+    const workspace = equals > 0 && hash > equals + 1 ? value.slice(equals + 1, hash).trim() : "";
+    const proposalId = hash > 0 ? value.slice(hash + 1).trim() : "";
+    if (!scope || !workspace || !proposalId) throw new Error(`invalid --proposal: ${value}; expected SCOPE=WORKSPACE#PROPOSAL`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(scope)) throw new Error(`invalid bundle scope: ${scope}`);
+    if (scopes.has(scope)) throw new Error(`duplicate bundle scope: ${scope}`);
+    scopes.add(scope);
+    refs.push({ scope, cwd: path.resolve(cwd, workspace), proposal_id: proposalId });
+  }
+  return refs;
+}
+
 function chineseTaskLabels(values: string[], proposal: SelectionProposal): Record<string, string> {
   const labels: Record<string, string> = {};
   const units = proposal.units.filter((unit) => !unit.director_local);
@@ -102,28 +147,51 @@ function chineseTaskLabels(values: string[], proposal: SelectionProposal): Recor
   return labels;
 }
 
-function approvalFor(proposal: SelectionProposal, key: string, selected: string, recommended: string | null, at: string): ModelSelectionApproval {
+function approvalFor(
+  proposal: SelectionProposal,
+  key: string,
+  selected: string,
+  recommended: string | null,
+  context: ApprovalContext,
+): ModelSelectionApproval {
   return {
     proposal_id: proposal.id,
     approval_id: `approval-${proposal.id}-${key.replaceAll(/[^a-zA-Z0-9_.-]/g, "-")}`,
-    approved_at: at,
+    confirmation_id: context.confirmation_id,
+    confirmation_scope: context.scope,
+    unit_key: key,
+    approved_at: context.confirmed_at,
     confirmed_by: "user",
     host_snapshot_id: proposal.host_snapshot_id,
     recommended_model_id: recommended,
     selected_model_id: selected,
     changed_by_user: selected !== recommended,
+    selected_provider_ids: context.selected_provider_ids,
+    global_provider_ids: context.global_provider_ids,
   };
 }
 
 function currentSourceFingerprint(proposal: SelectionProposal): string {
-  if (proposal.source === "standalone") return selectionSourceFingerprint({
-    description: proposal.payload.description,
-    task_kind: proposal.payload.task_kind || null,
-    deliverable: proposal.payload.deliverable || null,
-    done_when: proposal.payload.done_when || null,
-    write_paths: proposal.payload.write_paths || [],
-    write_operations: proposal.payload.write_operations || [],
-  });
+  if (proposal.source === "standalone") {
+    if (proposal.payload.source_shape === "multi-unit-v1") return selectionSourceFingerprint({
+      source_shape: "multi-unit-v1",
+      description: String(proposal.payload.description || ""),
+      units: Array.isArray(proposal.payload.units)
+        ? proposal.payload.units.map((item) => {
+          const unit = item && typeof item === "object" ? item as Record<string, unknown> : {};
+          return { key: String(unit.key || ""), description: String(unit.description || "") };
+        })
+        : [],
+    });
+    return selectionSourceFingerprint({
+      description: proposal.payload.description,
+      task_kind: proposal.payload.task_kind || null,
+      deliverable: proposal.payload.deliverable || null,
+      done_when: proposal.payload.done_when || null,
+      write_paths: proposal.payload.write_paths || [],
+      write_operations: proposal.payload.write_operations || [],
+    });
+  }
   const changeDir = String(proposal.payload.change_dir || "");
   const tasks = loadTasksFromChangeDir(changeDir).tasks
     .filter((task) => task.status === "pending")
@@ -131,7 +199,7 @@ function currentSourceFingerprint(proposal: SelectionProposal): string {
   return selectionSourceFingerprint(tasks);
 }
 
-function selectedCandidate(proposal: SelectionProposal, key: string, override: string | undefined): { candidate: SelectionCandidate; approval: ModelSelectionApproval } {
+function selectedCandidate(proposal: SelectionProposal, key: string, override: string | undefined): SelectionCandidate {
   const unit = proposal.units.find((item) => item.key === key);
   if (!unit || unit.director_local) throw new Error(`selection unit is not delegable: ${key}`);
   const selected = override || unit.default_model_id;
@@ -140,8 +208,44 @@ function selectedCandidate(proposal: SelectionProposal, key: string, override: s
   const candidate = unit.candidates.find((item) => item.model_id === selected);
   if (!candidate) throw new Error(`${key}: ${selected} was not disclosed in proposal ${proposal.id}`);
   if (!candidate.selectable) throw new Error(`${key}: ${selected}: ${candidate.selection_code}: ${candidate.selection_reason}`);
-  const at = new Date().toISOString();
-  return { candidate, approval: approvalFor(proposal, key, selected, unit.recommended_model_id, at) };
+  return candidate;
+}
+
+function sortedUnique(values: string[]): string[] {
+  return [...new Set(values.map((item) => item.trim()).filter(Boolean))].sort();
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function approvalContext(proposal: SelectionProposal, candidates: SelectionCandidate[], flags: FlagMap): ApprovalContext {
+  const selectedProviders = sortedUnique(candidates.map((candidate) => candidate.provider || "unknown"));
+  const declaredProviders = sortedUnique(many(flags, "provider"));
+  if (declaredProviders.length && !sameStrings(declaredProviders, selectedProviders)) {
+    throw new Error(`PROVIDER_SELECTION_MISMATCH: selected routes use ${selectedProviders.join(",")}; proposal provider choice declared ${declaredProviders.join(",")}`);
+  }
+  const globalProviders = sortedUnique(many(flags, "global-provider"));
+  const effectiveGlobalProviders = globalProviders.length ? globalProviders : selectedProviders;
+  if (selectedProviders.some((provider) => !effectiveGlobalProviders.includes(provider))) {
+    throw new Error(`GLOBAL_PROVIDER_SELECTION_MISMATCH: ${selectedProviders.join(",")} is not contained in ${effectiveGlobalProviders.join(",")}`);
+  }
+  const scopeFlag = one(flags, "confirmation-scope");
+  if (scopeFlag && scopeFlag !== "proposal" && scopeFlag !== "bundle") throw new Error("--confirmation-scope must be proposal or bundle");
+  const scope = (scopeFlag || "proposal") as ApprovalContext["scope"];
+  const confirmationId = one(flags, "confirmation-id") || `confirmation-${proposal.id}`;
+  if (!/^confirmation-[A-Za-z0-9._-]{1,160}$/.test(confirmationId)) throw new Error("invalid --confirmation-id");
+  if (scope === "bundle" && !one(flags, "confirmation-id")) throw new Error("bundle confirmation requires an explicit shared --confirmation-id");
+  if (scope === "bundle" && (!declaredProviders.length || !globalProviders.length)) {
+    throw new Error("bundle confirmation requires explicit --provider and --global-provider choices from the consolidated selector");
+  }
+  return {
+    confirmation_id: confirmationId,
+    scope,
+    confirmed_at: new Date().toISOString(),
+    selected_provider_ids: selectedProviders,
+    global_provider_ids: effectiveGlobalProviders,
+  };
 }
 
 function validateProposal(cwd: string, proposal: SelectionProposal): void {
@@ -159,34 +263,53 @@ function validateProposal(cwd: string, proposal: SelectionProposal): void {
 }
 
 function approveStandalone(cwd: string, proposal: SelectionProposal, cards: ModelCard[], flags: FlagMap) {
-  const unit = proposal.units.find((item) => !item.director_local);
-  if (!unit) throw new Error(`proposal ${proposal.id} has no delegated unit`);
-  const { candidate, approval } = selectedCandidate(proposal, unit.key, one(flags, "model"));
-  requireCardId(candidate.model_id, cards);
-  const planned = planStandaloneSpawn({
-    description: String(proposal.payload.description),
-    cards,
-    explicitModel: candidate.model_id,
-    cwd,
-    queue: null,
-    taskKind: proposal.payload.task_kind as "concrete" | "deliberative" | null,
-    deliverable: typeof proposal.payload.deliverable === "string" ? proposal.payload.deliverable : null,
-    doneWhen: typeof proposal.payload.done_when === "string" ? proposal.payload.done_when : null,
-    selectionApproval: approval,
-  });
-  if (planned.director_local === true) throw new Error("selection source no longer requires delegation");
-  const writePaths = Array.isArray(proposal.payload.write_paths) ? proposal.payload.write_paths.map(String) : [];
-  if (writePaths.length) {
-    const operations = Array.isArray(proposal.payload.write_operations)
-      ? proposal.payload.write_operations.map(String) as SafetyOperation[]
-      : ["write", "create"] as SafetyOperation[];
-    planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline: captureBaseline(cwd), writeAllowlist: writePaths, allowedOperations: operations });
-    planned.ticket.mode = "write";
-    planned.ticket.read_only = false;
+  const units = proposal.units.filter((item) => !item.director_local);
+  if (!units.length) throw new Error(`proposal ${proposal.id} has no delegated unit`);
+  const overrides = routeAssignments(many(flags, "route"));
+  for (const key of overrides.keys()) {
+    if (!units.some((unit) => unit.key === key)) throw new Error(`--route task is not delegable in ${proposal.id}: ${key}`);
   }
-  writeReceipt(cwd, planned.receipt);
-  writeSpawn(cwd, planned.ticket);
-  return { tickets: [planned.ticket], approvals: [{ key: unit.key, approval }], local: [] };
+  const modelOverride = one(flags, "model");
+  if (modelOverride && units.length > 1) throw new Error("multi-unit standalone approval requires repeated --route TASK=ID, not --model");
+  const choices = units.map((unit) => ({
+    unit,
+    candidate: selectedCandidate(proposal, unit.key, overrides.get(unit.key) || modelOverride),
+  }));
+  const context = approvalContext(proposal, choices.map((item) => item.candidate), flags);
+  const writePaths = Array.isArray(proposal.payload.write_paths) ? proposal.payload.write_paths.map(String) : [];
+  if (writePaths.length && units.length > 1) throw new Error("multi-unit standalone write approval is not supported; use separately scoped write proposals");
+  const tickets = [];
+  const approvals = [];
+  for (const { unit, candidate } of choices) {
+    requireCardId(candidate.model_id, cards);
+    const approval = approvalFor(proposal, unit.key, candidate.model_id, unit.recommended_model_id, context);
+    const legacySingle = proposal.payload.source_shape !== "multi-unit-v1";
+    const planned = planStandaloneSpawn({
+      description: unit.description,
+      cards,
+      explicitModel: candidate.model_id,
+      cwd,
+      queue: null,
+      taskKind: legacySingle ? proposal.payload.task_kind as "concrete" | "deliberative" | null : null,
+      deliverable: legacySingle && typeof proposal.payload.deliverable === "string" ? proposal.payload.deliverable : null,
+      doneWhen: legacySingle && typeof proposal.payload.done_when === "string" ? proposal.payload.done_when : null,
+      selectionApproval: approval,
+    });
+    if (planned.director_local === true) throw new Error(`selection source no longer requires delegation: ${unit.key}`);
+    if (writePaths.length) {
+      const operations = Array.isArray(proposal.payload.write_operations)
+        ? proposal.payload.write_operations.map(String) as SafetyOperation[]
+        : ["write", "create"] as SafetyOperation[];
+      planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline: captureBaseline(cwd), writeAllowlist: writePaths, allowedOperations: operations });
+      planned.ticket.mode = "write";
+      planned.ticket.read_only = false;
+    }
+    writeReceipt(cwd, planned.receipt);
+    writeSpawn(cwd, planned.ticket);
+    tickets.push(planned.ticket);
+    approvals.push({ key: unit.key, approval });
+  }
+  return { tickets, approvals, local: [], confirmation: context };
 }
 
 function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelCard[], flags: FlagMap) {
@@ -194,13 +317,19 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
   for (const key of overrides.keys()) {
     if (!proposal.units.some((unit) => unit.key === key && !unit.director_local)) throw new Error(`--route task is not delegable in ${proposal.id}: ${key}`);
   }
+  const candidates = new Map<string, SelectionCandidate>();
+  for (const unit of proposal.units) {
+    if (unit.director_local) continue;
+    candidates.set(unit.key, selectedCandidate(proposal, unit.key, overrides.get(unit.key)));
+  }
+  const context = approvalContext(proposal, [...candidates.values()], flags);
   const selected = new Map<string, ModelCard>();
   const approvals = new Map<string, ModelSelectionApproval>();
   for (const unit of proposal.units) {
     if (unit.director_local) continue;
-    const choice = selectedCandidate(proposal, unit.key, overrides.get(unit.key));
-    selected.set(unit.key, requireCardId(choice.candidate.model_id, cards));
-    approvals.set(unit.key, choice.approval);
+    const candidate = candidates.get(unit.key)!;
+    selected.set(unit.key, requireCardId(candidate.model_id, cards));
+    approvals.set(unit.key, approvalFor(proposal, unit.key, candidate.model_id, unit.recommended_model_id, context));
   }
   const result = applyChange({
     cwd,
@@ -216,13 +345,51 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     tickets: result.tickets,
     approvals: [...approvals.entries()].map(([key, approval]) => ({ key, approval })),
     local: result.local,
+    confirmation: context,
   };
 }
 
 export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: string; stdout: WritableLike; cards: ModelCard[] }): number {
   const sub = args[0] || "show";
+  if (sub === "render-bundle") {
+    const flags = flagsOf(args.slice(1));
+    const output = one(flags, "output");
+    if (!output) throw new Error("usage: baton selection render-bundle --proposal SCOPE=WORKSPACE#PROPOSAL ... --output PATH [--task-label SCOPE/TASK=CHINESE_LABEL] [--assign SCOPE/TASK=ID]");
+    const refs = bundleProposalRefs(many(flags, "proposal"), cwd);
+    const labelsByScope = scopedValues(many(flags, "task-label"), "task-label");
+    const assignmentsByScope = scopedValues(many(flags, "assign"), "assign");
+    const validScopes = new Set(refs.map((ref) => ref.scope));
+    for (const scope of [...labelsByScope.keys(), ...assignmentsByScope.keys()]) {
+      if (!validScopes.has(scope)) throw new Error(`unknown selection bundle scope: ${scope}`);
+    }
+    const inputs: SelectionBundleInput[] = refs.map((ref) => {
+      const proposal = readSelectionProposal(ref.cwd, ref.proposal_id);
+      const taskLabels = chineseTaskLabels(labelsByScope.get(ref.scope) || [], proposal);
+      const suggested = Object.fromEntries(suggestedAssignments(assignmentsByScope.get(ref.scope) || []));
+      return {
+        scope: ref.scope,
+        cwd: ref.cwd,
+        proposal,
+        taskLabels,
+        suggestedAssignments: suggested,
+      };
+    });
+    const artifact = writeSelectionBundle(inputs, output);
+    const result = {
+      source: "bundle",
+      status: "pending_confirmation",
+      proposals: refs.map((ref) => ({ scope: ref.scope, cwd: ref.cwd, proposal_id: ref.proposal_id })),
+      ...artifact,
+    };
+    if (flags.json) stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    else {
+      stdout.write(`${artifact.inline_content_reference}\n`);
+      stdout.write("presentation: one current-conversation selector and one Submit for every bundled proposal\n");
+    }
+    return 0;
+  }
   const id = args[1];
-  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID] [--confirm] [--model ID] [--route TASK=ID]");
+  if (!id) throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID] [--confirm] [--model ID] [--route TASK=ID] [--provider ID]");
   const proposal = readSelectionProposal(cwd, id);
   if (sub === "show") {
     const flags = flagsOf(args.slice(2));
@@ -246,7 +413,7 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
     }
     return 0;
   }
-  if (sub !== "approve") throw new Error("usage: baton selection show|render|approve PROPOSAL [--output PATH] [--task-label TASK=CHINESE_LABEL] [--assign TASK=ID] [--confirm] [--model ID] [--route TASK=ID]");
+  if (sub !== "approve") throw new Error("usage: baton selection show|render|render-bundle|approve ...");
   const flags = flagsOf(args.slice(2));
   if (!flags.confirm) throw new Error("MODEL_SELECTION_NOT_CONFIRMED: --confirm is required only after the user has reviewed the disclosed proposal");
   validateProposal(cwd, proposal);
@@ -254,18 +421,36 @@ export function runSelection(args: string[], { cwd, stdout, cards }: { cwd: stri
     ? approveStandalone(cwd, proposal, cards, flags)
     : approveOpenSpec(cwd, proposal, cards, flags);
   proposal.status = "approved";
-  proposal.approved_at = result.approvals[0]?.approval.approved_at || new Date().toISOString();
+  proposal.approved_at = result.confirmation.confirmed_at;
+  proposal.confirmation = {
+    confirmation_id: result.confirmation.confirmation_id,
+    scope: result.confirmation.scope,
+    confirmed_at: result.confirmation.confirmed_at,
+    selected_provider_ids: result.confirmation.selected_provider_ids,
+    global_provider_ids: result.confirmation.global_provider_ids,
+    unit_keys: result.approvals.map(({ key }) => key),
+  };
   if (!Array.isArray(proposal.history)) proposal.history = [{ event: "pending_confirmation", at: proposal.created_at }];
   proposal.history.push({ event: "approved", at: proposal.approved_at });
   proposal.approvals = result.approvals.map(({ key, approval }) => ({
     key,
     approval_id: approval.approval_id,
+    confirmation_id: approval.confirmation_id,
     recommended_model_id: approval.recommended_model_id,
     selected_model_id: approval.selected_model_id,
     changed_by_user: approval.changed_by_user,
+    selected_provider_ids: approval.selected_provider_ids,
+    global_provider_ids: approval.global_provider_ids,
   }));
   writeSelectionProposal(cwd, proposal);
-  const output = { proposal_id: proposal.id, status: proposal.status, approvals: proposal.approvals, tickets: result.tickets, director_local: result.local };
+  const output = {
+    proposal_id: proposal.id,
+    status: proposal.status,
+    confirmation: proposal.confirmation,
+    approvals: proposal.approvals,
+    tickets: result.tickets,
+    director_local: result.local,
+  };
   if (flags.json) stdout.write(`${JSON.stringify(output, null, 2)}\n`);
   else {
     stdout.write(`approved ${proposal.id}\n`);

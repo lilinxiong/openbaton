@@ -17,12 +17,17 @@ export interface ModelCard {
 export interface ModelSelectionApproval {
   proposal_id: string;
   approval_id: string;
+  confirmation_id?: string;
+  confirmation_scope?: "proposal" | "bundle";
+  unit_key?: string;
   approved_at: string;
   confirmed_by: "user" | "ops-config";
   host_snapshot_id: string;
   recommended_model_id: string | null;
   selected_model_id: string;
   changed_by_user: boolean;
+  selected_provider_ids?: string[];
+  global_provider_ids?: string[];
   ops_profile?: "runner" | "longctx";
   ops_action?: string;
 }

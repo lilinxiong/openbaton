@@ -64,11 +64,12 @@ Usage:
   baton host sync --model EXACT_ROUTE [--profile EXACT_ROUTE=EFFORT,...]  publish complete current Codex host surface
   baton config [--model EXACT_ROUTE] [--runner ROUTE|-] [--longctx ROUTE|-]  project ops routes (.baton.toml)
   baton match <text>                disclose preferred/candidate models without creating work
-  baton spawn <text> [--model ID]   create a model-selection proposal (no ticket)
+  baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  create one request-level model-selection proposal (no ticket)
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
   baton selection show PROPOSAL
-  baton selection render PROPOSAL --output PATH --task-label TASK=中文 [--assign TASK=ID]  return Chinese current-conversation inline-only selector
-  baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
+  baton selection render PROPOSAL --output PATH --task-label TASK=中文 [--assign TASK=ID]  return one Chinese current-conversation selector
+  baton selection render-bundle --proposal SCOPE=WORKSPACE#PROPOSAL ... --output PATH  combine proposals into one Submit
+  baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID] [--provider ID]
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -240,19 +241,51 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
 async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
   const flags = parseFlags(args);
   const text = positionalText(args);
-  if (!text) throw new Error("usage: baton spawn <text> [--model ID]");
+  if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--model ID]");
   const allCards = resolvedCards(cwd, env, runner, resolve);
   const kindFlag = stringFlag(flags, "task-kind");
   if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
     throw new Error("--task-kind must be concrete or deliberative");
+  }
+  const unitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
+  const explicitModel = stringFlag(flags, "model") || null;
+  const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
+  if (unitDefinitions.length) {
+    if (writePathsEarly.length) throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
+    const host = readHostCapabilitySnapshot(cwd);
+    if (!host) throw new Error("HOST_CAPABILITIES_REQUIRED: run baton host sync from the current Codex session before model selection");
+    const source = {
+      source_shape: "multi-unit-v1",
+      description: text,
+      units: unitDefinitions,
+    };
+    const units = unitDefinitions.map((item, index) => buildSelectionUnit({
+      cwd,
+      key: item.key,
+      description: item.description,
+      prompt: item.description,
+      cards: allCards,
+      automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description),
+      host,
+      requestedModelId: explicitModel,
+      directorLocal: directorMayRun(item.description),
+      metadata: { request_index: index },
+    }));
+    const proposal = createSelectionProposal(cwd, {
+      source: "standalone",
+      units,
+      sourceFingerprint: selectionSourceFingerprint(source),
+      payload: source,
+    });
+    if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
+    else printSelectionProposal(stdout, proposal);
+    return 0;
   }
   if (directorMayRun(text)) {
     stdout.write("director-local: tiny unit; no subagent model selection is needed\n");
     stdout.write(`unit: ${text}\n`);
     return 0;
   }
-  const explicitModel = stringFlag(flags, "model") || null;
-  const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (!explicitModel && !writePathsEarly.length) {
     const ops = resolveOpsDispatch(cwd, text, allCards);
     if (ops.kind === "director") {
@@ -501,6 +534,22 @@ function parseTaskRoutes(values: string[]): Map<string, string> {
     routes.set(number, route);
   }
   return routes;
+}
+
+function parseStandaloneUnits(values: string[]): Array<{ key: string; description: string }> {
+  const units: Array<{ key: string; description: string }> = [];
+  const keys = new Set<string>();
+  for (const value of values) {
+    const index = value.indexOf("=");
+    const key = index > 0 ? value.slice(0, index).trim() : "";
+    const description = index > 0 ? value.slice(index + 1).trim() : "";
+    if (!key || !description) throw new Error("--unit must use KEY=BUSINESS_TASK");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(key)) throw new Error(`invalid --unit key: ${key}`);
+    if (keys.has(key)) throw new Error(`duplicate --unit key: ${key}`);
+    keys.add(key);
+    units.push({ key, description });
+  }
+  return units;
 }
 
 function firstPositionalArg(args: string[]): string | null {

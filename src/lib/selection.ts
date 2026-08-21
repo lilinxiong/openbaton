@@ -97,12 +97,23 @@ export interface SelectionProposal {
   policy_exclusions: SubagentModelPolicyExclusion[];
   unavailable_by_provider: Array<{ provider: string; card_count: number; routes: string[]; code: string }>;
   payload: UnknownRecord;
+  confirmation?: {
+    confirmation_id: string;
+    scope: "proposal" | "bundle";
+    confirmed_at: string;
+    selected_provider_ids: string[];
+    global_provider_ids: string[];
+    unit_keys: string[];
+  } | null;
   approvals: Array<{
     key: string;
     approval_id: string;
+    confirmation_id?: string;
     recommended_model_id: string | null;
     selected_model_id: string;
     changed_by_user: boolean;
+    selected_provider_ids?: string[];
+    global_provider_ids?: string[];
   }>;
   history: Array<{ event: "pending_confirmation" | "approved"; at: string }>;
 }
@@ -345,6 +356,7 @@ export function createSelectionProposal(cwd: string, {
     policy_exclusions: policyExclusionSummary(units),
     unavailable_by_provider: unavailableSummary(units),
     payload,
+    confirmation: null,
     approvals: [],
     history: [{ event: "pending_confirmation", at: createdAt }],
   };
@@ -401,6 +413,7 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   }
   if (!Array.isArray(value.quota_pools)) value.quota_pools = proposalQuotaPools(value.units || []);
   if (!Array.isArray(value.task_exclusions)) value.task_exclusions = taskExclusionSummary(value.units || []);
+  if (value.confirmation === undefined) value.confirmation = null;
   return value;
 }
 

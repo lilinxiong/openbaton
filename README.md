@@ -29,9 +29,9 @@ The user talks to Codex as usual. The director runs Baton; the user does not hav
 
 1. **Split the work.** An ordinary request is refined into bounded units with an objective, deliverable, and done condition. Tiny rename or typo work may stay on the director. Implementation, exploration, and similar work always leaves.
 2. **Sync this Codex session.** Before proposing models, Codex publishes the complete current calling-host model and reasoning-effort surface with `baton host sync`. An abbreviated `spawn_agent` override list is not that surface.
-3. **Propose, do not ticket.** `baton spawn` or `baton apply` writes a selection proposal only.
-4. **Disclose and confirm.** The director shows the preferred exact route (when scoring has a unique winner) and every policy-eligible callable candidate. The user must keep or change that choice in this same conversation. Until Submit, ticket count and subagent count stay at zero.
-5. **Mint tickets.** `baton selection approve ... --confirm` creates queued tickets and immutable Delegation Receipts. A changed host snapshot or source task invalidates the proposal.
+3. **Propose once, do not ticket.** One ordinary request becomes one request-level proposal containing all of its bounded units. `baton spawn --unit ...` or `baton apply` writes that proposal only.
+4. **Disclose once and confirm once.** Provider is one global multi-select. Below it, the director shows every candidate and all task assignments together. Multiple workspace proposals from the same front request are rendered as one bundle with one Submit. Until that Submit, ticket count and subagent count stay at zero.
+5. **Mint tickets.** `baton selection approve ... --confirm` creates queued tickets and immutable Delegation Receipts. A bundled Submit binds the same confirmation id and global Provider choice into every proposal. A changed host snapshot or source task invalidates the proposal.
 6. **Dispatch in-process.** Codex reserves with `baton dispatch next`, calls host-native `spawn_agent`, binds the returned agent id, then writes exactly one terminal result. `close_agent` plus `dispatch release` frees the physical slot; FIFO refill follows.
 7. **Keep the front conversation clean.** Concrete workers return one short conclusion. Deliberative workers may checkpoint phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay in the child.
 
@@ -74,7 +74,7 @@ Candidates are grouped by quota pool, not shown as one flat list. Most providers
 
 Quota precedence is `OpenCodex reported > local CodexBar fallback > unknown`. CodexBar is informational, may represent its locally selected account, and never overwrites a reported OpenCodex window or changes provider/auth/route ownership. Baton stores only sanitized percentage/reset windows with a `codexbar:...` source. An unreported quota is never treated as zero or "enough". See [CodexBar quota fallback](docs/data-sources/codexbar.md).
 
-The selector is inline in the current Codex conversation and is presented in Chinese. Codex translates English source tasks into Chinese display labels via `--task-label`; those labels never rewrite the source request, task, or fingerprint. Codex must emit the `inline_content_reference` returned by `baton selection render ... --json` in the same reply. It must not open a browser, navigate to `file://`, show a file link, or create a separate selector surface. If inline rendering is unavailable, the same Chinese disclosure stays as text in this conversation.
+The selector is inline in the current Codex conversation and is presented in Chinese. One request produces one consolidated selector: a global Provider control first, every candidate route/profile second, all tasks grouped by path third, and one Submit last. Multiple workspace proposals use `baton selection render-bundle`. Codex translates English source tasks into Chinese display labels via `--task-label`; those labels never rewrite the source request, task, or fingerprint. Codex must emit the single returned `inline_content_reference` in the same reply. It must not open a browser, navigate to `file://`, show a file link, or create a separate selector surface. If inline rendering is unavailable, the same consolidated Chinese disclosure stays as text in this conversation.
 
 ## Project ops routes
 
@@ -126,12 +126,13 @@ baton capabilities refresh --provider aa --key-file PATH
 baton capabilities status
 baton capabilities show ROUTE [--profile PROFILE]
 
-baton spawn "explore why CI is red"
+baton spawn "explore why CI is red" --unit audit="audit the failures" --unit report="report the findings"
 baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
 baton apply [change] [--route TASK=EXACT_ROUTE]
 baton selection show PROPOSAL
 baton selection render PROPOSAL --output PATH --task-label TASK=LABEL [--json]
-baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID]
+baton selection render-bundle --proposal 'SCOPE=WORKSPACE#PROPOSAL' ... --output PATH --task-label SCOPE/TASK=LABEL [--json]
+baton selection approve PROPOSAL --confirm [--route TASK=ID] [--provider ID] [--global-provider ID] [--confirmation-id ID] [--confirmation-scope proposal|bundle]
 
 baton dispatch next --host codex --capacity N --json
 baton dispatch bind TICKET --agent-id ID --host codex --json

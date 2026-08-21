@@ -78,8 +78,10 @@ process.stdout.write(`${JSON.stringify({
     progress_sequence: ticket.progress?.sequence || 0,
     released: Boolean(ticket.slot_released_at),
     proposal_id: ticket.selection?.proposal_id,
+    confirmation_id: ticket.selection?.confirmation_id,
     user_changed_model: ticket.selection?.changed_by_user,
   })),
+  confirmation_id: proposals[0]?.confirmation?.confirmation_id,
   business_oracle: path.join(samplesDir, "EXPECTED.md"),
 }, null, 2)}\n`);
 
@@ -102,15 +104,21 @@ function verifyQueueRefill(items, runtimeRoot) {
 function verifyModelSelection(items, selections, runtimeRoot) {
   const delegatedUnits = selections.flatMap((proposal) => proposal.units.filter((unit) => !unit.director_local));
   assert(delegatedUnits.length === items.length, `expected ${items.length} disclosed delegated units, got ${delegatedUnits.length}`);
-  assert(selections.length === (mode === "openspec" ? 1 : 5), `unexpected ${mode} proposal count: ${selections.length}`);
+  assert(selections.length === 1, `one business request must create exactly one ${mode} proposal, got ${selections.length}`);
+  assert(selections[0].units.filter((unit) => !unit.director_local).length === 5, `${mode} proposal must aggregate all five delegated units`);
+  if (mode === "standalone") {
+    const sourceRequest = fs.readFileSync(path.join(workspace, "REQUEST.txt"), "utf8").trim();
+    assert(selections[0].payload?.source_shape === "multi-unit-v1", "standalone must use one request-level multi-unit proposal");
+    assert(selections[0].payload?.description === sourceRequest, "standalone proposal must preserve the bootstrap business request byte-for-byte after trimming");
+  }
   assert(selections.every((proposal) => proposal.status === "approved" && proposal.approved_at), "every selection proposal must be user-approved");
+  assert(selections.every((proposal) => proposal.confirmation?.confirmation_id && ["proposal", "bundle"].includes(proposal.confirmation.scope)), "every proposal must persist explicit confirmation scope and id");
+  assert(selections.every((proposal) => proposal.confirmation?.global_provider_ids?.length > 0), "every proposal must persist the global provider choice");
   assert(selections.every((proposal) => proposal.model_policy_id === "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3"), "every proposal must bind the current built-in model policy");
   assert(selections.every((proposal) => ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"].every((family) => proposal.policy_exclusions?.some((item) => item.family === family && item.code === "SUBAGENT_MODEL_FAMILY_FORBIDDEN"))), "every proposal must disclose all forbidden model families");
   assert(selections.every((proposal) => proposal.history?.[0]?.event === "pending_confirmation" && proposal.history?.some((event) => event.event === "approved")), "every proposal must prove pending disclosure before approval");
 
   const byId = new Map(selections.map((proposal) => [proposal.id, proposal]));
-  const selectedProviders = new Set();
-  const callableProviders = new Set();
   for (const proposal of selections) {
     assert(proposal.host_snapshot_id, `${proposal.id} must bind a Codex host snapshot`);
     assert(Array.isArray(proposal.unavailable_by_provider), `${proposal.id} must disclose host-unavailable providers`);
@@ -141,7 +149,6 @@ function verifyModelSelection(items, selections, runtimeRoot) {
         if (candidate.quota.status === "unknown") assert(candidate.quota.reason, `${candidate.model_id} unknown quota needs a reason`);
         else assert(candidate.quota.windows.every((window) => Number.isFinite(window.remaining_percent)), `${candidate.model_id} reported quota needs remaining percentages`);
         assert(candidate.host.code, `${candidate.model_id} must disclose Codex callability`);
-        if (candidate.selectable) callableProviders.add(candidate.provider || "unknown");
       }
     }
   }
@@ -149,20 +156,21 @@ function verifyModelSelection(items, selections, runtimeRoot) {
   for (const ticket of items) {
     const selection = ticket.selection;
     assert(selection?.confirmed_by === "user", `${ticket.id} must carry user model confirmation`);
+    assert(selection.confirmation_id === proposalConfirmation(selections, selection.proposal_id), `${ticket.id} must carry its proposal confirmation id`);
     assert(selection.selected_model_id === ticket.model_id, `${ticket.id} approval must match exact selected model`);
     const proposal = byId.get(selection.proposal_id);
     assert(proposal, `${ticket.id} references missing proposal ${selection.proposal_id}`);
     assert(proposal.host_snapshot_id === selection.host_snapshot_id, `${ticket.id} host snapshot must match its proposal`);
     const approval = proposal.approvals.find((item) => item.approval_id === selection.approval_id);
     assert(approval?.selected_model_id === ticket.model_id, `${ticket.id} proposal approval must match the ticket`);
-    const unit = proposal.units.find((item) => item.key === (mode === "openspec" ? ticket.openspec?.number : "standalone"));
+    const unitKey = selection.unit_key || (mode === "openspec" ? ticket.openspec?.number : null);
+    const unit = proposal.units.find((item) => item.key === unitKey);
     const candidate = unit?.candidates.find((item) => item.model_id === ticket.model_id);
     assert(candidate?.selectable && candidate.host.code === "AVAILABLE", `${ticket.id} selected route must have been disclosed as callable`);
-    selectedProviders.add(candidate.provider || "unknown");
+    assert(proposal.confirmation.global_provider_ids.includes(candidate.provider), `${ticket.id} selected provider must belong to the bundle-level global Provider choice`);
     assert(Date.parse(ticket.created_at) >= Date.parse(proposal.created_at), `${ticket.id} must not predate model disclosure`);
   }
   assert(items.some((ticket) => ticket.selection?.changed_by_user), "at least one ticket must exercise user route choice/override");
-  if (callableProviders.size >= 2) assert(selectedProviders.size >= 2, "select at least two currently callable providers to prove multi-provider dispatch");
 
   const hostSnapshot = path.join(runtimeRoot, "runs", "host-capabilities.json");
   assert(fs.existsSync(hostSnapshot), "current Codex host capability snapshot must be persisted");
@@ -180,6 +188,10 @@ function verifyModelSelection(items, selections, runtimeRoot) {
       assert(selections.some((proposal) => proposal.unavailable_by_provider.some((item) => item.code.includes("HOST_ROUTE_UNAVAILABLE"))), "catalog-only routes must be disclosed as HOST_ROUTE_UNAVAILABLE");
     }
   }
+}
+
+function proposalConfirmation(selections, proposalId) {
+  return selections.find((proposal) => proposal.id === proposalId)?.confirmation?.confirmation_id;
 }
 
 function verifyWorkspace(sampleMode) {

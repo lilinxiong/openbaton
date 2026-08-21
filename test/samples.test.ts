@@ -21,7 +21,7 @@ describe("built-in Baton capability samples", () => {
         assert.ok(fs.existsSync(path.join(dir, name)), `${path.basename(dir)}/${name}`);
       }
       const request = fs.readFileSync(path.join(dir, "REQUEST.txt"), "utf8");
-      assert.doesNotMatch(request, /baton|subagent|dispatch|openspec|route/i);
+      assert.doesNotMatch(request, /baton|subagent|dispatch|openspec|route|model|provider/i);
     }
   });
 
@@ -75,8 +75,13 @@ describe("built-in Baton capability samples", () => {
 
   it("verifies mandatory disclosure, confirmation, user override, and current multi-provider coverage", () => {
     const verifier = fs.readFileSync(path.join(samples, "verify.mjs"), "utf8");
+    const bundleVerifier = fs.readFileSync(path.join(samples, "verify-bundle.mjs"), "utf8");
+    const verifierSuite = `${verifier}\n${bundleVerifier}`;
     for (const marker of [
       "pending_confirmation",
+      "source_shape",
+      "confirmation_id",
+      "global_provider_ids",
       "confirmed_by",
       "changed_by_user",
       "recommended_model_id",
@@ -94,14 +99,17 @@ describe("built-in Baton capability samples", () => {
       "SUBAGENT_MODEL_FAMILY_FORBIDDEN",
       "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3",
       "selectedProviders",
-    ]) assert.match(verifier, new RegExp(marker));
+    ]) assert.match(verifierSuite, new RegExp(marker));
     const expected = fs.readFileSync(path.join(samples, "EXPECTED.md"), "utf8");
-    assert.match(expected, /No ticket exists until the user reviews and confirms/);
+    assert.match(expected, /one proposal containing all of its units/i);
+    assert.match(expected, /one global Provider choice and one confirmation id/i);
     assert.match(expected, /at least two providers/i);
     assert.match(expected, /No `gpt-5\.5`, `gpt-5\.6-sol`, or `gpt-5\.6-terra`/);
     const instructions = fs.readFileSync(path.join(samples, "README.md"), "utf8");
     assert.match(instructions, /Chinese, current-conversation inline-only/);
-    assert.match(instructions, /--task-label TASK=CHINESE_LABEL/);
+    assert.match(instructions, /--task-label SCOPE\/TASK=CHINESE_LABEL/);
+    assert.match(instructions, /baton selection render-bundle/);
+    assert.match(instructions, /one Submit/);
     assert.match(instructions, /never open a browser, navigate to `file:\/\/`/i);
   });
 
