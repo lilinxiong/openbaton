@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
 import { runConfig } from "../src/commands/config.js";
 import { reserveNext } from "../src/lib/dispatch.js";
-import { inferOpsAction } from "../src/lib/ops-task.js";
+import { inferOpsAction, inferOpsActionFromContext } from "../src/lib/ops-task.js";
 import { emptyConfig, loadConfig, saveConfig } from "../src/lib/config.js";
 import type { OpsConfig } from "../src/lib/ops-config.js";
 import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
@@ -16,6 +16,8 @@ import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { normalizeProviderQuotas } from "../src/lib/provider-quotas.js";
 import { configPath } from "../src/lib/paths.js";
 import { readReceipt } from "../src/lib/receipt.js";
+import { listSpawns } from "../src/lib/spawn.js";
+import { listSelectionProposals } from "../src/lib/selection.js";
 import { withHome, fakeEnv } from "./home.js";
 import { parseToml } from "../src/lib/toml.js";
 
@@ -89,6 +91,10 @@ describe("global ops config", () => {
     assert.equal(inferOpsAction("fix $build-app classification"), null);
     assert.equal(inferOpsAction("fix the failing tests"), null);
     assert.equal(inferOpsAction("why is CI red"), null);
+    assert.equal(inferOpsActionFromContext("run the tests", "Android target"), "test");
+    assert.equal(inferOpsActionFromContext("Collect release evidence", "bun test"), "test");
+    assert.equal(inferOpsActionFromContext("run the tests", "bun run build"), null);
+    assert.equal(inferOpsActionFromContext("不要提交", "git commit staged changes"), null);
   });
 
   it("stores empty routes in the shared ~/.baton/config.toml", () => {
@@ -227,6 +233,79 @@ describe("global ops config", () => {
     });
   });
 
+  it("inherits a request-level ops action across structured standalone units", async () => {
+    await withHome(async (home) => {
+      const cwd = setupOpsWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "run the tests",
+        "--unit", "android=Android target",
+        "--unit", "ios=iOS target",
+        "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.equal(result.proposal, null);
+      assert.deepEqual(result.dispatched.map((item: { key: string }) => item.key), ["android", "ios"]);
+      assert.ok(result.dispatched.every((item: { ticket: { route_id: string } }) => item.ticket.route_id === "mimo/mimo-v2.5-pro"));
+      assert.match(result.dispatched[0].ticket.prompt, /run the tests/);
+      assert.match(result.dispatched[0].ticket.prompt, /Work unit android: Android target/);
+      assert.equal(listSelectionProposals(cwd).length, 0);
+    });
+  });
+
+  it("routes mechanical structured units and keeps the remaining units in one proposal", async () => {
+    await withHome(async (home) => {
+      const cwd = setupOpsWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "Collect release evidence",
+        "--unit", "test=bun test",
+        "--unit", "report=Produce the final evidence-backed report",
+        "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.deepEqual(result.dispatched.map((item: { key: string }) => item.key), ["test"]);
+      assert.deepEqual(result.proposal.units.map((unit: { key: string }) => unit.key), ["report"]);
+      assert.equal(result.proposal.payload.source_shape, "multi-unit-v1");
+      assert.equal(listSpawns(cwd).length, 1);
+      assert.equal(listSelectionProposals(cwd).length, 1);
+    });
+  });
+
+  it("keeps conflicting request and unit actions behind ordinary model selection", async () => {
+    await withHome(async (home) => {
+      const cwd = setupOpsWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "mimo/mimo-v2.5-pro", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "run the tests",
+        "--unit", "build=bun run build",
+        "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      const proposal = JSON.parse(out.text());
+      assert.equal(proposal.status, "pending_confirmation");
+      assert.deepEqual(proposal.units.map((unit: { key: string }) => unit.key), ["build"]);
+      assert.equal(listSpawns(cwd).length, 0);
+    });
+  });
+
   it("fails closed when a configured ops route is absent from the synced OpenCodex snapshot", async () => {
     await withHome(async (home) => {
       const cwd = setupOpsWorkspace();
@@ -343,6 +422,53 @@ describe("global ops config", () => {
       assert.equal(reserved.reserved[0].mode, "commit-only");
       assert.equal(reserved.reserved[0].commit_authorization.expected_head, receipt.commit_baseline.head);
       assert.equal(reserved.reserved[0].commit_authorization.expected_tree, receipt.commit_baseline.staged_tree);
+    });
+  });
+
+  it("routes a structured commit unit through configured longctx without a selector", async () => {
+    await withHome(async (home) => {
+      const cwd = setupCommitWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "kimi/k3[1m]", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "提交吧。",
+        "--unit", "COMMIT_PLAN=仅提交已精确暂存的方案文件并生成中文提交信息",
+        "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.equal(result.proposal, null);
+      assert.equal(result.dispatched.length, 1);
+      assert.equal(result.dispatched[0].key, "COMMIT_PLAN");
+      assert.equal(result.dispatched[0].ticket.route_id, "kimi/k3[1m]");
+      assert.equal(result.dispatched[0].ticket.mode, "commit-only");
+      assert.equal(result.dispatched[0].ticket.selection.confirmed_by, "ops-config");
+      assert.equal(listSelectionProposals(cwd).length, 0);
+    });
+  });
+
+  it("rejects multiple structured commit-only units before creating tickets", async () => {
+    await withHome(async (home) => {
+      const cwd = setupCommitWorkspace();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      saveOpsConfig(cwd, env, {
+        runner: { route: "", actions: ["test", "build", "lint", "typecheck"] },
+        longctx: { route: "kimi/k3[1m]", actions: ["search", "digest", "git-summarize", "git-commit"] },
+      });
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "提交吧",
+        "--unit", "first=提交第一部分",
+        "--unit", "second=提交第二部分",
+      ], { cwd, env, stdout: out, stderr: out }), 1);
+      assert.match(out.text(), /MULTIPLE_COMMIT_UNITS/);
+      assert.equal(listSpawns(cwd).length, 0);
+      assert.equal(listSelectionProposals(cwd).length, 0);
     });
   });
 

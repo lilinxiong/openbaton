@@ -207,6 +207,7 @@ export function buildSpawnTicket({
  */
 interface PlanStandaloneOptions {
   description: string;
+  prompt?: string | null;
   cards: ModelCard[];
   explicitModel?: string | null;
   queue?: unknown;
@@ -215,14 +216,15 @@ interface PlanStandaloneOptions {
   deliverable?: string | null;
   doneWhen?: string | null;
   selectionApproval?: ModelSelectionApproval | null;
+  forceDelegate?: boolean;
 }
 
 export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
   | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
-export function planStandaloneSpawn({ description, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null }: PlanStandaloneOptions): StandalonePlan {
-  if (directorMayRun(description)) {
+export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, forceDelegate = false }: PlanStandaloneOptions): StandalonePlan {
+  if (!forceDelegate && directorMayRun(description)) {
     return {
       director_local: true,
       reason: "tiny unit; director can do it without polluting context",
@@ -237,7 +239,7 @@ export function planStandaloneSpawn({ description, cards, explicitModel, queue, 
   const ticket = buildSpawnTicket({
     id,
     description,
-    prompt: description,
+    prompt: prompt || description,
     modelId: card.id,
     routeId: card.route_id || null,
     reasoningEffort: card.reasoning_effort || null,

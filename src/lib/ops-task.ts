@@ -41,3 +41,20 @@ export function inferOpsAction(description: unknown): OpsAction | null {
   if (hits.length !== 1) return null;
   return hits[0].action;
 }
+
+/**
+ * Resolve one structured unit without making the CLI input shape part of the
+ * routing policy. A unit-specific action is used when present, while one
+ * request-level action supplies context for concise units such as "Android"
+ * or "iOS". Conflicts and explicit no-commit constraints stay fail-closed.
+ */
+export function inferOpsActionFromContext(requestDescription: unknown, unitDescription: unknown): OpsAction | null {
+  const requestText = String(requestDescription || "").trim();
+  const unitText = String(unitDescription || "").trim();
+  const requestAction = inferOpsAction(requestText);
+  const unitAction = inferOpsAction(unitText);
+  if (requestAction && unitAction && requestAction !== unitAction) return null;
+  const action = unitAction || requestAction;
+  if (action === "git-commit" && (NO_COMMIT.test(requestText) || NO_COMMIT.test(unitText))) return null;
+  return action;
+}

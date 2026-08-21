@@ -37,8 +37,8 @@ Baton 把每个 unit 变成可路由、可审计的 ticket。不同 worker 可�
 
 1. **拆工作。** 普通请求先收成有 objective / deliverable / done condition 的具体 unit。很小的 rename、typo 可以由 director 自己做；实施、探索一类工作必须离开。
 2. **Baton 按需同步一次。** OpenCodex 负责自身 runtime / provider 同步。Baton 只在本地 snapshot 缺失、过期或用户明确要求时，从 OpenCodex 刷新一次 route / profile / quota snapshot；不再做 per-session host sync。
-3. **一次出 proposal，不出 ticket。** 一次普通请求只生成一个 request-level proposal，里面汇总所有有边界的工作单元。`baton spawn --unit ...` 或 `baton apply` 此时只写 proposal。
-4. **一次披露、一次确认。** Provider 是整次请求的一个全局多选；下面统一展示全部候选和全部任务分配。同一前台请求涉及多个 workspace 时，把各自 proposal 合成一个 bundle，只保留一个 Submit。Submit 之前，ticket 数和 subagent 数都是 0。
+3. **先按 unit 路由，再进入选择。** CLI 输入形状不参与路由策略。Baton 用每个 unit 自身描述和未改写的 request 上下文共同判断；命中全局配置的机械 unit 可以直接生成 ops-config ticket，其余普通 unit 仍汇总为一份 request-level proposal。
+4. **一次披露、一次确认。** Provider 是整次请求的一个全局多选；下面统一展示全部候选和全部任务分配。同一前台请求涉及多个 workspace 时，把各自 proposal 合成一个 bundle，只保留一个 Submit。selector 里的 unit 在 Submit 前不能生成 ticket 或 subagent；另行披露的全局配置 ops 可以通过 `confirmed_by=ops-config` 已经排队或运行。
 5. **才铸 ticket。** `baton selection approve ... --confirm` 创建 queued ticket 和不可变 Delegation Receipt。bundle Submit 会把同一个 confirmation id 和全局 Provider 选择写入全部 proposal。OpenCodex catalog snapshot 或源任务变化会使旧 proposal 失效。
 6. **进程内 dispatch。** Codex 用 `baton dispatch next` 预留，调用 host-native `spawn_agent`，bind 返回的 agent id，然后只写一次终态。`close_agent` 再加 `dispatch release` 才释放物理槽位，FIFO 补位。
 7. **按活动性等待，不按耗时判死。** 有界 `wait_agent` 窗口只用于轮询。用 `baton dispatch probe` 持久化 exact agent 的 host 状态；只要仍是 `pending_init` / `running`，或者有 output / heartbeat，就无限续等同一 ticket。业务 progress 单独保存。只有最新匹配 probe 为 `not_found` 并提供其 sequence，才允许 timeout。
@@ -95,6 +95,8 @@ Quota 优先级是 `OpenCodex reported > 本机 CodexBar fallback > unknown`。C
 | `longctx` | 检索 / 消化 / git-summarize，以及提交已 staged 的精确变更集；大约需要 1M 上下文 | 由 director 自己跑 |
 
 `baton config` 直接通过 OpenCodex 刷新 route / quota snapshot，列出符合 policy 的可执行 route，并交互写入全局选择；它不依赖 Codex session snapshot。Dispatch 只校验配置 route 仍存在于已同步 OpenCodex snapshot，不存在时返回 `OPS_ROUTE_UNAVAILABLE`。它不会 inherit 父模型。要等 worker 结论，包括命令失败。
+
+`spawn` 会逐个 work unit 解析 ops，`--unit` 只表达结构，不再强制进入 selector。unit 自身动作与无歧义的 request 级动作可以互相补充上下文；两者冲突时仍走普通模型选择。显式 `--model` 始终关闭 ops-config 自动路由。混合请求可以先派发已配置的机械 unit，再把剩余 unit 合并到一张 selector；同一请求最多只能创建一个 `commit-only` unit。
 
 单纯“写 commit message”仍是只读 `git-summarize`。真正的“提交吧 / `git commit staged changes`”会创建独占的 `commit-only` ticket：director 必须先完成精确 staging，Receipt 冻结 parent HEAD、staged tree、路径、refs 和 reflog；worker 只能读取 Git 证据并执行一次 `git commit`，不能 `add`、`amend`、切分支、rebase、tag 或 push。所有终态都由 director 复验 commit parent/tree、refs、reflog、index 和工作区。普通 write worker 仍禁止任何 Git mutation。
 

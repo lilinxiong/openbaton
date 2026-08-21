@@ -11,7 +11,7 @@ import { loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
-import { authorizeCommitOpsPlan, resolveOpsDispatch } from "./lib/ops-dispatch.js";
+import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
@@ -62,7 +62,7 @@ Usage:
   baton cards [--ranked|--unranked] [--provider ID] [--json]
   baton config [--runner ROUTE|-] [--longctx ROUTE|-]  choose global ops routes from OpenCodex (~/.baton/config.toml)
   baton match <text>                disclose preferred/candidate models without creating work
-  baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  create one request-level model-selection proposal (no ticket)
+  baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  route configured ops units; propose the remaining units once
   baton apply [change] [--route TASK=EXACT_ROUTE]  create an OpenSpec selection proposal
   baton selection show PROPOSAL
   baton selection render PROPOSAL --output PATH --task-label TASK=中文 [--assign TASK=ID]  return one Chinese current-conversation selector
@@ -251,25 +251,86 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       description: text,
       units: unitDefinitions,
     };
-    const units = unitDefinitions.map((item, index) => buildSelectionUnit({
-      cwd,
-      key: item.key,
-      description: item.description,
-      prompt: item.description,
-      cards: allCards,
-      automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description),
-      requestedModelId: explicitModel,
-      directorLocal: directorMayRun(item.description),
-      metadata: { request_index: index },
+    const resolved = unitDefinitions.map((item, index) => ({
+      item,
+      index,
+      ops: explicitModel
+        ? { kind: "not-ops" } as OpsResolution
+        : resolveOpsUnitDispatch(cwd, text, item.description, allCards, { env }),
     }));
-    const proposal = createSelectionProposal(cwd, {
+    for (const { item, ops } of resolved) {
+      if (ops.kind === "unavailable") throw new Error(`${item.key}: ${ops.reason}`);
+    }
+    const commitUnits = resolved.filter(({ ops }) => ops.kind !== "not-ops" && ops.action === "git-commit");
+    if (commitUnits.length > 1) {
+      throw new Error(`MULTIPLE_COMMIT_UNITS: one request may contain only one commit-only unit (${commitUnits.map(({ item }) => item.key).join(", ")})`);
+    }
+
+    const units = [];
+    const dispatched = [];
+    const local = [];
+    const skipped = [];
+    for (const { item, index, ops } of resolved) {
+      if (ops.kind === "director") {
+        local.push({ key: item.key, action: ops.action, reason: ops.reason });
+        continue;
+      }
+      if (ops.kind === "empty-index") {
+        skipped.push({ key: item.key, action: ops.action, reason: "empty index, nothing to commit" });
+        continue;
+      }
+      if (ops.kind === "dispatch") {
+        let planned = planStandaloneSpawn({
+          description: item.description,
+          prompt: `${text}\n\nWork unit ${item.key}: ${item.description}`,
+          cards: allCards,
+          explicitModel: ops.card.id,
+          cwd,
+          taskKind: ops.action === "git-commit" ? "concrete" : kindFlag === "deliberative" ? "deliberative" : "concrete",
+          selectionApproval: ops.approval,
+          forceDelegate: true,
+        });
+        if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
+        const ticket = persistStandalonePlan(cwd, planned);
+        dispatched.push({ key: item.key, action: ops.action, profile: ops.profile, ticket });
+        continue;
+      }
+      units.push(buildSelectionUnit({
+        cwd,
+        key: item.key,
+        description: item.description,
+        prompt: item.description,
+        cards: allCards,
+        automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description),
+        requestedModelId: explicitModel,
+        directorLocal: directorMayRun(item.description),
+        metadata: { request_index: index },
+      }));
+    }
+    const proposal = units.length ? createSelectionProposal(cwd, {
       source: "standalone",
       units,
       sourceFingerprint: selectionSourceFingerprint(source),
       payload: source,
-    });
-    if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
-    else printSelectionProposal(stdout, proposal);
+    }) : null;
+    if (flags.json) {
+      const handled = dispatched.length || local.length || skipped.length;
+      stdout.write(`${JSON.stringify(proposal && !handled
+        ? proposal
+        : {
+          proposal,
+          dispatched: dispatched.map((item) => ({ key: item.key, action: item.action, profile: item.profile, ticket: item.ticket })),
+          director_local: local,
+          skipped,
+        }, null, 2)}\n`);
+    } else {
+      for (const item of dispatched) {
+        stdout.write(`ops-dispatch ${item.key}: ${item.profile} ${item.action}${item.action === "git-commit" ? " (commit-only)" : ""} → ${item.ticket.model_id} (${item.ticket.id})\n`);
+      }
+      for (const item of local) stdout.write(`director-local ${item.key}: ${item.action}; ${item.reason}\n`);
+      for (const item of skipped) stdout.write(`ops-skip ${item.key}: ${item.action}; ${item.reason}\n`);
+      if (proposal) printSelectionProposal(stdout, proposal);
+    }
     return 0;
   }
   if (directorMayRun(text)) {

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { canonicalWorkspaceRoot } from "./paths.js";
 import { loadConfig } from "./config.js";
 import { configuredRoute, type OpsAction, type OpsProfileId } from "./ops-config.js";
-import { inferOpsAction } from "./ops-task.js";
+import { inferOpsAction, inferOpsActionFromContext } from "./ops-task.js";
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
 import { readRouteSnapshot } from "./routes.js";
 import { buildCommitReceipt } from "./receipt.js";
@@ -54,6 +54,26 @@ export function resolveOpsDispatch(
   { env }: { env?: NodeJS.ProcessEnv } = {},
 ): OpsResolution {
   const action = inferOpsAction(description);
+  return resolveOpsActionDispatch(cwd, action, cards, { env });
+}
+
+export function resolveOpsUnitDispatch(
+  cwd: string,
+  requestDescription: unknown,
+  unitDescription: unknown,
+  cards: ModelCard[],
+  { env }: { env?: NodeJS.ProcessEnv } = {},
+): OpsResolution {
+  const action = inferOpsActionFromContext(requestDescription, unitDescription);
+  return resolveOpsActionDispatch(cwd, action, cards, { env });
+}
+
+function resolveOpsActionDispatch(
+  cwd: string,
+  action: OpsAction | null,
+  cards: ModelCard[],
+  { env }: { env?: NodeJS.ProcessEnv } = {},
+): OpsResolution {
   if (!action) return { kind: "not-ops" };
   if (action === "git-commit" && !hasStagedDiff(cwd)) return { kind: "empty-index", action };
   const configured = configuredRoute(loadConfig(cwd, { env }).ops, action);
