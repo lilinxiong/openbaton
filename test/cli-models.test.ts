@@ -9,6 +9,7 @@ import {
   discoverGrokModels,
   normalizeCodexModels,
   normalizeGrokModels,
+  parseGrokModelText,
   resolveCodexCommand,
   resolveGrokCommand,
 } from "../src/lib/cli-models.js";
@@ -101,6 +102,15 @@ function fakeSpawn(handler: (args: string[]) => { code: number; stdout?: string;
   }) as typeof import("node:child_process").spawn;
 }
 
+const GROK_MODELS_TEXT = `You are logged in with grok.com.
+
+Default model: grok-4.6
+
+Available models:
+  * grok-4.6 (default)
+  - grok-4.5
+`;
+
 describe("Grok CLI model adapter", () => {
   it("normalizes array, data, and models envelopes without inventing ids", () => {
     const sample = [
@@ -142,41 +152,48 @@ describe("Grok CLI model adapter", () => {
     assert.equal(resolveGrokCommand({ PATH: "", HOME: "", BATON_GROK_PATH: "/missing/grok" }), null);
   });
 
-  it("discovers models from grok models --json", async () => {
+  it("parses official grok models text and does not invent ids from login prose", () => {
+    const models = parseGrokModelText(GROK_MODELS_TEXT);
+    assert.deepEqual(models.map((model) => model.id), ["grok-4.6", "grok-4.5"]);
+    assert.equal(models[0].is_default, true);
+    assert.equal(models[1].is_default, false);
+    assert.throws(() => parseGrokModelText("You are logged in with grok.com.\n"), /no model ids/);
+  });
+
+  it("parses unmarked ids only inside the Available models section", () => {
+    const models = parseGrokModelText("You are logged in with grok.com.\n\nAvailable models:\n  grok-4.6 (default)\n  my-custom\n");
+    assert.deepEqual(models.map((model) => model.id), ["grok-4.6", "my-custom"]);
+    assert.equal(models[0].is_default, true);
+  });
+
+  it("accepts JSON stdout from grok models when the CLI emits it", () => {
+    const models = parseGrokModelText(JSON.stringify({ models: [{ id: "grok-4.6", name: "Grok 4.6" }] }));
+    assert.deepEqual(models.map((model) => model.id), ["grok-4.6"]);
+    assert.equal(models[0].display_name, "Grok 4.6");
+  });
+
+  it("discovers models from grok models without passing --json", async () => {
+    const calls: string[] = [];
     const catalog = await discoverGrokModels({
       command: "/bin/grok",
       spawnImpl: fakeSpawn((args) => {
-        if (args[0] === "models" && args[1] === "--json") {
-          return { code: 0, stdout: JSON.stringify({ models: [{ id: "grok-4.6", name: "Grok 4.6" }] }) };
-        }
-        if (args[0] === "version") return { code: 0, stdout: "grok 1.2.3\n" };
+        calls.push(args.join(" "));
+        if (args[0] === "models") return { code: 0, stdout: GROK_MODELS_TEXT };
+        if (args[0] === "version") return { code: 0, stdout: "grok 1.0.8 (95f4d452703b)\n" };
         return { code: 1, stderr: "unexpected" };
       }),
     });
     assert.equal(catalog.cli, "grok");
-    assert.equal(catalog.version, "grok 1.2.3");
-    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.6"]);
-  });
-
-  it("falls back to grok models text when --json fails", async () => {
-    const catalog = await discoverGrokModels({
-      command: "/bin/grok",
-      spawnImpl: fakeSpawn((args) => {
-        if (args[0] === "models" && args[1] === "--json") return { code: 2, stderr: "unknown flag" };
-        if (args[0] === "models") return { code: 0, stdout: "Available models:\n  grok-4.6 (default)\n  my-custom\n" };
-        if (args[0] === "version") return { code: 0, stdout: "1.0.0" };
-        return { code: 1 };
-      }),
-    });
-    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.6", "my-custom"]);
-    assert.equal(catalog.models[0].is_default, true);
+    assert.equal(catalog.version, "grok 1.0.8 (95f4d452703b)");
+    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.6", "grok-4.5"]);
+    assert.deepEqual(calls.filter((call) => call.startsWith("models")), ["models"]);
   });
 
   it("routes discoverCliModels(grok) through discoverGrokModels", async () => {
     const catalog = await discoverCliModels("grok", {
       command: "/bin/grok",
       spawnImpl: fakeSpawn((args) => {
-        if (args.join(" ") === "models --json") return { code: 0, stdout: JSON.stringify([{ id: "grok-4.5" }]) };
+        if (args[0] === "models") return { code: 0, stdout: JSON.stringify([{ id: "grok-4.5" }]) };
         if (args[0] === "version") return { code: 1, stderr: "no" };
         return { code: 1 };
       }),

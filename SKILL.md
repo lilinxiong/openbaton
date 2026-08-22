@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use this Codex director automatically for approved Goal or multi-model execution and configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or commit-only staged work. Skip ordinary discussion and tasks needing neither delegation nor ops routing."
+description: "Use this director automatically for approved Goal or multi-model execution and configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or commit-only staged work. Skip ordinary discussion and tasks needing neither delegation nor ops routing."
 ---
 
 # baton
@@ -15,7 +15,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 
 ## Model and configuration contract
 
-1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` (prefer `--json`, else parse reported ids) and stores exactly that surface. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p`.
+1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` and stores exactly the listed picker-visible ids (JSON stdout if Grok emits it; otherwise the Available models listing). Never invent ids from login or prose lines. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p`.
 
 2. **Configuration is per CLI and user-global.** Store the active CLI, enabled flag, runner label, longctx label, and subagent_models allowlist in ~/.baton/config.toml under [cli] and [cli.<id>].
    - runner and longctx are routing labels only. They do not claim speed, context-window size, or any other capability.
@@ -38,7 +38,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 
 ## Execution contract
 
-8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. The host reserves with baton dispatch next, calls its native spawn_agent with the exact model, supported effort when present, selected service_tier when non-null and exposed by the host, and fork_context=false, then binds the returned agent id. If the host cannot express a selected tier, report that execution option as unavailable instead of silently claiming Fast mode. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
+8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. The host reserves with baton dispatch next, then calls its native subagent tool: Codex `spawn_agent`, Grok `spawn_subagent`. Pass the exact model. Pass a supported effort or selected service_tier only when the host tool can express them; otherwise report that option as unavailable instead of silently claiming it. Grok must pass `spawn_subagent.model` (omitting it inherits the parent model). fork_context=false: Grok does not pass `resume_from`. Then bind the returned agent id. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
 
 9. **Read-only by default.** Writes require an explicit path/operation allowlist and a parent Git safety audit. Ordinary workers never mutate Git. The only exception is an exclusive commit-only Receipt: the parent stages and freezes the exact tree first, and the worker may perform exactly one git commit. It may not edit, add, amend, switch, branch, merge, rebase, cherry-pick, revert, tag, stash, clean, or push.
 
@@ -55,7 +55,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 1. Run baton config once or whenever the selected CLI picker surface changes.
 2. Plan with baton spawn or baton apply; Baton automatically records the chosen configured model and effort.
 3. Reserve with baton dispatch next --host HOST --capacity N --json (HOST is `codex` or `grok`).
-4. Spawn every reservation through the native host tool using the returned exact model, optional effort, optional service_tier when the host exposes it, fork_context=false, and the self-contained prompt. Grok hosts use native spawn, never `grok -p`.
+4. Spawn every reservation through the native host tool using the returned exact model, optional effort, optional service_tier when the host exposes it, fork_context=false, and the self-contained prompt. Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`.
 5. Bind with baton dispatch bind TICKET --agent-id ID --host HOST --json.
 6. Probe and wait until terminal; record success or failure through dispatch complete, fail, timeout, or close.
 7. Close the native agent, then run baton dispatch release; refill from FIFO.

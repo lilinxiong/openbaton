@@ -8,6 +8,16 @@ export const HOST_IDS = ["codex", "grok"] as const;
 
 export type HostId = (typeof HOST_IDS)[number];
 
+export function isHostId(value: string): value is HostId {
+  return (HOST_IDS as readonly string[]).includes(value);
+}
+
+export function parseHostId(value: string): HostId {
+  const host = String(value || "").trim().toLowerCase();
+  if (isHostId(host)) return host;
+  throw new Error(`invalid host: ${value || "<empty>"} (expected ${HOST_IDS.join("|")})`);
+}
+
 export const HOST_SKILL_REL: Record<HostId, string> = {
   codex: ".codex/skills/baton/SKILL.md",
   grok: ".grok/skills/baton/SKILL.md",

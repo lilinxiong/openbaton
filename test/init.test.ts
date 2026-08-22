@@ -29,9 +29,12 @@ describe("Codex init and update", () => {
         assert.match(skill, /OpenCodex/);
       }
       assert.match(grokSkill, /grok models/);
+      assert.match(grokSkill, /spawn_subagent/);
       assert.match(grokSkill, /--host grok/);
       assert.match(grokSkill, /grok -p/);
+      assert.doesNotMatch(grokSkill, /models --json/);
       assert.match(directorSkill, /Codex and Grok|adapters are Codex and Grok/i);
+      assert.match(directorSkill, /spawn_subagent/);
 
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.active, "codex");

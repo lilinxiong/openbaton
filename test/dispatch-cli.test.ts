@@ -212,4 +212,29 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(timedOut.stdout).ticket.status, "timed_out");
     });
   });
+
+  it("defaults dispatch host to the active CLI and rejects unknown hosts", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-host-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+
+      const first = await command(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env });
+      assert.equal(first.code, 0, first.stderr);
+      const firstTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
+      assert.equal(firstTicket.dispatch_host, "codex");
+
+      const second = await command(["dispatch", "next", "--host", "grok", "--capacity", "2", "--json"], { cwd, env });
+      assert.equal(second.code, 0, second.stderr);
+      const secondTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0002.json"), "utf8"));
+      assert.equal(secondTicket.dispatch_host, "grok");
+
+      const bad = await command(["dispatch", "next", "--host", "claude", "--capacity", "1", "--json"], { cwd, env });
+      assert.equal(bad.code, 1);
+      assert.match(bad.stderr, /invalid host/);
+    });
+  });
 });

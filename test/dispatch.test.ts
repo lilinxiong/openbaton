@@ -299,6 +299,17 @@ describe("reserveNext", () => {
       assert.equal(readTicket(cwd, `t-forbidden-${index}`).status, "dispatching");
     }
   });
+
+  it("accepts grok as a dispatch host and rejects unknown hosts", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1);
+    const reserved = reserveNext(cwd, { capacity: 1, host: "grok", now: at(10) });
+    assert.equal(readTicket(cwd, reserved.reserved[0].ticket_id).dispatch_host, "grok");
+    expectDispatchError(
+      () => reserveNext(cwd, { capacity: 1, host: "claude", now: at(20) }),
+      "INVALID_HOST",
+    );
+  });
 });
 
 describe("bindAgent", () => {
@@ -351,7 +362,7 @@ describe("bindAgent", () => {
       "AGENT_ID_REQUIRED",
     );
     expectDispatchError(
-      () => bindAgent(cwd, "t-0001", { agentId: "agent-x", host: "kimi", now: at(20) }),
+      () => bindAgent(cwd, "t-0001", { agentId: "agent-x", host: "grok", now: at(20) }),
       "HOST_MISMATCH",
     );
     assert.equal(readTicket(cwd, "t-0001").status, "dispatching");

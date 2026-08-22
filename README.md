@@ -19,7 +19,7 @@ Chinese: [README.zh.md](README.zh.md)
 Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. Adapters are Codex and Grok:
 
 1. baton config asks which CLI to configure.
-2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` (prefer `--json`) and keeps only reported ids.
+2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` and keeps only listed ids (JSON stdout if Grok emits it; otherwise the Available models listing, ignoring login/prose lines).
 3. Baton displays exactly the picker-visible models returned by that CLI.
 4. The user assigns optional runner and longctx labels, chooses the models subagents may call, and enables or disables that CLI profile.
 5. Later work is routed automatically within that configured candidate set. There is no runtime model selector or model confirmation.
@@ -112,7 +112,7 @@ The Baton CLI creates tickets and lifecycle state; only the selected host (Codex
 
 1. baton spawn or baton apply creates automatically routed tickets and immutable Receipts.
 2. The host reserves work with baton dispatch next.
-3. The host calls native spawn_agent with the exact model, supported reasoning effort and selected service tier when present and exposed by the host, and fork_context=false. A host that cannot express a selected tier reports it instead of silently claiming Fast mode.
+3. The host calls its native subagent tool (Codex `spawn_agent`, Grok `spawn_subagent`) with the exact model, plus supported reasoning effort and selected service tier only when the host tool can express them, and fork_context=false. A host that cannot express a selected option reports it instead of silently claiming it. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
 4. The host binds the returned agent id, persists activity and progress, and records exactly one terminal result.
 5. The host closes the native agent and runs dispatch release before refilling FIFO.
 

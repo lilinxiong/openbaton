@@ -19,7 +19,7 @@ English: [README.md](README.md)
 Baton 不再绑定 OpenCodex。模型发现归 CLI adapter；当前实现的是 Codex 与 Grok adapter：
 
 1. baton config 先让用户选择要配置的 CLI。
-2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。选择 Grok 后，Baton 运行 `grok models`（优先 `--json`），只保留 CLI 报告的 id。
+2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。选择 Grok 后，Baton 运行 `grok models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。
 3. 所选 CLI picker 返回什么，配置界面就完整显示什么。
 4. 用户设置可选的 runner、longctx 标签，选择允许 subagent 调用的模型，并决定是否启用这个 CLI 配置。
 5. 之后 Baton 只在这个候选集合内自动匹配，不再出现运行时模型选择器，也不需要用户确认模型。
@@ -112,7 +112,7 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Gr
 
 1. baton spawn 或 baton apply 创建已自动路由的 ticket 和不可变 Receipt。
 2. host 用 baton dispatch next 预留任务。
-3. host 调用原生 spawn_agent，传精确模型、存在时传已支持的 reasoning effort，以及 host 暴露时传自动选择的 service tier，并使用 fork_context=false。若 host 无法表达这个 tier，必须报告该执行选项不可用，不能静默声称已启用 Fast。
+3. host 调用原生 subagent 工具（Codex `spawn_agent`，Grok `spawn_subagent`），传精确模型；仅在 host 工具能表达时才传 reasoning effort 和 service tier；fork_context=false。Grok 必须传 `spawn_subagent.model`，省略会继承 parent 模型。若 host 无法表达某个已选项，必须报告该执行选项不可用，不能静默声称已启用。
 4. host 绑定 agent id，记录活动和进度，并只写一个终态。
 5. host 关闭原生 agent，执行 dispatch release 后再从 FIFO 补位。
 

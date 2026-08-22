@@ -269,6 +269,25 @@ export function resolveGrokCommand(env: NodeJS.ProcessEnv = process.env): string
   return findBinaryOnPath("grok", env);
 }
 
+const GROK_MODEL_ID = /^[A-Za-z][A-Za-z0-9._:/-]*$/;
+
+function grokModelStub(id: string, extras: Partial<Pick<CliModel, "display_name" | "description" | "is_default">> = {}): CliModel {
+  return {
+    id,
+    model: id,
+    display_name: extras.display_name || id,
+    description: extras.description || "",
+    hidden: false,
+    reasoning_efforts: [],
+    default_reasoning_effort: null,
+    input_modalities: [],
+    additional_speed_tiers: [],
+    service_tiers: [],
+    default_service_tier: null,
+    is_default: extras.is_default === true,
+  };
+}
+
 /** Normalize `grok models` JSON without inventing models. */
 export function normalizeGrokModels(value: unknown): CliModel[] {
   const envelope = record(value);
@@ -301,39 +320,74 @@ export function normalizeGrokModels(value: unknown): CliModel[] {
   return [...byId.values()];
 }
 
-function parseGrokModelText(stdout: string): CliModel[] {
+function parseGrokModelEntry(text: string): { id: string; is_default: boolean; description: string } | null {
+  const match = text.trim().match(/^([A-Za-z][A-Za-z0-9._:/-]*)(?:\s+\(([^)]*)\))?(?:\s+[—–-]\s+(.+))?\s*$/);
+  if (!match || !GROK_MODEL_ID.test(match[1])) return null;
+  const id = match[1];
+  const note = (match[2] || "").trim();
+  const rest = (match[3] || "").trim();
+  const is_default = /\bdefault\b/i.test(note) || /\bdefault\b/i.test(rest);
+  const description = rest || (note && !/\bdefault\b/i.test(note) ? note : "");
+  return { id, is_default, description };
+}
+
+/**
+ * Parse `grok models` stdout. Official grok prints a text listing; JSON is
+ * accepted when the CLI emits it. Login/prose lines are not model ids.
+ */
+export function parseGrokModelText(stdout: string): CliModel[] {
   const trimmed = stdout.trim();
   if (!trimmed) throw new Error("Grok models text was empty");
   try {
     return normalizeGrokModels(JSON.parse(trimmed));
-  } catch (error) {
-    if (!(error instanceof SyntaxError) && !(error instanceof Error && /envelope|array/.test(error.message))) {
-      /* keep scanning text */
-    }
+  } catch {
+    /* Official grok prints a text listing, not JSON. */
   }
   const byId = new Map<string, CliModel>();
+  let defaultId: string | null = null;
+  let inAvailable = false;
+  let availableHadContent = false;
+
+  const add = (entry: { id: string; is_default: boolean; description: string }) => {
+    const previous = byId.get(entry.id);
+    byId.set(entry.id, grokModelStub(entry.id, {
+      description: entry.description || previous?.description || "",
+      is_default: Boolean(previous?.is_default || entry.is_default || entry.id === defaultId),
+    }));
+  };
+
   for (const rawLine of trimmed.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const stripped = line.replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, "");
-    const token = stripped.split(/\s+/)[0]?.replace(/[,:;]+$/, "") || "";
-    if (!/^[A-Za-z][A-Za-z0-9._:/-]*$/.test(token)) continue;
-    if (["available", "models", "model", "name", "id", "default"].includes(token.toLowerCase())) continue;
-    if (byId.has(token)) continue;
-    byId.set(token, {
-      id: token,
-      model: token,
-      display_name: token,
-      description: "",
-      hidden: false,
-      reasoning_efforts: [],
-      default_reasoning_effort: null,
-      input_modalities: [],
-      additional_speed_tiers: [],
-      service_tiers: [],
-      default_service_tier: null,
-      is_default: /\bdefault\b/i.test(stripped),
-    });
+    if (!line || line.startsWith("#")) {
+      if (inAvailable && availableHadContent) inAvailable = false;
+      continue;
+    }
+    const defaultMatch = line.match(/^default models?:\s+([A-Za-z][A-Za-z0-9._:/-]*)/i);
+    if (defaultMatch) {
+      defaultId = defaultMatch[1];
+      continue;
+    }
+    if (/^available models:?$/i.test(line)) {
+      inAvailable = true;
+      availableHadContent = false;
+      continue;
+    }
+    const listed = line.match(/^(?:[-*•+]|\d+[.)])\s+(.*)$/);
+    const parsed = parseGrokModelEntry(listed?.[1] ?? (inAvailable ? line : ""));
+    if (parsed) {
+      add(parsed);
+      if (inAvailable) availableHadContent = true;
+      continue;
+    }
+    if (inAvailable) inAvailable = false;
+  }
+
+  if (defaultId) {
+    const current = byId.get(defaultId);
+    byId.set(defaultId, grokModelStub(defaultId, {
+      description: current?.description || "",
+      is_default: true,
+    }));
   }
   if (!byId.size) throw new Error("Grok models text contained no model ids");
   return [...byId.values()];
@@ -384,8 +438,9 @@ function runGrokProcess(
 }
 
 /**
- * Discover exactly the models `grok models` reports. Prefer --json, then
- * parse text ids. Baton never executes work via grok -p.
+ * Discover exactly the models `grok models` reports. Official grok has no
+ * `--json` flag; parse JSON stdout if present, otherwise the text listing.
+ * Baton never executes work via grok -p.
  */
 export async function discoverGrokModels({
   cwd,
@@ -396,29 +451,19 @@ export async function discoverGrokModels({
 }: DiscoverCliModelsOptions = {}): Promise<CliModelCatalog> {
   const executable = String(command || resolveGrokCommand(env) || "").trim();
   if (!executable) throw codedError("Grok CLI is not available; install grok or set BATON_GROK_PATH", "CLI_NOT_AVAILABLE");
-  const jsonRun = await runGrokProcess(executable, ["models", "--json"], { cwd, env, timeoutMs, spawnImpl });
-  let models: CliModel[] | null = null;
-  if (jsonRun.code === 0) {
-    try {
-      models = normalizeGrokModels(JSON.parse(jsonRun.stdout));
-    } catch {
-      models = null;
-    }
+  const modelsRun = await runGrokProcess(executable, ["models"], { cwd, env, timeoutMs, spawnImpl });
+  if (modelsRun.code !== 0) {
+    const detail = (modelsRun.stderr || modelsRun.stdout).trim();
+    throw codedError(
+      `Grok model discovery failed (${modelsRun.code ?? "unknown"})${detail ? `: ${detail}` : ""}`,
+      "GROK_MODEL_DISCOVERY_FAILED",
+    );
   }
-  if (!models) {
-    const textRun = await runGrokProcess(executable, ["models"], { cwd, env, timeoutMs, spawnImpl });
-    if (textRun.code !== 0) {
-      const detail = (textRun.stderr || textRun.stdout || jsonRun.stderr || jsonRun.stdout).trim();
-      throw codedError(
-        `Grok model discovery failed (${textRun.code ?? "unknown"})${detail ? `: ${detail}` : ""}`,
-        "GROK_MODEL_DISCOVERY_FAILED",
-      );
-    }
-    try {
-      models = parseGrokModelText(textRun.stdout);
-    } catch (error) {
-      throw codedError(error instanceof Error ? error.message : String(error), "GROK_MODEL_DISCOVERY_FAILED");
-    }
+  let models: CliModel[];
+  try {
+    models = parseGrokModelText(modelsRun.stdout);
+  } catch (error) {
+    throw codedError(error instanceof Error ? error.message : String(error), "GROK_MODEL_DISCOVERY_FAILED");
   }
   let version: string | null = null;
   try {

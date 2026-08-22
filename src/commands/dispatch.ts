@@ -1,4 +1,5 @@
 import { loadConfig } from "../lib/config.js";
+import { parseHostId, type HostId } from "../lib/hosts.js";
 import {
   bindAgent,
   deferDispatch,
@@ -76,6 +77,10 @@ function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean |
   return loadConfig(cwd, { env }).director.max_concurrent;
 }
 
+function dispatchHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): HostId {
+  return parseHostId(stringFlag(flags, "host") || loadConfig(cwd, { env }).cli.active);
+}
+
 interface DispatchCommandOptions {
   cwd: string;
   stdout: WritableLike;
@@ -93,7 +98,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
     const result = reserveNext(cwd, {
       capacity: capacity(cwd, env, flags.capacity),
       limit: flags.limit == null ? Number.MAX_SAFE_INTEGER : Number(flags.limit),
-      host: String(flags.host || "codex"),
+      host: dispatchHost(flags, cwd, env),
     });
     print(stdout, result, json);
     return result.blocked.length && result.reserved.length === 0 ? 1 : 0;
@@ -102,7 +107,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
   if (sub === "bind") {
     const id = values[0];
     if (!id || !flags["agent-id"]) throw new Error(USAGE.trim());
-    const ticket = bindAgent(cwd, id, { agentId: stringFlag(flags, "agent-id")!, host: String(flags.host || "codex") });
+    const ticket = bindAgent(cwd, id, { agentId: stringFlag(flags, "agent-id")!, host: dispatchHost(flags, cwd, env) });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;
   }

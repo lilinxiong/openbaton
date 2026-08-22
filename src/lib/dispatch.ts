@@ -20,6 +20,7 @@ import { recordRouteHealth } from "./route-health.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
 import { readRouteSnapshot } from "./routes.js";
 import { activeCliProfile, loadConfig } from "./config.js";
+import { parseHostId, type HostId } from "./hosts.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
@@ -393,7 +394,16 @@ interface ReserveOptions {
   now?: TimeInput;
 }
 
+function requireHost(host: string): HostId {
+  try {
+    return parseHostId(host);
+  } catch (error) {
+    throw new DispatchError(error instanceof Error ? error.message : String(error), "INVALID_HOST");
+  }
+}
+
 export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host = "codex", now }: ReserveOptions) {
+  host = requireHost(host);
   const max = capacityValue(capacity);
   const maxTake = Math.max(0, Math.floor(Number(limit) || 0));
   return withLock(cwd, () => {
@@ -458,6 +468,7 @@ function updateTicketLiveness(
 export function bindAgent(cwd: string, id: string, { agentId, host = "codex", now }: BindOptions): SpawnTicket {
   const workerId = String(agentId || "").trim();
   if (!workerId) throw new DispatchError("agentId is required", "AGENT_ID_REQUIRED", { ticketId: id });
+  host = requireHost(host);
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = normalizeTicketContract(readSpawn(cwd, id));

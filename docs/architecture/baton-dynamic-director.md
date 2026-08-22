@@ -4,16 +4,24 @@
 
 Baton is a CLI-neutral scheduling and policy layer. It does not own provider authentication or a universal model registry. Each CLI adapter owns its model-discovery boundary.
 
-The current Codex adapter obtains models from the public app-server model/list method with includeHidden=false. This is the picker-facing surface Codex exposes to clients. Baton persists the returned model ids, display metadata, supported reasoning efforts, and speed or service-tier metadata without augmenting the catalog from OpenCodex or hard-coded lists.
+Adapters:
+
+- Codex obtains models from the public app-server model/list method with includeHidden=false. This is the picker-facing surface Codex exposes to clients.
+- Grok obtains models from `grok models`. Official grok prints a text listing; JSON stdout is accepted if present. Login and prose lines are not model ids. `grok models --json` is not part of the official CLI.
+
+Baton persists the returned model ids and any display, reasoning-effort, or speed/service-tier metadata the CLI actually reported, without augmenting the catalog from OpenCodex or hard-coded lists. Grok's text listing currently reports ids only.
 
 ## Configuration model
 
     cli
-    └── codex
-        ├── enabled
-        ├── runner       (label only)
-        ├── longctx      (label only)
-        └── subagent_models
+    ├── active
+    ├── codex
+    │   ├── enabled
+    │   ├── runner       (label only)
+    │   ├── longctx      (label only)
+    │   └── subagent_models
+    └── grok
+        └── (same fields)
 
 runner and longctx are labels, not capability assertions. The subagent_models list is the complete configured allowlist for that CLI. Configured labels are members of the allowlist. Disabled profiles contribute no routes.
 
@@ -31,17 +39,17 @@ runner and longctx are labels, not capability assertions. The subagent_models li
       -> intersect configured ids with saved CLI catalog
       -> create model@effort cards from CLI-supported efforts
       -> score task/model/effort/speed automatically
-      -> persist an exact service tier only when Codex exposed it and the task requests speed
+      -> persist an exact service tier only when the selected CLI exposed it and the task requests speed
       -> create approved audit proposal, ticket, and Receipt
-      -> host-native dispatch
+      -> host-native dispatch (Codex spawn_agent / Grok spawn_subagent)
 
 There is no runtime human model selector. Explicit model or route flags and the former model-selection toggle are rejected.
 
 ## Visibility versus execution
 
-A model returned by Codex is picker-visible and therefore configurable. This includes gpt-5.4-mini and gpt-5.3-codex-spark whenever they occur in model/list.
+A model returned by the selected CLI is picker-visible and therefore configurable. For Codex this includes gpt-5.4-mini and gpt-5.3-codex-spark whenever they occur in model/list.
 
-Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not silently rewritten to another model.
+Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. Codex spawn_agent can pass model, effort, and tier. Grok spawn_subagent takes an exact `model` and independent context; if a ticket has effort or tier that the installed Grok tool cannot express, that option is unavailable rather than silently claimed. Omitting Grok `model` inherits the parent model and is forbidden. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not silently rewritten to another model.
 
 ## Automatic policy
 
