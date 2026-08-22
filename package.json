@@ -1,5 +1,5 @@
 {
-  "name": "baton",
+  "name": "@zhouliuya/openbaton",
   "version": "0.1.0",
   "description": "Director for multi-model work. 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.",
   "type": "module",
@@ -7,16 +7,27 @@
     "baton": "dist/bin/baton.js"
   },
   "engines": {
-    "node": ">=22.5",
-    "bun": ">=1.3.14"
+    "node": ">=22.5"
   },
-  "packageManager": "bun@1.3.14",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lilinxiong/openbaton.git"
+  },
+  "homepage": "https://github.com/lilinxiong/openbaton#readme",
+  "bugs": {
+    "url": "https://github.com/lilinxiong/openbaton/issues"
+  },
+  "author": "zhouliuya",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "bun -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && bunx --bun tsc -p tsconfig.json && bun -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
-    "check": "bunx --bun tsc -p tsconfig.json --noEmit",
-    "test": "bun run check && bun test --timeout 30000 test/*.test.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run check && bun test --timeout 30000 test/*.test.ts",
     "baton": "bun bin/baton.ts",
-    "prepack": "bun run build"
+    "prepack": "npm run build"
   },
   "files": [
     "dist",
@@ -26,10 +37,12 @@
     "templates",
     "SKILL.md",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "README.zh.md"
   ],
   "keywords": [
     "baton",
+    "openbaton",
     "director",
     "openspec",
     "multi-model"

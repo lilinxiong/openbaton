@@ -6,11 +6,11 @@ A director for multi-model work: one front conversation, automatic model and eff
 
 Baton works standalone and can consume OpenSpec tasks when OpenSpec is present.
 
-    bun add -g baton
+    npm install -g @zhouliuya/openbaton
     baton init
     baton config
 
-From a source checkout: bun install && bun run baton -- COMMAND. Requires Node.js 22.5+ or Bun 1.3.14+.
+Requires Node.js 22.5+. From a source checkout: bun install && bun run baton -- COMMAND.
 
 Chinese: [README.zh.md](README.zh.md)
 

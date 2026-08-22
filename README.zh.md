@@ -6,11 +6,11 @@
 
 Baton 可以独立工作；存在 OpenSpec 时也可以消费它的任务。
 
-    bun add -g baton
+    npm install -g @zhouliuya/openbaton
     baton init
     baton config
 
-源码 checkout：bun install && bun run baton -- COMMAND。需要 Node.js 22.5+ 或 Bun 1.3.14+。
+需要 Node.js 22.5+。源码 checkout：bun install && bun run baton -- COMMAND。
 
 English: [README.md](README.md)
 
