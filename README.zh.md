@@ -170,6 +170,15 @@ Baton 每条大约多 **50–62 毫秒**，外加开票一次 **221 毫秒**。�
 | standalone | 490.6 | 57.9 | 18.3 |
 | openspec | 608.2 | 100.0 | 26.0 |
 
+Token 来自各 session 的 `end_turn.usage`（不是账单页）。Baton 一列只计五个 grok-4.5 worker。
+
+| sample | Grok 4.6 默认（token） | Grok 4.6 串行（token） | Baton，五个 Grok 4.5（token） |
+| --- | ---: | ---: | ---: |
+| standalone | 1,497,407 | 37,439 | 144,056 |
+| openspec | 1,791,283 | 224,853 | 198,195 |
+
+峰值上下文：默认 grok-4.6 约 11–12 万 token；Baton 每个 grok-4.5 worker 约 1.1–1.3 万。
+
 ## OpenSpec 与状态
 
 OpenSpec 可选。存在时它负责任务拆解与状态，Baton 负责路由 ready task，并按稳定 task number 写回结论。不存在时，baton spawn 仍完整可用。

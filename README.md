@@ -170,6 +170,15 @@ Same frozen incident request, 2026-08-22. Five independent units. Grok default s
 | standalone | 490.6 | 57.9 | 18.3 |
 | openspec | 608.2 | 100.0 | 26.0 |
 
+Tokens from each session's `end_turn.usage` (not an invoice). Baton is the five grok-4.5 workers only.
+
+| sample | Grok 4.6 default (tokens) | Grok 4.6 sequential (tokens) | Baton, five Grok 4.5 (tokens) |
+| --- | ---: | ---: | ---: |
+| standalone | 1,497,407 | 37,439 | 144,056 |
+| openspec | 1,791,283 | 224,853 | 198,195 |
+
+Peak context: default grok-4.6 about 110k–124k tokens; each Baton grok-4.5 worker about 11k–13k.
+
 ## OpenSpec and state
 
 OpenSpec remains optional. When present, it owns task breakdown and status; Baton routes ready tasks and writes conclusions back by stable task number. Without OpenSpec, baton spawn is complete.
