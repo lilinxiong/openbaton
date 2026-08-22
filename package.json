@@ -26,6 +26,7 @@
     "build": "npm run clean && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && bun test --timeout 30000 test/*.test.ts",
+    "compare-ops": "bun scripts/compare-mechanical-ops.ts",
     "baton": "bun bin/baton.ts",
     "prepack": "npm run build"
   },
