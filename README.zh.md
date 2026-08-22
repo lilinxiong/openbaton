@@ -58,10 +58,10 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
     subagent_models = []
 
     [ops.runner]
-    actions = ["test", "build", "lint", "typecheck"]
+    actions = ["test", "build", "lint", "typecheck", "git-commit"]
 
     [ops.longctx]
-    actions = ["search", "digest", "git-summarize", "git-commit"]
+    actions = ["search", "digest", "git-summarize"]
 
 runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份所选 CLI 返回的模型列表。
 
@@ -124,7 +124,7 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Gr
 
 ## 机械 ops
 
-`ops.runner` 和 `ops.longctx` 标注哪些机械动作离开 director（`test`、`build`、`lint`、`typecheck`、`search`、`digest`、`git-summarize`、`git-commit`）。标签为空时，这些 unit 留在 director 上执行。
+`ops.runner` 和 `ops.longctx` 标注哪些机械动作离开 director。runner：`test`、`build`、`lint`、`typecheck`、`git-commit`。longctx：`search`、`digest`、`git-summarize`。标签为空时，这些 unit 留在 director 上执行。机械 worker 只执行推断出的命令，不探索；`git-commit` 可以看 staged diff、写一条 message、提交一次。
 
 对比脚本把每个 unit 跑两遍：一遍走 Baton ticket（spawn、bind、同一条本地命令、complete/release），一遍直接跑同一条命令。它不调用 host spawn 工具。live 模式从不 git commit；`--fixture` 只在临时仓库里 commit。
 

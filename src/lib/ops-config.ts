@@ -1,8 +1,8 @@
 export const OPS_PROFILES = ["runner", "longctx"] as const;
 export type OpsProfileId = (typeof OPS_PROFILES)[number];
 
-export const RUNNER_ACTIONS = ["test", "build", "lint", "typecheck"] as const;
-export const LONGCTX_ACTIONS = ["search", "digest", "git-summarize", "git-commit"] as const;
+export const RUNNER_ACTIONS = ["test", "build", "lint", "typecheck", "git-commit"] as const;
+export const LONGCTX_ACTIONS = ["search", "digest", "git-summarize"] as const;
 export const OPS_ACTIONS = [...RUNNER_ACTIONS, ...LONGCTX_ACTIONS] as const;
 export type OpsAction = (typeof OPS_ACTIONS)[number];
 
@@ -18,6 +18,11 @@ export interface OpsConfig {
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
 }
 
 function actionsOf(profile: OpsProfileId, value: unknown): OpsAction[] {
@@ -46,9 +51,16 @@ export function emptyOpsConfig(): OpsConfig {
 
 export function normalizeOpsConfig(value: unknown): OpsConfig {
   const ops = isUnknownRecord(value) ? value : {};
+  const runnerRaw = isUnknownRecord(ops.runner) ? { ...ops.runner } : {};
+  const longctxRaw = isUnknownRecord(ops.longctx) ? ops.longctx : {};
+  const runnerActions = stringList(runnerRaw.actions);
+  const longctxActions = stringList(longctxRaw.actions);
+  if (longctxActions?.includes("git-commit") && runnerActions && !runnerActions.includes("git-commit")) {
+    runnerRaw.actions = [...runnerActions, "git-commit"];
+  }
   return {
-    runner: profileOf("runner", ops.runner),
-    longctx: profileOf("longctx", ops.longctx),
+    runner: profileOf("runner", runnerRaw),
+    longctx: profileOf("longctx", longctxRaw),
   };
 }
 

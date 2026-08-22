@@ -401,7 +401,7 @@ async function batonLaneForUnit(options: {
       ticket: ordinary,
       kind: options.unit.commit ? "ops-dispatch" : "subagent",
       action: options.unit.commit ? "git-commit" : null,
-      profile: options.unit.commit ? "longctx" : null,
+      profile: options.unit.commit ? "runner" : null,
       cwd: options.cwd,
       env: options.env,
       host: options.host,

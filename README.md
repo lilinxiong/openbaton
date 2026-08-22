@@ -58,10 +58,10 @@ Selecting Grok (`baton init --cli grok` or `baton config --cli grok`) writes Gro
     subagent_models = []
 
     [ops.runner]
-    actions = ["test", "build", "lint", "typecheck"]
+    actions = ["test", "build", "lint", "typecheck", "git-commit"]
 
     [ops.longctx]
-    actions = ["search", "digest", "git-summarize", "git-commit"]
+    actions = ["search", "digest", "git-summarize"]
 
 runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same CLI-returned model surface.
 
@@ -124,7 +124,7 @@ Read-only is the default. Write tickets require an immutable path and operation 
 
 ## Mechanical ops
 
-`ops.runner` and `ops.longctx` label which mechanical actions leave the director (`test`, `build`, `lint`, `typecheck`, `search`, `digest`, `git-summarize`, `git-commit`). Empty labels keep those units on the director.
+`ops.runner` and `ops.longctx` label which mechanical actions leave the director. runner: `test`, `build`, `lint`, `typecheck`, `git-commit`. longctx: `search`, `digest`, `git-summarize`. Empty labels keep those units on the director. Mechanical workers execute the inferred command and do not explore; `git-commit` may read the staged diff, write one message, and create one commit.
 
 The compare script runs each unit twice: through Baton tickets (spawn, bind, the same local command, complete/release), then as that command directly. It does not call host spawn tools. Live mode never git-commits; `--fixture` commits only inside a temp repo.
 

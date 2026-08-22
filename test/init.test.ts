@@ -122,6 +122,8 @@ describe("Codex init and update", () => {
       assert.ok(result.actions.some((action) => /director\/CLI\/ops defaults/.test(action)));
       const config = loadConfig(cwd, { env });
       assert.equal(config.director.max_concurrent, 2);
+      assert.deepEqual(config.ops.runner.actions, ["test", "build", "lint", "typecheck", "git-commit"]);
+      assert.deepEqual(config.ops.longctx.actions, ["search", "digest", "git-summarize"]);
       assert.deepEqual(config.cli.codex, {
         enabled: true,
         runner: "gpt-5.4-mini",

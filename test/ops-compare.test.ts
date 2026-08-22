@@ -67,7 +67,8 @@ describe("mechanical ops baton vs direct comparison", () => {
         assert.ok(models.models.includes(tasks.get("ordinary")?.baton.model || ""));
         assert.equal(tasks.get("commit")?.baton.kind, "ops-dispatch");
         assert.equal(tasks.get("commit")?.baton.action, "git-commit");
-        assert.equal(tasks.get("commit")?.baton.model, models.longctx);
+        assert.equal(tasks.get("commit")?.baton.profile, "runner");
+        assert.equal(tasks.get("commit")?.baton.model, models.runner);
         assert.equal(tasks.get("commit")?.direct.exit, 0);
         assert.equal(tasks.get("commit")?.baton.exit, 0);
         assert.ok(tasks.get("test")?.direct.exit === 0);

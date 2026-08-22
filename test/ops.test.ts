@@ -10,6 +10,7 @@ import type { CliModel, CliModelCatalog } from "../src/lib/cli-models.js";
 import { inferOpsAction, inferOpsActionFromContext } from "../src/lib/ops-task.js";
 import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
 import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
+import { configuredRoute, normalizeOpsConfig } from "../src/lib/ops-config.js";
 import { readRouteSnapshot } from "../src/lib/routes.js";
 import type { ModelCard } from "../src/types.js";
 import { parseToml } from "../src/lib/toml.js";
@@ -73,6 +74,20 @@ describe("per-CLI configuration and ops labels", () => {
     assert.equal(inferOpsAction("implement the parser and run its tests"), null);
     assert.equal(inferOpsActionFromContext("run the tests", "Android target"), "test");
     assert.equal(inferOpsActionFromContext("run the tests", "bun run build"), null);
+  });
+
+  it("routes git-commit through runner and migrates legacy longctx lists", () => {
+    const migrated = normalizeOpsConfig({
+      runner: { actions: ["test", "build", "lint", "typecheck"] },
+      longctx: { actions: ["search", "digest", "git-summarize", "git-commit"] },
+    });
+    assert.deepEqual(migrated.runner.actions, ["test", "build", "lint", "typecheck", "git-commit"]);
+    assert.deepEqual(migrated.longctx.actions, ["search", "digest", "git-summarize"]);
+    migrated.runner.route = "gpt-5.4-mini";
+    migrated.longctx.route = "gpt-5.5";
+    assert.deepEqual(configuredRoute(migrated, "git-commit"), { profile: "runner", route: "gpt-5.4-mini" });
+    assert.deepEqual(configuredRoute(migrated, "search"), { profile: "longctx", route: "gpt-5.5" });
+    assert.deepEqual(configuredRoute(migrated, "test"), { profile: "runner", route: "gpt-5.4-mini" });
   });
 
   it("configures Codex from its returned picker surface, including Mini and Spark", async () => {
