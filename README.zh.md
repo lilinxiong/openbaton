@@ -163,41 +163,12 @@ Baton 每条大约多 **50–62 毫秒**，外加开票一次 **221 毫秒**。�
 
 ## Sample 事故审计
 
-`samples/standalone` 和 `samples/openspec` 共用同一份冻结事故数据。五个 unit 彼此独立、必须一起开始：四条取证 + 一条优先级分析。
-
-Grok 实跑，2026-08-22。同一请求三种跑法：
-
-1. **Grok 默认。** 一个 **grok-4.6** session 原样吃 `REQUEST.txt`。允许开 subagent；若开了且省略 `model`，子会话继承 grok-4.6，不会变成 Baton 指定的 grok-4.5。这次 **没有开 subagent**：搜了 `spawn_subagent` 文档，然后仍在 grok-4.6 上做完（standalone 51 次工具；openspec 80 次，含 `workflow` 和 `search_tool`，上下文 123K/500K，13 次工具错误）。
-2. **Grok 4.6 串行、禁止 spawn。** 同一模型，要求按顺序做五项且不要开子代理（OpenSpec 自己写 `tasks.md`）。
-3. **Baton。** `spawn`/`apply` + 五个 **grok-4.5** native subagent 并行，然后 `complete --release`（OpenSpec 在 complete 时写回）。
-
-业务结论与 `samples/EXPECTED.md` 一致。
-
-墙钟（秒）：
+同一冻结事故请求，2026-08-22。五个 unit 彼此独立。Grok 默认留在 **grok-4.6** 上，**没有** spawn（若开了且省略 `model`，子会话继承 4.6）。Baton 是五个 **grok-4.5** 并行。
 
 | sample | Grok 4.6 默认（秒） | Grok 4.6 串行、不开 spawn（秒） | Baton，五个 Grok 4.5 并行（秒） |
 | --- | ---: | ---: | ---: |
 | standalone | 490.6 | 57.9 | 18.3 |
 | openspec | 608.2 | 100.0 | 26.0 |
-
-Grok 默认细节：
-
-| sample | 模型 | 是否开子代理 | 工具调用 | 说明 |
-| --- | --- | --- | ---: | --- |
-| standalone | grok-4.6 | 无 | 51 | 留在父 session |
-| openspec | grok-4.6 | 无 | 80 | 上下文 123K/500K；写了 `tasks.md` |
-
-Baton 每个 worker 耗时（秒）；墙钟取最长的一条：
-
-| 任务 | standalone（秒） | openspec（秒） |
-| --- | ---: | ---: |
-| 计数 / 1.1 | 13.1 | 7.7 |
-| SLA / 1.2 | 13.7 | 26.0 |
-| 重复 owner / 1.3 | 6.1 | 8.5 |
-| 数据质量 / 1.4 | 18.3 | 14.9 |
-| 优先级 / 2.1 | 13.9 | 18.1 |
-
-这份审计上，Baton 的并行 grok-4.5 大约比 Grok 4.6 默认 **快 27 倍**，比「4.6 被要求串行、不开 spawn」**快 3～4 倍**。默认 Grok 没有把活分给 grok-4.5。没有抓到 token 账单；默认 Grok 把 4.6 上下文堆大，Baton 则让父会话保持很短、把有界工作放在 grok-4.5 上。
 
 ## OpenSpec 与状态
 
