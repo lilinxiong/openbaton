@@ -19,7 +19,8 @@ The workspace contains one frozen incident JSON file and one policy JSON file. T
 
 - Use five stable tasks so completion and conclusion writeback can be verified independently.
 - Treat prioritization as deliberative work; the other four lanes are concrete evidence extraction.
-- Keep all workers read-only and let the main Codex task own final synthesis.
+- Dispatch all five together. The four evidence lanes and the prioritization lane share the same frozen inputs; none waits for another worker's conclusion.
+- Keep all workers read-only and let the parent conversation own final synthesis.
 
 ## Risks / Trade-offs
 

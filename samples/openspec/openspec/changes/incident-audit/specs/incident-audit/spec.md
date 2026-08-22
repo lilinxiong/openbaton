@@ -6,7 +6,7 @@ Provide a reproducible read-only audit that turns a frozen incident snapshot and
 
 ### Requirement: Produce five read-only audit lanes
 
-The audit SHALL report incident counts, SLA breaches, unresolved priority, duplicate ownership combinations, and data-quality findings without modifying business inputs.
+The audit SHALL report incident counts, SLA breaches, unresolved priority, duplicate ownership combinations, and data-quality findings without modifying business inputs. The five lanes SHALL be independently executable in parallel from the same frozen inputs; no lane waits for another lane's conclusion.
 
 #### Scenario: Complete audit
 

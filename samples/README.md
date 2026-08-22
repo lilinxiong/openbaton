@@ -2,8 +2,10 @@
 
 These samples validate the same read-only incident audit through two paths, with no runtime model picker or confirmation step:
 
-- `standalone`: the workspace has no `openspec/`; the Codex director derives five bounded units from an ordinary request.
+- `standalone`: the workspace has no `openspec/`; the director derives five bounded units from an ordinary request.
 - `openspec`: the workspace contains a strict-valid OpenSpec change with five stable tasks; Baton consumes those tasks and writes conclusions back by task number.
+
+Both paths fan out five independent tickets at once (four concrete evidence lanes plus one deliberative priority lane). None waits for another worker. That parallel dispatch is the speed case versus one sequential parent agent. Token use is a separate question: five workers still pay five contexts.
 
 Neither request names Baton, subagents, dispatch, models, routes, or OpenSpec. If delegation only happens after adding such words, automatic triggering has failed.
 
@@ -55,6 +57,7 @@ Expected properties:
 - one five-unit proposal is automatically approved and creates five standalone tickets;
 - every ticket uses the proposal's recommended model and carries immutable automatic-selection evidence;
 - four tickets are `concrete/terminal-only` and one is `deliberative/checkpointed`;
+- the five tickets are reserved together and may run in parallel; none is blocked on another unit's conclusion;
 - the deliberative ticket reports at least one progress checkpoint;
 - all tickets have a real agent id, one attempt, terminal completion, close, and slot release;
 - no workspace file changes.

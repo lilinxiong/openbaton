@@ -161,6 +161,44 @@ Phases (milliseconds):
 
 Baton adds about **50–62 ms** per task, plus **221 ms** once to open the tickets. Re-run the script to refresh these numbers.
 
+## Sample incident audit
+
+`samples/standalone` and `samples/openspec` share one frozen incident snapshot. Five units are independent and must start together: four concrete evidence lanes plus one deliberative priority lane.
+
+Live Grok host run, 2026-08-22. Three ways to run the same request:
+
+1. **Grok default.** One **grok-4.6** session gets `REQUEST.txt` unchanged. Subagents are allowed. If it spawns and omits `model`, children inherit grok-4.6 — not Baton's grok-4.5. This run **did not spawn**; it searched for `spawn_subagent` then finished on grok-4.6 (standalone 51 tools; openspec 80 tools, `workflow` + `search_tool`, 123K/500K context, 13 tool errors).
+2. **Grok 4.6 sequential, no spawn.** Same model, told to do the five units in order and not spawn (OpenSpec writes `tasks.md` itself).
+3. **Baton.** `spawn`/`apply` + five **grok-4.5** native subagents in parallel, then `complete --release` (OpenSpec writeback on complete).
+
+Business answers matched `samples/EXPECTED.md`.
+
+Wall clock (seconds):
+
+| sample | Grok 4.6 default (s) | Grok 4.6 sequential, no spawn (s) | Baton, five Grok 4.5 in parallel (s) |
+| --- | ---: | ---: | ---: |
+| standalone | 490.6 | 57.9 | 18.3 |
+| openspec | 608.2 | 100.0 | 26.0 |
+
+Default Grok details:
+
+| sample | model | spawned children | tool calls | notes |
+| --- | --- | --- | ---: | --- |
+| standalone | grok-4.6 | none | 51 | stayed on the parent session |
+| openspec | grok-4.6 | none | 80 | 123K/500K context; wrote `tasks.md` |
+
+Baton per-worker duration (seconds); wall clock is the longest worker:
+
+| unit | standalone (s) | openspec (s) |
+| --- | ---: | ---: |
+| counts / 1.1 | 13.1 | 7.7 |
+| SLA / 1.2 | 13.7 | 26.0 |
+| duplicates / 1.3 | 6.1 | 8.5 |
+| data quality / 1.4 | 18.3 | 14.9 |
+| priority / 2.1 | 13.9 | 18.1 |
+
+On this audit, Baton's parallel grok-4.5 is about **27×** faster than Grok 4.6 default and about **3–4×** faster than Grok 4.6 told to stay sequential. Default Grok did not fan out to grok-4.5. Token bills were not captured; default Grok grew a large 4.6 context, while Baton keeps the parent short and puts bounded work on grok-4.5.
+
 ## OpenSpec and state
 
 OpenSpec remains optional. When present, it owns task breakdown and status; Baton routes ready tasks and writes conclusions back by stable task number. Without OpenSpec, baton spawn is complete.

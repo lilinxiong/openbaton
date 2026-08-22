@@ -27,6 +27,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && bun test --timeout 30000 test/*.test.ts",
     "compare-ops": "bun scripts/compare-mechanical-ops.ts",
+    "compare-samples": "bun scripts/compare-samples.ts",
     "baton": "bun bin/baton.ts",
     "prepack": "npm run build"
   },

@@ -22,6 +22,7 @@ describe("built-in Baton capability samples", () => {
       }
       const request = fs.readFileSync(path.join(dir, "REQUEST.txt"), "utf8");
       assert.doesNotMatch(request, /baton|subagent|dispatch|openspec|route|model|provider/i);
+      assert.match(request, /独立|同时/);
     }
   });
 
@@ -71,6 +72,8 @@ describe("built-in Baton capability samples", () => {
     assert.deepEqual(tasks.map((task) => inferWorkUnitKind(task.description)), [
       "concrete", "concrete", "concrete", "concrete", "deliberative",
     ]);
+    assert.match(tasksText, /MUST run in parallel/);
+    assert.match(tasksText, /MUST start with the four evidence lanes/);
   });
 
   it("verifies CLI-owned candidates and recommendation-only approval without a selector", () => {
