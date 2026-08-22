@@ -132,32 +132,34 @@ Benchmark：同一条本地命令，走 Baton ticket（spawn、bind、跑命令�
     bun scripts/compare-mechanical-ops.ts --fixture
     bun scripts/compare-mechanical-ops.ts --json
 
-本仓库，2026-08-22。`cli=grok` `ok=true`。6 张票一次打开：**221 ms**。
+本仓库，2026-08-22。`cli=grok` `ok=true`。6 张票一次打开：**221 毫秒**。
 
-用 Baton vs 不用（单位：毫秒）：
+`test` 在本仓库是 `bun run test`：类型检查再加整包单测，所以**命令本身大约 12 秒**，跟用不用 Baton 无关。
 
-| task | via | without (ms) | with (ms) | extra (ms) |
-| --- | --- | ---: | ---: | ---: |
-| test | runner/test | 12292.3 | 13369.0 | 1076.7 |
-| build | runner/build | 188.9 | 258.1 | 69.2 |
-| typecheck | runner/typecheck | 96.7 | 172.5 | 75.8 |
-| search | longctx/search | 5.7 | 59.7 | 54.0 |
-| summarize | longctx/git-summarize | 7.3 | 59.8 | 52.5 |
-| ordinary | subagent | 29.8 | 83.8 | 54.0 |
-| commit | skipped | — | — | — |
+用 Baton vs 不用。**Baton 外壳**是绑定 + 收尾（Baton 真正多出来的）。**命令两次之差**是同一条命令测了两遍，不是 Baton：
 
-Baton 路径的阶段（`ticket extra` = bind + complete，即外壳成本；单位：毫秒）：
+| 任务 | 走哪条路 | 不用 Baton（毫秒） | 走 Baton 时的命令（毫秒） | Baton 外壳（毫秒） | 命令两次之差（毫秒） |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 测试 | runner/test | 12292.3 | 13318.2 | 50.8 | 1025.9 |
+| 构建 | runner/build | 188.9 | 203.0 | 55.1 | 14.1 |
+| 类型检查 | runner/typecheck | 96.7 | 111.0 | 61.5 | 14.3 |
+| 搜索 | longctx/search | 5.7 | 5.8 | 53.9 | 0.1 |
+| git 摘要 | longctx/git-summarize | 7.3 | 8.0 | 51.8 | 0.7 |
+| 普通任务 | subagent | 29.8 | 31.8 | 52.0 | 2.0 |
+| 提交 | 跳过 | — | — | — | — |
 
-| task | bind (ms) | execute (ms) | complete (ms) | ticket extra (ms) | execute − without (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| test | 18.7 | 13318.2 | 32.1 | 50.8 | 1025.9 |
-| build | 18.2 | 203.0 | 36.9 | 55.1 | 14.1 |
-| typecheck | 24.7 | 111.0 | 36.8 | 61.5 | 14.3 |
-| search | 19.6 | 5.8 | 34.3 | 53.9 | 0.1 |
-| summarize | 19.7 | 8.0 | 32.1 | 51.8 | 0.7 |
-| ordinary | 20.4 | 31.8 | 31.6 | 52.0 | 2.0 |
+各阶段（毫秒）：
 
-Baton 自己多出来的是每条大约 **50–62 ms**（bind + complete），外加开票一次 **221 ms**。`test` 多出来的 **1076.7 ms** 几乎全是测试套件波动（`execute` vs 直跑），不是 ticket 成本。要更新数字，重新跑脚本。
+| 任务 | 绑定（毫秒） | 跑命令（毫秒） | 收尾（毫秒） |
+| --- | ---: | ---: | ---: |
+| 测试 | 18.7 | 13318.2 | 32.1 |
+| 构建 | 18.2 | 203.0 | 36.9 |
+| 类型检查 | 24.7 | 111.0 | 36.8 |
+| 搜索 | 19.6 | 5.8 | 34.3 |
+| git 摘要 | 19.7 | 8.0 | 32.1 |
+| 普通任务 | 20.4 | 31.8 | 31.6 |
+
+Baton 每条大约多 **50–62 毫秒**，外加开票一次 **221 毫秒**。要更新数字，重新跑脚本。
 
 ## OpenSpec 与状态
 

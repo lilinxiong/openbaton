@@ -524,7 +524,8 @@ export function formatCompareReport(report: CompareReport): string {
     `runner=${report.runner || "-"}  longctx=${report.longctx || "-"}  spawn=${ms(report.spawn_cli_ms)} (once for all units)`,
     "",
     "with baton vs without (same local command; no host model spawn; milliseconds)",
-    pad("task", 12) + pad("via", 22) + pad("without (ms)", 14) + pad("with (ms)", 12) + pad("extra (ms)", 12) + pad("model", 22) + "result",
+    "Baton wrapper = bind + complete. command run-to-run = execute minus without, not Baton.",
+    pad("task", 12) + pad("via", 22) + pad("without (ms)", 14) + pad("command (ms)", 14) + pad("wrapper (ms)", 14) + pad("run-to-run (ms)", 16) + "result",
   ];
   for (const task of report.tasks) {
     const via = task.baton.kind === "ops-dispatch" && task.baton.profile
@@ -534,38 +535,41 @@ export function formatCompareReport(report: CompareReport): string {
       task.direct.skipped ? `without:${task.direct.skipped}` : `without:${task.direct.exit === 0 ? "pass" : `fail ${task.direct.exit}`}`,
       task.baton.skipped ? `with:${task.baton.skipped}` : `with:${task.baton.exit === 0 ? "pass" : `fail ${task.baton.exit}`}`,
     ].join("  ");
+    const bind = task.baton.phases.bind_cli_ms;
+    const execute = task.baton.phases.execute_ms;
+    const complete = task.baton.phases.complete_cli_ms;
+    const wrapper = !task.baton.skipped && bind != null && complete != null ? round(bind + complete) : null;
+    const delta = !task.direct.skipped && !task.baton.skipped && execute != null
+      ? round(execute - task.direct.elapsed_ms)
+      : null;
     lines.push(
       pad(task.key, 12)
       + pad(via, 22)
       + pad(task.direct.skipped ? "-" : String(task.direct.elapsed_ms), 14)
-      + pad(task.baton.skipped ? "-" : String(task.baton.elapsed_ms), 12)
-      + pad(task.overhead_ms == null ? "-" : String(task.overhead_ms), 12)
-      + pad(task.baton.model || "-", 22)
+      + pad(task.baton.skipped || execute == null ? "-" : String(execute), 14)
+      + pad(wrapper == null ? "-" : String(wrapper), 14)
+      + pad(delta == null ? "-" : String(delta), 16)
       + result,
     );
   }
   lines.push(
     "",
-    "baton phases (milliseconds). ticket extra = bind + complete. execute is the command body.",
-    pad("task", 12) + pad("bind (ms)", 12) + pad("execute (ms)", 14) + pad("complete (ms)", 14) + pad("ticket extra (ms)", 18) + "execute − without (ms)",
+    "baton phases (milliseconds). execute is the command body.",
+    pad("task", 12) + pad("bind (ms)", 12) + pad("execute (ms)", 14) + pad("complete (ms)", 14),
   );
   for (const task of report.tasks) {
     if (task.direct.skipped || task.baton.skipped) {
-      lines.push(pad(task.key, 12) + pad("-", 12) + pad("-", 14) + pad("-", 14) + pad("-", 18) + "-");
+      lines.push(pad(task.key, 12) + pad("-", 12) + pad("-", 14) + pad("-", 14));
       continue;
     }
     const bind = task.baton.phases.bind_cli_ms;
     const execute = task.baton.phases.execute_ms;
     const complete = task.baton.phases.complete_cli_ms;
-    const extra = bind != null && complete != null ? round((bind || 0) + (complete || 0)) : null;
-    const delta = execute != null ? round(execute - task.direct.elapsed_ms) : null;
     lines.push(
       pad(task.key, 12)
       + pad(bind == null ? "-" : String(bind), 12)
       + pad(execute == null ? "-" : String(execute), 14)
-      + pad(complete == null ? "-" : String(complete), 14)
-      + pad(extra == null ? "-" : String(extra), 18)
-      + (delta == null ? "-" : String(delta)),
+      + pad(complete == null ? "-" : String(complete), 14),
     );
   }
   return `${lines.join("\n")}\n`;

@@ -134,30 +134,32 @@ Benchmark: the same local command with Baton tickets (spawn, bind, run, complete
 
 This checkout, 2026-08-22. `cli=grok` `ok=true`. Opening six tickets once: **221 ms**.
 
-With Baton vs without (milliseconds):
+`test` is `bun run test` in this repo: typecheck plus the full suite, so the command itself is about **12 s** either way. That is not Baton.
 
-| task | via | without (ms) | with (ms) | extra (ms) |
-| --- | --- | ---: | ---: | ---: |
-| test | runner/test | 12292.3 | 13369.0 | 1076.7 |
-| build | runner/build | 188.9 | 258.1 | 69.2 |
-| typecheck | runner/typecheck | 96.7 | 172.5 | 75.8 |
-| search | longctx/search | 5.7 | 59.7 | 54.0 |
-| summarize | longctx/git-summarize | 7.3 | 59.8 | 52.5 |
-| ordinary | subagent | 29.8 | 83.8 | 54.0 |
-| commit | skipped | — | — | — |
+Baton vs without. **Baton wrapper** is bind + complete (what Baton adds). **Command run-to-run** is the same command measured twice and is not Baton:
 
-Phases inside the Baton path (`ticket extra` = bind + complete, the wrapper cost; milliseconds):
+| task | via | without Baton (ms) | command via Baton (ms) | Baton wrapper (ms) | command run-to-run (ms) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| test | runner/test | 12292.3 | 13318.2 | 50.8 | 1025.9 |
+| build | runner/build | 188.9 | 203.0 | 55.1 | 14.1 |
+| typecheck | runner/typecheck | 96.7 | 111.0 | 61.5 | 14.3 |
+| search | longctx/search | 5.7 | 5.8 | 53.9 | 0.1 |
+| summarize | longctx/git-summarize | 7.3 | 8.0 | 51.8 | 0.7 |
+| ordinary | subagent | 29.8 | 31.8 | 52.0 | 2.0 |
+| commit | skipped | — | — | — | — |
 
-| task | bind (ms) | execute (ms) | complete (ms) | ticket extra (ms) | execute − without (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| test | 18.7 | 13318.2 | 32.1 | 50.8 | 1025.9 |
-| build | 18.2 | 203.0 | 36.9 | 55.1 | 14.1 |
-| typecheck | 24.7 | 111.0 | 36.8 | 61.5 | 14.3 |
-| search | 19.6 | 5.8 | 34.3 | 53.9 | 0.1 |
-| summarize | 19.7 | 8.0 | 32.1 | 51.8 | 0.7 |
-| ordinary | 20.4 | 31.8 | 31.6 | 52.0 | 2.0 |
+Phases (milliseconds):
 
-Baton's own extra is about **50–62 ms** per task (bind + complete), plus **221 ms** once to open the tickets. `test`'s extra **1076.7 ms** is almost all suite variance (`execute` vs without), not ticket cost. Re-run the script to refresh these numbers.
+| task | bind (ms) | execute (ms) | complete (ms) |
+| --- | ---: | ---: | ---: |
+| test | 18.7 | 13318.2 | 32.1 |
+| build | 18.2 | 203.0 | 36.9 |
+| typecheck | 24.7 | 111.0 | 36.8 |
+| search | 19.6 | 5.8 | 34.3 |
+| summarize | 19.7 | 8.0 | 32.1 |
+| ordinary | 20.4 | 31.8 | 31.6 |
+
+Baton adds about **50–62 ms** per task, plus **221 ms** once to open the tickets. Re-run the script to refresh these numbers.
 
 ## OpenSpec and state
 
