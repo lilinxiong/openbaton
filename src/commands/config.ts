@@ -6,7 +6,7 @@ import {
   type CliModel,
   type CliModelDiscovery,
 } from "../lib/cli-models.js";
-import { loadConfig, saveConfig } from "../lib/config.js";
+import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
 import { publishRouteSnapshot } from "../lib/routes.js";
 import type { WritableLike } from "../types.js";
 
@@ -191,6 +191,7 @@ export async function runConfig(args: string[], {
   current.cli[cli] = { enabled, runner, longctx, subagent_models: subagentModels };
   current.ops.runner.route = enabled ? runner : "";
   current.ops.longctx.route = enabled ? longctx : "";
+  current.director.max_concurrent = hostMaxConcurrent(cli, env);
   const file = saveConfig(cwd, current, { env });
   const result = {
     cli,
@@ -198,6 +199,7 @@ export async function runConfig(args: string[], {
     runner: runner || null,
     longctx: longctx || null,
     subagent_models: subagentModels,
+    max_concurrent: current.director.max_concurrent,
     model_source: `${cli} catalog`,
     config: file,
   };
@@ -208,6 +210,7 @@ export async function runConfig(args: string[], {
     stdout.write(`  runner: ${runner || "(empty; director)"}\n`);
     stdout.write(`  longctx: ${longctx || "(empty; director)"}\n`);
     stdout.write(`  subagent models: ${subagentModels.length ? subagentModels.join(", ") : "(none)"}\n`);
+    stdout.write(`  max_concurrent: ${current.director.max_concurrent}\n`);
     stdout.write("  later routing: automatic; no model confirmation UI\n");
   }
   return 0;

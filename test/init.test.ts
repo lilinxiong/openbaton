@@ -46,10 +46,31 @@ describe("Codex init and update", () => {
       };
       assert.deepEqual(config.cli.codex, emptyProfile);
       assert.deepEqual(config.cli.grok, emptyProfile);
+      assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((raw.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
+    });
+  });
+
+  it("writes Grok's host concurrent cap when --cli grok is selected", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-"));
+      const env = fakeEnv(home);
+      await initProject(cwd, { env, cli: "grok" });
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.active, "grok");
+      assert.equal(config.director.max_concurrent, 8);
+    });
+  });
+
+  it("honors GROK_MAX_CONCURRENT_SUBAGENTS when initializing Grok", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-cap-"));
+      const env = { ...fakeEnv(home), GROK_MAX_CONCURRENT_SUBAGENTS: "6" };
+      await initProject(cwd, { env, cli: "grok" });
+      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 6);
     });
   });
 

@@ -30,7 +30,7 @@ import {
 } from "./lib/selection.js";
 import { directorMayRun } from "./lib/hygiene.js";
 import { SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
-import type { CliModelDiscovery } from "./lib/cli-models.js";
+import { parseCliId, type CliModelDiscovery } from "./lib/cli-models.js";
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
 
@@ -69,7 +69,7 @@ of OpenSpec tasks, with conclusions written back. Not a thin adapter.
 The selected CLI owns model visibility; Baton routes only within the configured candidate set.
 
 Usage:
-  baton init [--force]                initialize Baton + Codex/Grok host skills
+  baton init [--force] [--cli codex|grok]  initialize Baton + Codex/Grok host skills
   baton update                        refresh host skills + global config defaults
   baton models refresh|status|candidates  inspect/refresh the active CLI model catalog
   baton cards [--ranked|--unranked] [--provider ID] [--json]
@@ -164,10 +164,13 @@ async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: N
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
   if (flags.tools) throw new Error("--tools is not supported; baton init installs Codex and Grok host skills");
-  const result = await initProject(cwd, { force, env });
+  const cliFlag = stringFlag(flags, "cli");
+  const cli = cliFlag ? parseCliId(cliFlag) : undefined;
+  const result = await initProject(cwd, { force, cli, env });
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
+  if (cli) stdout.write(`  cli: ${cli} (max_concurrent follows this host)\n`);
   stdout.write("\nNext: run `baton config`; choose a CLI, its runner/longctx labels, and the subagent candidate models.\n");
   stdout.write("Model visibility comes from the selected CLI. Later routing is automatic.\n");
   stdout.write("OpenSpec is optional. baton is complete without it.\n");

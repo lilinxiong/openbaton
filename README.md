@@ -36,6 +36,8 @@ The user-global ~/.baton/config.toml has one profile per CLI:
     max_concurrent = 4
     max_depth = 1
 
+Selecting Grok (`baton init --cli grok` or `baton config --cli grok`) writes Grok's host cap of 8 into max_concurrent, or GROK_MAX_CONCURRENT_SUBAGENTS when set.
+
     [cli]
     active = "codex"
 
@@ -133,7 +135,7 @@ Baton never creates project-local runtime state:
 
 ## Commands
 
-    baton init [--force]
+    baton init [--force] [--cli codex|grok]
     baton update
     baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]

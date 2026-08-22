@@ -11,7 +11,16 @@ import {
 import { CLI_IDS, type CliId } from "./cli-models.js";
 
 export const DEFAULT_MAX_CONCURRENT = 4;
+export const GROK_HOST_MAX_CONCURRENT = 8;
 export const DEFAULT_MAX_DEPTH = 1;
+
+/** Host-native concurrent subagent cap used as Baton's director ceiling. */
+export function hostMaxConcurrent(cli: CliId, env: NodeJS.ProcessEnv = process.env): number {
+  if (cli !== "grok") return DEFAULT_MAX_CONCURRENT;
+  const override = Number(String(env.GROK_MAX_CONCURRENT_SUBAGENTS || "").trim());
+  if (Number.isFinite(override) && override > 0) return Math.floor(override);
+  return GROK_HOST_MAX_CONCURRENT;
+}
 
 export interface DirectorSettings {
   max_concurrent: number;

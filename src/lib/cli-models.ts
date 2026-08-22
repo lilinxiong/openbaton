@@ -7,6 +7,12 @@ import type { CodedError, UnknownRecord } from "../types.js";
 export const CLI_IDS = ["codex", "grok"] as const;
 export type CliId = (typeof CLI_IDS)[number];
 
+export function parseCliId(value: string): CliId {
+  const cli = String(value || "").trim().toLowerCase();
+  if ((CLI_IDS as readonly string[]).includes(cli)) return cli as CliId;
+  throw new Error(`invalid CLI: ${value || "<empty>"} (expected ${CLI_IDS.join("|")})`);
+}
+
 export interface CliReasoningEffort {
   id: string;
   description: string;

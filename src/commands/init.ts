@@ -2,9 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
 import { installHostSkills, type HostId } from "../lib/hosts.js";
+import type { CliId } from "../lib/cli-models.js";
+import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
 
 export interface InitProjectOptions {
   force?: boolean;
+  cli?: CliId;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -16,7 +19,7 @@ export interface InitProjectResult {
 }
 
 export async function initProject(cwd: string, options: InitProjectOptions = {}): Promise<InitProjectResult> {
-  const { force = false, env } = options;
+  const { force = false, cli, env } = options;
   const dir = batonHomeDir(env);
   const created: string[] = [];
   const skipped: string[] = [];
@@ -45,6 +48,13 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const hosts = installHostSkills(cwd, { force, env });
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
+
+  if (cli) {
+    const cfg = loadConfig(cwd, { env });
+    cfg.cli.active = cli;
+    cfg.director.max_concurrent = hostMaxConcurrent(cli, env);
+    saveConfig(cwd, cfg, { env });
+  }
 
   return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools };
 }

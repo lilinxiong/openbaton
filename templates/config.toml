@@ -3,8 +3,10 @@
 # the exact models the user allows subagents to call.
 
 [director]
-# Desired Baton concurrency ceiling. The host/session limit can be lower;
-# AgentLimitReached tightens the observed capacity and returns tickets to FIFO.
+# Desired Baton concurrency ceiling. Selecting Grok (`baton init --cli grok`
+# or `baton config --cli grok`) writes Grok's host cap (8, or
+# GROK_MAX_CONCURRENT_SUBAGENTS). AgentLimitReached tightens observed capacity
+# and returns tickets to FIFO.
 max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1

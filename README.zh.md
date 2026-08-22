@@ -36,6 +36,8 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
     max_concurrent = 4
     max_depth = 1
 
+选择 Grok（`baton init --cli grok` 或 `baton config --cli grok`）会把 Grok 的 host 上限 8 写入 max_concurrent；若设置了 GROK_MAX_CONCURRENT_SUBAGENTS 则用该值。
+
     [cli]
     active = "codex"
 
@@ -133,7 +135,7 @@ Baton 不创建项目内运行时目录：
 
 ## 命令
 
-    baton init [--force]
+    baton init [--force] [--cli codex|grok]
     baton update
     baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]

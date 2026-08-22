@@ -143,6 +143,32 @@ describe("per-CLI configuration and ops labels", () => {
     });
   });
 
+  it("writes Grok's host concurrent cap when the Grok CLI is selected", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-grok-cap-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 4);
+      const grokCatalog: CliModelCatalog = {
+        cli: "grok",
+        version: "grok 1.0.8",
+        models: [model("grok-4.5", "Grok 4.5", "Fast"), model("grok-4.6", "Grok 4.6", "Flagship")],
+      };
+      const out = capture();
+      assert.equal(await runConfig([
+        "--cli", "grok",
+        "--runner", "grok-4.5",
+        "--longctx", "-",
+        "--subagent-model", "grok-4.5",
+        "--enable",
+      ], { cwd, env, stdout: out, discover: async () => structuredClone(grokCatalog) }), 0);
+      assert.match(out.text(), /max_concurrent: 8/);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.active, "grok");
+      assert.equal(config.director.max_concurrent, 8);
+    });
+  });
+
   it("treats runner and longctx as labels over the same allowlist", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-labels-"));
