@@ -197,6 +197,24 @@ describe("per-CLI configuration and ops labels", () => {
     });
   });
 
+  it("keeps empty runner and longctx labels on the director without blocking", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-empty-labels-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.codex.runner, "");
+      assert.equal(config.cli.codex.longctx, "");
+      const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), { env });
+      assert.equal(testOps.kind, "director");
+      const commitOps = resolveOpsDispatch(cwd, "git commit staged changes", cards(cwd), { env });
+      assert.ok(commitOps.kind === "director" || commitOps.kind === "empty-index");
+      const out = capture();
+      assert.equal(await run(["spawn", "bun test"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      assert.match(out.text(), /director-local/);
+    });
+  });
+
   it("returns no candidates when the CLI profile is disabled", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-disabled-"));

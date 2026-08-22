@@ -14,7 +14,6 @@ export type OpsResolution =
   | { kind: "not-ops" }
   | { kind: "director"; action: OpsAction; reason: string }
   | { kind: "empty-index"; action: "git-commit" }
-  | { kind: "unavailable"; action: OpsAction; profile: OpsProfileId; route: string; reason: string }
   | {
     kind: "dispatch";
     action: OpsAction;
@@ -83,21 +82,17 @@ function resolveOpsActionDispatch(
   const choices = listOpsRouteChoices(cwd, configured.profile, cards, { env });
   if (!findOpsRouteChoice(choices, configured.route)) {
     return {
-      kind: "unavailable",
+      kind: "director",
       action,
-      profile: configured.profile,
-      route: configured.route,
-      reason: `OPS_ROUTE_UNAVAILABLE: ${configured.profile} model ${configured.route} is not in the enabled CLI model allowlist`,
+      reason: `ops ${configured.profile} model is unset or unusable; director executes this mechanical unit`,
     };
   }
   const card = cardForRoute(cards, configured.route, cwd);
   if (!card?.route_id) {
     return {
-      kind: "unavailable",
+      kind: "director",
       action,
-      profile: configured.profile,
-      route: configured.route,
-      reason: `OPS_ROUTE_UNAVAILABLE: no card for ${configured.route}`,
+      reason: `ops ${configured.profile} model is unset or unusable; director executes this mechanical unit`,
     };
   }
   const approval: ModelSelectionApproval = {

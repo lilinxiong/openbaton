@@ -271,9 +271,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         ? { kind: "not-ops" } as OpsResolution
         : resolveOpsUnitDispatch(cwd, text, item.description, allCards, { env }),
     }));
-    for (const { item, ops } of resolved) {
-      if (ops.kind === "unavailable") throw new Error(`${item.key}: ${ops.reason}`);
-    }
     const commitUnits = resolved.filter(({ ops }) => ops.kind !== "not-ops" && ops.action === "git-commit");
     if (commitUnits.length > 1) {
       throw new Error(`MULTIPLE_COMMIT_UNITS: one request may contain only one commit-only unit (${commitUnits.map(({ item }) => item.key).join(", ")})`);
@@ -370,7 +367,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       stdout.write(`unit: ${text}\n`);
       return 0;
     }
-    if (ops.kind === "unavailable") throw new Error(ops.reason);
     if (ops.kind === "dispatch") {
       let planned = planStandaloneSpawn({
         description: text,
@@ -451,7 +447,6 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     let directorLocal = directorMayRun(task.description);
     if (!requested && !directorLocal) {
       const ops = resolveOpsDispatch(cwd, task.description, cards, { env });
-      if (ops.kind === "unavailable") throw new Error(`${task.number}: ${ops.reason}`);
       if (ops.kind === "director" || ops.kind === "empty-index") directorLocal = true;
       else if (ops.kind === "dispatch") {
         let planned = planStandaloneSpawn({

@@ -32,7 +32,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
    - fast/speed preference from CLI-provided model descriptions or speed/service-tier metadata.
    Missing Artificial Analysis data means unranked evidence, not an unusable model. Never select outside the configured allowlist or invent an effort or speed parameter the CLI did not expose.
 
-6. **Mechanical labels.** runner routes test/build/lint/typecheck units. longctx routes search/digest/git-summarize/commit-only units. They are user labels, so both use the same configured candidate surface and neither is filtered by a context threshold. An empty label keeps that action on the director.
+6. **Mechanical labels.** runner routes test/build/lint/typecheck units. longctx routes search/digest/git-summarize/commit-only units. They are user labels, so both use the same configured candidate surface and neither is filtered by a context threshold. An empty label keeps that action on the director and must not block the flow. A non-empty label is Baton dispatch: the director does not execute that action itself. For `git-commit` with a non-empty longctx/runner model, the director may stage only; spawn the unit, dispatch on the active host, and let the worker perform the exclusive commit-only Receipt. If both labels are empty, the director may `git commit` itself.
 
 7. **No parent inheritance or cross-model fallback.** A ticket contains one exact model and optional supported effort. Missing config, a disabled CLI profile, a stale/absent model, or an absent effort blocks dispatch. A failed ticket never silently changes models. A later independently planned unit may be matched again using current health evidence.
 
@@ -87,4 +87,5 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 - Do not show a runtime model selector or ask the user to confirm Baton's automatic model choice.
 - Do not use a model outside the enabled CLI allowlist, invent an effort/speed flag, inherit the parent model, or silently fall back.
 - Do not dispatch without an immutable Receipt, bypass write/Git safety, treat polling timeouts as worker failure, or refill before release.
+- Do not `git commit` in the director session while the matching runner/longctx label is set. If both labels are empty, execute mechanical ops on the director and do not block. When the label is set, stage, then baton spawn and dispatch.
 - Do not reimplement OpenSpec or dump worker tool output into the front conversation.
