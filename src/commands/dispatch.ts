@@ -20,10 +20,10 @@ const USAGE = `usage:
   baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
-  baton dispatch complete TICKET --text "short conclusion" --json
-  baton dispatch fail TICKET --code CODE --message MESSAGE --json
-  baton dispatch timeout TICKET --probe-sequence N [--message MESSAGE] --json
-  baton dispatch close TICKET [--message MESSAGE] --json
+  baton dispatch complete TICKET --text "short conclusion" [--release] --json
+  baton dispatch fail TICKET --code CODE --message MESSAGE [--release] --json
+  baton dispatch timeout TICKET --probe-sequence N [--message MESSAGE] [--release] --json
+  baton dispatch close TICKET [--message MESSAGE] [--release] --json
   baton dispatch release TICKET [--agent-id ID] --json
   baton dispatch recover [--stale-ms N] --json
   baton dispatch status [--capacity N] --json
@@ -79,6 +79,17 @@ function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean |
 
 function dispatchHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): HostId {
   return parseHostId(stringFlag(flags, "host") || loadConfig(cwd, { env }).cli.active);
+}
+
+function finishAndMaybeRelease(
+  cwd: string,
+  id: string,
+  flags: FlagMap,
+  options: Parameters<typeof finishAgent>[2],
+) {
+  const ticket = finishAgent(cwd, id, options);
+  if (!flags.release) return ticket;
+  return releaseAgent(cwd, id, { agentId: stringFlag(flags, "agent-id") || ticket.agent_id });
 }
 
 interface DispatchCommandOptions {
@@ -157,7 +168,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
   if (sub === "complete") {
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
-    const ticket = finishAgent(cwd, id, { status: "completed", conclusion: stringFlag(flags, "text")! });
+    const ticket = finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")! });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
     return 0;
   }
@@ -168,7 +179,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
     const timeoutProbeSequence = sub === "timeout" ? stringFlag(flags, "probe-sequence") : undefined;
     if (sub === "timeout" && !timeoutProbeSequence) throw new Error(USAGE.trim());
     const status = sub === "fail" ? "errored" : sub === "timeout" ? "timed_out" : "closed";
-    const ticket = finishAgent(cwd, id, {
+    const ticket = finishAndMaybeRelease(cwd, id, flags, {
       status,
       conclusion: stringFlag(flags, "text") || null,
       errorCode: stringFlag(flags, "code") || null,

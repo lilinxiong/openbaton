@@ -77,6 +77,34 @@ describe("dispatch CLI", () => {
     });
   });
 
+  it("spawn --dispatch reserves an ordinary subagent ticket and complete --release frees the slot", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-compact-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      const spawned = await approvedSpawn(["spawn", "implement first unit", "--dispatch", "--capacity", "1"], { cwd, env });
+      assert.equal(spawned.code, 0, spawned.stderr || spawned.stdout);
+      const payload = JSON.parse(spawned.stdout);
+      assert.equal(payload.tickets[0].id, "spn-0001");
+      assert.equal(payload.reserved.length, 1);
+      assert.equal(payload.reserved[0].ticket_id, "spn-0001");
+      assert.equal(payload.reserved[0].model, "kimi/k3[1m]");
+      assert.match(payload.reserved[0].prompt, /Baton work unit/);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8")).status, "dispatching");
+
+      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-compact", "--host", "codex", "--json"], { cwd, env });
+      assert.equal(bound.code, 0, bound.stderr);
+      const completed = await command(["dispatch", "complete", "spn-0001", "--text", "first done", "--release", "--json"], { cwd, env });
+      assert.equal(completed.code, 0, completed.stderr);
+      const done = JSON.parse(completed.stdout);
+      assert.equal(done.ticket.status, "completed");
+      assert.ok(done.ticket.slot_released_at);
+      assert.equal(done.snapshot.available, 1);
+      assert.deepEqual(done.snapshot.awaiting_release, []);
+    });
+  });
+
   it("rejects runtime model overrides and forbids manual conclude on current tickets", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));

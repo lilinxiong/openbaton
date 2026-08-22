@@ -14,6 +14,8 @@ import {
 } from "./commands/selection.js";
 import { activeCliProfile, configuredSubagentModels, loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
+import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
+import { parseHostId } from "./lib/hosts.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
@@ -76,7 +78,7 @@ Usage:
   baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text>                disclose preferred/candidate models without creating work
-  baton spawn <request> [--unit KEY=TEXT ...]  automatically choose from configured candidates
+  baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
   baton apply [change]               automatically choose per OpenSpec unit
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
@@ -87,10 +89,10 @@ Usage:
   baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --phase PHASE --text "short status" --json
-  baton dispatch complete TICKET --text "short conclusion" --json
+  baton dispatch complete TICKET --text "short conclusion" [--release] --json
   baton dispatch release TICKET --agent-id ID --json
-  baton dispatch fail|close TICKET --json
-  baton dispatch timeout TICKET --probe-sequence N --json
+  baton dispatch fail|close TICKET [--release] --json
+  baton dispatch timeout TICKET --probe-sequence N [--release] --json
   baton dispatch recover|status --json
   baton status                      director queue + OpenSpec status if present
   baton help | --help | -h
@@ -245,7 +247,7 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
 async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const text = positionalText(args);
-  if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...]");
+  if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]");
   const allCards = resolvedCards(cwd, env);
   const kindFlag = stringFlag(flags, "task-kind");
   if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
@@ -330,16 +332,19 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       payload: source,
     }) : null;
     const approval = proposal ? approveRecommendedSelection({ cwd, proposal, cards: allCards, env }) : null;
+    const createdTickets = dispatched.length > 0 || Boolean(approval?.tickets.length);
+    const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
     if (flags.json) {
       const handled = dispatched.length || local.length || skipped.length;
-      stdout.write(`${JSON.stringify(proposal && !handled
+      const payload = proposal && !handled
         ? { selection_mode: "baton-recommendation", ...approval! }
         : {
           ...(approval ? { selection_mode: "baton-recommendation", recommendation: approval } : { proposal }),
           dispatched: dispatched.map((item) => ({ key: item.key, action: item.action, profile: item.profile, ticket: item.ticket })),
           director_local: local,
           skipped,
-        }, null, 2)}\n`);
+        };
+      stdout.write(`${JSON.stringify(withReservation(payload, reservation), null, 2)}\n`);
     } else {
       for (const item of dispatched) {
         stdout.write(`ops-dispatch ${item.key}: ${item.profile} ${item.action}${item.action === "git-commit" ? " (commit-only)" : ""} → ${item.ticket.model_id} (${item.ticket.id})\n`);
@@ -347,12 +352,15 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       for (const item of local) stdout.write(`director-local ${item.key}: ${item.action}; ${item.reason}\n`);
       for (const item of skipped) stdout.write(`ops-skip ${item.key}: ${item.action}; ${item.reason}\n`);
       if (proposal && approval) printAutomaticRecommendation(stdout, proposal, approval);
+      printReservation(stdout, reservation);
+      printDispatchIgnored(stdout, flags, createdTickets);
     }
     return 0;
   }
   if (directorMayRun(text)) {
     stdout.write("director-local: tiny unit; no subagent model selection is needed\n");
     stdout.write(`unit: ${text}\n`);
+    printDispatchIgnored(stdout, flags, false);
     return 0;
   }
   if (!explicitModel && !writePathsEarly.length) {
@@ -360,11 +368,13 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     if (ops.kind === "director") {
       stdout.write(`director-local: ${ops.reason}\n`);
       stdout.write(`unit: ${text}\n`);
+      printDispatchIgnored(stdout, flags, false);
       return 0;
     }
     if (ops.kind === "empty-index") {
       stdout.write("ops: git-commit skipped; empty index, nothing to commit\n");
       stdout.write(`unit: ${text}\n`);
+      printDispatchIgnored(stdout, flags, false);
       return 0;
     }
     if (ops.kind === "dispatch") {
@@ -380,9 +390,13 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       });
       if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
       const ticket = persistStandalonePlan(cwd, planned);
+      const reservation = maybeReserveQueuedSpawn(cwd, env, flags, true);
       stdout.write(`ops-dispatch: ${ops.profile} ${ops.action}${ops.action === "git-commit" ? " (commit-only)" : ""} → ${ops.card.id}\n`);
       stdout.write(`  ticket ${ticket.id}  wait for the worker conclusion (success or failure)\n`);
-      if (flags.json) stdout.write(`${JSON.stringify(ticket, null, 2)}\n`);
+      printReservation(stdout, reservation);
+      if (flags.json) {
+        stdout.write(`${JSON.stringify(reservation ? withReservation({ ticket }, reservation) : ticket, null, 2)}\n`);
+      }
       return 0;
     }
   }
@@ -414,8 +428,12 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     payload,
   });
   const approval = approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
-  if (flags.json) stdout.write(`${JSON.stringify({ selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
-  else printAutomaticRecommendation(stdout, proposal, approval);
+  const reservation = maybeReserveQueuedSpawn(cwd, env, flags, approval.tickets.length > 0);
+  if (flags.json) stdout.write(`${JSON.stringify(withReservation({ selection_mode: "baton-recommendation", ...approval }, reservation), null, 2)}\n`);
+  else {
+    printAutomaticRecommendation(stdout, proposal, approval);
+    printReservation(stdout, reservation);
+  }
   return 0;
 }
 
@@ -607,6 +625,50 @@ function rememberFlag(flags: FlagMap, key: string, value: FlagValue): void {
   if (prev === undefined) flags[key] = value;
   else if (Array.isArray(prev)) prev.push(value);
   else flags[key] = [prev, value];
+}
+
+function flagOn(flags: FlagMap, key: string): boolean {
+  const value = flags[key];
+  if (value === true || value === "true") return true;
+  if (Array.isArray(value)) return value.some((item) => item === true || item === "true");
+  return false;
+}
+
+type SpawnReservation = ReturnType<typeof reserveNext>;
+
+function maybeReserveQueuedSpawn(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  flags: FlagMap,
+  createdTickets: boolean,
+): SpawnReservation | null {
+  if (!flagOn(flags, "dispatch") || !createdTickets) return null;
+  const cfg = loadConfig(cwd, { env });
+  const capacityFlag = stringFlag(flags, "capacity");
+  return reserveNext(cwd, {
+    capacity: capacityFlag != null ? Number(capacityFlag) : (persistedCapacity(cwd) ?? cfg.director.max_concurrent),
+    host: parseHostId(stringFlag(flags, "host") || cfg.cli.active),
+  });
+}
+
+function withReservation<T extends Record<string, unknown>>(payload: T, reservation: SpawnReservation | null): T | (T & SpawnReservation) {
+  if (!reservation) return payload;
+  return { ...payload, reserved: reservation.reserved, blocked: reservation.blocked, snapshot: reservation.snapshot };
+}
+
+function printReservation(stdout: WritableLike, reservation: SpawnReservation | null): void {
+  if (!reservation) return;
+  if (!reservation.reserved.length) stdout.write("reserved: none; ticket stays queued until dispatch next\n");
+  for (const item of reservation.reserved) {
+    stdout.write(`reserved ${item.ticket_id}: ${item.model}${item.mode === "commit-only" ? " (commit-only)" : ""}\n`);
+  }
+  for (const item of reservation.blocked) stdout.write(`blocked ${item.ticket_id}: ${item.code}\n`);
+}
+
+function printDispatchIgnored(stdout: WritableLike, flags: FlagMap, createdTickets: boolean): void {
+  if (flagOn(flags, "dispatch") && !createdTickets) {
+    stdout.write("spawn --dispatch ignored; nothing queued to reserve\n");
+  }
 }
 
 /** All values of a repeatable flag, in order. Comma-separated values are split by callers. */

@@ -62,7 +62,38 @@ async function bindCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   assert.equal(await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-commit", "--json"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
 }
 
+function parseJson(text: string) {
+  return JSON.parse(text.slice(text.indexOf("{")));
+}
+
 describe("commit-only dispatch integration", () => {
+  it("spawn --dispatch reserves a commit-only ticket in one call", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
+      publishRouteSnapshot(cwd, { models: [
+        { id: "k3[1m]", provider: "kimi", contextWindow: 1_048_576 },
+        { id: "mimo-v2.5-pro", provider: "mimo", contextWindow: 262_144 },
+      ] });
+      configureCodex(cwd, env, ["kimi/k3[1m]", "mimo/mimo-v2.5-pro"], {
+        runner: "mimo/mimo-v2.5-pro",
+        longctx: "kimi/k3[1m]",
+      });
+      const out = capture();
+      assert.equal(await run(["spawn", "git commit staged changes", "--dispatch", "--json"], {
+        cwd, env, stdout: out, stderr: out,
+      }), 0, out.text());
+      const payload = parseJson(out.text());
+      assert.equal(payload.ticket.mode, "commit-only");
+      assert.equal(payload.reserved.length, 1);
+      assert.equal(payload.reserved[0].ticket_id, payload.ticket.id);
+      assert.equal(payload.reserved[0].mode, "commit-only");
+      assert.match(payload.reserved[0].prompt, /commit-only authorization/);
+      assert.equal(readTicket(cwd).status, "dispatching");
+    });
+  });
+
   it("accepts one worker-created commit with the frozen staged tree", async () => {
     await withHome(async (home) => {
       const cwd = fixture();

@@ -20,12 +20,12 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
 ## Execution contract
 
 - Create queued tickets and immutable Receipts before native dispatch. Baton CLI never calls host tools itself and never executes work via `grok -p` or any other grok print/headless process.
-- Reserve with `baton dispatch next --host grok`. Call native `spawn_subagent` with the exact ticket model on the `model` field, `background=true`, no `resume_from` (independent context, fork_context=false), then bind the returned subagent id. Do not start a new grok process with `-m`/`--model`/`--effort`/`-p`.
+- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host grok --json` only for already-queued work. For each reserved ticket, call native `spawn_subagent` with exact `model`, `background=true`, no `resume_from`, then bind immediately. Do not start a new grok process with `-m`/`--model`/`--effort`/`-p`.
 - Always pass `model`. Omitting it inherits the parent model, which Baton forbids. If the installed `spawn_subagent` schema has no `model` field, or the ticket has reasoning_effort/service_tier that spawn_subagent cannot express, report that execution option as unavailable rather than silently claiming it.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
-- Configured mechanical ops follow the labels. If `runner` and `longctx` are empty, the director executes those actions itself and must not block the flow (including `git commit`). If a label is a non-empty model, that action is Baton work: the director may `git add` / stage only, then `baton spawn`, `baton dispatch next --host grok`, native `spawn_subagent` with the ticket `model`, bind, wait, complete, and release. Workers with a commit-only Receipt perform exactly one `git commit` and must not amend, rebase, merge, cherry-pick, revert, tag, stash, clean, or push.
+- Configured mechanical ops follow the labels. Empty `runner`/`longctx`: director executes them and must not block (including `git commit`). Non-empty: compact dispatch above; director may only `git add` / stage for commit-only. Commit-only workers perform exactly one `git commit` and must not amend, rebase, merge, cherry-pick, revert, tag, stash, clean, or push.
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
-- Wait using activity probes. Polling timeout is not ticket timeout. Close and release terminal agents before refilling FIFO.
+- Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
 - OpenSpec is optional and remains workflow owner when present. Baton state stays under ~/.baton, never in the project.
 - Install this skill at ~/.grok/skills/baton/SKILL.md. `grok inspect [--json]` shows discovered config including skills.
 
@@ -35,7 +35,7 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton match <text>
-    baton spawn <request> [--unit KEY=BUSINESS_TASK ...]
+    baton spawn <request> [--unit KEY=BUSINESS_TASK ...] [--dispatch]
     baton apply [change]
     baton dispatch next --host grok --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host grok --json
@@ -50,4 +50,4 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
 - Never add hard-coded family bans or infer unsupported status from tool documentation.
 - Never expose human model selection, select outside the enabled CLI allowlist, invent effort/speed flags, or silently substitute.
 - Never bypass Receipt/write/Git safety, convert polling cadence into failure, reimplement OpenSpec, or dump worker logs into the front conversation.
-- Never `git commit` from this director session while the matching runner/longctx label is a non-empty model. If both labels are empty, the director executes mechanical ops itself and must not stall. When the label is set, stage, then route through baton spawn and dispatch --host grok.
+- Never `git commit` from this director session while the matching runner/longctx label is a non-empty model. If both labels are empty, the director executes mechanical ops itself and must not stall. When the label is set, stage, then `baton spawn --dispatch` and native `spawn_subagent`.

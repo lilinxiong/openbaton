@@ -33,9 +33,14 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /--host grok/);
       assert.match(grokSkill, /grok -p/);
       assert.doesNotMatch(grokSkill, /models --json/);
-      assert.match(grokSkill, /If `runner` and `longctx` are empty, the director executes those actions itself/);
+      assert.match(grokSkill, /Empty `runner`\/`longctx`: director executes them and must not block/);
       assert.match(grokSkill, /Never `git commit` from this director session while the matching runner\/longctx label/);
+      assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
+      assert.match(grokSkill, /--dispatch --json/);
       assert.match(directorSkill, /An empty label keeps that action on the director and must not block the flow/);
+      assert.match(directorSkill, /Compact dispatch applies to every reserved ticket/);
+      assert.match(directorSkill, /\[--dispatch\]/);
+      assert.match(directorSkill, /\[--release\]/);
       assert.match(directorSkill, /Codex and Grok|adapters are Codex and Grok/i);
       assert.match(directorSkill, /spawn_subagent/);
 

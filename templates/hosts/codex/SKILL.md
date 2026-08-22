@@ -20,10 +20,10 @@ You are the Codex host director. Baton is the scheduling and policy layer; it is
 ## Execution contract
 
 - Create queued tickets and immutable Receipts before native dispatch. Baton CLI never calls host tools itself.
-- Reserve with baton dispatch next, call native spawn_agent with the exact model, optional supported reasoning effort, selected service_tier when non-null and exposed by the host, and fork_context=false, then bind the agent id. If the host cannot express a selected tier, report that execution option as unavailable rather than silently claiming Fast mode.
+- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host codex --json` only for already-queued work. For each reserved ticket, call native spawn_agent with the exact model, optional supported reasoning effort, selected service_tier when non-null and exposed by the host, and fork_context=false, then bind immediately. If the host cannot express a selected tier, report that execution option as unavailable rather than silently claiming Fast mode.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
-- Wait using activity probes. Polling timeout is not ticket timeout. Close and release terminal agents before refilling FIFO.
+- Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
 - OpenSpec is optional and remains workflow owner when present. Baton state stays under ~/.baton, never in the project.
 
 ## Commands
@@ -32,7 +32,7 @@ You are the Codex host director. Baton is the scheduling and policy layer; it is
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton match <text>
-    baton spawn <request> [--unit KEY=BUSINESS_TASK ...]
+    baton spawn <request> [--unit KEY=BUSINESS_TASK ...] [--dispatch]
     baton apply [change]
     baton dispatch next --host codex --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host codex --json

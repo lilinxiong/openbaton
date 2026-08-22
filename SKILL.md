@@ -32,19 +32,19 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
    - fast/speed preference from CLI-provided model descriptions or speed/service-tier metadata.
    Missing Artificial Analysis data means unranked evidence, not an unusable model. Never select outside the configured allowlist or invent an effort or speed parameter the CLI did not expose.
 
-6. **Mechanical labels.** runner routes test/build/lint/typecheck units. longctx routes search/digest/git-summarize/commit-only units. They are user labels, so both use the same configured candidate surface and neither is filtered by a context threshold. An empty label keeps that action on the director and must not block the flow. A non-empty label is Baton dispatch: the director does not execute that action itself. For `git-commit` with a non-empty longctx/runner model, the director may stage only; spawn the unit, dispatch on the active host, and let the worker perform the exclusive commit-only Receipt. If both labels are empty, the director may `git commit` itself.
+6. **Mechanical labels.** runner routes test/build/lint/typecheck units. longctx routes search/digest/git-summarize/commit-only units. They are user labels, so both use the same configured candidate surface and neither is filtered by a context threshold. An empty label keeps that action on the director and must not block the flow. A non-empty label is Baton dispatch: the director does not execute that action itself. For `git-commit` with a non-empty longctx/runner model, the director may stage only, then compact-dispatch the reserved ticket. If both labels are empty, the director may `git commit` itself.
 
 7. **No parent inheritance or cross-model fallback.** A ticket contains one exact model and optional supported effort. Missing config, a disabled CLI profile, a stale/absent model, or an absent effort blocks dispatch. A failed ticket never silently changes models. A later independently planned unit may be matched again using current health evidence.
 
 ## Execution contract
 
-8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. The host reserves with baton dispatch next, then calls its native subagent tool: Codex `spawn_agent`, Grok `spawn_subagent`. Pass the exact model. Pass a supported effort or selected service_tier only when the host tool can express them; otherwise report that option as unavailable instead of silently claiming it. Grok must pass `spawn_subagent.model` (omitting it inherits the parent model). fork_context=false: Grok does not pass `resume_from`. Then bind the returned agent id. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
+8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. Compact dispatch applies to every reserved ticket: runner ops, longctx ops, and ordinary `subagent_models` units. Prefer `baton spawn ... --dispatch --json` so enqueue and reserve are one call; use `baton dispatch next --host HOST --json` only for already-queued work. Then call the native subagent tool: Codex `spawn_agent`, Grok `spawn_subagent`. Pass the exact model. Pass a supported effort or selected service_tier only when the host tool can express them; otherwise report that option as unavailable instead of silently claiming it. Grok must pass `spawn_subagent.model` (omitting it inherits the parent model). fork_context=false: Grok does not pass `resume_from`. Bind the returned agent id immediately. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
 
 9. **Read-only by default.** Writes require an explicit path/operation allowlist and a parent Git safety audit. Ordinary workers never mutate Git. The only exception is an exclusive commit-only Receipt: the parent stages and freezes the exact tree first, and the worker may perform exactly one git commit. It may not edit, add, amend, switch, branch, merge, rebase, cherry-pick, revert, tag, stash, clean, or push.
 
 10. **Flat, host-bounded concurrency.** Children cannot spawn children. Queue unlimited logical work and respect the host's current physical capacity. AgentLimitReached is backpressure: defer the same reservation without consuming an attempt or switching models.
 
-11. **Activity-driven lifecycle.** Concrete workers return concise conclusions; checkpointed deliberative workers may also return compact phase/result/next-step/blocker state. Persist host probes separately from business progress. A wait timeout is polling cadence, not ticket timeout. Only an exact not_found probe can authorize a timeout. Close and release terminal agents before refilling capacity.
+11. **Activity-driven lifecycle.** Concrete workers return concise conclusions; checkpointed deliberative workers may also return compact phase/result/next-step/blocker state. Persist host probes separately from business progress. Native completion is the activity signal. Probe only while the agent is still running, or to record exact not_found. A wait timeout is polling cadence, not ticket timeout. Finish with complete/fail/timeout/close plus `--release` before refilling capacity. Do not add probe or close round-trips after a native terminal result.
 
 12. **OpenSpec remains optional.** When present, consume its tasks/status and write conclusions back. Do not reimplement its workflow. Without it, baton spawn remains complete.
 
@@ -52,13 +52,13 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 
 ## Host runtime protocol
 
+This loop is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets.
+
 1. Run baton config once or whenever the selected CLI picker surface changes.
-2. Plan with baton spawn or baton apply; Baton automatically records the chosen configured model and effort.
-3. Reserve with baton dispatch next --host HOST --capacity N --json (HOST is `codex` or `grok`).
-4. Spawn every reservation through the native host tool using the returned exact model, optional effort, optional service_tier when the host exposes it, fork_context=false, and the self-contained prompt. Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`.
-5. Bind with baton dispatch bind TICKET --agent-id ID --host HOST --json.
-6. Probe and wait until terminal; record success or failure through dispatch complete, fail, timeout, or close.
-7. Close the native agent, then run baton dispatch release; refill from FIFO.
+2. Create tickets with `baton spawn ... --dispatch --json` or `baton apply`. `--dispatch` enqueues and reserves in one call. Use `baton dispatch next --host HOST --json` only for already-queued work.
+3. For each reserved ticket, native-spawn with the returned model, prompt, optional effort, and optional service_tier when the host exposes them, fork_context=false. Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`. Bind immediately with `baton dispatch bind TICKET --agent-id ID --host HOST --json`.
+4. Wait on native completion. Probe only while still running, or to record exact `not_found`.
+5. `baton dispatch complete TICKET --text "..." --release --json` (or fail/timeout/close with `--release`). Refill from FIFO.
 
 ## Commands
 
@@ -67,15 +67,15 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]
     baton match <text>
-    baton spawn <request> [--unit KEY=BUSINESS_TASK ...]
+    baton spawn <request> [--unit KEY=BUSINESS_TASK ...] [--dispatch]
     baton apply [change]
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
     baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
     baton dispatch progress TICKET --phase PHASE --text "short status" --json
-    baton dispatch complete TICKET --text "short conclusion" --json
-    baton dispatch fail|timeout|close TICKET --json
+    baton dispatch complete TICKET --text "short conclusion" [--release] --json
+    baton dispatch fail|timeout|close TICKET [--release] --json
     baton dispatch release TICKET --agent-id ID --json
     baton dispatch recover|status --json
     baton status
@@ -87,5 +87,5 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 - Do not show a runtime model selector or ask the user to confirm Baton's automatic model choice.
 - Do not use a model outside the enabled CLI allowlist, invent an effort/speed flag, inherit the parent model, or silently fall back.
 - Do not dispatch without an immutable Receipt, bypass write/Git safety, treat polling timeouts as worker failure, or refill before release.
-- Do not `git commit` in the director session while the matching runner/longctx label is set. If both labels are empty, execute mechanical ops on the director and do not block. When the label is set, stage, then baton spawn and dispatch.
+- Do not `git commit` in the director session while the matching runner/longctx label is set. If both labels are empty, execute mechanical ops on the director and do not block. When the label is set, stage, then `baton spawn --dispatch` and native host spawn.
 - Do not reimplement OpenSpec or dump worker tool output into the front conversation.
