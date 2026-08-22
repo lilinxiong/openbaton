@@ -68,7 +68,7 @@ function modelLabel(model: CliModel): string {
 }
 
 function printModels(stdout: WritableLike, cli: CliId, models: CliModel[]): void {
-  stdout.write(`models: ${cli} model/list (picker-visible)\n`);
+  stdout.write(`models: ${cli} catalog (picker-visible)\n`);
   models.forEach((model, index) => stdout.write(`  ${index + 1}. ${modelLabel(model)}\n`));
 }
 
@@ -198,7 +198,7 @@ export async function runConfig(args: string[], {
     runner: runner || null,
     longctx: longctx || null,
     subagent_models: subagentModels,
-    model_source: `${cli} model/list`,
+    model_source: `${cli} catalog`,
     config: file,
   };
   if (args.includes("--json")) stdout.write(`${JSON.stringify(result, null, 2)}\n`);

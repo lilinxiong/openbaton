@@ -16,13 +16,15 @@ Chinese: [README.zh.md](README.zh.md)
 
 ## What changed
 
-Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. The current adapter is Codex:
+Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. Adapters are Codex and Grok:
 
 1. baton config asks which CLI to configure.
-2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded.
-3. Baton displays exactly the picker-visible models returned by Codex.
+2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` (prefer `--json`) and keeps only reported ids.
+3. Baton displays exactly the picker-visible models returned by that CLI.
 4. The user assigns optional runner and longctx labels, chooses the models subagents may call, and enables or disables that CLI profile.
 5. Later work is routed automatically within that configured candidate set. There is no runtime model selector or model confirmation.
+
+Baton never executes work via `grok -p`. Dispatch host ids are `codex` and `grok`.
 
 Baton does not query OpenCodex, merge in a hard-coded catalog, or treat a model as unsupported because a host tool description did not list it.
 
@@ -47,20 +49,26 @@ The user-global ~/.baton/config.toml has one profile per CLI:
       "gpt-5.3-codex-spark",
     ]
 
+    [cli.grok]
+    enabled = false
+    runner = ""
+    longctx = ""
+    subagent_models = []
+
     [ops.runner]
     actions = ["test", "build", "lint", "typecheck"]
 
     [ops.longctx]
     actions = ["search", "digest", "git-summarize", "git-commit"]
 
-runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same Codex-returned model surface.
+runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same CLI-returned model surface.
 
 Configured label values are automatically included in subagent_models. A disabled profile contributes no candidates.
 
 Non-interactive setup is also supported:
 
     baton config \
-      --cli codex \
+      --cli codex|grok \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
       --subagent-model gpt-5.6-luna \
@@ -100,7 +108,7 @@ Baton never inherits the parent model, chooses outside the enabled allowlist, in
 
 ## Execution lifecycle
 
-The Baton CLI creates tickets and lifecycle state; only the Codex host calls native subagent tools.
+The Baton CLI creates tickets and lifecycle state; only the selected host (Codex or Grok) calls native subagent tools.
 
 1. baton spawn or baton apply creates automatically routed tickets and immutable Receipts.
 2. The host reserves work with baton dispatch next.
@@ -127,15 +135,15 @@ Baton never creates project-local runtime state:
 
     baton init [--force]
     baton update
-    baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+    baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]
     baton match "fix the flaky auth tests quickly"
     baton spawn "implement the migration" [--unit KEY=TEXT ...]
     baton apply [change]
-    baton dispatch next --host codex --capacity N --json
-    baton dispatch bind TICKET --agent-id ID --host codex --json
+    baton dispatch next --host HOST --capacity N --json
+    baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
     baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
     baton dispatch progress TICKET --phase PHASE --text "short status" --json

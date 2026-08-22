@@ -14,8 +14,8 @@ import {
 import type { WritableLike } from "../types.js";
 
 const USAGE = `usage:
-  baton dispatch next --host codex [--capacity N] [--limit N] --json
-  baton dispatch bind TICKET --agent-id ID --host codex --json
+  baton dispatch next --host HOST [--capacity N] [--limit N] --json
+  baton dispatch bind TICKET --agent-id ID --host HOST --json
   baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json

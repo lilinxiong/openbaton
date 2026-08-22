@@ -16,13 +16,15 @@ English: [README.md](README.md)
 
 ## 这次改造
 
-Baton 不再绑定 OpenCodex。模型发现归 CLI adapter；当前实现的是 Codex adapter：
+Baton 不再绑定 OpenCodex。模型发现归 CLI adapter；当前实现的是 Codex 与 Grok adapter：
 
 1. baton config 先让用户选择要配置的 CLI。
-2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。
-3. Codex picker 返回什么，配置界面就完整显示什么。
+2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。选择 Grok 后，Baton 运行 `grok models`（优先 `--json`），只保留 CLI 报告的 id。
+3. 所选 CLI picker 返回什么，配置界面就完整显示什么。
 4. 用户设置可选的 runner、longctx 标签，选择允许 subagent 调用的模型，并决定是否启用这个 CLI 配置。
 5. 之后 Baton 只在这个候选集合内自动匹配，不再出现运行时模型选择器，也不需要用户确认模型。
+
+Baton 从不通过 `grok -p` 执行任务。dispatch host id 为 `codex` 或 `grok`。
 
 Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某个 host tool 的说明里少了一个模型，就把它判为不支持。
 
@@ -47,20 +49,26 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
       "gpt-5.3-codex-spark",
     ]
 
+    [cli.grok]
+    enabled = false
+    runner = ""
+    longctx = ""
+    subagent_models = []
+
     [ops.runner]
     actions = ["test", "build", "lint", "typecheck"]
 
     [ops.longctx]
     actions = ["search", "digest", "git-summarize", "git-commit"]
 
-runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份 Codex 返回模型列表。
+runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份所选 CLI 返回的模型列表。
 
 被设置为 runner 或 longctx 的模型会自动加入 subagent_models。CLI 配置关闭时，不提供任何候选。
 
 也可以非交互配置：
 
     baton config \
-      --cli codex \
+      --cli codex|grok \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
       --subagent-model gpt-5.6-luna \
@@ -100,7 +108,7 @@ Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没
 
 ## 执行生命周期
 
-Baton CLI 负责 ticket 与生命周期状态；只有 Codex host 调用原生 subagent 工具。
+Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Grok）调用原生 subagent 工具。
 
 1. baton spawn 或 baton apply 创建已自动路由的 ticket 和不可变 Receipt。
 2. host 用 baton dispatch next 预留任务。
@@ -127,15 +135,15 @@ Baton 不创建项目内运行时目录：
 
     baton init [--force]
     baton update
-    baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+    baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]
     baton match "快速修复 flaky auth tests"
     baton spawn "实现迁移" [--unit KEY=TEXT ...]
     baton apply [change]
-    baton dispatch next --host codex --capacity N --json
-    baton dispatch bind TICKET --agent-id ID --host codex --json
+    baton dispatch next --host HOST --capacity N --json
+    baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
     baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
     baton dispatch progress TICKET --phase PHASE --text "short status" --json

@@ -5,7 +5,7 @@ description: "Use this Codex director automatically for approved Goal or multi-m
 
 # baton
 
-You are the director. Baton is a CLI-neutral scheduling and policy layer. Its current adapter is Codex; it does not use OpenCodex for model discovery, authentication, or execution.
+You are the director. Baton is a CLI-neutral scheduling and policy layer. Its adapters are Codex and Grok; it does not use OpenCodex for model discovery, authentication, or execution.
 
 ## Entry routing
 
@@ -15,7 +15,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its cu
 
 ## Model and configuration contract
 
-1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded and stores exactly the picker-visible response. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis.
+1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` (prefer `--json`, else parse reported ids) and stores exactly that surface. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p`.
 
 2. **Configuration is per CLI and user-global.** Store the active CLI, enabled flag, runner label, longctx label, and subagent_models allowlist in ~/.baton/config.toml under [cli] and [cli.<id>].
    - runner and longctx are routing labels only. They do not claim speed, context-window size, or any other capability.
@@ -50,27 +50,27 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its cu
 
 13. **State stays user-global.** Shared cache lives under ~/.baton/cache; workspace runtime lives under ~/.baton/workspaces/<canonical-root-sha256>. Never create project-local Baton state.
 
-## Codex runtime protocol
+## Host runtime protocol
 
-1. Run baton config once or whenever the Codex picker surface changes.
+1. Run baton config once or whenever the selected CLI picker surface changes.
 2. Plan with baton spawn or baton apply; Baton automatically records the chosen configured model and effort.
-3. Reserve with baton dispatch next --host codex --capacity N --json.
-4. Spawn every reservation through the native host tool using the returned exact model, optional effort, optional service_tier when the host exposes it, fork_context=false, and the self-contained prompt.
-5. Bind with baton dispatch bind TICKET --agent-id ID --host codex --json.
+3. Reserve with baton dispatch next --host HOST --capacity N --json (HOST is `codex` or `grok`).
+4. Spawn every reservation through the native host tool using the returned exact model, optional effort, optional service_tier when the host exposes it, fork_context=false, and the self-contained prompt. Grok hosts use native spawn, never `grok -p`.
+5. Bind with baton dispatch bind TICKET --agent-id ID --host HOST --json.
 6. Probe and wait until terminal; record success or failure through dispatch complete, fail, timeout, or close.
 7. Close the native agent, then run baton dispatch release; refill from FIFO.
 
 ## Commands
 
-    baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+    baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]
     baton match <text>
     baton spawn <request> [--unit KEY=BUSINESS_TASK ...]
     baton apply [change]
-    baton dispatch next --host codex --capacity N --json
-    baton dispatch bind TICKET --agent-id ID --host codex --json
+    baton dispatch next --host HOST --capacity N --json
+    baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
     baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
     baton dispatch progress TICKET --phase PHASE --text "short status" --json

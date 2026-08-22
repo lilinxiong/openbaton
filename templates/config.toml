@@ -18,6 +18,12 @@ runner = ""
 longctx = ""
 subagent_models = []
 
+[cli.grok]
+enabled = false
+runner = ""
+longctx = ""
+subagent_models = []
+
 # Action classification remains global. Model labels live under the CLI above.
 [ops.runner]
 actions = ["test", "build", "lint", "typecheck"]

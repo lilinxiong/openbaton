@@ -15,7 +15,7 @@ export interface UpdateProjectResult {
 }
 
 /**
- * Refresh Baton-owned Codex files and user-global director/ops settings.
+ * Refresh Baton-owned host files and user-global director/ops settings.
  * Refreshes installed host SKILL copies. Does not install new hosts.
  * Configuration lives in ~/.baton. Never creates project-local Baton config or runtime state.
  */

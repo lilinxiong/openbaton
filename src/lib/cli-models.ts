@@ -4,7 +4,7 @@ import path from "node:path";
 import { findBinaryOnPath, isExecutableFile } from "./executables.js";
 import type { CodedError, UnknownRecord } from "../types.js";
 
-export const CLI_IDS = ["codex"] as const;
+export const CLI_IDS = ["codex", "grok"] as const;
 export type CliId = (typeof CLI_IDS)[number];
 
 export interface CliReasoningEffort {
@@ -262,7 +262,176 @@ export async function discoverCodexModels({
   });
 }
 
+/** Resolve the official Grok Build binary, without inventing a fallback path. */
+export function resolveGrokCommand(env: NodeJS.ProcessEnv = process.env): string | null {
+  const override = String(env.BATON_GROK_PATH || "").trim();
+  if (override) return isExecutableFile(override) ? override : null;
+  return findBinaryOnPath("grok", env);
+}
+
+/** Normalize `grok models` JSON without inventing models. */
+export function normalizeGrokModels(value: unknown): CliModel[] {
+  const envelope = record(value);
+  const values = Array.isArray(value)
+    ? value
+    : Array.isArray(envelope?.data)
+      ? envelope.data
+      : envelope?.models;
+  if (!Array.isArray(values)) throw new Error("Grok models response must be an array or a data/models envelope");
+  const byId = new Map<string, CliModel>();
+  for (const item of values) {
+    const data = record(item);
+    const id = String(data?.id ?? data?.model ?? (typeof item === "string" ? item : "")).trim();
+    if (!id || data?.hidden === true) continue;
+    byId.set(id, {
+      id,
+      model: String(data?.model || id).trim() || id,
+      display_name: String(data?.displayName ?? data?.display_name ?? data?.name ?? id).trim() || id,
+      description: String(data?.description || "").trim(),
+      hidden: false,
+      reasoning_efforts: normalizeReasoningEfforts(data?.supportedReasoningEfforts ?? data?.reasoning_efforts ?? data?.efforts),
+      default_reasoning_effort: String(data?.defaultReasoningEffort ?? data?.default_reasoning_effort ?? "").trim() || null,
+      input_modalities: strings(data?.inputModalities ?? data?.input_modalities),
+      additional_speed_tiers: strings(data?.additionalSpeedTiers ?? data?.additional_speed_tiers),
+      service_tiers: normalizeServiceTiers(data?.serviceTiers ?? data?.service_tiers ?? data?.tiers),
+      default_service_tier: String(data?.defaultServiceTier ?? data?.default_service_tier ?? "").trim() || null,
+      is_default: data?.isDefault === true || data?.is_default === true,
+    });
+  }
+  return [...byId.values()];
+}
+
+function parseGrokModelText(stdout: string): CliModel[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) throw new Error("Grok models text was empty");
+  try {
+    return normalizeGrokModels(JSON.parse(trimmed));
+  } catch (error) {
+    if (!(error instanceof SyntaxError) && !(error instanceof Error && /envelope|array/.test(error.message))) {
+      /* keep scanning text */
+    }
+  }
+  const byId = new Map<string, CliModel>();
+  for (const rawLine of trimmed.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const stripped = line.replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, "");
+    const token = stripped.split(/\s+/)[0]?.replace(/[,:;]+$/, "") || "";
+    if (!/^[A-Za-z][A-Za-z0-9._:/-]*$/.test(token)) continue;
+    if (["available", "models", "model", "name", "id", "default"].includes(token.toLowerCase())) continue;
+    if (byId.has(token)) continue;
+    byId.set(token, {
+      id: token,
+      model: token,
+      display_name: token,
+      description: "",
+      hidden: false,
+      reasoning_efforts: [],
+      default_reasoning_effort: null,
+      input_modalities: [],
+      additional_speed_tiers: [],
+      service_tiers: [],
+      default_service_tier: null,
+      is_default: /\bdefault\b/i.test(stripped),
+    });
+  }
+  if (!byId.size) throw new Error("Grok models text contained no model ids");
+  return [...byId.values()];
+}
+
+function runGrokProcess(
+  executable: string,
+  args: string[],
+  {
+    cwd,
+    env,
+    timeoutMs,
+    spawnImpl,
+  }: DiscoverCliModelsOptions,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = (spawnImpl || spawn)(executable, args, {
+        cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+      }) as ChildProcessWithoutNullStreams;
+    } catch (error) {
+      reject(codedError(`Grok model discovery failed: ${error instanceof Error ? error.message : String(error)}`, "GROK_MODEL_DISCOVERY_FAILED"));
+      return;
+    }
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let settled = false;
+    const finish = (error?: Error, code: number | null = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      terminate(child);
+      if (error) reject(error);
+      else resolve({ code, stdout: stdout.join(""), stderr: stderr.join("") });
+    };
+    const timer = setTimeout(() => {
+      finish(codedError("Grok model discovery timed out", "GROK_MODEL_DISCOVERY_TIMEOUT"));
+    }, timeoutMs ?? 15_000);
+    child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+    child.on("error", (error) => finish(codedError(`Grok model discovery failed: ${error.message}`, "GROK_MODEL_DISCOVERY_FAILED")));
+    child.on("exit", (code) => finish(undefined, code));
+    child.stdin.end();
+  });
+}
+
+/**
+ * Discover exactly the models `grok models` reports. Prefer --json, then
+ * parse text ids. Baton never executes work via grok -p.
+ */
+export async function discoverGrokModels({
+  cwd,
+  env = process.env,
+  command,
+  timeoutMs = 15_000,
+  spawnImpl = spawn,
+}: DiscoverCliModelsOptions = {}): Promise<CliModelCatalog> {
+  const executable = String(command || resolveGrokCommand(env) || "").trim();
+  if (!executable) throw codedError("Grok CLI is not available; install grok or set BATON_GROK_PATH", "CLI_NOT_AVAILABLE");
+  const jsonRun = await runGrokProcess(executable, ["models", "--json"], { cwd, env, timeoutMs, spawnImpl });
+  let models: CliModel[] | null = null;
+  if (jsonRun.code === 0) {
+    try {
+      models = normalizeGrokModels(JSON.parse(jsonRun.stdout));
+    } catch {
+      models = null;
+    }
+  }
+  if (!models) {
+    const textRun = await runGrokProcess(executable, ["models"], { cwd, env, timeoutMs, spawnImpl });
+    if (textRun.code !== 0) {
+      const detail = (textRun.stderr || textRun.stdout || jsonRun.stderr || jsonRun.stdout).trim();
+      throw codedError(
+        `Grok model discovery failed (${textRun.code ?? "unknown"})${detail ? `: ${detail}` : ""}`,
+        "GROK_MODEL_DISCOVERY_FAILED",
+      );
+    }
+    try {
+      models = parseGrokModelText(textRun.stdout);
+    } catch (error) {
+      throw codedError(error instanceof Error ? error.message : String(error), "GROK_MODEL_DISCOVERY_FAILED");
+    }
+  }
+  let version: string | null = null;
+  try {
+    const versionRun = await runGrokProcess(executable, ["version"], { cwd, env, timeoutMs, spawnImpl });
+    if (versionRun.code === 0) version = versionRun.stdout.trim().split(/\r?\n/)[0] || null;
+  } catch {
+    version = null;
+  }
+  return { cli: "grok", version, models };
+}
+
 export const discoverCliModels: CliModelDiscovery = async (cli, options) => {
   if (cli === "codex") return discoverCodexModels(options);
+  if (cli === "grok") return discoverGrokModels(options);
   throw codedError(`unsupported CLI: ${cli}`, "CLI_NOT_SUPPORTED");
 };

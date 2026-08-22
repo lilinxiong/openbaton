@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { normalizeCodexModels, resolveCodexCommand } from "../src/lib/cli-models.js";
+import { EventEmitter } from "node:events";
+import {
+  discoverCliModels,
+  discoverGrokModels,
+  normalizeCodexModels,
+  normalizeGrokModels,
+  resolveCodexCommand,
+  resolveGrokCommand,
+} from "../src/lib/cli-models.js";
+import type { CodedError } from "../src/types.js";
 
 describe("Codex CLI model adapter", () => {
   it("keeps the exact picker-visible surface, including Mini and Spark", () => {
@@ -63,5 +72,141 @@ describe("Codex CLI model adapter", () => {
     fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
     assert.equal(resolveCodexCommand({ PATH: dir, HOME: "" }), executable);
+  });
+});
+
+function fakeSpawn(handler: (args: string[]) => { code: number; stdout?: string; stderr?: string; hang?: boolean }) {
+  return ((command: string, args: string[]) => {
+    void command;
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      stdin: { write: () => void; end: () => void };
+      killed: boolean;
+      kill: () => void;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { write() {}, end() {} };
+    child.killed = false;
+    child.kill = () => { child.killed = true; };
+    const result = handler(args);
+    queueMicrotask(() => {
+      if (result.hang) return;
+      if (result.stdout) child.stdout.emit("data", result.stdout);
+      if (result.stderr) child.stderr.emit("data", result.stderr);
+      child.emit("exit", result.code);
+    });
+    return child;
+  }) as typeof import("node:child_process").spawn;
+}
+
+describe("Grok CLI model adapter", () => {
+  it("normalizes array, data, and models envelopes without inventing ids", () => {
+    const sample = [
+      {
+        id: "grok-4.6",
+        name: "Grok 4.6",
+        description: "Flagship",
+        efforts: [{ id: "low" }, { id: "high", description: "Deep" }],
+        tiers: [{ id: "fast", name: "Fast" }],
+      },
+      { model: "my-custom", displayName: "Custom", hidden: false },
+      { id: "hidden-x", hidden: true },
+      { id: "grok-4.6", name: "Grok 4.6 newer", is_default: true, efforts: [{ id: "low" }, { id: "high", description: "Deep" }], tiers: [{ id: "fast", name: "Fast" }] },
+    ];
+    const fromArray = normalizeGrokModels(sample);
+    const fromData = normalizeGrokModels({ data: sample });
+    const fromModels = normalizeGrokModels({ models: sample });
+    for (const models of [fromArray, fromData, fromModels]) {
+      assert.deepEqual(models.map((model) => model.id), ["grok-4.6", "my-custom"]);
+      assert.equal(models[0].display_name, "Grok 4.6 newer");
+      assert.equal(models[0].is_default, true);
+      assert.deepEqual(models[0].reasoning_efforts.map((effort) => effort.id), ["low", "high"]);
+      assert.deepEqual(models[0].service_tiers.map((tier) => tier.id), ["fast"]);
+      assert.equal(models[1].display_name, "Custom");
+    }
+  });
+
+  it("rejects a payload without models", () => {
+    assert.throws(() => normalizeGrokModels({ nope: true }), /envelope/);
+  });
+
+  it("honors BATON_GROK_PATH when executable and otherwise PATH", () => {
+    assert.equal(resolveGrokCommand({ ...process.env, BATON_GROK_PATH: process.execPath, PATH: "" }), process.execPath);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-path-"));
+    const executable = path.join(dir, process.platform === "win32" ? "grok.cmd" : "grok");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
+    assert.equal(resolveGrokCommand({ PATH: dir, HOME: "", BATON_GROK_PATH: "" }), executable);
+    assert.equal(resolveGrokCommand({ PATH: "", HOME: "", BATON_GROK_PATH: "/missing/grok" }), null);
+  });
+
+  it("discovers models from grok models --json", async () => {
+    const catalog = await discoverGrokModels({
+      command: "/bin/grok",
+      spawnImpl: fakeSpawn((args) => {
+        if (args[0] === "models" && args[1] === "--json") {
+          return { code: 0, stdout: JSON.stringify({ models: [{ id: "grok-4.6", name: "Grok 4.6" }] }) };
+        }
+        if (args[0] === "version") return { code: 0, stdout: "grok 1.2.3\n" };
+        return { code: 1, stderr: "unexpected" };
+      }),
+    });
+    assert.equal(catalog.cli, "grok");
+    assert.equal(catalog.version, "grok 1.2.3");
+    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.6"]);
+  });
+
+  it("falls back to grok models text when --json fails", async () => {
+    const catalog = await discoverGrokModels({
+      command: "/bin/grok",
+      spawnImpl: fakeSpawn((args) => {
+        if (args[0] === "models" && args[1] === "--json") return { code: 2, stderr: "unknown flag" };
+        if (args[0] === "models") return { code: 0, stdout: "Available models:\n  grok-4.6 (default)\n  my-custom\n" };
+        if (args[0] === "version") return { code: 0, stdout: "1.0.0" };
+        return { code: 1 };
+      }),
+    });
+    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.6", "my-custom"]);
+    assert.equal(catalog.models[0].is_default, true);
+  });
+
+  it("routes discoverCliModels(grok) through discoverGrokModels", async () => {
+    const catalog = await discoverCliModels("grok", {
+      command: "/bin/grok",
+      spawnImpl: fakeSpawn((args) => {
+        if (args.join(" ") === "models --json") return { code: 0, stdout: JSON.stringify([{ id: "grok-4.5" }]) };
+        if (args[0] === "version") return { code: 1, stderr: "no" };
+        return { code: 1 };
+      }),
+    });
+    assert.equal(catalog.cli, "grok");
+    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.5"]);
+  });
+
+  it("codes missing binary and failed discovery", async () => {
+    await assert.rejects(
+      () => discoverGrokModels({ env: { PATH: "", HOME: "" } }),
+      (error: unknown) => (error as CodedError).code === "CLI_NOT_AVAILABLE",
+    );
+    await assert.rejects(
+      () => discoverGrokModels({
+        command: "/bin/grok",
+        spawnImpl: fakeSpawn(() => ({ code: 1, stderr: "boom" })),
+      }),
+      (error: unknown) => (error as CodedError).code === "GROK_MODEL_DISCOVERY_FAILED",
+    );
+  });
+
+  it("times out hung grok models", async () => {
+    await assert.rejects(
+      () => discoverGrokModels({
+        command: "/bin/grok",
+        timeoutMs: 20,
+        spawnImpl: fakeSpawn(() => ({ code: 0, hang: true })),
+      }),
+      (error: unknown) => (error as CodedError).code === "GROK_MODEL_DISCOVERY_TIMEOUT",
+    );
   });
 });

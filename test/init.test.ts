@@ -16,11 +16,11 @@ describe("Codex init and update", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-"));
       const env = fakeEnv(home);
       const result = await initProject(cwd, { env });
-      assert.equal(result.tools.length, 1);
-      assert.equal(result.tools[0], "codex");
+      assert.deepEqual(result.tools, ["codex", "grok"]);
 
       const directorSkill = fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8");
       const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
+      const grokSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.grok), "utf8");
       for (const skill of [directorSkill, hostSkill]) {
         assert.match(skill, /model\/list/);
         assert.match(skill, /gpt-5\.4-mini/);
@@ -28,15 +28,21 @@ describe("Codex init and update", () => {
         assert.match(skill, /No human model selector|Never expose human model selection/);
         assert.match(skill, /OpenCodex/);
       }
+      assert.match(grokSkill, /grok models/);
+      assert.match(grokSkill, /--host grok/);
+      assert.match(grokSkill, /grok -p/);
+      assert.match(directorSkill, /Codex and Grok|adapters are Codex and Grok/i);
 
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.active, "codex");
-      assert.deepEqual(config.cli.codex, {
+      const emptyProfile = {
         enabled: false,
         runner: "",
         longctx: "",
         subagent_models: [],
-      });
+      };
+      assert.deepEqual(config.cli.codex, emptyProfile);
+      assert.deepEqual(config.cli.grok, emptyProfile);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((raw.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);

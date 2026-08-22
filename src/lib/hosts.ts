@@ -4,12 +4,13 @@ import { packageRoot, hostHome, displayHomePath } from "./paths.js";
 
 export { hostHome } from "./paths.js";
 
-export const HOST_IDS = ["codex"] as const;
+export const HOST_IDS = ["codex", "grok"] as const;
 
 export type HostId = (typeof HOST_IDS)[number];
 
 export const HOST_SKILL_REL: Record<HostId, string> = {
   codex: ".codex/skills/baton/SKILL.md",
+  grok: ".grok/skills/baton/SKILL.md",
 };
 
 export interface HostEnvOptions {
@@ -39,7 +40,7 @@ export interface HostRefreshResult {
 }
 
 export function hostSkillDest(tool: HostId, options: HostEnvOptions = {}): string {
-  return path.join(hostHome(options.env), HOST_SKILL_REL.codex);
+  return path.join(hostHome(options.env), HOST_SKILL_REL[tool]);
 }
 
 export function skillTemplatePath(tool: HostId): string {
@@ -71,7 +72,7 @@ function copySkill(
 
 export function installHostSkills(cwd: string, options: InstallHostSkillsOptions = {}): HostInstallResult {
   const { force = false, env } = options;
-  const hostTools: HostId[] = ["codex"];
+  const hostTools: HostId[] = [...HOST_IDS];
   const created: string[] = [];
   const skipped: string[] = [];
   for (const tool of hostTools) {

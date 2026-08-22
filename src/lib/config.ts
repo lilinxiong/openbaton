@@ -29,6 +29,7 @@ export interface CliProfileSettings {
 export interface CliSettings {
   active: CliId;
   codex: CliProfileSettings;
+  grok: CliProfileSettings;
 }
 
 export interface Config {
@@ -54,6 +55,12 @@ export function emptyConfig(): Config {
     cli: {
       active: "codex",
       codex: {
+        enabled: false,
+        runner: "",
+        longctx: "",
+        subagent_models: [],
+      },
+      grok: {
         enabled: false,
         runner: "",
         longctx: "",
@@ -113,6 +120,7 @@ function normalizeCli(value: unknown, legacyOps: OpsConfig): CliSettings {
   return {
     active,
     codex: normalizeCliProfile(cli.codex, legacyOps),
+    grok: normalizeCliProfile(cli.grok, emptyOpsConfig()),
   };
 }
 
@@ -139,6 +147,12 @@ function serializeConfig(cfg: Config): UnknownRecord {
         runner: cfg.cli.codex.runner,
         longctx: cfg.cli.codex.longctx,
         subagent_models: cfg.cli.codex.subagent_models,
+      },
+      grok: {
+        enabled: cfg.cli.grok.enabled,
+        runner: cfg.cli.grok.runner,
+        longctx: cfg.cli.grok.longctx,
+        subagent_models: cfg.cli.grok.subagent_models,
       },
     },
     ops: {

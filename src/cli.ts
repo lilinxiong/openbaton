@@ -69,11 +69,11 @@ of OpenSpec tasks, with conclusions written back. Not a thin adapter.
 The selected CLI owns model visibility; Baton routes only within the configured candidate set.
 
 Usage:
-  baton init [--force]                initialize Baton + Codex skill
-  baton update                        refresh Codex skill + global config defaults
+  baton init [--force]                initialize Baton + Codex/Grok host skills
+  baton update                        refresh host skills + global config defaults
   baton models refresh|status|candidates  inspect/refresh the active CLI model catalog
   baton cards [--ranked|--unranked] [--provider ID] [--json]
-  baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+  baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
                [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text>                disclose preferred/candidate models without creating work
   baton spawn <request> [--unit KEY=TEXT ...]  automatically choose from configured candidates
@@ -82,8 +82,8 @@ Usage:
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
   baton capabilities show ROUTE [--profile PROFILE]
-  baton dispatch next --host codex --capacity N --json
-  baton dispatch bind TICKET --agent-id ID --host codex --json
+  baton dispatch next --host HOST --capacity N --json
+  baton dispatch bind TICKET --agent-id ID --host HOST --json
   baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --phase PHASE --text "short status" --json
@@ -163,7 +163,7 @@ export async function run(argv: string[], {
 async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
-  if (flags.tools) throw new Error("--tools is not supported; Baton is Codex-only");
+  if (flags.tools) throw new Error("--tools is not supported; baton init installs Codex and Grok host skills");
   const result = await initProject(cwd, { force, env });
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
