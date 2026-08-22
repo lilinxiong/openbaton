@@ -94,8 +94,12 @@ export interface CompareOptions {
   workspace?: string;
 }
 
-function round(ms: number): number {
-  return Math.round(ms * 10) / 10;
+function round(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function ms(value: number): string {
+  return `${value} ms`;
 }
 
 function clip(text: string, max = 240): string {
@@ -516,27 +520,52 @@ export async function runMechanicalCompare(options: CompareOptions): Promise<Com
 
 export function formatCompareReport(report: CompareReport): string {
   const lines = [
-    `mechanical ops comparison  cli=${report.cli}  host=${report.host}  mode=${report.mode}  ok=${report.ok}`,
-    `runner=${report.runner || "-"}  longctx=${report.longctx || "-"}  spawn_cli_ms=${report.spawn_cli_ms}`,
+    `mechanical ops benchmark  cli=${report.cli}  host=${report.host}  mode=${report.mode}  ok=${report.ok}`,
+    `runner=${report.runner || "-"}  longctx=${report.longctx || "-"}  spawn=${ms(report.spawn_cli_ms)} (once for all units)`,
     "",
-    pad("task", 12) + pad("via", 22) + pad("direct_ms", 12) + pad("baton_ms", 12) + pad("overhead_ms", 14) + pad("model", 22) + "result",
+    "with baton vs without (same local command; no host model spawn; milliseconds)",
+    pad("task", 12) + pad("via", 22) + pad("without (ms)", 14) + pad("with (ms)", 12) + pad("extra (ms)", 12) + pad("model", 22) + "result",
   ];
   for (const task of report.tasks) {
     const via = task.baton.kind === "ops-dispatch" && task.baton.profile
       ? `${task.baton.profile}/${task.baton.action}`
       : task.baton.kind;
     const result = [
-      task.direct.skipped ? `direct:${task.direct.skipped}` : `direct:${task.direct.exit === 0 ? "pass" : `fail ${task.direct.exit}`}`,
-      task.baton.skipped ? `baton:${task.baton.skipped}` : `baton:${task.baton.exit === 0 ? "pass" : `fail ${task.baton.exit}`}`,
+      task.direct.skipped ? `without:${task.direct.skipped}` : `without:${task.direct.exit === 0 ? "pass" : `fail ${task.direct.exit}`}`,
+      task.baton.skipped ? `with:${task.baton.skipped}` : `with:${task.baton.exit === 0 ? "pass" : `fail ${task.baton.exit}`}`,
     ].join("  ");
     lines.push(
       pad(task.key, 12)
       + pad(via, 22)
-      + pad(task.direct.skipped ? "-" : String(task.direct.elapsed_ms), 12)
+      + pad(task.direct.skipped ? "-" : String(task.direct.elapsed_ms), 14)
       + pad(task.baton.skipped ? "-" : String(task.baton.elapsed_ms), 12)
-      + pad(task.overhead_ms == null ? "-" : String(task.overhead_ms), 14)
+      + pad(task.overhead_ms == null ? "-" : String(task.overhead_ms), 12)
       + pad(task.baton.model || "-", 22)
       + result,
+    );
+  }
+  lines.push(
+    "",
+    "baton phases (milliseconds). ticket extra = bind + complete. execute is the command body.",
+    pad("task", 12) + pad("bind (ms)", 12) + pad("execute (ms)", 14) + pad("complete (ms)", 14) + pad("ticket extra (ms)", 18) + "execute − without (ms)",
+  );
+  for (const task of report.tasks) {
+    if (task.direct.skipped || task.baton.skipped) {
+      lines.push(pad(task.key, 12) + pad("-", 12) + pad("-", 14) + pad("-", 14) + pad("-", 18) + "-");
+      continue;
+    }
+    const bind = task.baton.phases.bind_cli_ms;
+    const execute = task.baton.phases.execute_ms;
+    const complete = task.baton.phases.complete_cli_ms;
+    const extra = bind != null && complete != null ? round((bind || 0) + (complete || 0)) : null;
+    const delta = execute != null ? round(execute - task.direct.elapsed_ms) : null;
+    lines.push(
+      pad(task.key, 12)
+      + pad(bind == null ? "-" : String(bind), 12)
+      + pad(execute == null ? "-" : String(execute), 14)
+      + pad(complete == null ? "-" : String(complete), 14)
+      + pad(extra == null ? "-" : String(extra), 18)
+      + (delta == null ? "-" : String(delta)),
     );
   }
   return `${lines.join("\n")}\n`;

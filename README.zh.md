@@ -126,25 +126,38 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Gr
 
 `ops.runner` 和 `ops.longctx` 标注哪些机械动作离开 director。runner：`test`、`build`、`lint`、`typecheck`、`git-commit`。longctx：`search`、`digest`、`git-summarize`。标签为空时，这些 unit 留在 director 上执行。机械 worker 只执行推断出的命令，不探索；`git-commit` 可以看 staged diff、写一条 message、提交一次。
 
-对比脚本把每个 unit 跑两遍：一遍走 Baton ticket（spawn、bind、同一条本地命令、complete/release），一遍直接跑同一条命令。它不调用 host spawn 工具。live 模式从不 git commit；`--fixture` 只在临时仓库里 commit。
+Benchmark：同一条本地命令，走 Baton ticket（spawn、bind、跑命令、complete/release）vs 不用 Baton（直接跑）。不拉起 host 模型。默认在本仓库跑，跳过 `git commit`；`--fixture` 用临时仓库并包含 commit。
 
     bun scripts/compare-mechanical-ops.ts
     bun scripts/compare-mechanical-ops.ts --fixture
     bun scripts/compare-mechanical-ops.ts --json
 
-本仓库 live 结果，2026-08-22。`cli=grok` `host=grok` `runner=grok-4.5` `longctx=grok-4.5` `spawn_cli_ms=202.5` `ok=true`。
+本仓库，2026-08-22。`cli=grok` `ok=true`。6 张票一次打开：**221 ms**。
 
-| task | via | direct_ms | baton_ms | overhead_ms | model | result |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| test | runner/test | 15244.1 | 17671.3 | 2427.2 | grok-4.5 | pass / pass |
-| build | runner/build | 182.1 | 243.6 | 61.5 | grok-4.5 | pass / pass |
-| typecheck | runner/typecheck | 96.3 | 146.3 | 50.0 | grok-4.5 | pass / pass |
-| search | longctx/search | 5.6 | 56.6 | 51.0 | grok-4.5 | pass / pass |
-| summarize | longctx/git-summarize | 6.6 | 56.0 | 49.4 | grok-4.5 | pass / pass |
-| ordinary | subagent | 29.0 | 80.7 | 51.7 | grok-4.5 | pass / pass |
-| commit | skipped | — | — | — | — | live 不 git commit |
+用 Baton vs 不用（单位：毫秒）：
 
-轻量命令的 bind + complete 大约 50ms。Baton 通道先跑，所以 `test` 的 overhead 含测试套件波动，不只是 ticket 成本。要更新数字，重新跑脚本。
+| task | via | without (ms) | with (ms) | extra (ms) |
+| --- | --- | ---: | ---: | ---: |
+| test | runner/test | 12292.3 | 13369.0 | 1076.7 |
+| build | runner/build | 188.9 | 258.1 | 69.2 |
+| typecheck | runner/typecheck | 96.7 | 172.5 | 75.8 |
+| search | longctx/search | 5.7 | 59.7 | 54.0 |
+| summarize | longctx/git-summarize | 7.3 | 59.8 | 52.5 |
+| ordinary | subagent | 29.8 | 83.8 | 54.0 |
+| commit | skipped | — | — | — |
+
+Baton 路径的阶段（`ticket extra` = bind + complete，即外壳成本；单位：毫秒）：
+
+| task | bind (ms) | execute (ms) | complete (ms) | ticket extra (ms) | execute − without (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| test | 18.7 | 13318.2 | 32.1 | 50.8 | 1025.9 |
+| build | 18.2 | 203.0 | 36.9 | 55.1 | 14.1 |
+| typecheck | 24.7 | 111.0 | 36.8 | 61.5 | 14.3 |
+| search | 19.6 | 5.8 | 34.3 | 53.9 | 0.1 |
+| summarize | 19.7 | 8.0 | 32.1 | 51.8 | 0.7 |
+| ordinary | 20.4 | 31.8 | 31.6 | 52.0 | 2.0 |
+
+Baton 自己多出来的是每条大约 **50–62 ms**（bind + complete），外加开票一次 **221 ms**。`test` 多出来的 **1076.7 ms** 几乎全是测试套件波动（`execute` vs 直跑），不是 ticket 成本。要更新数字，重新跑脚本。
 
 ## OpenSpec 与状态
 

@@ -126,25 +126,38 @@ Read-only is the default. Write tickets require an immutable path and operation 
 
 `ops.runner` and `ops.longctx` label which mechanical actions leave the director. runner: `test`, `build`, `lint`, `typecheck`, `git-commit`. longctx: `search`, `digest`, `git-summarize`. Empty labels keep those units on the director. Mechanical workers execute the inferred command and do not explore; `git-commit` may read the staged diff, write one message, and create one commit.
 
-The compare script runs each unit twice: through Baton tickets (spawn, bind, the same local command, complete/release), then as that command directly. It does not call host spawn tools. Live mode never git-commits; `--fixture` commits only inside a temp repo.
+Benchmark: the same local command with Baton tickets (spawn, bind, run, complete/release) vs without Baton (run the command). No host model is spawned. Default mode runs in this repo and skips `git commit`; `--fixture` uses a temp repo and includes commit.
 
     bun scripts/compare-mechanical-ops.ts
     bun scripts/compare-mechanical-ops.ts --fixture
     bun scripts/compare-mechanical-ops.ts --json
 
-Live run on this checkout, 2026-08-22. `cli=grok` `host=grok` `runner=grok-4.5` `longctx=grok-4.5` `spawn_cli_ms=202.5` `ok=true`.
+This checkout, 2026-08-22. `cli=grok` `ok=true`. Opening six tickets once: **221 ms**.
 
-| task | via | direct_ms | baton_ms | overhead_ms | model | result |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| test | runner/test | 15244.1 | 17671.3 | 2427.2 | grok-4.5 | pass / pass |
-| build | runner/build | 182.1 | 243.6 | 61.5 | grok-4.5 | pass / pass |
-| typecheck | runner/typecheck | 96.3 | 146.3 | 50.0 | grok-4.5 | pass / pass |
-| search | longctx/search | 5.6 | 56.6 | 51.0 | grok-4.5 | pass / pass |
-| summarize | longctx/git-summarize | 6.6 | 56.0 | 49.4 | grok-4.5 | pass / pass |
-| ordinary | subagent | 29.0 | 80.7 | 51.7 | grok-4.5 | pass / pass |
-| commit | skipped | — | — | — | — | live mode does not git commit |
+With Baton vs without (milliseconds):
 
-Cheap commands add about 50ms for bind + complete. Baton lanes run first, so `test` overhead includes suite variance, not only ticket cost. Re-run the script to refresh these numbers.
+| task | via | without (ms) | with (ms) | extra (ms) |
+| --- | --- | ---: | ---: | ---: |
+| test | runner/test | 12292.3 | 13369.0 | 1076.7 |
+| build | runner/build | 188.9 | 258.1 | 69.2 |
+| typecheck | runner/typecheck | 96.7 | 172.5 | 75.8 |
+| search | longctx/search | 5.7 | 59.7 | 54.0 |
+| summarize | longctx/git-summarize | 7.3 | 59.8 | 52.5 |
+| ordinary | subagent | 29.8 | 83.8 | 54.0 |
+| commit | skipped | — | — | — |
+
+Phases inside the Baton path (`ticket extra` = bind + complete, the wrapper cost; milliseconds):
+
+| task | bind (ms) | execute (ms) | complete (ms) | ticket extra (ms) | execute − without (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| test | 18.7 | 13318.2 | 32.1 | 50.8 | 1025.9 |
+| build | 18.2 | 203.0 | 36.9 | 55.1 | 14.1 |
+| typecheck | 24.7 | 111.0 | 36.8 | 61.5 | 14.3 |
+| search | 19.6 | 5.8 | 34.3 | 53.9 | 0.1 |
+| summarize | 19.7 | 8.0 | 32.1 | 51.8 | 0.7 |
+| ordinary | 20.4 | 31.8 | 31.6 | 52.0 | 2.0 |
+
+Baton's own extra is about **50–62 ms** per task (bind + complete), plus **221 ms** once to open the tickets. `test`'s extra **1076.7 ms** is almost all suite variance (`execute` vs without), not ticket cost. Re-run the script to refresh these numbers.
 
 ## OpenSpec and state
 
