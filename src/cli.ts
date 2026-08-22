@@ -3,17 +3,16 @@ import { updateProject } from "./commands/update.js";
 import { listCards } from "./commands/cards.js";
 import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
-import { ensureRouteSnapshotFresh, runRoutes } from "./commands/routes.js";
+import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { runConfig } from "./commands/config.js";
 import {
   approveRecommendedSelection,
   assertRecommendedSelectionAvailable,
-  printSelectionProposal,
   runSelection,
   type SelectionApprovalOutput,
 } from "./commands/selection.js";
-import { loadConfig } from "./lib/config.js";
+import { activeCliProfile, configuredSubagentModels, loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
@@ -30,10 +29,9 @@ import {
   type SelectionProposal,
 } from "./lib/selection.js";
 import { directorMayRun } from "./lib/hygiene.js";
-import { FORBIDDEN_SUBAGENT_MODEL_FAMILIES, SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
+import { SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
+import type { CliModelDiscovery } from "./lib/cli-models.js";
 import type { ModelCard } from "./types.js";
-import type { OcxResolver, OcxRunner } from "./lib/opencodex.js";
-import type { CodexBarResolver, CodexBarRunner } from "./lib/codexbar.js";
 import type { CodedError, WritableLike } from "./types.js";
 
 interface RunOptions {
@@ -41,10 +39,7 @@ interface RunOptions {
   stdout?: WritableLike;
   stderr?: WritableLike;
   env?: NodeJS.ProcessEnv;
-  runner?: OcxRunner;
-  resolve?: OcxResolver;
-  codexBarRunner?: CodexBarRunner;
-  codexBarResolve?: CodexBarResolver;
+  discover?: CliModelDiscovery;
   fetchImpl?: typeof fetch;
 }
 
@@ -53,9 +48,15 @@ type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
 export const VERSION = "0.1.0";
 
-function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): ModelCard[] {
-  ensureRouteSnapshotFresh({ cwd, stdout: { write() {} }, env, runner, resolve });
-  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd)).map((candidate) => candidate.card);
+function resolvedCards(cwd: string, env: NodeJS.ProcessEnv): ModelCard[] {
+  const cfg = loadConfig(cwd, { env });
+  const allowed = new Set(configuredSubagentModels(cfg));
+  if (!allowed.size) return [];
+  const snapshot = readRouteSnapshot(cwd);
+  if (!snapshot || snapshot.cli !== cfg.cli.active) return [];
+  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd))
+    .map((candidate) => candidate.card)
+    .filter((card) => card.route_id && allowed.has(card.route_id));
 }
 
 const HELP = `baton — director for multi-model work
@@ -65,22 +66,18 @@ Standalone: cards + native spawn + director context hygiene. Complete without Op
 Together: OpenSpec owns breakdown/status; baton owns who runs each task and keeps
 the director context clean. Apply is multi-model, uncapped, card-routed execution
 of OpenSpec tasks, with conclusions written back. Not a thin adapter.
-Built-in subagent policy forbids every gpt-5.5, gpt-5.6-sol, and gpt-5.6-terra route/profile.
+The selected CLI owns model visibility; Baton routes only within the configured candidate set.
 
 Usage:
   baton init [--force]                initialize Baton + Codex skill
   baton update                        refresh Codex skill + global config defaults
-  baton routes refresh|status|candidates  refresh Baton once from synchronized OpenCodex state
+  baton models refresh|status|candidates  inspect/refresh the active CLI model catalog
   baton cards [--ranked|--unranked] [--provider ID] [--json]
-  baton config [--runner ROUTE|-] [--longctx ROUTE|-]  choose global ops routes from OpenCodex (~/.baton/config.toml)
-  baton config model-selection on|off|status  opt in/out of manual model choice (default: off)
+  baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+               [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text>                disclose preferred/candidate models without creating work
-  baton spawn <request> [--unit KEY=TEXT ...] [--model ID]  auto-recommend remaining units; --model requires model-selection on
-  baton apply [change] [--route TASK=EXACT_ROUTE]  auto-recommend OpenSpec units; --route requires model-selection on
-  baton selection show PROPOSAL
-  baton selection render PROPOSAL --output PATH --task-label TASK=中文 [--assign TASK=ID]  return one Chinese current-conversation selector
-  baton selection render-bundle --proposal SCOPE=WORKSPACE#PROPOSAL ... --output PATH  combine proposals into one Submit
-  baton selection approve PROPOSAL --confirm [--model ID] [--route TASK=ID] [--provider ID]
+  baton spawn <request> [--unit KEY=TEXT ...]  automatically choose from configured candidates
+  baton apply [change]               automatically choose per OpenSpec unit
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -105,10 +102,7 @@ export async function run(argv: string[], {
   stdout = process.stdout,
   stderr = process.stderr,
   env = process.env,
-  runner,
-  resolve,
-  codexBarRunner,
-  codexBarResolve,
+  discover,
   fetchImpl,
 }: RunOptions = {}): Promise<number> {
   const args = argv.slice();
@@ -131,17 +125,17 @@ export async function run(argv: string[], {
       case "update":
         return cmdUpdate(cwd, stdout, env);
       case "cards":
-        return cmdCards(args, cwd, stdout, env, runner, resolve);
+        return cmdCards(args, cwd, stdout, env);
       case "match":
-        return cmdMatch(args, cwd, stdout, env, runner, resolve);
+        return cmdMatch(args, cwd, stdout, env);
       case "config":
-        return await runConfig(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
+        return await runConfig(args, { cwd, stdout, env, discover });
       case "spawn":
-        return await cmdSpawn(args, cwd, stdout, env, runner, resolve);
+        return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
-        return await cmdApply(args, cwd, stdout, env, runner, resolve);
+        return await cmdApply(args, cwd, stdout, env);
       case "selection":
-        return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env, runner, resolve), env });
+        return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env), env });
       case "conclude":
         return cmdConclude(args, cwd, stdout);
       case "capabilities":
@@ -149,11 +143,12 @@ export async function run(argv: string[], {
       case "dispatch":
         return runDispatch(args, { cwd, stdout, env });
       case "routes":
-        return runRoutes(args, { cwd, stdout, env, runner, resolve, codexBarRunner, codexBarResolve });
+      case "models":
+        return await runRoutes(args, { cwd, stdout, env, discover });
       case "conversation":
         return runConversation(args, { stdout });
       case "status":
-        return cmdStatus(cwd, stdout, env, runner, resolve);
+        return cmdStatus(cwd, stdout, env);
       default:
         stderr.write(`unknown command: ${cmd}\n\n${HELP}`);
         return 2;
@@ -173,8 +168,8 @@ async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: N
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
-  stdout.write("\nNext: run `baton routes refresh`, inspect `baton cards --ranked`, then `baton spawn` or `baton apply`.\n");
-  stdout.write("All executable route/profile IDs come from OpenCodex.\n");
+  stdout.write("\nNext: run `baton config`; choose a CLI, its runner/longctx labels, and the subagent candidate models.\n");
+  stdout.write("Model visibility comes from the selected CLI. Later routing is automatic.\n");
   stdout.write("OpenSpec is optional. baton is complete without it.\n");
   return 0;
 }
@@ -186,9 +181,8 @@ function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
   return 0;
 }
 
-function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): number {
-  ensureRouteSnapshotFresh({ cwd, stdout, env, runner, resolve });
-  if (args[0] === "add") throw new Error("cards add is not supported; use an exact OpenCodex route/profile ID");
+function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
+  if (args[0] === "add") throw new Error("cards add is not supported; configure exact CLI model ids with `baton config`");
   const flags = parseFlags(args);
   let models = listCards(cwd, { env });
   if (flags.ranked) models = models.filter((card) => card.capability?.ranked);
@@ -200,7 +194,7 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     return 0;
   }
   if (models.length === 0) {
-    stdout.write("no OpenCodex routes. Run: baton routes refresh\n");
+    stdout.write("no enabled subagent models. Run: baton config\n");
     return 0;
   }
   stdout.write(`cards: ${models.length}\n`);
@@ -208,13 +202,13 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   return 0;
 }
 
-function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): number {
+function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   const text = positionalText(args);
   if (!text) {
     throw new Error("usage: baton match <text>");
   }
   try {
-    const cards = resolvedCards(cwd, env, runner, resolve);
+    const cards = resolvedCards(cwd, env);
     const unit = buildSelectionUnit({
       cwd, key: "preview", description: text, prompt: text, cards,
       automaticCards: cardsForAutomaticSelection(cwd, cards, text),
@@ -245,21 +239,20 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
   }
 }
 
-async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
+async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const text = positionalText(args);
-  if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--model ID]");
-  const cfg = loadConfig(cwd, { env });
-  const allCards = resolvedCards(cwd, env, runner, resolve);
+  if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...]");
+  const allCards = resolvedCards(cwd, env);
   const kindFlag = stringFlag(flags, "task-kind");
   if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
     throw new Error("--task-kind must be concrete or deliberative");
   }
   const unitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
-  const explicitModel = stringFlag(flags, "model") || null;
-  if (explicitModel && !cfg.director.model_selection) {
-    throw new Error("MODEL_SELECTION_DISABLED: --model requires `baton config model-selection on`; model selection is off, so Baton uses its recommendation");
+  if (stringFlag(flags, "model")) {
+    throw new Error("MODEL_SELECTION_REMOVED: --model is not supported; configure cli.<id>.subagent_models and let Baton route automatically");
   }
+  const explicitModel = null;
   const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (unitDefinitions.length) {
     if (writePathsEarly.length) throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
@@ -329,24 +322,20 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         metadata: { request_index: index },
       }));
     }
-    if (!cfg.director.model_selection) assertRecommendedSelectionAvailable(units);
+    assertRecommendedSelectionAvailable(units);
     const proposal = units.length ? createSelectionProposal(cwd, {
       source: "standalone",
       units,
       sourceFingerprint: selectionSourceFingerprint(source),
       payload: source,
     }) : null;
-    const approval = proposal && !cfg.director.model_selection
-      ? approveRecommendedSelection({ cwd, proposal, cards: allCards, env })
-      : null;
+    const approval = proposal ? approveRecommendedSelection({ cwd, proposal, cards: allCards, env }) : null;
     if (flags.json) {
       const handled = dispatched.length || local.length || skipped.length;
       stdout.write(`${JSON.stringify(proposal && !handled
-        ? approval ? { selection_mode: "baton-recommendation", ...approval } : proposal
+        ? { selection_mode: "baton-recommendation", ...approval! }
         : {
-          ...(approval
-            ? { selection_mode: "baton-recommendation", recommendation: approval }
-            : { proposal }),
+          ...(approval ? { selection_mode: "baton-recommendation", recommendation: approval } : { proposal }),
           dispatched: dispatched.map((item) => ({ key: item.key, action: item.action, profile: item.profile, ticket: item.ticket })),
           director_local: local,
           skipped,
@@ -358,7 +347,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       for (const item of local) stdout.write(`director-local ${item.key}: ${item.action}; ${item.reason}\n`);
       for (const item of skipped) stdout.write(`ops-skip ${item.key}: ${item.action}; ${item.reason}\n`);
       if (proposal && approval) printAutomaticRecommendation(stdout, proposal, approval);
-      else if (proposal) printSelectionProposal(stdout, proposal);
     }
     return 0;
   }
@@ -419,30 +407,26 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     automaticCards: cardsForAutomaticSelection(cwd, allCards, text),
     requestedModelId: explicitModel,
   });
-  if (!cfg.director.model_selection) assertRecommendedSelectionAvailable([unit]);
+  assertRecommendedSelectionAvailable([unit]);
   const proposal = createSelectionProposal(cwd, {
     source: "standalone",
     units: [unit],
     sourceFingerprint: selectionSourceFingerprint(payload),
     payload,
   });
-  if (!cfg.director.model_selection) {
-    const approval = approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
-    if (flags.json) stdout.write(`${JSON.stringify({ selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
-    else printAutomaticRecommendation(stdout, proposal, approval);
-  } else if (flags.json) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
-  else printSelectionProposal(stdout, proposal);
+  const approval = approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
+  if (flags.json) stdout.write(`${JSON.stringify({ selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
+  else printAutomaticRecommendation(stdout, proposal, approval);
   return 0;
 }
 
-async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): Promise<number> {
+async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const change = firstPositionalArg(args);
-  const cfg = loadConfig(cwd, { env });
-  if (multiFlag(flags, "route").length && !cfg.director.model_selection) {
-    throw new Error("MODEL_SELECTION_DISABLED: --route requires `baton config model-selection on`; model selection is off, so Baton uses its recommendation");
+  if (multiFlag(flags, "route").length) {
+    throw new Error("MODEL_SELECTION_REMOVED: --route is not supported; configure cli.<id>.subagent_models and let Baton route automatically");
   }
-  const cards = resolvedCards(cwd, env, runner, resolve);
+  const cards = resolvedCards(cwd, env);
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
     stdout.write("  baton spawn \"explore the auth module\"\n");
@@ -501,23 +485,19 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     return 0;
   }
   const taskSource = tasks.map((task) => ({ number: task.number, description: task.description, section: task.section }));
-  if (!cfg.director.model_selection) assertRecommendedSelectionAvailable(units);
+  assertRecommendedSelectionAvailable(units);
   const proposal = createSelectionProposal(cwd, {
     source: "openspec",
     units,
     sourceFingerprint: selectionSourceFingerprint(taskSource),
     payload: { change: change || changeDir.split(/[\\/]/).at(-1), change_dir: changeDir },
   });
-  if (!cfg.director.model_selection) {
-    const approval = approveRecommendedSelection({ cwd, proposal, cards, env });
-    if (flags.json) {
-      stdout.write(`${JSON.stringify(dispatched.length
-        ? { selection_mode: "baton-recommendation", recommendation: approval, dispatched: dispatched.map((item) => item.ticket) }
-        : { selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
-    } else printAutomaticRecommendation(stdout, proposal, approval);
-  } else if (flags.json) {
-    stdout.write(`${JSON.stringify(dispatched.length ? { proposal, dispatched: dispatched.map((item) => item.ticket) } : proposal, null, 2)}\n`);
-  } else printSelectionProposal(stdout, proposal);
+  const approval = approveRecommendedSelection({ cwd, proposal, cards, env });
+  if (flags.json) {
+    stdout.write(`${JSON.stringify(dispatched.length
+      ? { selection_mode: "baton-recommendation", recommendation: approval, dispatched: dispatched.map((item) => item.ticket) }
+      : { selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
+  } else printAutomaticRecommendation(stdout, proposal, approval);
   return 0;
 }
 
@@ -535,7 +515,7 @@ function cmdConclude(args: string[], cwd: string, stdout: WritableLike): number 
   return 0;
 }
 
-function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, runner?: OcxRunner, resolve?: OcxResolver): number {
+function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   let cfg = null;
   try {
     cfg = loadConfig(cwd, { env });
@@ -548,16 +528,18 @@ function cmdStatus(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv, ru
     throw err;
   }
   stdout.write("baton status\n");
-  const cards = resolvedCards(cwd, env, runner, resolve);
+  const cards = resolvedCards(cwd, env);
   const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
   const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
-  stdout.write(`  cards: ${cards.length} OpenCodex routes (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
-  stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}  forbidden ${FORBIDDEN_SUBAGENT_MODEL_FAMILIES.join(", ")}\n`);
-  stdout.write(`  model selection: ${cfg.director.model_selection ? "on (user choice enabled)" : "off (Baton recommendation automatic)"}\n`);
+  stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
+  stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}\n`);
+  stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
+  const cliProfile = activeCliProfile(cfg);
+  stdout.write(`  cli: ${cfg.cli.active} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
   stdout.write(`  max_concurrent: ${cfg.director.max_concurrent} (queue beyond this; never refuse)\n`);
   const snapshot = readRouteSnapshot(cwd);
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
-  stdout.write(`  OpenCodex routes: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton routes refresh)"}\n`);
+  stdout.write(`  CLI models: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton config)"}\n`);
   const selections = listSelectionProposals(cwd);
   stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
   const spawns = listSpawns(cwd);
@@ -586,7 +568,9 @@ function printAutomaticRecommendation(stdout: WritableLike, proposal: SelectionP
     }
     const selected = output.approvals.find((approval) => approval.key === unit.key)?.selected_model_id || unit.recommended_model_id;
     const candidate = unit.candidates.find((item) => item.model_id === selected);
-    const speed = candidate?.speed_optimized ? `; fast=${candidate.speed_signals.join("+")}` : "";
+    const speed = candidate?.speed_optimized
+      ? `; fast=${candidate.service_tier || "model"} via ${candidate.speed_signals.join("+")}`
+      : "";
     stdout.write(`  ${unit.key}: ${selected} (score=${candidate?.task_score ?? "fallback"}; effort=${unit.target_reasoning_effort}; context=${unit.estimated_context_tokens}${speed})\n`);
   }
   for (const ticket of output.tickets) stdout.write(`  ticket ${ticket.id} queued; dispatch remains host-owned\n`);

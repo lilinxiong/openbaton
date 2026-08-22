@@ -6,13 +6,9 @@ export const LONGCTX_ACTIONS = ["search", "digest", "git-summarize", "git-commit
 export const OPS_ACTIONS = [...RUNNER_ACTIONS, ...LONGCTX_ACTIONS] as const;
 export type OpsAction = (typeof OPS_ACTIONS)[number];
 
-export const LONGCTX_CONTEXT_FLOOR = 900_000;
-export const LONGCTX_MIN_CONTEXT_DEFAULT = 1_048_576;
-
 export interface OpsProfile {
   route: string;
   actions: OpsAction[];
-  min_context_tokens?: number;
 }
 
 export interface OpsConfig {
@@ -38,17 +34,13 @@ function profileOf(profile: OpsProfileId, value: unknown): OpsProfile {
     route,
     actions: actionsOf(profile, raw.actions),
   };
-  if (profile === "longctx") {
-    const min = Number(raw.min_context_tokens);
-    parsed.min_context_tokens = Number.isFinite(min) && min > 0 ? Math.floor(min) : LONGCTX_MIN_CONTEXT_DEFAULT;
-  }
   return parsed;
 }
 
 export function emptyOpsConfig(): OpsConfig {
   return {
     runner: { route: "", actions: [...RUNNER_ACTIONS] },
-    longctx: { route: "", actions: [...LONGCTX_ACTIONS], min_context_tokens: LONGCTX_MIN_CONTEXT_DEFAULT },
+    longctx: { route: "", actions: [...LONGCTX_ACTIONS] },
   };
 }
 

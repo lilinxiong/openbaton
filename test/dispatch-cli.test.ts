@@ -7,6 +7,7 @@ import { run } from "../src/cli.js";
 import { dispatchStatePath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
+import { configureCodex } from "./configure.js";
 
 function capture() {
   const chunks = [];
@@ -21,12 +22,16 @@ async function command(argv, options) {
 }
 
 async function approvedSpawn(argv, options) {
-  const enabled = await command(["config", "model-selection", "on"], options);
-  if (enabled.code !== 0) return enabled;
-  const proposed = await command([...argv, "--json"], options);
-  if (proposed.code !== 0) return proposed;
-  const id = JSON.parse(proposed.stdout).id;
-  return command(["selection", "approve", id, "--confirm", "--json"], options);
+  configureCodex(options.cwd, options.env, ["kimi/k3[1m]"]);
+  const automatic = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--model") {
+      index += 1;
+      continue;
+    }
+    automatic.push(argv[index]);
+  }
+  return command([...automatic, "--json"], options);
 }
 
 describe("dispatch CLI", () => {
@@ -72,22 +77,19 @@ describe("dispatch CLI", () => {
     });
   });
 
-  it("blocks unavailable exact routes before ticket creation and forbids manual conclude on current tickets", async () => {
+  it("rejects runtime model overrides and forbids manual conclude on current tickets", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
+      configureCodex(cwd, env, ["kimi/k3[1m]"]);
       const disabled = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(disabled.code, 1);
-      assert.match(disabled.stderr, /MODEL_SELECTION_DISABLED/);
-      assert.equal((await command(["config", "model-selection", "on"], { cwd, env })).code, 0);
-      const unavailable = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
-      assert.equal(unavailable.code, 1);
-      assert.match(unavailable.stderr, /not an exact route\/profile id|no executable route/);
+      assert.match(disabled.stderr, /MODEL_SELECTION_REMOVED/);
       const bareAlias = await command(["spawn", "implement complex unit", "--model", "k3[1m]"], { cwd, env });
       assert.equal(bareAlias.code, 1);
-      assert.match(bareAlias.stderr, /not an exact route\/profile id/);
+      assert.match(bareAlias.stderr, /MODEL_SELECTION_REMOVED/);
       assert.equal((await approvedSpawn(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });

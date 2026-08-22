@@ -3,15 +3,17 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import vm from "node:vm";
 import { run } from "../src/cli.js";
-import { buildSelectionUnit, createSelectionProposal, readSelectionProposal, selectionSourceFingerprint, writeSelectionProposal } from "../src/lib/selection.js";
-import { SUBAGENT_MODEL_FAMILY_FORBIDDEN, SUBAGENT_MODEL_POLICY_ID } from "../src/lib/model-policy.js";
-import { renderSelectionView } from "../src/lib/selection-view.js";
-import { normalizeProviderQuotas } from "../src/lib/provider-quotas.js";
-import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { artificialAnalysisDbPath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
-import { writeCapabilitySnapshot } from "../src/lib/capabilities/store.js";
+import { buildRouteCandidates, publishRouteSnapshot } from "../src/lib/routes.js";
+import {
+  buildSelectionUnit,
+  createSelectionProposal,
+  estimateTaskComplexity,
+  readSelectionProposal,
+  selectionSourceFingerprint,
+} from "../src/lib/selection.js";
+import { artificialAnalysisDbPath } from "../src/lib/paths.js";
+import { configureCodex } from "./configure.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function capture() {
@@ -19,680 +21,212 @@ function capture() {
   return { write(value: unknown) { chunks.push(String(value)); }, text() { return chunks.join(""); } };
 }
 
-function card(id: string, route: string, provider: string, coding: number, agentic: number, relative: number) {
-  return {
-    id, route_id: route, provider, executable: true, source: "dynamic" as const,
-    reasoning_effort: id.includes("@") ? id.slice(id.lastIndexOf("@") + 1) : undefined,
-    strengths: `AA-derived inference: coding=${coding}, agentic=${agentic}`,
-    positioning: relative >= 0.75 ? ["strong-coding", "strong-agentic"] : ["balanced"],
-    capability: {
-      source: "artificial-analysis" as const, ranked: true, unranked: false, reason: null,
-      intelligence_index: 50, coding_index: coding, agentic_index: agentic,
-      cost_per_task: 1, output_tokens_per_second: 50, time_to_first_answer_seconds: 10,
-      relative: { intelligence: relative, coding: relative, agentic: relative, cost_efficiency: 0.5, throughput: 0.5, latency: 0.5 },
-    },
-  };
+const MODELS = [
+  {
+    id: "gpt-5.6-sol",
+    displayName: "5.6 Sol",
+    description: "Most capable model for complex repository architecture and migration work",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
+    additionalSpeedTiers: ["fast"],
+    serviceTiers: [{ id: "priority", name: "Fast" }],
+  },
+  {
+    id: "gpt-5.6-luna",
+    displayName: "5.6 Luna",
+    description: "Fast balanced coding model",
+    supportedReasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "medium",
+  },
+  {
+    id: "gpt-5.4-mini",
+    displayName: "5.4 Mini",
+    description: "Small fast cost-efficient coding model for simpler fixes",
+    supportedReasoningEfforts: ["low", "medium"],
+    defaultReasoningEffort: "low",
+    additionalSpeedTiers: ["fast"],
+  },
+  {
+    id: "gpt-5.3-codex-spark",
+    displayName: "5.3 Codex Spark",
+    description: "Ultra-fast coding model",
+    supportedReasoningEfforts: ["low", "medium"],
+    defaultReasoningEffort: "low",
+  },
+];
+
+function setup(cwd: string, env: NodeJS.ProcessEnv) {
+  publishRouteSnapshot(cwd, { models: MODELS }, new Date(), { cli: "codex", engineVersion: "test" });
+  configureCodex(cwd, env, MODELS.map((model) => model.id));
+  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd)).map((candidate) => candidate.card);
 }
 
-describe("model selection policy", () => {
-  it("groups quota pools, adapts Cursor API/Auto, hides exhausted pools, and filters non-agent routes", () => withHome(() => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-pools-"));
-    publishRouteSnapshot(cwd, { models: [
-      { id: "claude-opus-5", provider: "cursor", namespaced: "cursor/claude-opus-5" },
-      { id: "grok-4.6", provider: "cursor", namespaced: "cursor/grok-4.6" },
-      { id: "composer-2.5", provider: "cursor", namespaced: "cursor/composer-2.5" },
-      { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
-      { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
-      { id: "mimo-v2.5-tts", provider: "mimo", namespaced: "mimo/mimo-v2.5-tts" },
-    ] }, new Date(), {
-      providerQuotas: normalizeProviderQuotas({ reports: [{
-        provider: "cursor",
-        source: "cursor:period-usage",
-        quota: {
-          monthlyPercent: 100,
-          customWindows: [
-            { label: "First-party models", percent: 4.752 },
-            { label: "API usage", percent: 93.72 },
-          ],
-        },
-      }] }),
-    });
-    const cards = [
-      card("cursor/claude-opus-5", "cursor/claude-opus-5", "cursor", 90, 90, 1),
-      card("cursor/grok-4.6", "cursor/grok-4.6", "cursor", 99, 99, 1),
-      card("cursor/composer-2.5", "cursor/composer-2.5", "cursor", 98, 98, 1),
-      card("alibaba-token-plan/glm-5.2", "alibaba-token-plan/glm-5.2", "alibaba-token-plan", 80, 80, 0.8),
-      card("mimo/mimo-v2.5-pro", "mimo/mimo-v2.5-pro", "mimo", 60, 50, 0.5),
-      card("mimo/mimo-v2.5-tts", "mimo/mimo-v2.5-tts", "mimo", 100, 100, 1),
-    ];
-    const unit = buildSelectionUnit({
-      cwd,
-      key: "standalone",
-      description: "audit incident JSON and produce a report",
-      prompt: "audit incident JSON and produce a report",
-      cards,
-      automaticCards: cards,
-    });
-    assert.equal(unit.candidates.some((candidate) => candidate.model_id === "mimo/mimo-v2.5-tts"), false);
-    assert.deepEqual(unit.task_exclusions.map((item) => item.model_id), ["mimo/mimo-v2.5-tts"]);
-    assert.equal(unit.candidates.some((candidate) => candidate.model_id === "mimo/mimo-v2.5-pro"), true);
-    assert.equal(unit.candidates.find((candidate) => candidate.model_id === "cursor/grok-4.6")?.selection_code, "QUOTA_POOL_EXHAUSTED");
-    assert.equal(unit.candidates.find((candidate) => candidate.model_id === "cursor/grok-4.6")?.selectable, false);
-    assert.equal(unit.recommended_model_id, "cursor/claude-opus-5");
-
-    const proposal = createSelectionProposal(cwd, {
-      source: "standalone",
-      units: [unit],
-      sourceFingerprint: selectionSourceFingerprint({ description: unit.description }),
-      payload: { description: unit.description },
-    });
-    assert.deepEqual(proposal.quota_pools.map((pool) => [pool.id, pool.status]), [
-      ["cursor-api", "available"],
-      ["alibaba-token-plan", "unknown"],
-      ["mimo", "unknown"],
-      ["cursor-auto", "exhausted"],
-    ]);
-    assert.equal(proposal.quota_pools[0].remaining_percent, 6.280000000000001);
-    assert.deepEqual(proposal.quota_pools.at(-1)?.model_ids, ["cursor/composer-2.5", "cursor/grok-4.6"]);
-    const fragment = renderSelectionView(proposal);
-    assert.doesNotMatch(fragment, /<!doctype|<html|<body/i);
-    assert.match(fragment, /data-baton-presentation="current_conversation_inline_only"/);
-    assert.match(fragment, /全局选择 Provider/);
-    assert.match(fragment, /Baton 汇总模型选择/);
-    assert.match(fragment, /模型擅长项/);
-    assert.match(fragment, /Cursor API/);
-    assert.match(fragment, /额度耗尽/);
-    assert.match(fragment, /sendFollowUpMessage/);
-    assert.ok(fragment.includes('"display_model_id":"claude-opus-5"'));
-    assert.ok(fragment.includes('"default_checked":["cursor/claude-opus-5"]'));
-    assert.ok(fragment.includes('"default_assignments":{"standalone":"cursor/claude-opus-5"}'));
-    const script = fragment.match(/<script>([\s\S]*?)<\/script>/)?.[1];
-    assert.ok(script);
-    assert.doesNotThrow(() => new vm.Script(script));
-    assert.throws(() => buildSelectionUnit({
-      cwd,
-      key: "blocked",
-      description: unit.description,
-      prompt: unit.prompt,
-      cards,
-      automaticCards: cards,
-      requestedModelId: "cursor/grok-4.6",
-    }), /QUOTA_POOL_EXHAUSTED/);
-  }));
-
-  it("converts OpenCodex used percentages into explicit remaining quota windows", () => {
-    const quotas = normalizeProviderQuotas({ reports: [
-      { provider: "kimi", source: "kimi:usages", quota: { fiveHourPercent: 5, fiveHourResetAt: 1_800_000_000_000, weeklyPercent: 9 } },
-      { provider: "cursor", reverseEngineered: true, quota: { monthlyPercent: 22.4896, customWindows: [{ label: "API usage", percent: 93.72 }] } },
-    ] }, "2026-08-19T00:00:00.000Z");
-    const kimi = quotas.find((item) => item.provider === "kimi")!;
-    assert.deepEqual(kimi.windows.map((item) => [item.name, item.remaining_percent]), [["five_hour", 95], ["weekly", 91]]);
-    const cursor = quotas.find((item) => item.provider === "cursor")!;
-    assert.equal(cursor.windows.find((item) => item.label === "API usage")?.remaining_percent, 6.280000000000001);
-    assert.equal(cursor.reverse_engineered, true);
+describe("automatic configured-model selection", () => {
+  it("maps explicit speed/simple work to low effort and complex work to max", () => {
+    assert.deepEqual(estimateTaskComplexity("implement a quick small coding fix"), { effort: "low", reason: "simple" });
+    assert.deepEqual(estimateTaskComplexity("implement a complex repository-wide architecture migration"), { effort: "max", reason: "very-complex" });
   });
 
-  it("recommends from the synced OpenCodex snapshot and keeps unknown quota explicit", () => withHome(() => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-"));
-    publishRouteSnapshot(cwd, { models: [
-      { id: "strong", provider: "openai", namespaced: "openai/strong", reasoningEfforts: ["high", "ultra"] },
-      { id: "cheap", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/cheap", reasoningEfforts: ["low"] },
-      { id: "k3", provider: "kimi", namespaced: "kimi/k3", reasoningEfforts: ["max"] },
-    ] }, new Date(), {
-      providerQuotas: normalizeProviderQuotas({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 87 } }] }),
-    });
-    const cards = [
-      card("openai/strong@high", "openai/strong", "openai", 95, 92, 1),
-      card("openai/strong@ultra", "openai/strong", "openai", 98, 97, 1),
-      card("alibaba-token-plan/cheap@low", "alibaba-token-plan/cheap", "alibaba-token-plan", 55, 45, 0.3),
-      card("kimi/k3@max", "kimi/k3", "kimi", 99, 99, 1),
-      card("gpt-5.5@high", "gpt-5.5", "openai", 100, 100, 1),
-      card("gpt-5.6-sol@max", "gpt-5.6-sol", "openai", 100, 100, 1),
-      card("cursor/gpt-5.6-terra@high", "cursor/gpt-5.6-terra", "cursor", 100, 100, 1),
-    ];
-    const unit = buildSelectionUnit({
-      cwd, key: "standalone", description: "implement complex multi-file migration",
-      prompt: "implement complex multi-file migration", cards, automaticCards: cards,
-    });
-    assert.equal(unit.recommended_model_id, "kimi/k3@max");
-    assert.equal(unit.recommendation_reason, "DETERMINISTIC_TOP_SCORE_TIEBREAK");
-    assert.equal(unit.target_reasoning_effort, "max");
-    assert.equal(unit.estimated_context_tokens, 1_000_000);
-    assert.equal(unit.candidates.find((item) => item.model_id === "kimi/k3@max")?.selection_code, "AVAILABLE");
-    assert.equal(unit.candidates.find((item) => item.model_id === "openai/strong@ultra")?.selection_code, "AVAILABLE");
-    assert.equal(unit.candidates.some((item) => /gpt-(?:5\.5|5\.6-(?:sol|terra))/.test(item.model_id)), false);
-    assert.deepEqual(unit.policy_exclusions.map((item) => item.family), ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"]);
-    assert.equal(unit.candidates.find((item) => item.provider === "openai")?.quota.windows[0].remaining_percent, 13);
-    assert.equal(unit.candidates.find((item) => item.provider === "alibaba-token-plan")?.quota.reason, "PROVIDER_QUOTA_NOT_REPORTED");
-    const proposal = createSelectionProposal(cwd, {
-      source: "standalone", units: [unit], sourceFingerprint: selectionSourceFingerprint({ description: unit.description }),
-      payload: { description: unit.description },
-    });
-    assert.equal(readSelectionProposal(cwd, proposal.id).status, "pending_confirmation");
-    assert.equal(proposal.model_policy_id, SUBAGENT_MODEL_POLICY_ID);
-    assert.deepEqual(proposal.policy_exclusions.map((item) => item.family), ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"]);
-    assert.throws(() => buildSelectionUnit({
-      cwd, key: "blocked", description: "implement", prompt: "implement", cards,
-      requestedModelId: "gpt-5.5@high",
-    }), new RegExp(SUBAGENT_MODEL_FAMILY_FORBIDDEN));
-  }));
-
-  it("keeps deterministic serving variants reference-only but allows them in automatic recommendation", () => withHome(() => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-reference-"));
-    publishRouteSnapshot(cwd, { models: [
-      { id: "exact", provider: "provider", namespaced: "provider/exact" },
-      { id: "fast", provider: "provider", namespaced: "provider/fast" },
-    ] });
-    const exact = card("provider/exact", "provider/exact", "provider", 60, 60, 0.5);
-    const reference = card("provider/fast", "provider/fast", "provider", 99, 99, 1);
-    reference.capability.reference_only = true;
-    reference.capability.reference_reasons = ["SERVING_VARIANT_BASE_MODEL_REFERENCE"];
-    reference.capability.reference_route_id = "provider/base";
-    reference.capability.reference_profile = "";
-    reference.capability.aa_slug = "base";
-    reference.capability.aa_data = {
-      evaluations: { artificial_analysis_coding_index: 99 },
-      pricing: { price_1m_input_tokens: 1 },
-      performance: { median_output_tokens_per_second: 100 },
-      cost: {},
-    };
-    reference.strengths += "; reference only (SERVING_VARIANT_BASE_MODEL_REFERENCE)";
-
-    const unit = buildSelectionUnit({
-      cwd,
-      key: "standalone",
-      description: "implement a repository migration",
-      prompt: "implement a repository migration",
-      cards: [exact, reference],
-      automaticCards: [exact, reference],
-    });
-    const disclosed = unit.candidates.find((candidate) => candidate.model_id === reference.id)!;
-    assert.equal(unit.recommended_model_id, reference.id);
-    assert.equal(disclosed.selectable, true);
-    assert.equal(disclosed.automatic_eligible, true);
-    assert.equal(disclosed.speed_optimized, true);
-    assert.deepEqual(disclosed.speed_signals, ["route-name"]);
-    assert.equal(disclosed.reference_only, true);
-    assert.equal(disclosed.reference_route_id, "provider/base");
-    assert.equal(disclosed.reference_profile, "");
-    assert.equal(disclosed.aa_slug, "base");
-    assert.ok((disclosed.task_score || 0) > 0, "base-model reference task score remains visible");
-    assert.equal(disclosed.aa_data?.pricing.price_1m_input_tokens, 1);
-  }));
-
-  it("orders equal task scores by reasoning strength, then the smallest fitting context", () => withHome(() => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-shape-"));
-    publishRouteSnapshot(cwd, { models: [
-      { id: "low-256", provider: "provider", namespaced: "provider/low-256", reasoningEfforts: ["low"], contextWindow: 262_144 },
-      { id: "max-256", provider: "provider", namespaced: "provider/max-256", reasoningEfforts: ["max"], contextWindow: 262_144 },
-      { id: "max-1m", provider: "provider", namespaced: "provider/max-1m", reasoningEfforts: ["max"], contextWindow: 1_048_576 },
-    ] });
-    const candidates = [
-      card("provider/low-256@low", "provider/low-256", "provider", 80, 80, 0.8),
-      card("provider/max-256@max", "provider/max-256", "provider", 80, 80, 0.8),
-      card("provider/max-1m@max", "provider/max-1m", "provider", 80, 80, 0.8),
-    ];
-
-    const simple = buildSelectionUnit({
-      cwd,
-      key: "simple",
-      description: "修复一个简单的单文件拼写错误",
-      prompt: "修复一个简单的单文件拼写错误",
-      cards: candidates,
-      automaticCards: candidates,
-    });
-    assert.equal(simple.target_reasoning_effort, "low");
-    assert.equal(simple.estimated_context_tokens, 128_000);
-    assert.equal(simple.recommended_model_id, "provider/low-256@low");
-
-    const complex = buildSelectionUnit({
-      cwd,
-      key: "complex",
-      description: "implement a complex multi-file repository migration",
-      prompt: "implement a complex multi-file repository migration",
-      cards: candidates,
-      automaticCards: candidates,
-    });
-    assert.equal(complex.target_reasoning_effort, "max");
-    assert.equal(complex.estimated_context_tokens, 1_000_000);
-    assert.equal(complex.recommended_model_id, "provider/max-1m@max");
-  }));
-
-  it("distinguishes named fast routes from OpenCodex service-tier config and prefers either after context", () => withHome(() => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-fast-"));
-    publishRouteSnapshot(cwd, { models: [
-      { id: "plain", provider: "provider", namespaced: "provider/plain", reasoningEfforts: ["medium"], contextWindow: 262_144, supportsServiceTier: false },
-      { id: "named-fast", provider: "provider", namespaced: "provider/named-fast", reasoningEfforts: ["medium"], contextWindow: 262_144, supportsServiceTier: false },
-      { id: "configured", provider: "provider", namespaced: "provider/configured", reasoningEfforts: ["medium"], contextWindow: 262_144, supportsServiceTier: true },
-    ] });
-    const plain = card("provider/plain@medium", "provider/plain", "provider", 80, 80, 0.8);
-    const named = card("provider/named-fast@medium", "provider/named-fast", "provider", 80, 80, 0.8);
-    const configured = card("provider/configured@medium", "provider/configured", "provider", 80, 80, 0.8);
-    const all = [plain, named, configured];
+  it("selects Mini at low effort for small fast work without benchmark data", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-fast-"));
+    const env = fakeEnv(home);
+    const cards = setup(cwd, env);
+    const text = "implement a quick small coding fix";
     const unit = buildSelectionUnit({
       cwd,
       key: "fast",
-      description: "implement a routine feature",
-      prompt: "implement a routine feature",
-      cards: all,
-      automaticCards: [plain, configured],
+      description: text,
+      prompt: text,
+      cards,
+      automaticCards: cards,
     });
-    assert.equal(unit.recommended_model_id, configured.id);
-    assert.deepEqual(unit.candidates.find((candidate) => candidate.model_id === named.id)?.speed_signals, ["route-name"]);
-    assert.deepEqual(unit.candidates.find((candidate) => candidate.model_id === configured.id)?.speed_signals, ["opencodex-config"]);
-    assert.equal(unit.candidates.find((candidate) => candidate.model_id === plain.id)?.speed_optimized, false);
+    assert.equal(unit.target_reasoning_effort, "low");
+    assert.equal(unit.recommended_model_id, "gpt-5.4-mini@low");
+    const mini = unit.candidates.find((candidate) => candidate.model_id === "gpt-5.4-mini@low")!;
+    assert.equal(mini.automatic_eligible, true);
+    assert.equal(mini.ranked, false);
+    assert.equal(mini.speed_optimized, true);
+    assert.equal(mini.service_tier, "fast");
+    assert.deepEqual(mini.speed_signals, ["catalog-description", "service-tier"]);
+    const sol = unit.candidates.find((candidate) => candidate.model_id === "gpt-5.6-sol@low")!;
+    assert.equal(sol.service_tier, "priority");
+    assert.deepEqual(sol.speed_signals, ["service-tier"]);
+    assert.ok(unit.candidates.some((candidate) => candidate.model_id === "gpt-5.3-codex-spark@low"));
+    assert.deepEqual(unit.policy_exclusions, []);
   }));
 
-  it("requires confirmation, permits an exact user override, and binds the approval into ticket and Receipt", async () => {
+  it("chooses one best-fit effort per model before comparing benchmark scores", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-profile-first-"));
+    const env = fakeEnv(home);
+    publishRouteSnapshot(cwd, { models: [
+      {
+        id: "strong-default",
+        description: "Strong coding model",
+        supportedReasoningEfforts: ["low", "medium", "high"],
+        defaultReasoningEffort: "medium",
+      },
+      {
+        id: "quick-model",
+        description: "Small fast coding model",
+        supportedReasoningEfforts: ["low", "medium", "high"],
+        defaultReasoningEffort: "medium",
+      },
+    ] }, new Date(), { cli: "codex", engineVersion: "test" });
+    configureCodex(cwd, env, ["strong-default", "quick-model"]);
+    const capability = (coding: number) => ({
+      source: "artificial-analysis" as const,
+      ranked: true,
+      unranked: false,
+      reason: "ranked",
+      reference_only: false,
+      reference_reasons: [],
+      intelligence_index: null,
+      coding_index: coding,
+      agentic_index: null,
+      cost_per_task: null,
+      output_tokens_per_second: null,
+      time_to_first_answer_seconds: null,
+    });
+    const cards = [
+      { id: "strong-default", route_id: "strong-default", strengths: "coding", executable: true, capability: capability(100) },
+      { id: "strong-default@low", route_id: "strong-default", reasoning_effort: "low", strengths: "coding", executable: true, capability: capability(10) },
+      { id: "strong-default@medium", route_id: "strong-default", reasoning_effort: "medium", strengths: "coding", executable: true, capability: capability(100) },
+      { id: "strong-default@high", route_id: "strong-default", reasoning_effort: "high", strengths: "coding", executable: true, capability: capability(100) },
+      { id: "quick-model", route_id: "quick-model", strengths: "fast coding", executable: true, capability: capability(90) },
+      { id: "quick-model@low", route_id: "quick-model", reasoning_effort: "low", strengths: "fast coding", executable: true, capability: capability(50) },
+      { id: "quick-model@medium", route_id: "quick-model", reasoning_effort: "medium", strengths: "fast coding", executable: true, capability: capability(90) },
+      { id: "quick-model@high", route_id: "quick-model", reasoning_effort: "high", strengths: "fast coding", executable: true, capability: capability(90) },
+    ];
+    const text = "implement a quick small coding fix";
+    const unit = buildSelectionUnit({ cwd, key: "one", description: text, prompt: text, cards, automaticCards: cards });
+    assert.equal(unit.target_reasoning_effort, "low");
+    assert.equal(unit.recommended_model_id, "quick-model@low");
+    assert.deepEqual(
+      unit.candidates.filter((candidate) => candidate.automatic_eligible).map((candidate) => candidate.model_id).sort(),
+      ["quick-model@low", "strong-default@low"],
+    );
+    assert.equal(unit.candidates.find((candidate) => candidate.model_id === "strong-default")?.automatic_eligible, false);
+  }));
+
+  it("selects the strongest configured model at a CLI-supported max effort", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-complex-"));
+    const env = fakeEnv(home);
+    const cards = setup(cwd, env);
+    const text = "implement a complex repository-wide architecture migration";
+    const unit = buildSelectionUnit({
+      cwd,
+      key: "complex",
+      description: text,
+      prompt: text,
+      cards,
+      automaticCards: cards,
+    });
+    assert.equal(unit.target_reasoning_effort, "max");
+    assert.equal(unit.recommended_model_id, "gpt-5.6-sol@max");
+    assert.equal(unit.requires_manual_choice, false);
+  }));
+
+  it("persists the full automatic decision as audit evidence", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-audit-"));
+    const env = fakeEnv(home);
+    const cards = setup(cwd, env);
+    const text = "implement a quick small coding fix";
+    const unit = buildSelectionUnit({ cwd, key: "one", description: text, prompt: text, cards, automaticCards: cards });
+    const proposal = createSelectionProposal(cwd, {
+      source: "standalone",
+      units: [unit],
+      sourceFingerprint: selectionSourceFingerprint({ description: text }),
+      payload: { description: text },
+    });
+    const stored = readSelectionProposal(cwd, proposal.id);
+    assert.equal(stored.units[0].recommended_model_id, "gpt-5.4-mini@low");
+    assert.ok(stored.units[0].candidates.some((candidate) => candidate.model_id === "gpt-5.3-codex-spark@low"));
+    assert.deepEqual(stored.policy_exclusions, []);
+  }));
+
+  it("spawn auto-approves and creates a ticket without model confirmation", async () => {
     await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-cli-"));
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-spawn-"));
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
-      assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
-      publishRouteSnapshot(cwd, { models: [
-        { id: "strong", provider: "provider-a", namespaced: "provider-a/strong", reasoningEfforts: ["high"] },
-        { id: "cheap", provider: "provider-b", namespaced: "provider-b/cheap", reasoningEfforts: ["low"] },
-      ] });
-      writeCapabilitySnapshot({
-        dbPath: artificialAnalysisDbPath(cwd),
-        metadata: { provider: "aa", tier: "free", fetchedAt: "2026-08-19T00:00:00Z" },
-        models: [
-          { id: "aa-strong", slug: "aa-strong", name: "Strong", evaluations: { artificial_analysis_intelligence_index: 90, artificial_analysis_coding_index: 95, artificial_analysis_agentic_index: 90 }, pricing: {}, performance: {}, cost: {} },
-          { id: "aa-cheap", slug: "aa-cheap", name: "Cheap", evaluations: { artificial_analysis_intelligence_index: 40, artificial_analysis_coding_index: 50, artificial_analysis_agentic_index: 30 }, pricing: {}, performance: {}, cost: {} },
-        ],
-        mappings: [
-          { routeId: "strong", profile: "high", aaSlug: "aa-strong" },
-          { routeId: "cheap", profile: "low", aaSlug: "aa-cheap" },
-        ],
-      });
-      const proposedOut = capture();
-      assert.equal(await run(["spawn", "implement a complex multi-file repository migration", "--json"], { cwd, env, stdout: proposedOut, stderr: capture() }), 0);
-      const proposal = JSON.parse(proposedOut.text());
-      assert.equal(proposal.units[0].recommended_model_id, "provider-a/strong@high");
-      assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
+      setup(cwd, env);
+      const out = capture();
+      assert.equal(await run(["spawn", "implement a quick small coding fix", "--json"], {
+        cwd,
+        env,
+        stdout: out,
+        stderr: out,
+      }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.equal(result.selection_mode, "baton-recommendation");
+      assert.equal(result.status, "approved");
+      assert.equal(result.approvals[0].selected_model_id, "gpt-5.4-mini@low");
+      assert.equal(result.approvals[0].confirmed_by, "baton-recommendation");
+      assert.equal(result.approvals[0].service_tier, "fast");
+      assert.equal(result.tickets[0].service_tier, "fast");
 
-      const disclosed = capture();
-      assert.equal(await run(["selection", "show", proposal.id], { cwd, env, stdout: disclosed, stderr: disclosed }), 0);
-      assert.match(disclosed.text(), /\[confirmation required\]/);
-      assert.match(disclosed.text(), /preferred: provider-a\/strong@high/);
-      assert.match(disclosed.text(), /candidates:/);
-      assert.match(disclosed.text(), /\| Candidate \| Preferred \| Provider \| Effort \| Context \| Fast \| Evidence \| Task score \| AA I\/C\/A \|/);
-      assert.match(disclosed.text(), /\| provider-a\/strong@high \| yes \| provider-a \| high \| unknown \| no \| exact \| \d+ \| 90\/95\/90 \|/);
-      assert.match(disclosed.text(), /\| Quota pool \| Provider \| Status \| Source \| Remaining\/reset or unknown reason \| Models \| Observed at \|/);
-      assert.match(disclosed.text(), /PROVIDER_QUOTA_NOT_REPORTED/);
-      assert.match(disclosed.text(), /AVAILABLE/);
-      assert.match(disclosed.text(), /No ticket exists yet/);
+      const audit = capture();
+      assert.equal(await run(["selection", "show", result.proposal_id, "--json"], {
+        cwd, env, stdout: audit, stderr: audit,
+      }), 0, audit.text());
+      assert.equal(JSON.parse(audit.text()).status, "approved");
 
-      const renderedPath = path.join(cwd, "selection-view.html");
-      const rendered = capture();
-      const untranslated = capture();
-      assert.equal(await run(["selection", "render", proposal.id, "--output", renderedPath, "--json"], { cwd, env, stdout: untranslated, stderr: untranslated }), 1);
-      assert.match(untranslated.text(), /CHINESE_TASK_LABEL_REQUIRED/);
-      assert.equal(await run(["selection", "render", proposal.id, "--output", renderedPath, "--task-label", `${proposal.units[0].key}=实施复杂的多文件仓库迁移`, "--json"], { cwd, env, stdout: rendered, stderr: rendered }), 0, rendered.text());
-      const renderedResult = JSON.parse(rendered.text());
-      assert.equal(renderedResult.output, renderedPath);
-      assert.equal(renderedResult.presentation, "current_conversation_inline_only");
-      assert.equal(renderedResult.surface, "current_conversation");
-      assert.equal(renderedResult.display_language, "zh-CN");
-      assert.deepEqual(renderedResult.content_reference, { kind: "visualize", path: renderedPath });
-      assert.equal(renderedResult.inline_content_reference, `visualize${JSON.stringify({ path: renderedPath })}`);
-      assert.equal(renderedResult.host_action, "emit_inline_content_reference_in_current_response");
-      assert.equal(renderedResult.browser_navigation_allowed, false);
-      assert.equal(renderedResult.file_link_allowed, false);
-      assert.match(fs.readFileSync(renderedPath, "utf8"), /sendFollowUpMessage/);
-      assert.match(fs.readFileSync(renderedPath, "utf8"), /实施复杂的多文件仓库迁移/);
-      assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
-
-      const suggestedPath = path.join(cwd, "selection-suggested.html");
-      const suggested = capture();
-      assert.equal(await run(["selection", "render", proposal.id, "--output", suggestedPath, "--task-label", "standalone=实施复杂的多文件仓库迁移", "--assign", "standalone=provider-b/cheap@low", "--json"], { cwd, env, stdout: suggested, stderr: suggested }), 0, suggested.text());
-      assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"default_checked":["provider-b/cheap@low"]'));
-      assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"default_assignments":{"standalone":"provider-b/cheap@low"}'));
-      assert.ok(fs.readFileSync(suggestedPath, "utf8").includes('"display_model_id":"cheap@low"'));
-      assert.match(fs.readFileSync(suggestedPath, "utf8"), /已按汇总建议预选 Provider、route\/profile 和任务分配/);
-
-      const invalidAssign = capture();
-      assert.equal(await run(["selection", "render", proposal.id, "--output", path.join(cwd, "selection-invalid.html"), "--task-label", "standalone=实施复杂的多文件仓库迁移", "--assign", "standalone=missing/route", "--json"], { cwd, env, stdout: invalidAssign, stderr: invalidAssign }), 1);
-      assert.match(invalidAssign.text(), /INVALID_SELECTION_SUGGESTION/);
-
-      const forbidden = capture();
-      assert.equal(await run(["selection", "approve", proposal.id, "--confirm", "--model", "gpt-5.6-terra@max"], { cwd, env, stdout: forbidden, stderr: forbidden }), 1);
-      assert.match(forbidden.text(), new RegExp(SUBAGENT_MODEL_FAMILY_FORBIDDEN));
-      assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
-
-      const stored = readSelectionProposal(cwd, proposal.id);
-      stored.model_policy_id = "legacy-policy";
-      writeSelectionProposal(cwd, stored);
-      const stalePolicy = capture();
-      assert.equal(await run(["selection", "approve", proposal.id, "--confirm"], { cwd, env, stdout: stalePolicy, stderr: stalePolicy }), 1);
-      assert.match(stalePolicy.text(), /MODEL_POLICY_CHANGED/);
-      stored.model_policy_id = SUBAGENT_MODEL_POLICY_ID;
-      writeSelectionProposal(cwd, stored);
-
-      const blocked = capture();
-      assert.equal(await run(["selection", "approve", proposal.id], { cwd, env, stdout: blocked, stderr: blocked }), 1);
-      assert.match(blocked.text(), /MODEL_SELECTION_NOT_CONFIRMED/);
-
-      const approved = capture();
-      assert.equal(await run(["selection", "approve", proposal.id, "--confirm", "--model", "provider-b/cheap@low", "--json"], { cwd, env, stdout: approved, stderr: approved }), 0, approved.text());
-      const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
-      const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
-      assert.equal(ticket.model_id, "provider-b/cheap@low");
-      assert.equal(ticket.selection.confirmed_by, "user");
-      assert.equal(ticket.selection.changed_by_user, true);
-      assert.deepEqual(receipt.selection, ticket.selection);
-      const dispatch = capture();
-      assert.equal(await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: dispatch, stderr: dispatch }), 0);
-      assert.equal(JSON.parse(dispatch.text()).reserved[0].selection.approval_id, ticket.selection.approval_id);
-    });
-  });
-
-  it("creates one multi-unit standalone proposal and bundles standalone plus OpenSpec behind one Submit", async () => {
-    await withHome(async (home) => {
-      const standaloneCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-bundle-standalone-"));
-      const openspecCwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-bundle-openspec-"));
-      const env = fakeEnv(home);
-      for (const cwd of [standaloneCwd, openspecCwd]) {
-        assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
-        assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      for (const action of ["render", "approve", "render-bundle"]) {
+        const removed = capture();
+        assert.equal(await run(["selection", action, result.proposal_id], {
+          cwd, env, stdout: removed, stderr: removed,
+        }), 1);
+        assert.match(removed.text(), /MODEL_SELECTION_REMOVED/);
       }
-      publishRouteSnapshot(standaloneCwd, {
-        models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }],
-      });
 
-      const standaloneOut = capture();
-      assert.equal(await run([
-        "spawn",
-        "Inspect the incident dataset and return an evidence-backed audit.",
-        "--unit", "audit=Audit the incident records and identify anomalies",
-        "--unit", "report=Produce the final evidence-backed report",
-        "--model", "kimi/k3",
-        "--json",
-      ], { cwd: standaloneCwd, env, stdout: standaloneOut, stderr: standaloneOut }), 0, standaloneOut.text());
-      const standaloneProposal = JSON.parse(standaloneOut.text());
-      assert.equal(standaloneProposal.status, "pending_confirmation");
-      assert.equal(standaloneProposal.payload.source_shape, "multi-unit-v1");
-      assert.equal(standaloneProposal.payload.description, "Inspect the incident dataset and return an evidence-backed audit.");
-      assert.deepEqual(standaloneProposal.units.map((unit: { key: string }) => unit.key), ["audit", "report"]);
-
-      const changeDir = path.join(openspecCwd, "openspec", "changes", "bundle-demo");
-      fs.mkdirSync(changeDir, { recursive: true });
-      fs.writeFileSync(path.join(changeDir, "tasks.md"), "## 1. Audit\n\n- [ ] 1.1 Audit the incident records\n- [ ] 1.2 Produce the final report\n");
-      const openspecOut = capture();
-      assert.equal(await run([
-        "apply", "bundle-demo",
-        "--route", "1.1=kimi/k3",
-        "--route", "1.2=kimi/k3",
-        "--json",
-      ], { cwd: openspecCwd, env, stdout: openspecOut, stderr: openspecOut }), 0, openspecOut.text());
-      const openspecProposal = JSON.parse(openspecOut.text());
-      assert.equal(openspecProposal.units.length, 2);
-      assert.equal(fs.existsSync(spawnsDir(standaloneCwd)), false);
-      assert.equal(fs.existsSync(spawnsDir(openspecCwd)), false);
-
-      const bundlePath = path.join(standaloneCwd, "selection-bundle.html");
-      const rendered = capture();
-      assert.equal(await run([
-        "selection", "render-bundle",
-        "--proposal", `standalone=${standaloneCwd}#${standaloneProposal.id}`,
-        "--proposal", `openspec=${openspecCwd}#${openspecProposal.id}`,
-        "--output", bundlePath,
-        "--task-label", "standalone/audit=审计事件记录并识别异常",
-        "--task-label", "standalone/report=生成带证据的最终报告",
-        "--task-label", "openspec/1.1=审计事件记录",
-        "--task-label", "openspec/1.2=生成最终报告",
-        "--json",
-      ], { cwd: standaloneCwd, env, stdout: rendered, stderr: rendered }), 0, rendered.text());
-      const artifact = JSON.parse(rendered.text());
-      assert.equal(artifact.proposals.length, 2);
-      assert.equal(artifact.presentation, "current_conversation_inline_only");
-      const html = fs.readFileSync(bundlePath, "utf8");
-      assert.match(html, /Baton 汇总模型选择/);
-      assert.match(html, /全局选择 Provider/);
-      assert.match(html, /一次提交全部确认/);
-      assert.match(html, /"source":"bundle"/);
-      assert.equal((html.match(/await window\.openai\.sendFollowUpMessage/g) || []).length, 1);
-      assert.equal((html.match(/<button[^>]+data-submit>/g) || []).length, 1);
-      assert.match(html, new RegExp(standaloneCwd.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-      assert.match(html, new RegExp(openspecCwd.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-      const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
-      assert.ok(script);
-      assert.doesNotThrow(() => new vm.Script(script));
-      const confirmationId = html.match(/"confirmation_id":"([^"]+)"/)?.[1];
-      assert.match(confirmationId || "", /^confirmation-bundle-/);
-
-      const missingGlobalProvider = capture();
-      assert.equal(await run([
-        "selection", "approve", standaloneProposal.id,
-        "--confirm",
-        "--confirmation-id", confirmationId!,
-        "--confirmation-scope", "bundle",
-        "--route", "audit=kimi/k3",
-        "--route", "report=kimi/k3",
-      ], { cwd: standaloneCwd, env, stdout: missingGlobalProvider, stderr: missingGlobalProvider }), 1);
-      assert.match(missingGlobalProvider.text(), /requires explicit --provider and --global-provider/);
-      assert.equal(fs.existsSync(spawnsDir(standaloneCwd)), false);
-
-      const common = [
-        "--confirm",
-        "--confirmation-id", confirmationId!,
-        "--confirmation-scope", "bundle",
-        "--provider", "kimi",
-        "--global-provider", "kimi",
-        "--json",
-      ];
-      const standaloneApproved = capture();
-      assert.equal(await run([
-        "selection", "approve", standaloneProposal.id,
-        ...common,
-        "--route", "audit=kimi/k3",
-        "--route", "report=kimi/k3",
-      ], { cwd: standaloneCwd, env, stdout: standaloneApproved, stderr: standaloneApproved }), 0, standaloneApproved.text());
-      const openspecApproved = capture();
-      assert.equal(await run([
-        "selection", "approve", openspecProposal.id,
-        ...common,
-        "--route", "1.1=kimi/k3",
-        "--route", "1.2=kimi/k3",
-      ], { cwd: openspecCwd, env, stdout: openspecApproved, stderr: openspecApproved }), 0, openspecApproved.text());
-
-      const storedStandalone = readSelectionProposal(standaloneCwd, standaloneProposal.id);
-      const storedOpenSpec = readSelectionProposal(openspecCwd, openspecProposal.id);
-      assert.equal(storedStandalone.confirmation?.confirmation_id, confirmationId);
-      assert.equal(storedOpenSpec.confirmation?.confirmation_id, confirmationId);
-      assert.equal(storedStandalone.confirmation?.scope, "bundle");
-      assert.equal(storedOpenSpec.confirmation?.scope, "bundle");
-      for (const cwd of [standaloneCwd, openspecCwd]) {
-        const tickets = fs.readdirSync(spawnsDir(cwd)).filter((name) => name.endsWith(".json"))
-          .map((name) => JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), name), "utf8")));
-        assert.equal(tickets.length, 2);
-        assert.ok(tickets.every((ticket) => ticket.selection.confirmation_id === confirmationId));
-        assert.ok(tickets.every((ticket) => ticket.selection.confirmation_scope === "bundle"));
-      }
-    });
-  });
-
-  it("invalidates a pending proposal when the synced OpenCodex catalog changes", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-selection-stale-"));
-      const env = fakeEnv(home);
-      await run(["init"], { cwd, env, stdout: capture(), stderr: capture() });
-      await run(["config", "model-selection", "on"], { cwd, env, stdout: capture(), stderr: capture() });
-      publishRouteSnapshot(cwd, { models: [{ id: "k3", provider: "kimi", namespaced: "kimi/k3" }] });
-      const out = capture();
-      assert.equal(await run(["spawn", "implement the repository migration", "--model", "kimi/k3", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
-      const proposal = JSON.parse(out.text());
-      publishRouteSnapshot(cwd, { models: [
-        { id: "k3", provider: "kimi", namespaced: "kimi/k3" },
-        { id: "grok-4.6", provider: "xai", namespaced: "xai/grok-4.6" },
-      ] });
-      const approval = capture();
-      assert.equal(await run(["selection", "approve", proposal.id, "--confirm"], { cwd, env, stdout: approval, stderr: approval }), 1);
-      assert.match(approval.text(), /ROUTE_SNAPSHOT_STALE/);
-      assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
-    });
-  });
-
-  it("syncs routes, profiles, and sanitized quota from OpenCodex in one on-demand refresh", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-route-sync-"));
-      const env = fakeEnv(home);
-      const out = capture();
-      const runner = (input) => {
-        const key = input.args.join(" ");
-        const stdout = key === "--version"
-          ? "opencodex 2.26.0\n"
-          : key === "models live --json"
-            ? JSON.stringify({ models: [{ id: "sol", provider: "openai", namespaced: "openai/sol", reasoningEfforts: ["low", "high"] }] })
-            : JSON.stringify({ reports: [{ provider: "openai", quota: { weeklyPercent: 25 } }] });
-        return { status: 0, stdout, stderr: "", error: null };
-      };
-      const resolve = () => ({ source: "path" as const, command: "ocx", prefixArgs: [] });
-      assert.equal(await run(["routes", "refresh"], { cwd, env, stdout: out, stderr: out, runner, resolve }), 0, out.text());
-      const result = JSON.parse(out.text());
-      assert.deepEqual(result.snapshot.routes.map((route) => route.route_id), ["openai/sol"]);
-      assert.deepEqual(result.snapshot.routes[0].reasoning_efforts, ["high", "low"]);
-      assert.equal(result.snapshot.provider_quotas[0].windows[0].remaining_percent, 75);
-    });
-  });
-
-  it("uses sanitized CodexBar quota only for a provider OpenCodex did not report", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-codexbar-"));
-      const env = fakeEnv(home);
-      const out = capture();
-      const runner = (input) => {
-        const key = input.args.join(" ");
-        const stdout = key === "--version"
-          ? "opencodex 2.26.0\n"
-          : key === "models live --json"
-            ? JSON.stringify({ models: [
-              { id: "strong", provider: "openai", namespaced: "openai/strong" },
-              { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
-            ] })
-            : JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] });
-        return { status: 0, stdout, stderr: "", error: null };
-      };
-      const resolve = () => ({ source: "path" as const, command: "ocx", prefixArgs: [] });
-      const queried = [];
-      const codexBarRunner = (input) => {
-        queried.push(input.args[input.args.indexOf("--provider") + 1]);
-        return {
-          status: 0,
-          stdout: JSON.stringify([{ provider: "alibabatokenplan", source: "web", usage: {
-            updatedAt: "2026-08-20T00:00:00Z",
-            accountEmail: "must-not-persist@example.invalid",
-            primary: { usedPercent: 25, windowMinutes: 10_080, resetsAt: "2026-08-24T00:00:00Z" },
-          } }]),
-          stderr: "",
-          error: null,
-        };
-      };
-      assert.equal(await run(["routes", "refresh"], {
-        cwd, env, stdout: out, stderr: out, runner, resolve,
-        codexBarResolve: () => "/Applications/CodexBarCLI",
-        codexBarRunner,
-      }), 0, out.text());
-      const result = JSON.parse(out.text());
-      assert.deepEqual(queried, ["alibaba-token-plan"], "OpenCodex-reported openai quota must not be queried or overwritten");
-      const openai = result.snapshot.provider_quotas.find((item) => item.provider === "openai");
-      const alibaba = result.snapshot.provider_quotas.find((item) => item.provider === "alibaba-token-plan");
-      assert.equal(openai.source, "chatgpt:wham");
-      assert.equal(openai.windows[0].remaining_percent, 80);
-      assert.equal(alibaba.source, "codexbar:alibaba-token-plan:web");
-      assert.equal(alibaba.windows[0].remaining_percent, 75);
-      assert.doesNotMatch(JSON.stringify(result.snapshot), /must-not-persist@example\.invalid/);
-    });
-  });
-
-  it("uses the CodexBar GUI snapshot for providers OpenCodex did not report without calling the CLI", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-codexbar-gui-"));
-      const env = fakeEnv(home);
-      const widgetDir = path.join(home, "Library", "Group Containers", "Y5PE65HELJ.com.steipete.codexbar");
-      fs.mkdirSync(widgetDir, { recursive: true });
-      fs.writeFileSync(path.join(widgetDir, "widget-snapshot.json"), `${JSON.stringify({
-        generatedAt: "2026-08-20T09:12:24Z",
-        entries: [{
-          provider: "alibabatokenplan",
-          updatedAt: "2026-08-20T09:11:51Z",
-          accountEmail: "must-not-persist@example.invalid",
-          secondary: { usedPercent: 0.963488, resetsAt: "2026-08-27T06:08:00Z", windowMinutes: 10_080 },
-          usageRows: [{ percentLeft: 99.036512, id: "secondary", title: "7-day" }],
-        }, {
-          provider: "mimo",
-          updatedAt: "2026-08-20T09:11:51Z",
-          primary: { usedPercent: 3.73, resetsAt: "2027-04-24T23:59:59Z", windowMinutes: 43_200 },
-          usageRows: [{ percentLeft: 96.27, id: "primary", title: "Credits" }],
-        }],
-      })}\n`);
-      const queried = [];
-      const out = capture();
-      assert.equal(await run(["routes", "refresh"], {
-        cwd, env, stdout: out, stderr: out,
-        resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
-        runner: (input) => {
-          const key = input.args.join(" ");
-          const stdout = key === "--version"
-            ? "opencodex 2.26.0\n"
-            : key === "models live --json"
-              ? JSON.stringify({ models: [
-                { id: "strong", provider: "openai", namespaced: "openai/strong" },
-                { id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" },
-                { id: "mimo-v2.5-pro", provider: "mimo", namespaced: "mimo/mimo-v2.5-pro" },
-              ] })
-              : JSON.stringify({ reports: [{ provider: "openai", source: "chatgpt:wham", quota: { weeklyPercent: 20 } }] });
-          return { status: 0, stdout, stderr: "", error: null };
-        },
-        codexBarResolve: () => "/Applications/CodexBarCLI",
-        codexBarRunner: (input) => {
-          queried.push(input.args[input.args.indexOf("--provider") + 1]);
-          return { status: 1, stdout: "", stderr: "must-not-run", error: new Error("keychain") };
-        },
-      }), 0, out.text());
-      const result = JSON.parse(out.text());
-      assert.deepEqual(queried, []);
-      const openai = result.snapshot.provider_quotas.find((item) => item.provider === "openai");
-      const alibaba = result.snapshot.provider_quotas.find((item) => item.provider === "alibaba-token-plan");
-      const mimo = result.snapshot.provider_quotas.find((item) => item.provider === "mimo");
-      assert.equal(openai.source, "chatgpt:wham");
-      assert.equal(alibaba.source, "codexbar:alibaba-token-plan:widget");
-      assert.equal(alibaba.windows[0].label, "7-day");
-      assert.equal(alibaba.windows[0].remaining_percent, 99.036512);
-      assert.equal(mimo.source, "codexbar:mimo:widget");
-      assert.equal(mimo.windows[0].label, "Credits");
-      assert.equal(mimo.windows[0].remaining_percent, 96.27);
-      assert.doesNotMatch(JSON.stringify(result.snapshot), /must-not-persist@example\.invalid|must-not-run|keychain/);
-    });
-  });
-
-  it("keeps missing quota fail-soft when CodexBar is not installed or callable", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-no-codexbar-"));
-      const env = fakeEnv(home);
-      let called = false;
-      const out = capture();
-      assert.equal(await run(["routes", "refresh"], {
-        cwd, env, stdout: out, stderr: out,
-        resolve: () => ({ source: "path" as const, command: "ocx", prefixArgs: [] }),
-        runner: (input) => {
-          const key = input.args.join(" ");
-          const stdout = key === "--version"
-            ? "opencodex 2.26.0\n"
-            : key === "models live --json"
-              ? JSON.stringify({ models: [{ id: "glm-5.2", provider: "alibaba-token-plan", namespaced: "alibaba-token-plan/glm-5.2" }] })
-              : JSON.stringify({ reports: [] });
-          return { status: 0, stdout, stderr: "", error: null };
-        },
-        codexBarResolve: () => null,
-        codexBarRunner: () => {
-          called = true;
-          return { status: 0, stdout: "[]", stderr: "", error: null };
-        },
-      }), 0, out.text());
-      const result = JSON.parse(out.text());
-      assert.equal(called, false);
-      assert.deepEqual(result.snapshot.provider_quotas, []);
+      const explicit = capture();
+      assert.equal(await run(["spawn", "implement a change", "--model", "gpt-5.3-codex-spark"], {
+        cwd,
+        env,
+        stdout: explicit,
+        stderr: explicit,
+      }), 1);
+      assert.match(explicit.text(), /MODEL_SELECTION_REMOVED/);
     });
   });
 });

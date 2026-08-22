@@ -73,44 +73,35 @@ describe("built-in Baton capability samples", () => {
     ]);
   });
 
-  it("verifies mandatory disclosure, confirmation, user override, and current multi-provider coverage", () => {
+  it("verifies CLI-owned candidates and recommendation-only approval without a selector", () => {
     const verifier = fs.readFileSync(path.join(samples, "verify.mjs"), "utf8");
     const bundleVerifier = fs.readFileSync(path.join(samples, "verify-bundle.mjs"), "utf8");
     const verifierSuite = `${verifier}\n${bundleVerifier}`;
     for (const marker of [
       "pending_confirmation",
       "source_shape",
-      "confirmation_id",
-      "global_provider_ids",
       "confirmed_by",
       "changed_by_user",
       "recommended_model_id",
-      "task_score",
-      "aa_scores",
-      "reference_only",
-      "reference_reasons",
-      "reference_route_id",
-      "reference_profile",
-      "aa_slug",
-      "aa_data",
-      "remaining_percent",
-      "codexbar:",
-      "catalog_fingerprint",
-      "SUBAGENT_MODEL_FAMILY_FORBIDDEN",
-      "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3",
-      "selectedProviders",
+      "automatic_eligible",
+      "requires_manual_choice",
+      "baton-recommendation",
+      "configured-cli-subagent-allowlist-v1",
+      "cli-models.json",
+      'snapshot.source === "cli"',
+      'snapshot.cli === "codex"',
+      "reasoning_efforts",
+      "service_tier",
     ]) assert.match(verifierSuite, new RegExp(marker));
     const expected = fs.readFileSync(path.join(samples, "EXPECTED.md"), "utf8");
     assert.match(expected, /one proposal containing all of its units/i);
-    assert.match(expected, /one global Provider choice and one confirmation id/i);
-    assert.match(expected, /at least two providers/i);
-    assert.match(expected, /No `gpt-5\.5`, `gpt-5\.6-sol`, or `gpt-5\.6-terra`/);
+    assert.match(expected, /no selector or user confirmation/i);
+    assert.match(expected, /Mini and Spark remain eligible/i);
     const instructions = fs.readFileSync(path.join(samples, "README.md"), "utf8");
-    assert.match(instructions, /Chinese, current-conversation inline-only/);
-    assert.match(instructions, /--task-label SCOPE\/TASK=CHINESE_LABEL/);
-    assert.match(instructions, /baton selection render-bundle/);
-    assert.match(instructions, /one Submit/);
-    assert.match(instructions, /never open a browser, navigate to `file:\/\/`/i);
+    assert.match(instructions, /no runtime model picker or confirmation step/i);
+    assert.match(instructions, /comes directly from Codex `model\/list`/i);
+    assert.match(instructions, /runner.*longctx.*labels only/is);
+    assert.doesNotMatch(instructions, /selection render|one Submit|manual selector/i);
   });
 
   it("strict-validates the embedded OpenSpec change when OpenSpec is available", { skip: !openspecCliAvailable() }, () => {

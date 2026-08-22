@@ -45,25 +45,25 @@
       "routeId": "k3-256k",
       "profile": "low",
       "aaSlug": "kimi-k3-low",
-      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+      "note": "Context-window route alias; AA capability comes from the underlying Kimi K3 model."
     },
     {
       "routeId": "k3-256k",
       "profile": "max",
       "aaSlug": "kimi-k3",
-      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+      "note": "Context-window route alias; AA capability comes from the underlying Kimi K3 model."
     },
     {
       "routeId": "k3[1m]",
       "profile": "low",
       "aaSlug": "kimi-k3-low",
-      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+      "note": "Context-window route alias; AA capability comes from the underlying Kimi K3 model."
     },
     {
       "routeId": "k3[1m]",
       "profile": "max",
       "aaSlug": "kimi-k3",
-      "note": "OpenCodex context route; AA capability comes from the underlying Kimi K3 model."
+      "note": "Context-window route alias; AA capability comes from the underlying Kimi K3 model."
     },
     {
       "routeId": "kimi-k2.7-code-highspeed",

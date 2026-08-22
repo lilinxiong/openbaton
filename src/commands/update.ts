@@ -43,13 +43,14 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
     const current = loadConfig(cwd, { env });
     const merged = normalizeConfig({
       director: { ...defaults.director, ...current.director },
+      cli: current.cli,
       ops: {
         runner: { ...defaults.ops.runner, ...current.ops.runner },
         longctx: { ...defaults.ops.longctx, ...current.ops.longctx },
       },
     });
     saveConfig(cwd, merged, { env });
-    actions.push(`merged global director/ops defaults into ${displayHomePath(destConfig, { cwd, env })} (all routes come from OpenCodex)`);
+    actions.push(`merged global director/CLI/ops defaults into ${displayHomePath(destConfig, { cwd, env })} (models come from the selected CLI)`);
   }
 
   const hosts = refreshInstalledHostSkills(cwd, { env });

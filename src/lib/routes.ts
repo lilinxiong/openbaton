@@ -16,23 +16,31 @@ import type { CardCapabilityEvidence, ModelCard } from "../types.js";
 export interface ExecutableRoute {
   id: string;
   provider: string | null;
-  /** Exact model string accepted by the host runtime. Never reconstruct it. */
+  /** Exact model string returned by the selected CLI. Never reconstruct it. */
   route_id: string;
   disabled: boolean;
   native: boolean;
   reasoning_efforts: string[];
   default_reasoning_effort: string | null;
   context_window: number | null;
-  /** Effective per-model fast/service-tier support reported by OpenCodex. */
+  display_name: string;
+  description: string;
+  input_modalities: string[];
+  additional_speed_tiers: string[];
+  service_tiers: string[];
+  default_service_tier: string | null;
+  is_default: boolean;
+  /** Effective per-model fast/service-tier support reported by the CLI. */
   supports_service_tier: boolean | null;
 }
 
 export interface RouteSnapshot {
-  schema_version: 4;
+  schema_version: 5;
   generation: number;
   fingerprint: string;
   fetched_at: string;
-  source: "opencodex";
+  source: "cli";
+  cli: string;
   engine_version: string | null;
   routes: ExecutableRoute[];
   quota_refresh_error: string | null;
@@ -46,6 +54,22 @@ function stableRoutes(routes: ExecutableRoute[]): string {
 function strings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))].sort();
+}
+
+function reasoningEfforts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => {
+    const data = item && typeof item === "object" ? item as Record<string, unknown> : null;
+    return String(data?.reasoningEffort ?? data?.reasoning_effort ?? data?.id ?? item ?? "").trim();
+  }).filter(Boolean))].sort();
+}
+
+function serviceTierIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => {
+    const data = item && typeof item === "object" ? item as Record<string, unknown> : null;
+    return String(data?.id ?? item ?? "").trim();
+  }).filter(Boolean))];
 }
 
 function contextWindow(record: Record<string, unknown> | null): number | null {
@@ -68,7 +92,7 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
     const record = value as Record<string, unknown>;
     values = record.data ?? record.models ?? record.liveModels ?? record.routes;
   }
-  if (!Array.isArray(values)) throw new Error("OpenCodex model catalog must be an array or contain models/data/liveModels/routes");
+  if (!Array.isArray(values)) throw new Error("CLI model catalog must be an array or contain models/data/routes");
   const byId = new Map<string, ExecutableRoute>();
   for (const item of values) {
     const record = item && typeof item === "object" ? item as Record<string, unknown> : null;
@@ -76,19 +100,38 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
     if (!id) continue;
     const provider = typeof record?.provider === "string" ? record.provider : id.includes("/") ? id.split("/", 1)[0] : null;
     const routeId = exactRouteId(record, id, provider);
-    const reasoningEfforts = strings(record?.reasoningEfforts ?? record?.reasoning_efforts);
+    const reasoningValues = reasoningEfforts(record?.supportedReasoningEfforts ?? record?.reasoningEfforts ?? record?.reasoning_efforts);
     const defaultReasoningEffort = String(record?.defaultReasoningEffort ?? record?.default_reasoning_effort ?? "").trim() || null;
     const supportsServiceTierRaw = record?.supportsServiceTier ?? record?.supports_service_tier;
-    const supportsServiceTier = typeof supportsServiceTierRaw === "boolean" ? supportsServiceTierRaw : null;
+    const serviceTiers = serviceTierIds(record?.serviceTiers ?? record?.service_tiers);
+    const additionalSpeedTiers = strings(record?.additionalSpeedTiers ?? record?.additional_speed_tiers);
+    const description = String(record?.description || "").trim();
+    const catalogDescribesSpeed = /\b(?:fast|ultra-fast|low[- ]latency|high[- ]throughput)\b/i.test(description);
+    const hasTierMetadata = record && (
+      Object.hasOwn(record, "serviceTiers")
+      || Object.hasOwn(record, "service_tiers")
+      || Object.hasOwn(record, "additionalSpeedTiers")
+      || Object.hasOwn(record, "additional_speed_tiers")
+    );
+    const supportsServiceTier = typeof supportsServiceTierRaw === "boolean"
+      ? supportsServiceTierRaw || catalogDescribesSpeed
+      : hasTierMetadata ? serviceTiers.length > 0 || additionalSpeedTiers.length > 0 || catalogDescribesSpeed : catalogDescribesSpeed || null;
     byId.set(`${provider || ""}\0${routeId}`, {
       id,
       provider,
       route_id: routeId,
       disabled: record?.disabled === true,
       native: record?.native === true,
-      reasoning_efforts: reasoningEfforts,
+      reasoning_efforts: reasoningValues,
       default_reasoning_effort: defaultReasoningEffort,
       context_window: contextWindow(record),
+      display_name: String(record?.displayName ?? record?.display_name ?? id).trim() || id,
+      description,
+      input_modalities: strings(record?.inputModalities ?? record?.input_modalities),
+      additional_speed_tiers: additionalSpeedTiers,
+      service_tiers: serviceTiers,
+      default_service_tier: String(record?.defaultServiceTier ?? record?.default_service_tier ?? "").trim() || null,
+      is_default: record?.isDefault === true || record?.is_default === true,
       supports_service_tier: supportsServiceTier,
     });
   }
@@ -96,6 +139,7 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
 }
 
 interface PublishRouteSnapshotOptions {
+  cli?: string;
   engineVersion?: string | null;
   providerQuotas?: ProviderQuotaDisclosure[];
   quotaRefreshError?: string | null;
@@ -105,7 +149,7 @@ export function publishRouteSnapshot(
   cwd: string,
   catalog: unknown,
   now: Date = new Date(),
-  { engineVersion = null, providerQuotas, quotaRefreshError }: PublishRouteSnapshotOptions = {},
+  { cli = "codex", engineVersion = null, providerQuotas, quotaRefreshError }: PublishRouteSnapshotOptions = {},
 ): { changed: boolean; snapshot: RouteSnapshot } {
   const routes = normalizeRouteCatalog(catalog);
   const fingerprint = crypto.createHash("sha256").update(stableRoutes(routes)).digest("hex");
@@ -113,19 +157,21 @@ export function publishRouteSnapshot(
   let previous: Partial<RouteSnapshot> | null = null;
   if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
   const normalizedEngineVersion = String(engineVersion || "").trim() || null;
-  const sameCatalog = previous?.schema_version === 4
+  const sameCatalog = previous?.schema_version === 5
     && previous.fingerprint === fingerprint
+    && previous.cli === cli
     && previous.engine_version === normalizedEngineVersion;
   const quotaUpdate = providerQuotas !== undefined || quotaRefreshError !== undefined;
   if (sameCatalog && !quotaUpdate) {
     return { changed: false, snapshot: previous as RouteSnapshot };
   }
   const snapshot: RouteSnapshot = {
-    schema_version: 4,
+    schema_version: 5,
     generation: sameCatalog ? Number(previous?.generation || 1) : Number(previous?.generation || 0) + 1,
     fingerprint,
     fetched_at: now.toISOString(),
-    source: "opencodex",
+    source: "cli",
+    cli,
     engine_version: normalizedEngineVersion,
     routes,
     quota_refresh_error: quotaUpdate ? String(quotaRefreshError || "").trim() || null : previous?.quota_refresh_error || null,
@@ -144,7 +190,7 @@ export function readRouteSnapshot(cwd: string): RouteSnapshot | null {
   const file = routeSnapshotPath(cwd);
   if (!fs.existsSync(file)) return null;
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
-  if (parsed.schema_version !== 4 || !Array.isArray(parsed.routes) || !Array.isArray(parsed.provider_quotas)) return null;
+  if (parsed.schema_version !== 5 || parsed.source !== "cli" || typeof parsed.cli !== "string" || !Array.isArray(parsed.routes) || !Array.isArray(parsed.provider_quotas)) return null;
   return parsed as RouteSnapshot;
 }
 
@@ -285,9 +331,11 @@ function applyPositioning(candidates: RouteCandidate[]): void {
         cap?.output_tokens_per_second == null ? null : `tok/s=${cap.output_tokens_per_second}`,
         cap?.time_to_first_answer_seconds == null ? null : `ttfa=${cap.time_to_first_answer_seconds}s`,
       ].filter(Boolean);
-      candidate.card.strengths = partial
+      const catalogDescription = candidate.card.description || "";
+      const evidenceText = partial
         ? `AA partial reference only: ${cap.aa_name || cap.aa_slug}; ${cap.reason || "ranking metrics missing"}${available.length ? `; ${available.join(", ")}` : ""}`
         : `unranked; ${cap?.reason || "no capability evidence"}`;
+      candidate.card.strengths = [catalogDescription, evidenceText].filter(Boolean).join("; ");
       continue;
     }
     cap.relative = {
@@ -317,7 +365,9 @@ function applyPositioning(candidates: RouteCandidate[]): void {
     const reference = cap.reference_only
       ? `; reference only (${(cap.reference_reasons || []).join(", ")}; source=${cap.aa_slug || "unknown"})`
       : "";
-    candidate.card.strengths = `AA-derived inference: ${tags.join(", ")}${fields.length ? `; ${fields.join(", ")}` : ""}${reference}`;
+    candidate.card.strengths = [candidate.card.description, `AA-derived inference: ${tags.join(", ")}${fields.length ? `; ${fields.join(", ")}` : ""}${reference}`]
+      .filter(Boolean)
+      .join("; ");
   }
 }
 
@@ -347,9 +397,8 @@ export function buildRouteCandidates(cwd: string, capabilityDbPath: string): Rou
     const byProfile = new Map<string, StoredRouteMapping>();
     for (const mapping of routeMappings) if (!byProfile.has(mapping.profile)) byProfile.set(mapping.profile, mapping);
     if (!byProfile.has("")) byProfile.set("", { routeId: capabilityRoute, profile: "", aaSlug: "", mappingSource: "explicit", note: null });
-    // OpenCodex owns the callable profile surface. Keep every exact supported
-    // route@profile visible even when AA has no mapping for it; missing evidence
-    // is unranked/unknown, never a reason to erase a user-selectable host route.
+    // The selected CLI owns the effort surface. Keep every exact supported
+    // model@effort visible even when AA has no mapping for it.
     for (const profile of route.reasoning_efforts) {
       if (!byProfile.has(profile)) {
         byProfile.set(profile, { routeId: capabilityRoute, profile, aaSlug: "", mappingSource: "explicit", note: null });
@@ -362,8 +411,8 @@ export function buildRouteCandidates(cwd: string, capabilityDbPath: string): Rou
         : queryRouteCapability({ dbPath: capabilityDbPath, routeId: lookupRoute, profile: lookupProfile });
     };
     for (const [profile] of byProfile) {
-      // A stored capability mapping is evidence only; it must never expand the
-      // callable profile surface owned by the current OpenCodex catalog.
+      // Capability evidence must never expand the effort surface returned by
+      // the selected CLI.
       if (profile && !route.reasoning_efforts.includes(profile)) continue;
       let result = query(capabilityRoute, profile);
       if (hasCapabilityModel(result) && !result.ranked) {
@@ -405,12 +454,18 @@ export function buildRouteCandidates(cwd: string, capabilityDbPath: string): Rou
       const executable = route.disabled !== true;
       const card: ModelCard = {
         id,
-        strengths: "",
+        strengths: route.description,
+        display_name: route.display_name,
+        description: route.description,
         route_id: canonical,
         reasoning_effort: profile || undefined,
         source: "dynamic",
         provider: route.provider,
         executable,
+        available_speed_tiers: route.additional_speed_tiers,
+        service_tiers: route.service_tiers,
+        default_service_tier: route.default_service_tier,
+        is_default: route.is_default,
         capability: evidence(result, "referenceRouteId" in result ? result.referenceRouteId : capabilityRoute),
       };
       candidates.push({ card, executable, capability: result });

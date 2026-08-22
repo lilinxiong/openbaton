@@ -44,6 +44,7 @@ export type ApplyUnit =
       model_id: null;
       route_id?: null;
       reasoning_effort?: null;
+      service_tier?: null;
       provider?: null;
       director_local: true;
     })
@@ -51,6 +52,7 @@ export type ApplyUnit =
       model_id: string;
       route_id?: string | null;
       reasoning_effort?: string | null;
+      service_tier?: string | null;
       provider?: string | null;
       director_local: false;
     });
@@ -272,6 +274,7 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       modelId: unit.model_id,
       routeId: unit.route_id,
       reasoningEffort: unit.reasoning_effort,
+      serviceTier: selectionApprovals.get(unit.id)?.service_tier || null,
       source: "openspec",
       openspec: {
         change_dir: changeDir,

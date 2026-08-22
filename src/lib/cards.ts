@@ -1,10 +1,9 @@
 /**
- * Model cards are the only routing input.
- * No default model. No parent-session inherit. No match → blocked.
+ * Model cards are derived only from the active CLI's configured allowlist.
+ * No parent-session inheritance and no model outside that allowlist.
  */
 
 import type { CardCapabilityEvidence, ModelCard } from "../types.js";
-import { isSubagentModelAllowed } from "./model-policy.js";
 
 interface CardMatchExtras {
   code?: string;
@@ -88,55 +87,44 @@ function scoreCapability(text: unknown, capability: CardCapabilityEvidence): num
 }
 
 /**
- * Pick exactly one card. Ties and zeros are blocked — never a silent default.
+ * Pick exactly one configured card. Ties are resolved deterministically so
+ * runtime routing never opens a human model selector.
  */
 export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: string; score: number; card: ModelCard } {
   const ranked = rankModelCards(text, cards);
   const eligible = ranked.map((item) => item.card);
   if (eligible.length === 0) {
     throw new CardMatchError(
-      "no ranked executable OpenCodex routes are available. Refresh routes/capabilities; baton will not invent a default model.",
+      "no enabled CLI subagent models are configured. Run `baton config`.",
       { code: "NO_CARDS" },
     );
   }
   const best = ranked[0];
-  if (!best || best.score <= 0) {
-    throw new CardMatchError(
-      `no OpenCodex route matches this unit. Refusing to inherit a parent/default model.\nunit: ${text}`,
-      { code: "NO_CARD_MATCH", candidates: ranked.map((r) => r.card.id) },
-    );
-  }
-  const tied = ranked.filter((r) => r.score === best.score);
-  if (tied.length > 1) {
-    throw new CardMatchError(
-      `ambiguous card match (${tied.map((t) => t.card.id).join(", ")}). Narrow the unit or the strengths. No silent default.`,
-      { code: "AMBIGUOUS_CARD", candidates: tied.map((t) => t.card.id) },
-    );
-  }
+  if (!best) throw new CardMatchError("no configured CLI model matched", { code: "NO_CARD_MATCH" });
   return { model_id: best.card.id, score: best.score, card: best.card };
 }
 
-/** Ranked disclosure input. Unlike matchModelCard, ties and zero scores are retained for user choice. */
+/** Deterministic automatic ordering over the configured candidate set. */
 export function rankModelCards(text: unknown, cards: ModelCard[]): Array<{ card: ModelCard; score: number }> {
   return (cards || [])
-    .filter((card) => card.executable !== false
-      && isSubagentModelAllowed(card)
-      && (!card.capability || (card.capability.ranked && card.capability.reference_only !== true)))
+    .filter((card) => card.executable !== false)
     .map((card) => ({ card, score: scoreCard(text, card) }))
-    .sort((a, b) => b.score - a.score || a.card.id.localeCompare(b.card.id));
+    .sort((a, b) => b.score - a.score
+      || Number(b.card.is_default) - Number(a.card.is_default)
+      || a.card.id.localeCompare(b.card.id));
 }
 
 export function requireCardId(modelId: string, cards: ModelCard[]): ModelCard {
   const found = cards.find((card) => card.id === modelId);
   if (!found) {
     throw new CardMatchError(
-      `model "${modelId}" is not an exact route/profile id in the current OpenCodex snapshot.`,
+      `model "${modelId}" is not in the active CLI subagent candidate set.`,
       { code: "UNKNOWN_CARD", candidates: cards.map((c) => c.id) },
     );
   }
   if (found.executable === false) {
     throw new CardMatchError(
-      `model "${modelId}" has no executable route in the current OpenCodex snapshot.`,
+      `model "${modelId}" is not available in the active CLI model catalog.`,
       { code: "NO_EXECUTABLE_ROUTE", candidates: [found.id] },
     );
   }

@@ -17,6 +17,7 @@ export interface DelegationReceipt {
     card_id: string;
     route_id: string | null;
     reasoning_effort: string | null;
+    service_tier: string | null;
     provider: string | null;
   };
   execution: {
@@ -78,6 +79,7 @@ export function buildReadOnlyReceipt({
       card_id: card.id,
       route_id: card.route_id || null,
       reasoning_effort: card.reasoning_effort || null,
+      service_tier: selection?.service_tier || null,
       provider: card.provider || null,
     },
     execution: { mode: "read-only", fork_context: false, max_depth: 1 },

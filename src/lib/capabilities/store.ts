@@ -418,7 +418,7 @@ export type RouteCapabilityResult =
     };
 
 /**
- * Artificial Analysis slugs use hyphens where OpenCodex model ids commonly
+ * Artificial Analysis slugs use hyphens where CLI model ids commonly
  * use dots. This is a deterministic identity normalization, not fuzzy search.
  */
 export function normalizedAaSlug(routeId: string, profile = ""): string {

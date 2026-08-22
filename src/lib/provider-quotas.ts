@@ -108,7 +108,7 @@ export function unknownProviderQuota(provider: string, observedAt: string, reaso
   };
 }
 
-/** OpenCodex reported windows always win; fallback may fill only absent/unknown providers. */
+/** Primary CLI-reported windows always win; fallback may fill only absent/unknown providers. */
 export function mergeProviderQuotaFallbacks(
   primary: ProviderQuotaDisclosure[],
   fallbacks: ProviderQuotaDisclosure[],

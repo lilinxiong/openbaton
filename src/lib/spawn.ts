@@ -64,6 +64,7 @@ export interface SpawnTicket extends UnknownRecord {
   model_id: string;
   route_id: string | null;
   reasoning_effort: string | null;
+  service_tier: string | null;
   fork_context: false;
   mode: ExecutionMode;
   read_only: boolean;
@@ -141,6 +142,7 @@ interface BuildSpawnTicketOptions {
   modelId: string;
   routeId?: string | null;
   reasoningEffort?: string | null;
+  serviceTier?: string | null;
   source?: string;
   openspec?: UnknownRecord | null;
   taskKind?: WorkUnitKind | null;
@@ -157,6 +159,7 @@ export function buildSpawnTicket({
   modelId,
   routeId = null,
   reasoningEffort = null,
+  serviceTier = null,
   source = "standalone",
   openspec = null,
   taskKind = null,
@@ -181,6 +184,7 @@ export function buildSpawnTicket({
     model_id: modelId,
     route_id: routeId,
     reasoning_effort: reasoningEffort,
+    service_tier: serviceTier,
     fork_context: false,
     mode: "read-only",
     read_only: true,
@@ -243,6 +247,7 @@ export function planStandaloneSpawn({ description, prompt = null, cards, explici
     modelId: card.id,
     routeId: card.route_id || null,
     reasoningEffort: card.reasoning_effort || null,
+    serviceTier: selectionApproval?.service_tier || null,
     source: "standalone",
     taskKind,
     deliverable,

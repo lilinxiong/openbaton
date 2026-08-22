@@ -15,7 +15,7 @@ import {
 import { mergeProviderQuotaFallbacks, unknownProviderQuota } from "../src/lib/provider-quotas.js";
 
 describe("CodexBar quota fallback", () => {
-  it("maps OpenCodex provider ids and discovers a callable CLI on PATH", () => {
+  it("maps provider ids and discovers a callable CLI on PATH", () => {
     assert.equal(codexBarProviderId("openai"), "codex");
     assert.equal(codexBarProviderId("alibaba-token-plan"), "alibaba-token-plan");
     assert.equal(codexBarProviderId("bad/provider"), null);
@@ -97,11 +97,11 @@ describe("CodexBar quota fallback", () => {
     assert.equal(input.timeoutMs, 15_000);
   });
 
-  it("never overwrites reported OpenCodex quota but replaces an absent or unknown provider", () => {
-    const openCodex = normalizeCodexBarQuota("openai", "codex", [{
+  it("never overwrites reported primary quota but replaces an absent or unknown provider", () => {
+    const primary = normalizeCodexBarQuota("openai", "codex", [{
       source: "web", usage: { primary: { usedPercent: 20 } },
     }], "2026-08-20T00:00:00Z");
-    openCodex.source = "chatgpt:wham";
+    primary.source = "chatgpt:wham";
     const codexBarOpenAI = normalizeCodexBarQuota("openai", "codex", [{
       source: "web", usage: { primary: { usedPercent: 80 } },
     }], "2026-08-20T00:00:00Z");
@@ -109,7 +109,7 @@ describe("CodexBar quota fallback", () => {
       source: "web", usage: { primary: { usedPercent: 25 } },
     }], "2026-08-20T00:00:00Z");
     const merged = mergeProviderQuotaFallbacks([
-      openCodex,
+      primary,
       unknownProviderQuota("alibaba-token-plan", "2026-08-20T00:00:00Z"),
     ], [codexBarOpenAI, codexBarAlibaba]);
     assert.equal(merged.find((item) => item.provider === "openai")?.source, "chatgpt:wham");

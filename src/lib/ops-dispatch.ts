@@ -80,14 +80,14 @@ function resolveOpsActionDispatch(
   if (!configured) {
     return { kind: "director", action, reason: "ops route is empty; director executes this mechanical unit" };
   }
-  const choices = listOpsRouteChoices(cwd, configured.profile, cards);
+  const choices = listOpsRouteChoices(cwd, configured.profile, cards, { env });
   if (!findOpsRouteChoice(choices, configured.route)) {
     return {
       kind: "unavailable",
       action,
       profile: configured.profile,
       route: configured.route,
-      reason: `OPS_ROUTE_UNAVAILABLE: ${configured.profile} route ${configured.route} is not executable in the synced OpenCodex snapshot`,
+      reason: `OPS_ROUTE_UNAVAILABLE: ${configured.profile} model ${configured.route} is not in the enabled CLI model allowlist`,
     };
   }
   const card = cardForRoute(cards, configured.route, cwd);

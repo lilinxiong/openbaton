@@ -5,10 +5,10 @@ import { parseToml, stringifyToml } from "./toml.js";
 import { configPath } from "./paths.js";
 import {
   emptyOpsConfig,
-  LONGCTX_MIN_CONTEXT_DEFAULT,
   normalizeOpsConfig,
   type OpsConfig,
 } from "./ops-config.js";
+import { CLI_IDS, type CliId } from "./cli-models.js";
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 export const DEFAULT_MAX_DEPTH = 1;
@@ -16,12 +16,24 @@ export const DEFAULT_MAX_DEPTH = 1;
 export interface DirectorSettings {
   max_concurrent: number;
   max_depth: number;
-  model_selection: boolean;
   runner?: string;
+}
+
+export interface CliProfileSettings {
+  enabled: boolean;
+  runner: string;
+  longctx: string;
+  subagent_models: string[];
+}
+
+export interface CliSettings {
+  active: CliId;
+  codex: CliProfileSettings;
 }
 
 export interface Config {
   director: DirectorSettings;
+  cli: CliSettings;
   ops: OpsConfig;
 }
 
@@ -38,7 +50,15 @@ export function emptyConfig(): Config {
     director: {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
       max_depth: DEFAULT_MAX_DEPTH,
-      model_selection: false,
+    },
+    cli: {
+      active: "codex",
+      codex: {
+        enabled: false,
+        runner: "",
+        longctx: "",
+        subagent_models: [],
+      },
     },
     ops: emptyOpsConfig(),
   };
@@ -57,24 +77,75 @@ function normalizeDirector(raw: unknown): DirectorSettings {
   const settings: DirectorSettings = {
     max_concurrent: Number.isFinite(max) && max > 0 ? Math.floor(max) : DEFAULT_MAX_CONCURRENT,
     max_depth: Number.isFinite(depth) && depth >= 1 ? Math.floor(depth) : DEFAULT_MAX_DEPTH,
-    model_selection: director.model_selection === true,
   };
   const runner = optionalTrimmedString(director.runner);
   if (runner) settings.runner = runner;
   return settings;
 }
 
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function normalizeCliProfile(value: unknown, legacyOps: OpsConfig): CliProfileSettings {
+  const profile = isUnknownRecord(value) ? value : {};
+  const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
+  const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
+  const runner = rawRunner || legacyOps.runner.route;
+  const longctx = rawLongctx || legacyOps.longctx.route;
+  const configured = stringList(profile.subagent_models ?? profile.subagentModels);
+  const migrated = [runner, longctx].filter(Boolean);
+  const subagentModels = configured.length ? configured : [...new Set(migrated)];
+  const hasEnabled = Object.hasOwn(profile, "enabled");
+  return {
+    enabled: hasEnabled ? profile.enabled === true : configured.length === 0 && migrated.length > 0,
+    runner,
+    longctx,
+    subagent_models: subagentModels,
+  };
+}
+
+function normalizeCli(value: unknown, legacyOps: OpsConfig): CliSettings {
+  const cli = isUnknownRecord(value) ? value : {};
+  const requested = String(cli.active || "codex").trim();
+  const active = (CLI_IDS as readonly string[]).includes(requested) ? requested as CliId : "codex";
+  return {
+    active,
+    codex: normalizeCliProfile(cli.codex, legacyOps),
+  };
+}
+
+export function activeCliProfile(config: Pick<Config, "cli">): CliProfileSettings {
+  return config.cli[config.cli.active];
+}
+
+export function configuredSubagentModels(config: Pick<Config, "cli">): string[] {
+  const profile = activeCliProfile(config);
+  return profile.enabled ? [...profile.subagent_models] : [];
+}
+
 function serializeConfig(cfg: Config): UnknownRecord {
   return {
-    director: { ...cfg.director },
+    director: {
+      max_concurrent: cfg.director.max_concurrent,
+      max_depth: cfg.director.max_depth,
+      ...(cfg.director.runner ? { runner: cfg.director.runner } : {}),
+    },
+    cli: {
+      active: cfg.cli.active,
+      codex: {
+        enabled: cfg.cli.codex.enabled,
+        runner: cfg.cli.codex.runner,
+        longctx: cfg.cli.codex.longctx,
+        subagent_models: cfg.cli.codex.subagent_models,
+      },
+    },
     ops: {
       runner: {
-        route: cfg.ops.runner.route,
         actions: cfg.ops.runner.actions,
       },
       longctx: {
-        route: cfg.ops.longctx.route,
-        min_context_tokens: cfg.ops.longctx.min_context_tokens || LONGCTX_MIN_CONTEXT_DEFAULT,
         actions: cfg.ops.longctx.actions,
       },
     },
@@ -83,9 +154,15 @@ function serializeConfig(cfg: Config): UnknownRecord {
 
 export function normalizeConfig(raw: unknown): Config {
   const source = isUnknownRecord(raw) ? raw : {};
+  const ops = normalizeOpsConfig(source.ops);
+  const cli = normalizeCli(source.cli, ops);
+  const active = cli[cli.active];
+  ops.runner.route = active.enabled ? active.runner : "";
+  ops.longctx.route = active.enabled ? active.longctx : "";
   return {
     director: normalizeDirector(source.director),
-    ops: normalizeOpsConfig(source.ops),
+    cli,
+    ops,
   };
 }
 

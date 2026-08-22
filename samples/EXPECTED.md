@@ -2,13 +2,12 @@
 
 ## Baton routing acceptance
 
-- Model selection is triggered from the ordinary request without Baton-specific wording.
-- Each ordinary business request creates one proposal containing all of its units; no ticket exists until the user reviews the combined selector and clicks its single Submit.
-- The paired standalone/OpenSpec run uses one global Provider choice and one confirmation id across both proposals.
-- Every delegated unit discloses preferred/candidate exact routes, strengths, task score, raw AA scores, remaining quota/reset or explicit unknown reason, and current Codex callability.
-- At least one choice exercises user override/manual selection; when two providers are callable, the paired bundle uses at least two providers across its selected tickets.
-- Catalog-only routes stay visible as host-unavailable and never silently replace the approved route.
-- No `gpt-5.5`, `gpt-5.6-sol`, or `gpt-5.6-terra` route/profile appears in subagent candidates or tickets; each proposal records all three built-in family exclusions.
+- Automatic model routing is triggered from the ordinary request without Baton-specific wording.
+- Each ordinary business request creates one proposal containing all of its units and immediately approves its deterministic recommendations; no selector or user confirmation is involved.
+- Every delegated unit selects only from the active CLI's enabled `subagent_models`, using a reasoning effort returned by Codex for that model.
+- Every ticket records `confirmed_by=baton-recommendation`, uses its unit's recommended model, and records `changed_by_user=false`.
+- Missing benchmark data, a zero score, or a score tie is resolved deterministically instead of opening a manual-choice flow.
+- Configured Codex models are not removed by hard-coded family bans; Mini and Spark remain eligible whenever Codex returns them and the user enables them.
 
 - Total incidents: `6`.
 - Severity counts: `sev1=2`, `sev2=2`, `sev3=2`.

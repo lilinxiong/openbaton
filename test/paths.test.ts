@@ -50,7 +50,7 @@ describe("global Baton storage paths", () => {
 
     assert.equal(routeSnapshotPath(first), routeSnapshotPath(second));
     assert.equal(capabilitiesCacheDir(first), capabilitiesCacheDir(second));
-    assert.equal(routeSnapshotPath(first), path.join(home, ".baton", "cache", "routes.json"));
+    assert.equal(routeSnapshotPath(first), path.join(home, ".baton", "cache", "cli-models.json"));
     assert.equal(routeHealthPath(first), path.join(home, ".baton", "cache", "route-health.json"));
     assert.equal(artificialAnalysisDbPath(first), path.join(home, ".baton", "cache", "capabilities", "artificial-analysis.sqlite3"));
     assert.ok(!fs.existsSync(path.join(first, ".baton")));

@@ -1,19 +1,13 @@
 import readline from "node:readline/promises";
-import { artificialAnalysisDbPath } from "../lib/paths.js";
-import { buildRouteCandidates } from "../lib/routes.js";
-import { refreshRouteSnapshot } from "./routes.js";
 import {
-  emptyOpsConfig,
-  type OpsProfileId,
-} from "../lib/ops-config.js";
+  CLI_IDS,
+  discoverCliModels,
+  type CliId,
+  type CliModel,
+  type CliModelDiscovery,
+} from "../lib/cli-models.js";
 import { loadConfig, saveConfig } from "../lib/config.js";
-import {
-  findOpsRouteChoice,
-  listOpsRouteChoices,
-  type OpsRouteChoice,
-} from "../lib/ops-routes.js";
-import { resolveOcx, type OcxResolver, type OcxRunner } from "../lib/opencodex.js";
-import type { CodexBarResolver, CodexBarRunner } from "../lib/codexbar.js";
+import { publishRouteSnapshot } from "../lib/routes.js";
 import type { WritableLike } from "../types.js";
 
 export interface ConfigCommandOptions {
@@ -21,10 +15,7 @@ export interface ConfigCommandOptions {
   stdout: WritableLike;
   stdin?: NodeJS.ReadableStream;
   env?: NodeJS.ProcessEnv;
-  runner?: OcxRunner;
-  resolve?: OcxResolver;
-  codexBarRunner?: CodexBarRunner;
-  codexBarResolve?: CodexBarResolver;
+  discover?: CliModelDiscovery;
   readLine?: () => Promise<string>;
 }
 
@@ -40,48 +31,14 @@ function repeated(args: string[], name: string): string[] {
   return values;
 }
 
-function optionalRouteFlag(args: string[], name: string): string | undefined {
+function lastFlag(args: string[], name: string): string | undefined {
   const values = repeated(args, name);
-  if (!values.length) return undefined;
-  const value = values[values.length - 1].trim();
+  return values.length ? values[values.length - 1].trim() : undefined;
+}
+
+function optionalModelFlag(args: string[], name: string): string | undefined {
+  const value = lastFlag(args, name);
   return value === "-" ? "" : value;
-}
-
-function cards(cwd: string) {
-  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd)).map((item) => item.card);
-}
-
-function formatChoice(item: OpsRouteChoice, profile: OpsProfileId): string {
-  const context = profile === "longctx" && item.context_window != null ? `  ${item.context_window}` : "";
-  return `${item.route_id}${context}`;
-}
-
-function printChoices(
-  stdout: WritableLike,
-  profile: OpsProfileId,
-  choices: OpsRouteChoice[],
-): void {
-  if (profile === "runner") stdout.write("runner — 跑 test/build/lint（OpenCodex routes）\n");
-  else stdout.write("longctx — 检索/消化/写 commit message（≥1M，OpenCodex routes）\n");
-  stdout.write("  0. （空：由主 agent 执行）\n");
-  if (!choices.length) {
-    stdout.write(profile === "longctx"
-      ? "  （OpenCodex snapshot 中没有符合 policy 的 ≥1M route）\n"
-      : "  （OpenCodex snapshot 中没有符合 policy 的 runner route）\n");
-    return;
-  }
-  choices.forEach((item, index) => {
-    stdout.write(`  ${index + 1}. ${formatChoice(item, profile)}\n`);
-  });
-}
-
-function parseChoice(line: string, choices: OpsRouteChoice[]): string {
-  const text = line.trim();
-  if (!text || text === "0") return "";
-  const index = Number(text);
-  if (Number.isInteger(index) && index >= 1 && index <= choices.length) return choices[index - 1].route_id;
-  if (findOpsRouteChoice(choices, text)) return text;
-  throw new Error(`invalid ${choices.length ? `choice (0-${choices.length})` : "choice; only 0 is available"}: ${text}`);
 }
 
 async function defaultReadLine(stdin: NodeJS.ReadableStream, stdout: WritableLike): Promise<string> {
@@ -93,34 +50,68 @@ async function defaultReadLine(stdin: NodeJS.ReadableStream, stdout: WritableLik
   }
 }
 
-function requireChoice(profile: OpsProfileId, route: string, choices: OpsRouteChoice[]): string {
-  if (!route) return "";
-  if (!findOpsRouteChoice(choices, route)) {
-    throw new Error(`OPS_ROUTE_UNAVAILABLE: ${profile} route ${route} is not in the filtered OpenCodex snapshot`);
-  }
-  return route;
+function printClis(stdout: WritableLike): void {
+  stdout.write("CLIs\n");
+  CLI_IDS.forEach((cli, index) => stdout.write(`  ${index + 1}. ${cli}\n`));
 }
 
-function runModelSelectionConfig(
-  args: string[],
-  { cwd, stdout, env }: Pick<ConfigCommandOptions, "cwd" | "stdout" | "env">,
-): number {
-  const action = args.find((item) => !item.startsWith("--")) || "status";
-  if (!["on", "off", "status"].includes(action)) {
-    throw new Error("usage: baton config model-selection on|off|status [--json]");
+function parseCliChoice(value: string): CliId {
+  const text = value.trim().toLowerCase();
+  const index = Number(text);
+  if (Number.isInteger(index) && index >= 1 && index <= CLI_IDS.length) return CLI_IDS[index - 1];
+  if ((CLI_IDS as readonly string[]).includes(text)) return text as CliId;
+  throw new Error(`invalid CLI choice: ${value}`);
+}
+
+function modelLabel(model: CliModel): string {
+  return `${model.display_name} (${model.id})${model.description ? ` — ${model.description}` : ""}`;
+}
+
+function printModels(stdout: WritableLike, cli: CliId, models: CliModel[]): void {
+  stdout.write(`models: ${cli} model/list (picker-visible)\n`);
+  models.forEach((model, index) => stdout.write(`  ${index + 1}. ${modelLabel(model)}\n`));
+}
+
+function modelByChoice(models: CliModel[], value: string): CliModel | null {
+  const text = value.trim();
+  if (!text || text === "0" || text === "-") return null;
+  const index = Number(text);
+  if (Number.isInteger(index) && index >= 1 && index <= models.length) return models[index - 1];
+  return models.find((model) => model.id === text) || null;
+}
+
+function requireModel(models: CliModel[], value: string, label: string): string {
+  if (!value) return "";
+  const model = modelByChoice(models, value);
+  if (!model) throw new Error(`${label} model ${value} is not in the ${models.length}-model CLI response`);
+  return model.id;
+}
+
+function selectedModel(models: CliModel[], value: string, label: string): string {
+  const text = value.trim();
+  if (!text || text === "0" || text === "-") return "";
+  return requireModel(models, text, label);
+}
+
+function parseModelSet(models: CliModel[], values: string[]): string[] {
+  const tokens = values.flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+  if (tokens.some((value) => value.toLowerCase() === "all")) return models.map((model) => model.id);
+  if (tokens.length === 1 && ["0", "-", "none"].includes(tokens[0].toLowerCase())) return [];
+  const chosen: string[] = [];
+  for (const token of tokens) {
+    const model = modelByChoice(models, token);
+    if (!model) throw new Error(`subagent model ${token} is not in the ${models.length}-model CLI response`);
+    if (!chosen.includes(model.id)) chosen.push(model.id);
   }
-  const current = loadConfig(cwd, { env });
-  if (action !== "status") {
-    current.director.model_selection = action === "on";
-    saveConfig(cwd, current, { env });
-  }
-  const enabled = current.director.model_selection;
-  if (args.includes("--json")) {
-    stdout.write(`${JSON.stringify({ model_selection: enabled })}\n`);
-  } else {
-    stdout.write(`model selection: ${enabled ? "on (user choice enabled)" : "off (Baton recommendation automatic)"}\n`);
-  }
-  return 0;
+  return chosen;
+}
+
+function parseEnabled(value: string, current: boolean): boolean {
+  const text = value.trim().toLowerCase();
+  if (!text) return current;
+  if (["y", "yes", "1", "on", "true", "enable", "enabled"].includes(text)) return true;
+  if (["n", "no", "0", "off", "false", "disable", "disabled"].includes(text)) return false;
+  throw new Error(`invalid enabled choice: ${value}`);
 }
 
 export async function runConfig(args: string[], {
@@ -128,56 +119,96 @@ export async function runConfig(args: string[], {
   stdout,
   stdin = process.stdin,
   env = process.env,
-  runner,
-  resolve,
-  codexBarRunner,
-  codexBarResolve,
+  discover = discoverCliModels,
   readLine,
 }: ConfigCommandOptions): Promise<number> {
   if (args[0] === "model-selection") {
-    return runModelSelectionConfig(args.slice(1), { cwd, stdout, env });
+    throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.subagent_models; configure the candidate set with `baton config`");
   }
-  refreshRouteSnapshot({
-    cwd,
-    stdout: { write() {} },
-    env,
-    runner,
-    resolve: resolve || resolveOcx,
-    codexBarRunner,
-    codexBarResolve,
-  });
-  const available = cards(cwd);
-  const runnerChoices = listOpsRouteChoices(cwd, "runner", available);
-  const longctxChoices = listOpsRouteChoices(cwd, "longctx", available);
-  stdout.write("models: OpenCodex live snapshot\n\n");
-  printChoices(stdout, "runner", runnerChoices);
-  stdout.write("\n");
-  printChoices(stdout, "longctx", longctxChoices);
-
-  let runnerRoute = optionalRouteFlag(args, "runner");
-  let longctxRoute = optionalRouteFlag(args, "longctx");
-  const ask = readLine || (() => defaultReadLine(stdin, stdout));
-  if (runnerRoute === undefined) {
-    stdout.write("\nSelect runner (0 = empty):\n");
-    runnerRoute = parseChoice(await ask(), runnerChoices);
-  }
-  if (longctxRoute === undefined) {
-    stdout.write("\nSelect longctx (0 = empty):\n");
-    longctxRoute = parseChoice(await ask(), longctxChoices);
-  }
-  runnerRoute = requireChoice("runner", runnerRoute, runnerChoices);
-  longctxRoute = requireChoice("longctx", longctxRoute, longctxChoices);
-
   const current = loadConfig(cwd, { env });
-  const nextOps = emptyOpsConfig();
-  nextOps.runner.actions = current.ops.runner.actions;
-  nextOps.longctx.actions = current.ops.longctx.actions;
-  nextOps.longctx.min_context_tokens = current.ops.longctx.min_context_tokens;
-  nextOps.runner.route = runnerRoute;
-  nextOps.longctx.route = longctxRoute;
-  const file = saveConfig(cwd, { ...current, ops: nextOps }, { env });
-  stdout.write(`\nwrote ${file}\n`);
-  stdout.write(`  runner: ${runnerRoute || "(empty; director)"}\n`);
-  stdout.write(`  longctx: ${longctxRoute || "(empty; director)"}\n`);
+  const ask = readLine || (() => defaultReadLine(stdin, stdout));
+
+  let cliValue = lastFlag(args, "cli");
+  if (cliValue === undefined) {
+    printClis(stdout);
+    stdout.write("\nSelect CLI:\n");
+    cliValue = await ask();
+  }
+  const cli = parseCliChoice(cliValue);
+  const catalog = await discover(cli, { cwd, env });
+  if (!catalog.models.length) throw new Error(`${cli} returned no picker-visible models`);
+  publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), {
+    cli,
+    engineVersion: catalog.version,
+    providerQuotas: [],
+    quotaRefreshError: null,
+  });
+
+  stdout.write("\n");
+  printModels(stdout, cli, catalog.models);
+  const existing = current.cli[cli];
+
+  let runner = optionalModelFlag(args, "runner");
+  if (runner === undefined) {
+    stdout.write("\nSelect runner (0 = empty; this is a label, not a capability claim):\n");
+    runner = selectedModel(catalog.models, await ask(), "runner");
+  }
+  runner = requireModel(catalog.models, runner, "runner");
+
+  let longctx = optionalModelFlag(args, "longctx");
+  if (longctx === undefined) {
+    stdout.write("\nSelect longctx (0 = empty; no context-window support is assumed):\n");
+    longctx = selectedModel(catalog.models, await ask(), "longctx");
+  }
+  longctx = requireModel(catalog.models, longctx, "longctx");
+
+  const subagentFlags = repeated(args, "subagent-model");
+  let subagentModels: string[];
+  if (!subagentFlags.length) {
+    stdout.write("\nSelect models callable by subagents (comma-separated indexes/ids, `all`, or 0):\n");
+    subagentModels = parseModelSet(catalog.models, [await ask()]);
+  } else {
+    subagentModels = parseModelSet(catalog.models, subagentFlags);
+  }
+  // runner and longctx are themselves subagent routes when configured, so the
+  // persisted allowlist must truthfully include them.
+  for (const model of [runner, longctx]) {
+    if (model && !subagentModels.includes(model)) subagentModels.push(model);
+  }
+
+  if (args.includes("--enable") && args.includes("--disable")) {
+    throw new Error("--enable and --disable are mutually exclusive");
+  }
+  let enabled: boolean;
+  if (args.includes("--enable")) enabled = true;
+  else if (args.includes("--disable")) enabled = false;
+  else {
+    stdout.write(`\nEnable this ${cli} configuration? [y/n] (current: ${existing.enabled ? "on" : "off"}):\n`);
+    enabled = parseEnabled(await ask(), existing.enabled);
+  }
+
+  current.cli.active = cli;
+  current.cli[cli] = { enabled, runner, longctx, subagent_models: subagentModels };
+  current.ops.runner.route = enabled ? runner : "";
+  current.ops.longctx.route = enabled ? longctx : "";
+  const file = saveConfig(cwd, current, { env });
+  const result = {
+    cli,
+    enabled,
+    runner: runner || null,
+    longctx: longctx || null,
+    subagent_models: subagentModels,
+    model_source: `${cli} model/list`,
+    config: file,
+  };
+  if (args.includes("--json")) stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  else {
+    stdout.write(`\nwrote ${file}\n`);
+    stdout.write(`  cli: ${cli} (${enabled ? "enabled" : "disabled"})\n`);
+    stdout.write(`  runner: ${runner || "(empty; director)"}\n`);
+    stdout.write(`  longctx: ${longctx || "(empty; director)"}\n`);
+    stdout.write(`  subagent models: ${subagentModels.length ? subagentModels.join(", ") : "(none)"}\n`);
+    stdout.write("  later routing: automatic; no model confirmation UI\n");
+  }
   return 0;
 }

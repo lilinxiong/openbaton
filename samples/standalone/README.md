@@ -8,4 +8,4 @@ The audit is read-only:
 - `policy.json`: acknowledgement and resolution targets.
 - `REQUEST.txt`: user-facing request; it intentionally does not name Baton or subagents.
 
-Expected interaction: the director automatically creates one five-unit request-level proposal before creating tickets. When paired with the OpenSpec sample, both proposals appear in one selector with one global Provider control and one Submit. Verify that `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` are disclosed as built-in family exclusions and never appear as candidates. Review the remaining strengths, task/AA scores, quota/unknown reasons, and callability; change or manually select at least one exact candidate, and use two providers when two are callable. Then submit once for both paths.
+Expected interaction: the director creates one five-unit request-level proposal, deterministically selects exact model/reasoning-effort candidates from the enabled Codex allowlist, automatically approves those recommendations, and creates tickets. No model selector or user confirmation is involved.

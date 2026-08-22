@@ -1,11 +1,11 @@
-# Baton capability samples
+# Baton automatic-routing samples
 
-This sample explicitly enables free model selection and validates the same read-only incident audit and manual model-selection handshake through two paths:
+These samples validate the same read-only incident audit through two paths, with no runtime model picker or confirmation step:
 
-- `standalone`: the workspace has no `openspec/`; the Codex director must derive five bounded units in one request-level proposal from an ordinary request.
-- `openspec`: the workspace contains a strict-valid OpenSpec change with five stable tasks; Baton must consume those tasks and write conclusions back by task number.
+- `standalone`: the workspace has no `openspec/`; the Codex director derives five bounded units from an ordinary request.
+- `openspec`: the workspace contains a strict-valid OpenSpec change with five stable tasks; Baton consumes those tasks and writes conclusions back by task number.
 
-Neither user request names Baton, subagents, dispatch, routes, or OpenSpec. If delegation only happens after adding such words, automatic triggering has failed.
+Neither request names Baton, subagents, dispatch, models, routes, or OpenSpec. If delegation only happens after adding such words, automatic triggering has failed.
 
 ## Prerequisites
 
@@ -16,36 +16,26 @@ bun run test
 bun run build
 bun link
 baton update
-baton routes refresh
-baton cards --ranked
-baton config model-selection on
+baton config
+baton models
+baton cards
 ```
 
-At least one ranked executable exact route/profile must be visible. `bun link` is required only when testing this source checkout; a normally installed package already provides `baton` on `PATH`.
+`baton config` must select and enable the Codex profile, assign optional `runner` and `longctx` labels, and choose the models subagents may call. The catalog shown by the command comes directly from Codex `model/list`; Baton does not obtain or augment it from OpenCodex. `runner` and `longctx` are labels only and do not assert model context-window capabilities.
 
-OpenCodex owns its runtime/provider synchronization. Baton then runs one on-demand `baton routes refresh` when its persisted snapshot is missing or stale; it does not derive or publish a per-session Codex model surface. The proposal uses the exact executable routes and profiles in that OpenCodex snapshot.
+`bun link` is required only when testing this source checkout. A normally installed package already provides `baton` on `PATH`.
 
-Quota uses `OpenCodex reported > local CodexBar fallback > unknown`. A sample run must preserve source/reason, never overwrite an OpenCodex reported window, and never persist CodexBar account/auth/raw-output fields. CodexBar is optional; absence or provider failure remains an explicit unknown state.
+## Automatic routing contract
 
-## Required opt-in confirmation interaction
+The ordinary business request is decomposed once. Baton records an auditable proposal and immediately chooses a model, reasoning effort, and available speed signal from the enabled CLI candidate set. It then creates tickets without rendering a selector or waiting for user confirmation.
 
-The product default is `model_selection=off`; normal standalone and OpenSpec work uses Baton's automatic recommendation. This sample is specifically the manual-selector acceptance flow, so enable it with `baton config model-selection on` before bootstrapping. Turn it off again with `baton config model-selection off` after the sample if desired.
+Every automatic choice must satisfy all of the following:
 
-The pasted business request is intentionally trigger-neutral. Codex must not ask the user to invoke Baton. It should first break down the work and present comparison-table model-selection disclosure containing:
-
-- one preferred exact route/profile when scoring has a unique positive winner, otherwise an explicit manual-choice state;
-- all policy-eligible executable OpenCodex candidates, strengths, task score, raw/available AA data, reference-only status/provenance, remaining quota/reset or an explicit unknown reason, and snapshot callability;
-- an auditable built-in exclusion for every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` route/profile; none of those families may appear as a candidate or ticket.
-
-At this point no ticket may exist. When both paths are tested in one front conversation, Codex combines the standalone proposal and OpenSpec proposal into one selector. Provider is one global multi-select for the entire request; the two path groups and all ten task assignments appear below it. Reply with one Submit that:
-
-1. keeps any suitable preferred choices;
-2. changes or manually selects at least one disclosed exact candidate;
-3. uses at least two providers across the paired bundle when at least two providers are selectable in the synced OpenCodex snapshot.
-
-That single Submit sends one confirmation id to both proposals. Codex should then approve both and execute the tickets. Never ask it to choose an unavailable route, and never accept fallback.
-
-The selector is a Chinese, current-conversation inline-only artifact. Codex must faithfully translate every English source task into a Chinese `--task-label SCOPE/TASK=CHINESE_LABEL` used only for rendering, then emit the one `inline_content_reference` returned by `baton selection render-bundle ... --json` in the current response. The original business requests, source tasks, and fingerprints stay unchanged. Codex must never open a browser, navigate to `file://`, show a file link, or create a separate page/window/task for model selection. If inline rendering is unavailable, the complete Chinese disclosure and one confirmation remain as text in this same conversation.
+- the exact base model was returned by the active Codex catalog and is present in `cli.codex.subagent_models`;
+- the chosen reasoning effort and any non-null service tier are values Codex returned for that model;
+- `confirmed_by=baton-recommendation` and `changed_by_user=false` are persisted as audit evidence;
+- a zero benchmark score, score tie, or missing Artificial Analysis record does not open a manual-choice flow;
+- no hard-coded family ban removes a configured Codex model, including `gpt-5.4-mini` or `gpt-5.3-codex-spark`.
 
 ## Standalone path
 
@@ -62,13 +52,9 @@ bun samples/verify.mjs <workspace> standalone
 Expected properties:
 
 - no `openspec/` exists;
-- five standalone tickets are created from the ordinary request;
-- one five-unit standalone selection proposal is approved before those tickets exist;
-- every ticket carries immutable user model-approval evidence; at least one choice differs from the recommendation/manual default;
-- candidate disclosure covers strengths, task/AA scores and available data, reference-only provenance, quota, and OpenCodex snapshot callability;
-- every proposal discloses all three built-in family bans, and no candidate or ticket belongs to any of those families;
-- if at least two providers are callable, selected tickets across the paired bundle cover at least two providers;
-- four are `concrete/terminal-only` and one is `deliberative/checkpointed`;
+- one five-unit proposal is automatically approved and creates five standalone tickets;
+- every ticket uses the proposal's recommended model and carries immutable automatic-selection evidence;
+- four tickets are `concrete/terminal-only` and one is `deliberative/checkpointed`;
 - the deliberative ticket reports at least one progress checkpoint;
 - all tickets have a real agent id, one attempt, terminal completion, close, and slot release;
 - no workspace file changes.
@@ -88,27 +74,15 @@ bun samples/verify.mjs <workspace> openspec
 Expected properties:
 
 - five tickets use `source=openspec` and stable task numbers `1.1` through `2.1`;
-- one five-unit OpenSpec selection proposal is approved before tickets are created, including at least one user route change/manual choice;
+- one five-unit proposal is automatically approved without a selector;
 - completion checks each task and adds one child `conclusion:` line;
 - `openspec validate incident-audit --strict` passes;
 - only `openspec/changes/incident-audit/tasks.md` changes in the workspace;
-- the same lifecycle/progress assertions as the standalone path pass.
+- the same lifecycle and automatic-routing assertions as the standalone path pass.
 
-## Combined one-Submit gate
+## Paired gate
 
-For the required paired run, bootstrap both fresh workspaces in this same Codex task, create one pending proposal in each, and render them together:
-
-```bash
-baton selection render-bundle \
-  --proposal 'standalone=/absolute/standalone#sel-0001' \
-  --proposal 'openspec=/absolute/openspec#sel-0001' \
-  --output /absolute/selection-bundle.html \
-  --task-label standalone/TASK=中文说明 \
-  --task-label openspec/TASK=中文说明 \
-  --json
-```
-
-There must be one global Provider control, one combined task table, and one Submit. After both path verifiers pass, verify that they came from that same Submit:
+After running both fresh workspaces, verify that each request independently used the automatic recommendation path:
 
 ```bash
 bun samples/verify-bundle.mjs <standalone-workspace> <openspec-workspace>

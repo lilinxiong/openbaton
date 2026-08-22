@@ -30,8 +30,9 @@ export interface SelectionCandidate {
   reasoning_effort_configurable: boolean;
   effective_reasoning_effort: string | null;
   context_window: number | null;
+  service_tier: string | null;
   speed_optimized: boolean;
-  speed_signals: Array<"route-name" | "opencodex-config">;
+  speed_signals: Array<"route-name" | "catalog-description" | "service-tier">;
   provider: string | null;
   selectable: boolean;
   selection_code: "AVAILABLE" | "QUOTA_POOL_EXHAUSTED";
@@ -113,6 +114,7 @@ export interface SelectionProposal {
     confirmed_by?: ModelSelectionApproval["confirmed_by"];
     recommended_model_id: string | null;
     selected_model_id: string;
+    service_tier?: string | null;
     changed_by_user: boolean;
     selected_provider_ids?: string[];
     global_provider_ids?: string[];
@@ -159,9 +161,18 @@ function candidateFor(
       "DEFAULT_PROFILE_REFERENCE",
       "SERVING_VARIANT_BASE_MODEL_REFERENCE",
     ].includes(reason));
+  const wantsSpeed = classifyTask(prompt).speed > 0;
   const speedSignals: SelectionCandidate["speed_signals"] = [];
-  if (/(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(card.route_id)) speedSignals.push("route-name");
-  if (route.supports_service_tier === true) speedSignals.push("opencodex-config");
+  const routeNamedFast = /(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(card.route_id);
+  const catalogDescribesSpeed = /\b(?:fast|ultra-fast|low[- ]latency|high[- ]throughput)\b/i.test(route.description);
+  const serviceTier = wantsSpeed
+    ? route.service_tiers.find((tier) => /(?:fast|priority|ultrafast)/i.test(tier))
+      || route.additional_speed_tiers.find((tier) => /(?:fast|priority|ultrafast)/i.test(tier))
+      || null
+    : null;
+  if (wantsSpeed && routeNamedFast) speedSignals.push("route-name");
+  if (wantsSpeed && catalogDescribesSpeed) speedSignals.push("catalog-description");
+  if (serviceTier) speedSignals.push("service-tier");
   return {
     model_id: card.id,
     route_id: card.route_id,
@@ -169,6 +180,7 @@ function candidateFor(
     reasoning_effort_configurable: route.reasoning_efforts.length > 0,
     effective_reasoning_effort: card.reasoning_effort || route.default_reasoning_effort || card.capability?.reference_profile || null,
     context_window: route.context_window,
+    service_tier: serviceTier,
     speed_optimized: speedSignals.length > 0,
     speed_signals: speedSignals,
     provider: card.provider || null,
@@ -176,15 +188,15 @@ function candidateFor(
     selection_code: quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
     selection_reason: quotaPool.status === "exhausted"
       ? `${quotaPool.label} quota is exhausted`
-      : "route/profile is executable in the synced OpenCodex snapshot",
-    automatic_eligible: selectable && ranked && (!referenceOnly || deterministicVariantReference) && automaticIds.has(card.id),
+      : "model/reasoning effort was returned by the active CLI",
+    automatic_eligible: selectable && automaticIds.has(card.id),
     ranked,
     reference_only: referenceOnly,
     reference_reasons: referenceReasons,
     reference_route_id: card.capability?.reference_route_id ?? null,
     reference_profile: card.capability?.reference_profile ?? null,
     aa_slug: card.capability?.aa_slug ?? null,
-    task_score: ranked ? scoreCard(prompt, card) : null,
+    task_score: scoreCard(prompt, card),
     strengths: card.strengths,
     positioning: card.positioning || [],
     aa_scores: evidenceScores(card.capability),
@@ -210,8 +222,9 @@ export interface TaskComplexityEstimate {
 export function estimateTaskComplexity(text: unknown): TaskComplexityEstimate {
   const value = String(text || "").toLowerCase();
   const dimensions = classifyTask(value);
-  if (/\b(?:tiny|small|typo|rename-only|routine)\b|小改|简单任务|拼写|仅重命名|常规/.test(value)
-    && dimensions.agentic === 0 && dimensions.intelligence === 0) {
+  if ((dimensions.speed > 0 && dimensions.agentic === 0 && dimensions.intelligence === 0)
+    || (/\b(?:tiny|small|typo|rename-only|routine)\b|小改|简单任务|拼写|仅重命名|常规/.test(value)
+    && dimensions.agentic === 0 && dimensions.intelligence === 0)) {
     return { effort: "low", reason: "simple" };
   }
   if (/\b(?:monorepo|multi-file|cross-module|migration|migrate|architecture|repository-wide|codebase-wide|complex integration)\b|全仓(?:库)?|多文件|跨模块|迁移|架构|复杂集成/.test(value)
@@ -307,6 +320,37 @@ function compareEffortFit(left: string | null, right: string | null, target: Sel
   return rightFit.rank - leftFit.rank || leftFit.distance - rightFit.distance;
 }
 
+/**
+ * Reasoning effort is a per-model execution setting, not a separate model
+ * competing on benchmark score. Keep all CLI-returned profiles visible for
+ * audit, but let automatic routing compare exactly one best-fit profile per
+ * route. This also prevents a benchmarked implicit/default profile from
+ * defeating the task's requested low/high/max level.
+ */
+function restrictAutomaticEffortCandidates(
+  candidates: SelectionCandidate[],
+  target: SelectionUnit["target_reasoning_effort"],
+): void {
+  const byRoute = new Map<string, SelectionCandidate[]>();
+  for (const candidate of candidates) {
+    const values = byRoute.get(candidate.route_id) || [];
+    values.push(candidate);
+    byRoute.set(candidate.route_id, values);
+  }
+  for (const values of byRoute.values()) {
+    if (!values.some((candidate) => candidate.reasoning_effort_configurable)) continue;
+    const eligibleProfiles = values
+      .filter((candidate) => candidate.automatic_eligible && candidate.reasoning_effort)
+      .sort((left, right) => compareEffortFit(
+        left.effective_reasoning_effort,
+        right.effective_reasoning_effort,
+        target,
+      ) || left.model_id.localeCompare(right.model_id));
+    for (const candidate of values) candidate.automatic_eligible = false;
+    if (eligibleProfiles[0]) eligibleProfiles[0].automatic_eligible = true;
+  }
+}
+
 /** Stable, evidence-backed ordering when task scores do not identify one winner. */
 function compareContextFit(left: number | null, right: number | null, target: number): number {
   const fit = (window: number | null) => {
@@ -331,6 +375,9 @@ function recommendationTieBreak(
   const rightCapability = [right.aa_scores.coding, right.aa_scores.agentic, right.aa_scores.intelligence]
     .reduce<number>((sum, value) => sum + (value ?? 0), 0);
   return compareEffortFit(left.effective_reasoning_effort, right.effective_reasoning_effort, targetEffort)
+    // When the CLI exposes explicit efforts, persist the chosen level instead
+    // of relying on an implicit model default with the same effective rank.
+    || Number(Boolean(right.reasoning_effort)) - Number(Boolean(left.reasoning_effort))
     || compareContextFit(left.context_window, right.context_window, estimatedContextTokens)
     || Number(right.speed_optimized) - Number(left.speed_optimized)
     || quotaRank[right.quota_pool_status] - quotaRank[left.quota_pool_status]
@@ -379,7 +426,7 @@ export function buildSelectionUnit({
   }
   const policyExclusions = summarizeSubagentModelPolicyExclusions(cards);
   const snapshot = readRouteSnapshot(cwd);
-  if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton routes refresh before model selection");
+  if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
   const policyEligibleCards = cards.filter(isSubagentModelAllowed);
   const taskExclusions = policyEligibleCards
     .map(taskCapabilityExclusion)
@@ -391,6 +438,7 @@ export function buildSelectionUnit({
     .map((card) => candidateFor(prompt, card, snapshot, automaticIds))
     .filter((item): item is SelectionCandidate => item !== null);
   inferEffectiveReasoningEfforts(candidates);
+  restrictAutomaticEffortCandidates(candidates, complexityEstimate.effort);
   candidates.sort((a, b) => Number(b.selectable) - Number(a.selectable)
       || Number(b.automatic_eligible) - Number(a.automatic_eligible)
       || (b.task_score ?? -1) - (a.task_score ?? -1)
@@ -496,7 +544,7 @@ export function createSelectionProposal(cwd: string, {
   now?: Date | string | number;
 }): SelectionProposal {
   const snapshot = readRouteSnapshot(cwd);
-  if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton routes refresh before model selection");
+  if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const proposal: SelectionProposal = {
     schema_version: 2,
@@ -544,7 +592,7 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   if (!fs.existsSync(file)) throw new Error(`selection proposal not found: ${id}`);
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as SelectionProposal;
   if (value.schema_version !== 2) {
-    throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates OpenCodex-only route selection; create a new proposal`);
+    throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates CLI-owned model selection; create a new proposal`);
   }
   const snapshot = readRouteSnapshot(cwd);
   for (const unit of value.units || []) {
@@ -566,10 +614,12 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
       if (candidate.effective_reasoning_effort === undefined) {
         candidate.effective_reasoning_effort = candidate.reasoning_effort || route?.default_reasoning_effort || candidate.reference_profile || null;
       }
+      if (candidate.service_tier === undefined) candidate.service_tier = null;
       if (!Array.isArray(candidate.speed_signals)) {
         candidate.speed_signals = [];
         if (/(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(candidate.route_id)) candidate.speed_signals.push("route-name");
-        if (route?.supports_service_tier === true) candidate.speed_signals.push("opencodex-config");
+        if (/\b(?:fast|ultra-fast|low[- ]latency|high[- ]throughput)\b/i.test(route?.description || "")) candidate.speed_signals.push("catalog-description");
+        if (candidate.service_tier) candidate.speed_signals.push("service-tier");
       }
       candidate.speed_optimized = candidate.speed_signals.length > 0;
       const pool = quotaPoolForCandidate(candidate);
@@ -583,7 +633,7 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
       if (!candidate.selection_reason) {
         candidate.selection_reason = pool.status === "exhausted"
           ? `${pool.label} quota is exhausted`
-          : "route/profile is executable in the synced OpenCodex snapshot";
+          : "model/reasoning effort was returned by the active CLI";
       }
       if (pool.status === "exhausted") {
         candidate.selectable = false;

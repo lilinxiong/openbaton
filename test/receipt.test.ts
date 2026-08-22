@@ -13,10 +13,16 @@ describe("Delegation Receipt", () => {
       ticketId: "spn-0001",
       card: { id: "k3", strengths: "flagship", route_id: "kimi/k3[1m]", reasoning_effort: "max", provider: "kimi" },
       issuedAt: "2026-08-19T00:00:00.000Z",
+      selection: {
+        proposal_id: "sel-1", approval_id: "approval-1", approved_at: "2026-08-19T00:00:00.000Z",
+        confirmed_by: "baton-recommendation", catalog_fingerprint: "catalog", recommended_model_id: "k3",
+        selected_model_id: "k3", service_tier: "priority", changed_by_user: false,
+      },
     });
     assert.equal(receipt.receipt_id, "rcpt-spn-0001-a1");
     assert.equal(receipt.route.route_id, "kimi/k3[1m]");
     assert.equal(receipt.route.provider, "kimi");
+    assert.equal(receipt.route.service_tier, "priority");
     assert.equal(receipt.execution.mode, "read-only");
     assert.deepEqual(receipt.scope.write_allowlist, []);
     assert.deepEqual(receipt.scope.allowed_operations, ["read"]);

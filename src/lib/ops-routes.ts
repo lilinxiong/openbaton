@@ -3,7 +3,8 @@ import { taskCapabilityExclusion } from "./task-suitability.js";
 import { quotaForProvider } from "./provider-quotas.js";
 import { quotaPoolForCandidate } from "./quota-pools.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
-import { LONGCTX_CONTEXT_FLOOR, type OpsProfileId } from "./ops-config.js";
+import type { OpsProfileId } from "./ops-config.js";
+import { activeCliProfile, loadConfig } from "./config.js";
 import type { ModelCard } from "../types.js";
 
 export interface OpsRouteChoice {
@@ -18,11 +19,6 @@ function routeContext(route: ExecutableRoute): number | null {
   const value = Number(route.context_window);
   if (Number.isFinite(value) && value > 0) return Math.floor(value);
   return /\[1m\]/i.test(route.route_id) ? 1_048_576 : null;
-}
-
-export function isLongContextRoute(route: ExecutableRoute): boolean {
-  const context = routeContext(route);
-  return context != null && context >= LONGCTX_CONTEXT_FLOOR;
 }
 
 function cardForRoute(cards: ModelCard[], routeId: string): ModelCard | null {
@@ -74,14 +70,24 @@ function commonEligible(
 
 export function listOpsRouteChoices(
   cwd: string,
-  profile: OpsProfileId,
+  _profile: OpsProfileId,
   cards: ModelCard[],
+  { env = process.env }: { env?: NodeJS.ProcessEnv } = {},
 ): OpsRouteChoice[] {
   const snapshot = readRouteSnapshot(cwd);
-  const routes = (snapshot?.routes || []).filter((route) => commonEligible(cwd, cards, route));
-  const filtered = profile === "longctx"
-    ? routes.filter(isLongContextRoute)
-    : routes.filter((route) => !isLongContextRoute(route));
+  let allowed = new Set<string>();
+  try {
+    const config = loadConfig(cwd, { env });
+    const cli = activeCliProfile(config);
+    if (cli.enabled && snapshot?.cli === config.cli.active) allowed = new Set(cli.subagent_models);
+  } catch (error) {
+    if ((error as { code?: string }).code === "BATON_NOT_INITIALIZED") return [];
+    throw error;
+  }
+  const routes = (snapshot?.routes || []).filter((route) => allowed.has(route.route_id) && commonEligible(cwd, cards, route));
+  // runner and longctx are user labels. They do not assert or filter model
+  // capabilities such as context-window size.
+  const filtered = routes;
 
   const unique = new Map<string, OpsRouteChoice>();
   for (const route of filtered) {

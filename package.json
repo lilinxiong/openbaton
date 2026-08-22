@@ -35,9 +35,7 @@
     "multi-model"
   ],
   "license": "MIT",
-  "dependencies": {
-    "@bitkyc08/opencodex": "^2.28.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"

@@ -18,41 +18,28 @@ const workspace = fs.realpathSync(path.resolve(workspaceArg));
 const root = git(["rev-parse", "--show-toplevel"]).trim();
 if (fs.realpathSync(root) !== workspace) fail("workspace must be its own Git root");
 
-const workspaceId = crypto.createHash("sha256").update(workspace).digest("hex");
 const home = process.env.HOME || os.homedir();
+const workspaceId = crypto.createHash("sha256").update(workspace).digest("hex");
 const batonWorkspace = path.join(home, ".baton", "workspaces", workspaceId);
-const spawnDir = path.join(batonWorkspace, "spawns");
-const selectionDir = path.join(batonWorkspace, "selections");
-if (!fs.existsSync(spawnDir)) fail(`no Baton runtime found for workspace: ${batonWorkspace}`);
-if (!fs.existsSync(selectionDir)) fail(`no model-selection proposals found for workspace: ${selectionDir}`);
-
-const tickets = fs.readdirSync(spawnDir)
-  .filter((name) => name.endsWith(".json"))
-  .map((name) => JSON.parse(fs.readFileSync(path.join(spawnDir, name), "utf8")))
+const tickets = readJsonDirectory(path.join(batonWorkspace, "spawns"))
   .filter((ticket) => ticket.source === (mode === "openspec" ? "openspec" : "standalone"))
   .sort((a, b) => String(a.id).localeCompare(String(b.id)));
-
-const proposals = fs.readdirSync(selectionDir)
-  .filter((name) => name.endsWith(".json"))
-  .map((name) => JSON.parse(fs.readFileSync(path.join(selectionDir, name), "utf8")))
+const proposals = readJsonDirectory(path.join(batonWorkspace, "selections"))
   .filter((proposal) => proposal.source === (mode === "openspec" ? "openspec" : "standalone"))
   .sort((a, b) => String(a.id).localeCompare(String(b.id)));
-
-const forbiddenSubagentFamily = /(?:^|\/)(?:gpt-5\.5|gpt-5\.6-(?:sol|terra))(?:$|[-@/])/;
 
 assert(tickets.length === 5, `expected 5 ${mode} tickets, got ${tickets.length}`);
 assert(tickets.every((ticket) => ticket.status === "completed"), "every ticket must be completed");
 assert(tickets.every((ticket) => ticket.agent_id), "every ticket must bind a real agent id");
 assert(tickets.every((ticket) => ticket.attempt === 1), "every ticket must complete in one attempt");
 assert(tickets.every((ticket) => ticket.slot_released_at), "every terminal ticket must release its host slot");
-assert(tickets.every((ticket) => ticket.route_id), "every ticket must carry an exact route id");
-assert(tickets.every((ticket) => !forbiddenSubagentFamily.test(ticket.model_id) && !forbiddenSubagentFamily.test(ticket.route_id)), "built-in forbidden families must never reach a subagent ticket");
+assert(tickets.every((ticket) => ticket.route_id), "every ticket must carry an exact CLI route id");
 assert(tickets.every((ticket) => {
   const expected = ticket.reasoning_effort ? `${ticket.route_id}@${ticket.reasoning_effort}` : ticket.route_id;
   return ticket.model_id === expected;
-}), "model_id must be the exact route/profile id");
+}), "model_id must preserve the selected route/reasoning-effort pair");
 
-verifyModelSelection(tickets, proposals);
+verifyAutomaticSelection(tickets, proposals);
 
 const concrete = tickets.filter((ticket) => ticket.work_unit?.kind === "concrete");
 const deliberative = tickets.filter((ticket) => ticket.work_unit?.kind === "deliberative");
@@ -69,6 +56,7 @@ process.stdout.write(`${JSON.stringify({
   ok: true,
   mode,
   workspace,
+  routing: "automatic",
   tickets: tickets.map((ticket) => ({
     id: ticket.id,
     source: ticket.source,
@@ -78,113 +66,79 @@ process.stdout.write(`${JSON.stringify({
     progress_sequence: ticket.progress?.sequence || 0,
     released: Boolean(ticket.slot_released_at),
     proposal_id: ticket.selection?.proposal_id,
-    confirmation_id: ticket.selection?.confirmation_id,
-    user_changed_model: ticket.selection?.changed_by_user,
+    confirmed_by: ticket.selection?.confirmed_by,
   })),
-  confirmation_id: proposals[0]?.confirmation?.confirmation_id,
   business_oracle: path.join(samplesDir, "EXPECTED.md"),
 }, null, 2)}\n`);
+
+function verifyAutomaticSelection(items, selections) {
+  assert(selections.length === 1, `one request must create exactly one ${mode} proposal, got ${selections.length}`);
+  const proposal = selections[0];
+  const delegatedUnits = proposal.units.filter((unit) => !unit.director_local);
+  assert(delegatedUnits.length === items.length, `expected ${items.length} delegated units, got ${delegatedUnits.length}`);
+  assert(proposal.status === "approved" && proposal.approved_at, "the recommendation must be approved automatically");
+  assert(proposal.model_policy_id === "configured-cli-subagent-allowlist-v1", "proposal must bind the configured CLI allowlist policy");
+  assert(Array.isArray(proposal.policy_exclusions) && proposal.policy_exclusions.length === 0, "there must be no hard-coded model-family exclusions");
+  assert(proposal.confirmation?.scope === "proposal", "automatic approval is scoped to its request proposal");
+  assert(proposal.confirmation?.confirmed_by === "baton-recommendation", "approval must not claim user model confirmation");
+  assert(proposal.history?.[0]?.event === "pending_confirmation" && proposal.history?.some((event) => event.event === "approved"), "proposal must retain create-then-auto-approve audit order");
+
+  if (mode === "standalone") {
+    const sourceRequest = fs.readFileSync(path.join(workspace, "REQUEST.txt"), "utf8").trim();
+    assert(proposal.payload?.source_shape === "multi-unit-v1", "standalone must use one request-level multi-unit proposal");
+    assert(proposal.payload?.description === sourceRequest, "standalone proposal must preserve the request text");
+  }
+
+  const approvals = new Map(proposal.approvals.map((approval) => [approval.key, approval]));
+  for (const unit of delegatedUnits) {
+    assert(unit.recommended_model_id, `${proposal.id}/${unit.key} must have an automatic recommendation`);
+    assert(unit.default_model_id === unit.recommended_model_id, `${proposal.id}/${unit.key} default must equal its recommendation`);
+    assert(unit.requires_manual_choice === false, `${proposal.id}/${unit.key} must not require manual model choice`);
+    assert(unit.candidates.some((candidate) => candidate.model_id === unit.recommended_model_id && candidate.selectable && candidate.automatic_eligible), `${proposal.id}/${unit.key} recommendation must be an eligible CLI candidate`);
+    const approval = approvals.get(unit.key);
+    assert(approval?.confirmed_by === "baton-recommendation", `${proposal.id}/${unit.key} must be approved by Baton`);
+    assert(approval?.selected_model_id === unit.recommended_model_id, `${proposal.id}/${unit.key} must select its recommendation`);
+    const selectedCandidate = unit.candidates.find((candidate) => candidate.model_id === unit.recommended_model_id);
+    assert((approval?.service_tier || null) === (selectedCandidate?.service_tier || null), `${proposal.id}/${unit.key} must persist its automatic service tier`);
+    assert(approval?.changed_by_user === false, `${proposal.id}/${unit.key} must not record a user override`);
+  }
+
+  for (const ticket of items) {
+    const selection = ticket.selection;
+    assert(selection?.confirmed_by === "baton-recommendation", `${ticket.id} must carry automatic recommendation evidence`);
+    assert(selection?.changed_by_user === false, `${ticket.id} must not claim user model input`);
+    assert(selection?.selected_model_id === ticket.model_id, `${ticket.id} selection must match its exact model id`);
+    assert((selection?.service_tier || null) === (ticket.service_tier || null), `${ticket.id} must preserve its selected service tier`);
+    const unitKey = selection?.unit_key || (mode === "openspec" ? ticket.openspec?.number : null);
+    const unit = proposal.units.find((item) => item.key === unitKey);
+    assert(unit?.recommended_model_id === ticket.model_id, `${ticket.id} must use its unit recommendation`);
+  }
+
+  const snapshotPath = path.join(home, ".baton", "cache", "cli-models.json");
+  assert(fs.existsSync(snapshotPath), "Baton must persist the active CLI model snapshot");
+  const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
+  assert(snapshot.schema_version === 5 && snapshot.source === "cli" && snapshot.cli === "codex", "snapshot must use the Codex CLI-owned schema");
+  const routes = new Map(snapshot.routes.map((route) => [route.route_id, route]));
+  for (const ticket of items) {
+    const route = routes.get(ticket.route_id);
+    assert(route && !route.disabled, `${ticket.id} route must exist in the current Codex snapshot`);
+    if (ticket.reasoning_effort) {
+      assert(route.reasoning_efforts.includes(ticket.reasoning_effort), `${ticket.id} effort must be returned by Codex for ${ticket.route_id}`);
+    }
+    if (ticket.service_tier) {
+      assert(route.service_tiers.includes(ticket.service_tier) || route.additional_speed_tiers.includes(ticket.service_tier), `${ticket.id} service tier must be returned by Codex for ${ticket.route_id}`);
+    }
+  }
+}
 
 function verifyQueueRefill(items, runtimeRoot) {
   const dispatchState = path.join(runtimeRoot, "runs", "dispatch.json");
   if (!fs.existsSync(dispatchState)) return;
   const capacity = Number(JSON.parse(fs.readFileSync(dispatchState, "utf8")).capacity);
   if (!Number.isInteger(capacity) || capacity >= items.length) return;
-  const releases = items
-    .map((ticket) => Date.parse(ticket.slot_released_at || ""))
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b);
-  const reservations = items.map((ticket) => {
-    const event = ticket.history?.find((entry) => entry.event === "dispatch_reserved");
-    return Date.parse(event?.at || "");
-  }).filter(Number.isFinite);
+  const releases = items.map((ticket) => Date.parse(ticket.slot_released_at || "")).filter(Number.isFinite).sort((a, b) => a - b);
+  const reservations = items.map((ticket) => Date.parse(ticket.history?.find((entry) => entry.event === "dispatch_reserved")?.at || "")).filter(Number.isFinite);
   assert(releases.length > 0 && reservations.some((at) => at >= releases[0]), "queued work must refill only after a slot release");
-}
-
-function verifyModelSelection(items, selections) {
-  const delegatedUnits = selections.flatMap((proposal) => proposal.units.filter((unit) => !unit.director_local));
-  assert(delegatedUnits.length === items.length, `expected ${items.length} disclosed delegated units, got ${delegatedUnits.length}`);
-  assert(selections.length === 1, `one business request must create exactly one ${mode} proposal, got ${selections.length}`);
-  assert(selections[0].units.filter((unit) => !unit.director_local).length === 5, `${mode} proposal must aggregate all five delegated units`);
-  if (mode === "standalone") {
-    const sourceRequest = fs.readFileSync(path.join(workspace, "REQUEST.txt"), "utf8").trim();
-    assert(selections[0].payload?.source_shape === "multi-unit-v1", "standalone must use one request-level multi-unit proposal");
-    assert(selections[0].payload?.description === sourceRequest, "standalone proposal must preserve the bootstrap business request byte-for-byte after trimming");
-  }
-  assert(selections.every((proposal) => proposal.status === "approved" && proposal.approved_at), "every selection proposal must be user-approved");
-  assert(selections.every((proposal) => proposal.confirmation?.confirmation_id && ["proposal", "bundle"].includes(proposal.confirmation.scope)), "every proposal must persist explicit confirmation scope and id");
-  assert(selections.every((proposal) => proposal.confirmation?.global_provider_ids?.length > 0), "every proposal must persist the global provider choice");
-  assert(selections.every((proposal) => proposal.model_policy_id === "builtin-task-compatible-quota-pools-no-gpt-5.5-gpt-5.6-sol-terra-v3"), "every proposal must bind the current built-in model policy");
-  assert(selections.every((proposal) => ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"].every((family) => proposal.policy_exclusions?.some((item) => item.family === family && item.code === "SUBAGENT_MODEL_FAMILY_FORBIDDEN"))), "every proposal must disclose all forbidden model families");
-  assert(selections.every((proposal) => proposal.history?.[0]?.event === "pending_confirmation" && proposal.history?.some((event) => event.event === "approved")), "every proposal must prove pending disclosure before approval");
-
-  const byId = new Map(selections.map((proposal) => [proposal.id, proposal]));
-  for (const proposal of selections) {
-    assert(proposal.schema_version === 2, `${proposal.id} must use the OpenCodex-only selection schema`);
-    assert(proposal.catalog_fingerprint, `${proposal.id} must bind the synced OpenCodex catalog`);
-    for (const unit of proposal.units) {
-      assert(Object.hasOwn(unit, "recommended_model_id"), `${proposal.id}/${unit.key} must disclose preferred model state`);
-      if (unit.director_local) continue;
-      assert(unit.candidates.length > 0, `${proposal.id}/${unit.key} must disclose candidates`);
-      assert(unit.candidates.every((candidate) => !forbiddenSubagentFamily.test(candidate.model_id) && !forbiddenSubagentFamily.test(candidate.route_id)), `${proposal.id}/${unit.key} must exclude all built-in forbidden candidate families`);
-      for (const candidate of unit.candidates) {
-        assert(candidate.strengths, `${candidate.model_id} must disclose strengths`);
-        assert(Object.hasOwn(candidate, "task_score"), `${candidate.model_id} must disclose task score`);
-        assert(Object.hasOwn(candidate, "reference_only"), `${candidate.model_id} must disclose whether evidence is reference-only`);
-        assert(Array.isArray(candidate.reference_reasons), `${candidate.model_id} must disclose reference provenance`);
-        assert(Object.hasOwn(candidate, "reference_route_id"), `${candidate.model_id} must disclose reference route provenance`);
-        assert(Object.hasOwn(candidate, "reference_profile"), `${candidate.model_id} must disclose reference profile provenance`);
-        assert(Object.hasOwn(candidate, "aa_slug"), `${candidate.model_id} must disclose AA identity provenance`);
-        assert(Object.hasOwn(candidate, "aa_data"), `${candidate.model_id} must disclose available AA data`);
-        if (candidate.reference_only) {
-          assert(candidate.reference_reasons.length > 0, `${candidate.model_id} reference-only evidence needs a reason`);
-          assert(candidate.reference_route_id, `${candidate.model_id} reference-only evidence needs a source route`);
-          assert(candidate.aa_slug, `${candidate.model_id} reference-only evidence needs an AA slug`);
-          assert(/reference only/i.test(candidate.strengths), `${candidate.model_id} reference-only evidence must be visibly labelled`);
-        }
-        for (const key of ["intelligence", "coding", "agentic"]) {
-          assert(Object.hasOwn(candidate.aa_scores, key), `${candidate.model_id} must disclose AA ${key}`);
-        }
-        assert(["reported", "unknown"].includes(candidate.quota.status), `${candidate.model_id} must disclose quota state`);
-        if (candidate.quota.status === "unknown") assert(candidate.quota.reason, `${candidate.model_id} unknown quota needs a reason`);
-        else assert(candidate.quota.windows.every((window) => Number.isFinite(window.remaining_percent)), `${candidate.model_id} reported quota needs remaining percentages`);
-        assert(candidate.selection_code, `${candidate.model_id} must disclose OpenCodex callability`);
-      }
-    }
-  }
-
-  for (const ticket of items) {
-    const selection = ticket.selection;
-    assert(selection?.confirmed_by === "user", `${ticket.id} must carry user model confirmation`);
-    assert(selection.confirmation_id === proposalConfirmation(selections, selection.proposal_id), `${ticket.id} must carry its proposal confirmation id`);
-    assert(selection.selected_model_id === ticket.model_id, `${ticket.id} approval must match exact selected model`);
-    const proposal = byId.get(selection.proposal_id);
-    assert(proposal, `${ticket.id} references missing proposal ${selection.proposal_id}`);
-    assert(proposal.catalog_fingerprint === selection.catalog_fingerprint, `${ticket.id} catalog fingerprint must match its proposal`);
-    const approval = proposal.approvals.find((item) => item.approval_id === selection.approval_id);
-    assert(approval?.selected_model_id === ticket.model_id, `${ticket.id} proposal approval must match the ticket`);
-    const unitKey = selection.unit_key || (mode === "openspec" ? ticket.openspec?.number : null);
-    const unit = proposal.units.find((item) => item.key === unitKey);
-    const candidate = unit?.candidates.find((item) => item.model_id === ticket.model_id);
-    assert(candidate?.selectable && candidate.selection_code === "AVAILABLE", `${ticket.id} selected route must have been disclosed as callable`);
-    assert(proposal.confirmation.global_provider_ids.includes(candidate.provider), `${ticket.id} selected provider must belong to the bundle-level global Provider choice`);
-    assert(Date.parse(ticket.created_at) >= Date.parse(proposal.created_at), `${ticket.id} must not predate model disclosure`);
-  }
-  assert(items.some((ticket) => ticket.selection?.changed_by_user), "at least one ticket must exercise user route choice/override");
-
-  const routeSnapshot = path.join(home, ".baton", "cache", "routes.json");
-  assert(fs.existsSync(routeSnapshot), "Baton must persist one OpenCodex route/quota snapshot");
-  const catalog = JSON.parse(fs.readFileSync(routeSnapshot, "utf8"));
-  assert(catalog.schema_version === 4, "route snapshot must use the route/quota/fast-capability schema");
-  assert(catalog.routes?.some((route) => !route.disabled), "route snapshot must contain executable OpenCodex routes");
-  assert(catalog.provider_quotas.every((quota) => !Object.hasOwn(quota, "accounts")), "route quota disclosure must not contain provider credentials/accounts");
-  assert(!hasSensitiveQuotaKey(catalog.provider_quotas), "route quota disclosure must not persist CodexBar account/auth fields");
-  assert(catalog.provider_quotas.every((quota) => quota.source == null || typeof quota.source === "string"), "every quota source must be explicit or null");
-  assert(catalog.provider_quotas.filter((quota) => quota.source?.startsWith("codexbar:")).every((quota) => quota.status === "reported" || quota.reason?.startsWith("CODEXBAR_")), "CodexBar fallback must preserve sanitized provenance and failure reason");
-}
-
-function proposalConfirmation(selections, proposalId) {
-  return selections.find((proposal) => proposal.id === proposalId)?.confirmation?.confirmation_id;
 }
 
 function verifyWorkspace(sampleMode) {
@@ -194,26 +148,21 @@ function verifyWorkspace(sampleMode) {
     assert(status.trim() === "", `standalone workspace must stay clean:\n${status}`);
     return;
   }
-
   const tasksPath = path.join(workspace, "openspec", "changes", "incident-audit", "tasks.md");
   const tasks = fs.readFileSync(tasksPath, "utf8");
   assert((tasks.match(/^- \[x\]/gm) || []).length === 5, "all five OpenSpec tasks must be checked");
   assert((tasks.match(/^\s+- conclusion:/gm) || []).length === 5, "all five OpenSpec tasks must have conclusions");
   const changed = status.trim().split(/\r?\n/).filter(Boolean);
   assert(changed.length === 1 && changed[0].endsWith("openspec/changes/incident-audit/tasks.md"), `unexpected OpenSpec workspace changes:\n${status}`);
-  const validation = spawnSync("openspec", ["validate", "incident-audit", "--strict", "--no-interactive"], {
-    cwd: workspace,
-    encoding: "utf8",
-  });
+  const validation = spawnSync("openspec", ["validate", "incident-audit", "--strict", "--no-interactive"], { cwd: workspace, encoding: "utf8" });
   assert(validation.status === 0, validation.stderr || validation.stdout || "OpenSpec strict validation failed");
 }
 
-function hasSensitiveQuotaKey(value) {
-  if (Array.isArray(value)) return value.some(hasSensitiveQuotaKey);
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, child]) =>
-    /^(?:accounts?|accountEmail|accountID|loginMethod|cookies?|tokens?|credentials?)$/i.test(key)
-    || hasSensitiveQuotaKey(child));
+function readJsonDirectory(directory) {
+  if (!fs.existsSync(directory)) fail(`missing Baton runtime directory: ${directory}`);
+  return fs.readdirSync(directory)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")));
 }
 
 function git(args) {

@@ -1,141 +1,67 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { classifyTask, matchModelCard, requireCardId, CardMatchError } from "../src/lib/cards.js";
+import { CardMatchError, classifyTask, matchModelCard, requireCardId } from "../src/lib/cards.js";
 
-const cards = [
-  { id: "example-coder", strengths: "write code, implement, fix tests, grind on a repo" },
-  { id: "example-explorer", strengths: "explore, research, short plans, do not think forever" },
-];
-
-describe("matchModelCard", () => {
-  it("hits a single matching card", () => {
-    const hit = matchModelCard("implement the login form", cards);
-    assert.equal(hit.model_id, "example-coder");
-    assert.ok(hit.score > 0);
-  });
-
-  it("blocks when no cards are configured", () => {
-    assert.throws(() => matchModelCard("implement anything", []), (err) => {
-      assert.ok(err instanceof CardMatchError);
-      assert.equal(err.code, "NO_CARDS");
-      return true;
-    });
-  });
-
-  it("blocks when nothing matches — never a silent default", () => {
-    assert.throws(() => matchModelCard("paint the barn purple", cards), (err) => {
-      assert.ok(err instanceof CardMatchError);
-      assert.equal(err.code, "NO_CARD_MATCH");
-      return true;
-    });
-  });
-
-  it("blocks an ambiguous tie — never a silent default", () => {
-    const twins = [
-      { id: "alpha", strengths: "implement code" },
-      { id: "beta", strengths: "implement code" },
+describe("configured model cards", () => {
+  it("selects the strongest text match", () => {
+    const cards = [
+      { id: "gpt-5.4-mini", strengths: "small fast coding fixes", executable: true },
+      { id: "gpt-5.6-sol", strengths: "complex repository architecture migration", executable: true },
     ];
-    assert.throws(() => matchModelCard("implement code", twins), (err) => {
-      assert.ok(err instanceof CardMatchError);
-      assert.equal(err.code, "AMBIGUOUS_CARD");
-      assert.deepEqual(err.candidates, ["alpha", "beta"]);
+    assert.equal(matchModelCard("complex repository architecture migration", cards).model_id, "gpt-5.6-sol");
+    assert.equal(matchModelCard("small fast coding fix", cards).model_id, "gpt-5.4-mini");
+  });
+
+  it("blocks only when the enabled CLI candidate set is empty", () => {
+    assert.throws(() => matchModelCard("implement anything", []), (error) => {
+      assert.ok(error instanceof CardMatchError);
+      assert.equal(error.code, "NO_CARDS");
       return true;
     });
   });
 
-  it("uses structured AA capability dimensions as the primary dynamic signal", () => {
-    const dynamic = [
+  it("resolves zero-score and tie cases deterministically without a selector", () => {
+    const cards = [
+      { id: "beta", strengths: "coding", executable: true },
+      { id: "alpha", strengths: "coding", executable: true, is_default: true },
+    ];
+    assert.equal(matchModelCard("paint the barn purple", cards).model_id, "alpha");
+    assert.equal(matchModelCard("coding", cards).model_id, "alpha");
+  });
+
+  it("allows unranked, reference-only, Mini, Spark and all returned families", () => {
+    const cards = [
       {
-        id: "provider/strong-coder@high", strengths: "", route_id: "provider/strong-coder", reasoning_effort: "high",
-        source: "dynamic", executable: true,
-        capability: {
-          source: "artificial-analysis", ranked: true, unranked: false, reason: null,
-          intelligence_index: 70, coding_index: 90, agentic_index: 85,
-          cost_per_task: 1, output_tokens_per_second: 50, time_to_first_answer_seconds: 20,
-          relative: { intelligence: 0.8, coding: 1, agentic: 1, cost_efficiency: 0.1, throughput: 0.4, latency: 0.4 },
-        },
+        id: "gpt-5.4-mini", route_id: "gpt-5.4-mini", strengths: "small fast coding",
+        executable: true,
+        capability: { source: "artificial-analysis" as const, ranked: false, unranked: true, reason: "missing" },
       },
       {
-        id: "provider/fast-cheap", strengths: "", route_id: "provider/fast-cheap",
-        source: "dynamic", executable: true,
-        capability: {
-          source: "artificial-analysis", ranked: true, unranked: false, reason: null,
-          intelligence_index: 40, coding_index: 55, agentic_index: 30,
-          cost_per_task: 0.01, output_tokens_per_second: 180, time_to_first_answer_seconds: 2,
-          relative: { intelligence: 0.3, coding: 0.4, agentic: 0.2, cost_efficiency: 1, throughput: 1, latency: 1 },
-        },
+        id: "gpt-5.3-codex-spark", route_id: "gpt-5.3-codex-spark", strengths: "ultra-fast coding",
+        executable: true,
       },
+      { id: "gpt-5.6-sol", route_id: "gpt-5.6-sol", strengths: "complex migration", executable: true },
+      { id: "gpt-5.5", route_id: "gpt-5.5", strengths: "general coding", executable: true },
     ];
-    assert.equal(matchModelCard("implement a complex multi-file repository migration", dynamic).model_id, "provider/strong-coder@high");
-    assert.equal(matchModelCard("quick cheap routine batch fix", dynamic).model_id, "provider/fast-cheap");
+    assert.equal(matchModelCard("ultra-fast coding", cards).model_id, "gpt-5.3-codex-spark");
+    assert.equal(matchModelCard("small fast coding", [cards[0]]).model_id, "gpt-5.4-mini");
+    assert.equal(requireCardId("gpt-5.6-sol", cards).route_id, "gpt-5.6-sol");
+    assert.equal(requireCardId("gpt-5.5", cards).route_id, "gpt-5.5");
   });
 
-  it("keeps unranked routes visible for explicit selection but excludes them from automatic matching", () => {
-    const unranked = {
-      id: "provider/unmapped", strengths: "unranked", route_id: "provider/unmapped",
-      source: "dynamic", executable: true,
-      capability: {
-        source: "artificial-analysis", ranked: false, unranked: true, reason: "no_canonical_mapping",
-        intelligence_index: null, coding_index: null, agentic_index: null,
-        cost_per_task: null, output_tokens_per_second: null, time_to_first_answer_seconds: null,
-      },
-    };
-    assert.throws(() => matchModelCard("implement code", [unranked]), (err) => err instanceof CardMatchError && err.code === "NO_CARDS");
-    assert.equal(requireCardId("provider/unmapped", [unranked]).route_id, "provider/unmapped");
+  it("rejects ids outside the configured candidate set", () => {
     assert.throws(
-      () => requireCardId("unmapped", [unranked]),
+      () => requireCardId("gpt-5.4", [{ id: "gpt-5.4-mini", strengths: "" }]),
       (error) => error instanceof CardMatchError && error.code === "UNKNOWN_CARD",
     );
   });
 
-  it("keeps reference-only scores visible but excludes them from automatic matching", () => {
-    const referenceOnly = {
-      id: "provider/fast-model", strengths: "implement code repository migration", route_id: "provider/fast-model",
-      source: "dynamic" as const, executable: true,
-      capability: {
-        source: "artificial-analysis" as const, ranked: true, unranked: false, reason: null,
-        reference_only: true, reference_reasons: ["SERVING_VARIANT_BASE_MODEL_REFERENCE"],
-        intelligence_index: 99, coding_index: 99, agentic_index: 99,
-        cost_per_task: 0.01, output_tokens_per_second: 500, time_to_first_answer_seconds: 0.1,
-      },
-    };
-    const exact = {
-      id: "provider/exact-model", strengths: "implement code", route_id: "provider/exact-model",
-      source: "dynamic" as const, executable: true,
-      capability: {
-        source: "artificial-analysis" as const, ranked: true, unranked: false, reason: null,
-        intelligence_index: 60, coding_index: 60, agentic_index: 60,
-        cost_per_task: 1, output_tokens_per_second: 50, time_to_first_answer_seconds: 5,
-      },
-    };
-
-    assert.equal(matchModelCard("implement code repository migration", [referenceOnly, exact]).model_id, exact.id);
-    assert.equal(requireCardId(referenceOnly.id, [referenceOnly]).capability?.reference_only, true);
-  });
-
-  it("never auto-matches any built-in forbidden family even when it scores highest", () => {
-    const forbidden = {
-      id: "provider/gpt-5.6-sol-max@high", route_id: "provider/gpt-5.6-sol-max", reasoning_effort: "high",
-      strengths: "implement code repository migration", executable: true,
-    };
-    const forbidden55 = {
-      id: "provider/gpt-5.5-extra@high", route_id: "provider/gpt-5.5-extra", reasoning_effort: "high",
-      strengths: "implement code repository migration", executable: true,
-    };
-    const allowed = {
-      id: "gpt-5.6-luna@low", route_id: "gpt-5.6-luna", reasoning_effort: "low",
-      strengths: "implement code", executable: true,
-    };
-    assert.equal(matchModelCard("implement code repository migration", [forbidden, forbidden55, allowed]).model_id, allowed.id);
-    assert.equal(requireCardId(forbidden.id, [forbidden]).route_id, forbidden.route_id, "catalog lookup remains inspectable");
-    assert.equal(requireCardId(forbidden55.id, [forbidden55]).route_id, forbidden55.route_id, "gpt-5.5 stays catalog-inspectable");
-  });
-
-  it("classifies verification/report work and Chinese task language instead of producing a zero signal", () => {
-    assert.ok(classifyTask("verify and report the incident audit with evidence").intelligence >= 4);
-    const chinese = classifyTask("分析仓库并验证修复结果，尽快给出报告");
-    assert.ok(chinese.intelligence >= 3);
-    assert.ok(chinese.agentic >= 1);
+  it("classifies complexity, cost and speed in English and Chinese", () => {
+    const complex = classifyTask("implement and verify a complex repository migration with evidence");
+    assert.ok(complex.coding >= 1);
+    assert.ok(complex.agentic >= 1);
+    assert.ok(complex.intelligence >= 2);
+    const chinese = classifyTask("快速实现小型修复并验证结果");
     assert.ok(chinese.coding >= 1);
     assert.ok(chinese.speed >= 1);
   });

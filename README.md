@@ -2,194 +2,148 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-Director for multi-model work. One front conversation, capability-routed native spawn, a clean director context.
+A director for multi-model work: one front conversation, automatic model and effort routing, native subagents, and a clean main context.
 
-Complete on its own. Strictly better with OpenSpec.
+Baton works standalone and can consume OpenSpec tasks when OpenSpec is present.
 
-```
-bun add -g baton
-baton init
-```
+    bun add -g baton
+    baton init
+    baton config
 
-From a source checkout: `bun install && bun run baton -- <command>`. Requires Node.js 22.5+ or Bun 1.3.14+.
-
-To update the locally linked Baton from this checkout:
-
-```sh
-python3 scripts/update_local_baton.py
-```
-
-The script installs locked dependencies, runs tests and type checking, builds, runs `bun link`, and finishes with `baton update`. It does not pull Git or refresh OpenCodex routes/cache. Use `--skip-install --skip-tests` for a quick local update or `--dry-run` to preview the commands.
+From a source checkout: bun install && bun run baton -- COMMAND. Requires Node.js 22.5+ or Bun 1.3.14+.
 
 Chinese: [README.zh.md](README.zh.md)
 
-## What it is
+## What changed
 
-Not another coding CLI. Baton is a Codex-only skill pack. `baton init` installs a director into Codex so one front conversation can assign work to exact OpenCodex routes.
+Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. The current adapter is Codex:
 
-Being able to spawn different models is only the execution primitive. Real work still needs to decide which exact route should handle each unit, bound what that worker may write, queue past the host concurrency limit, and return only the evidence the main agent needs.
+1. baton config asks which CLI to configure.
+2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded.
+3. Baton displays exactly the picker-visible models returned by Codex.
+4. The user assigns optional runner and longctx labels, chooses the models subagents may call, and enables or disables that CLI profile.
+5. Later work is routed automatically within that configured candidate set. There is no runtime model selector or model confirmation.
 
-Baton turns each unit into a routed, auditable ticket. Workers can analyze, implement, or review in parallel. They stay at depth 1: never a recursive agent tree, and never a second front conversation.
+Baton does not query OpenCodex, merge in a hard-coded catalog, or treat a model as unsupported because a host tool description did not list it.
 
-## How a session works
+## Configuration
 
-The user talks to Codex as usual. The director runs Baton; the user does not have to type these commands.
+The user-global ~/.baton/config.toml has one profile per CLI:
 
-1. **Split the work.** An ordinary request is refined into bounded units with an objective, deliverable, and done condition. Tiny rename or typo work may stay on the director. Implementation, exploration, and similar work always leaves.
-2. **Sync Baton on demand.** OpenCodex owns runtime/provider synchronization. Baton refreshes one persisted route/profile/quota snapshot from OpenCodex only when it is missing or stale, or when the user explicitly requests it. There is no per-session host sync.
-3. **Route units before selection.** CLI input shape is not routing policy. Baton evaluates every bounded unit from its own description plus the unchanged request context. Configured mechanical units can mint ops-config tickets immediately; all remaining ordinary units are aggregated into one request-level proposal.
-4. **Recommend automatically by default.** Free model selection is off unless the user opts in. Baton picks one ranked exact route/profile by task score, reasoning strength, context fit, and fast throughput, then records `confirmed_by=baton-recommendation` and creates the ticket without showing a selector.
-5. **Offer one selector only when enabled.** `baton config model-selection on` restores the consolidated Provider/model/task selector and explicit Submit flow. A changed OpenCodex catalog snapshot or source task invalidates either an automatic or user-approved proposal.
-6. **Dispatch in-process.** Codex reserves with `baton dispatch next`, calls host-native `spawn_agent`, binds the returned agent id, then writes exactly one terminal result. `close_agent` plus `dispatch release` frees the physical slot; FIFO refill follows.
-7. **Wait by activity, not elapsed time.** Bounded `wait_agent` windows are polling cadence only. Persist exact-agent host state with `baton dispatch probe`; `pending_init`, `running`, output, or heartbeat activity keeps the same ticket alive indefinitely. Business progress stays separate. Timeout requires the latest matching `not_found` probe sequence.
-8. **Keep the front conversation clean.** Concrete workers return one short conclusion. Deliberative workers may checkpoint phase, current result, next step, and blockers. Tool dumps and hidden reasoning stay in the child.
+    [director]
+    max_concurrent = 4
+    max_depth = 1
 
-Mechanical ops can skip the selector when the user-global `~/.baton/config.toml` names an executable route in the synced OpenCodex snapshot. Empty means the director runs that class itself.
+    [cli]
+    active = "codex"
 
-## Rules that stay true
+    [cli.codex]
+    enabled = true
+    runner = "gpt-5.4-mini"
+    longctx = "gpt-5.5"
+    subagent_models = [
+      "gpt-5.6-luna",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex-spark",
+    ]
 
-- **Codex only.** The skill installs into `~/.codex`. Baton state lives under `~/.baton`. There is no other coding-CLI host, no print-mode shell-out, and no Baton login.
-- **OpenCodex owns route availability.** Baton selects only exact, non-disabled routes/profiles from its synced OpenCodex snapshot. It does not prefilter them through a session model list. If host-native spawn still rejects a selected route, the director reports that execution error and never substitutes another route.
-- **No silent substitution.** No parent-model inherit, no route/provider fallback, no local aliases or overrides. Explicit selection uses an exact OpenCodex route/profile id.
-- **Catalog and eligibility are separate.** OpenCodex discovery stays fully inspectable. Built-in policy forbids every `gpt-5.5`, `gpt-5.6-sol`, and `gpt-5.6-terra` provider route, variant, and reasoning profile from candidates, confirmation, tickets, and dispatch. Proposals disclose those exclusions. Other session or Goal exclusions remain temporary.
-- **Unranked is not invented.** Truly unmapped or uncertain routes never drive automatic recommendation. Deterministic profile/base/serving variants may use ranked underlying-model evidence while retaining `reference_only` provenance. With free selection enabled, a user may explicitly pick a disclosed callable `unranked` route. Forbidden families cannot be overridden.
-- **Logical work is uncapped.** The host/session concurrency limit is runtime capability, not a hard-coded six. Saturation returns the same ticket to FIFO without consuming its attempt. A terminal agent still occupies a slot until close and release succeed. Depth is 1.
-- **No timer-based worker death.** Repeated wait-call timeouts and missing progress text never make a running agent dead. Baton records host liveness separately and allows ticket timeout only after the current exact agent is probed as `not_found`.
-- **Git remains parent-gated.** Ordinary workers never stage, commit, branch, rebase, or push. The sole exception is an exclusive `commit-only` ticket over an exact parent-staged tree; it may create one audited commit but still cannot stage, amend, branch, rebase, tag, or push. Write and commit-only tickets pass their parent safety gate on every terminal path.
+    [ops.runner]
+    actions = ["test", "build", "lint", "typecheck"]
 
-## OpenSpec
+    [ops.longctx]
+    actions = ["search", "digest", "git-summarize", "git-commit"]
 
-If OpenSpec is present, it owns breakdown and status. Baton owns who runs each ready task and writes conclusions back by stable task number.
+runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same Codex-returned model surface.
 
-If OpenSpec is absent, `baton spawn` still works.
+Configured label values are automatically included in subagent_models. A disabled profile contributes no candidates.
 
-Do not reimplement OpenSpec.
+Non-interactive setup is also supported:
 
-## OpenCodex
+    baton config \
+      --cli codex \
+      --runner gpt-5.4-mini \
+      --longctx gpt-5.5 \
+      --subagent-model gpt-5.6-luna \
+      --subagent-model gpt-5.4-mini \
+      --subagent-model gpt-5.3-codex-spark \
+      --enable
 
-OpenCodex is consumed through Baton's package dependency and runtime resolver. It owns provider accounts, authentication, model discovery, primary quota reporting, and route execution. Baton only schedules.
+Run baton models refresh when the selected CLI's picker surface changes.
 
-Baton has no login, account, token, or credential command. Do not paste a base URL or API key into this project.
+## Mini and Spark
 
-## Model selection
+If Codex returns gpt-5.4-mini or gpt-5.3-codex-spark from model/list, Baton displays them and lets the user put them in subagent_models.
 
-Free model selection is user-global and defaults to off:
+Catalog visibility and actual host execution are distinct evidence:
 
-```sh
-baton config model-selection status
-baton config model-selection on
-baton config model-selection off
-```
+- picker-visible means the model is configurable;
+- the configured allowlist means Baton may select it;
+- dispatch revalidates the model and reasoning effort against the captured CLI catalog;
+- only an actual host-native rejection is execution-failure evidence.
 
-With it off, `spawn` / `apply` automatically approve Baton's recommendation. Explicit `--model` / `--route` and `selection render` / `selection approve` are rejected. The approved proposal retains the complete decision evidence; each ticket and Receipt retains `confirmed_by=baton-recommendation` approval evidence. If there is no eligible ranked recommendation, Baton blocks instead of choosing an `unranked` route.
+Baton has no hard-coded family bans. It does not label Mini or Spark unsupported merely because a particular tool schema or help string omitted them.
 
-Recommendation order is deterministic:
+## Automatic routing
 
-1. highest task score;
-2. reasoning strength fitted to task complexity (`low` / `medium` / `high` / `xhigh` / `max`);
-3. the smallest context window that fits the estimated task size, or the largest available window if none fits;
-4. fast throughput, detected separately from a `fast` / `highspeed` route-name token and effective OpenCodex `supportsServiceTier=true` config;
-5. quota, remaining capability/cost/performance evidence, then stable exact id.
+baton spawn and baton apply never ask the user to pick a model. Baton automatically chooses:
 
-With free selection on, `spawn` / `apply` disclose, for every delegated unit:
+- a configured model based on the work-unit text and CLI model description;
+- one of the reasoning efforts that the CLI returned, fitted to task complexity;
+- a fast model or exact service tier when the task asks for speed and the CLI description or speed/service-tier metadata supports that preference;
+- optional local capability and recent route-health evidence as refinements.
 
-- Baton's preferred exact route/profile, target reasoning strength, context estimate, and fast evidence source
-- every policy-eligible executable OpenCodex candidate, with strengths, task score, raw/available Artificial Analysis data, reference-only provenance, remaining quota or an explicit unknown reason, and snapshot callability
-- the built-in `gpt-5.5` / `gpt-5.6-sol` / `gpt-5.6-terra` family exclusions
+Artificial Analysis data is optional. Missing benchmark data leaves the evidence unranked; it does not make a Codex-returned, configured model unusable.
 
-Candidates are grouped by quota pool, not shown as one flat list. Most providers are one pool. Cursor is two: `cursor-auto` (Grok and Composer series, monthly/Auto allowance) and `cursor-api` (every other Cursor route, reported API usage). Available pools sort by remaining quota, unknown pools follow, and exhausted pools are disabled, collapsed, and last. ASR, TTS, voice-clone, and voice-design routes are disclosed as `TASK_CAPABILITY_MISMATCH` for text-reasoning work.
+Explicit --model, --route, baton config model-selection, selector rendering, and user model approval are removed. The automatic decision is still persisted in the proposal, ticket, and Delegation Receipt for auditability.
 
-Quota precedence is `OpenCodex reported > local CodexBar fallback > unknown`. CodexBar is informational, may represent its locally selected account, and never overwrites a reported OpenCodex window or changes provider/auth/route ownership. Baton stores only sanitized percentage/reset windows with a `codexbar:...` source. An unreported quota is never treated as zero or "enough". See [CodexBar quota fallback](docs/data-sources/codexbar.md).
+Baton never inherits the parent model, chooses outside the enabled allowlist, invents a reasoning effort or speed flag, or silently switches a failed ticket to another model.
 
-When enabled, the selector is inline in the current Codex conversation and is presented in Chinese. One request produces one consolidated selector: a global Provider control first, every candidate route/profile second, all tasks grouped by path third, and one Submit last. Multiple workspace proposals use `baton selection render-bundle`. Codex translates English source tasks into Chinese display labels via `--task-label`; those labels never rewrite the source request, task, or fingerprint. Codex must emit the single returned `inline_content_reference` in the same reply. It must not open a browser, navigate to `file://`, show a file link, or create a separate selector surface.
+## Execution lifecycle
 
-## Global ops routes
+The Baton CLI creates tickets and lifecycle state; only the Codex host calls native subagent tools.
 
-`~/.baton/config.toml` stores optional exact routes for two mechanical classes under `[ops.runner]` and `[ops.longctx]`. The same choices apply in every workspace. There is no built-in default.
+1. baton spawn or baton apply creates automatically routed tickets and immutable Receipts.
+2. The host reserves work with baton dispatch next.
+3. The host calls native spawn_agent with the exact model, supported reasoning effort and selected service tier when present and exposed by the host, and fork_context=false. A host that cannot express a selected tier reports it instead of silently claiming Fast mode.
+4. The host binds the returned agent id, persists activity and progress, and records exactly one terminal result.
+5. The host closes the native agent and runs dispatch release before refilling FIFO.
 
-| Class | When it runs | Empty means |
-| --- | --- | --- |
-| `runner` | terminating test / build / lint / typecheck | the director runs it |
-| `longctx` | search / digest / git-summarize, and committing an exact already-staged change set; needs about 1M context | the director runs it |
+Logical work is uncapped; physical concurrency follows the current host limit. AgentLimitReached defers the same ticket without consuming an attempt or changing its model. Polling timeouts are not worker failures; a ticket can time out only after the exact agent is probed as not_found.
 
-`baton config` refreshes the route/quota snapshot directly through OpenCodex, lists policy-eligible executable routes, and interactively writes the global choices. It does not depend on a Codex session snapshot. Dispatch validates that the configured route still exists in the synced OpenCodex snapshot and fails with `OPS_ROUTE_UNAVAILABLE` otherwise. It never inherits the parent model. Wait for the worker conclusion, including command failure.
+Read-only is the default. Write tickets require an immutable path and operation allowlist plus parent Git safety checks. The sole Git exception is an exclusive commit-only ticket over an exact parent-staged tree; it may create one audited commit and may not stage, amend, branch, rebase, tag, or push.
 
-`spawn` resolves ops per work unit, including units supplied with `--unit`. A unit-specific action and an unambiguous request-level action may provide each other's context; conflicting actions stay on the ordinary recommendation/selection path. An explicit `--model` is accepted only when free selection is on and then disables ops-config auto-routing. Mixed requests may dispatch configured mechanical units while automatically recommending the rest, or place the rest in one selector when free selection is on.
+## OpenSpec and state
 
-A request to only write a commit message remains a read-only `git-summarize` operation. An actual “commit it” / `git commit staged changes` request creates an exclusive `commit-only` ticket: the director must stage the exact set first, and the Receipt freezes the parent HEAD, staged tree, paths, refs, and reflog. The worker may inspect read-only Git evidence and execute exactly one `git commit`; it may not add, amend, switch branches, rebase, tag, or push. Every terminal path is audited by the director against the commit parent/tree, refs, reflog, index, and worktree. Ordinary write workers still cannot perform Git mutations.
+OpenSpec remains optional. When present, it owns task breakdown and status; Baton routes ready tasks and writes conclusions back by stable task number. Without OpenSpec, baton spawn is complete.
 
-## Capability cache
+Baton never creates project-local runtime state:
 
-Artificial Analysis is an optional, replaceable capability source. Ordinary routing reads only the user-global SQLite snapshot at `~/.baton/cache/capabilities/artificial-analysis.sqlite3`.
-
-```
-baton capabilities refresh --provider aa --key-file /private/tmp/openbaton-aa-api-key
-baton capabilities status
-baton capabilities show gpt-5.6-luna --profile high
-```
-
-No fuzzy model matching. Missing metrics stay unknown. Capability evidence does not replace route health, quota, authorization, or session policy. See [Artificial Analysis capability cache](docs/data-sources/artificial-analysis.md).
-
-## State
-
-Baton never creates project-local `.baton/` runtime state or a project `.baton.toml`. Mechanical ops policy shares the user-global `~/.baton/config.toml` with director settings.
-
-Under `~/.baton`:
-
-- `config.toml` and `SKILL.md` — user-global director/ops settings and skill
-- `cache/` — shared OpenCodex Route Snapshot and capability data
-- `workspaces/<sha256-of-canonical-root>/` — tickets, Receipts, runs, locks, and remembered host capacity
-- `workspaces/<sha256-of-canonical-root>/selections/` — pending and approved model disclosures
+- ~/.baton/config.toml — director and per-CLI profiles
+- ~/.baton/cache/cli-models.json — selected CLI catalog snapshot
+- ~/.baton/cache/capabilities/ — optional local capability evidence
+- ~/.baton/workspaces/CANONICAL-ROOT-SHA256/ — tickets, Receipts, selections, locks, and lifecycle state
 
 ## Commands
 
-```
-baton init [--force]
-baton update
-baton config [--runner ROUTE|-] [--longctx ROUTE|-]
-baton config model-selection on|off|status [--json]
-
-baton routes refresh|status|candidates
-baton cards [--ranked|--unranked] [--provider ID] [--json]
-baton match "fix the flaky auth tests"
-baton capabilities refresh --provider aa --key-file PATH
-baton capabilities status
-baton capabilities show ROUTE [--profile PROFILE]
-
-baton spawn "explore why CI is red" --unit audit="audit the failures" --unit report="report the findings"
-baton spawn "edit one file" --model kimi/k3[1m] --write-path src/file.ts --write-ops write
-baton apply [change] [--route TASK=EXACT_ROUTE]
-baton selection show PROPOSAL
-baton selection render PROPOSAL --output PATH --task-label TASK=LABEL [--json]
-baton selection render-bundle --proposal 'SCOPE=WORKSPACE#PROPOSAL' ... --output PATH --task-label SCOPE/TASK=LABEL [--json]
-baton selection approve PROPOSAL --confirm [--route TASK=ID] [--provider ID] [--global-provider ID] [--confirmation-id ID] [--confirmation-scope proposal|bundle]
-
-baton dispatch next --host codex --capacity N --json
-baton dispatch bind TICKET --agent-id ID --host codex --json
-baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
-baton dispatch progress TICKET --phase PHASE --text "short status" --json
-baton dispatch complete TICKET --text "short conclusion" --json
-baton dispatch fail TICKET --json
-baton dispatch timeout TICKET --probe-sequence N --json
-baton dispatch close TICKET --json
-baton dispatch release TICKET --agent-id ID --json
-baton dispatch recover|status --json
-
-baton conversation promote --from-file PATH
-baton status
-```
-
-`baton update` refreshes the installed Codex skill and merges global defaults without replacing configured ops routes. `~/.baton/config.toml` stores concurrency, depth, the default-off free-selection switch, and optional mechanical-route choices; every route value is still an exact OpenCodex route.
-
-## Samples
-
-[`samples/`](samples/README.md) ships two repeatable paths over the same incident-audit data:
-
-- standalone, with no OpenSpec artifacts
-- strict-valid OpenSpec tasks with stable conclusion writeback
-
-Both user requests are trigger-neutral and do not name Baton or subagents.
+    baton init [--force]
+    baton update
+    baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+                 [--subagent-model MODEL|all] [--enable|--disable]
+    baton models refresh|status|candidates
+    baton cards [--ranked|--unranked] [--json]
+    baton match "fix the flaky auth tests quickly"
+    baton spawn "implement the migration" [--unit KEY=TEXT ...]
+    baton apply [change]
+    baton dispatch next --host codex --capacity N --json
+    baton dispatch bind TICKET --agent-id ID --host codex --json
+    baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+    baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
+    baton dispatch progress TICKET --phase PHASE --text "short status" --json
+    baton dispatch complete TICKET --text "short conclusion" --json
+    baton dispatch fail|timeout|close TICKET --json
+    baton dispatch release TICKET --agent-id ID --json
+    baton dispatch recover|status --json
+    baton status
 
 ## License
 

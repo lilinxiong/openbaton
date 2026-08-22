@@ -18,7 +18,7 @@ export const WORKSPACES_DIR = "workspaces";
 export const CAPABILITIES_DIR = "capabilities";
 export const AA_DB_NAME = "artificial-analysis.sqlite3";
 export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
-export const ROUTE_SNAPSHOT_NAME = "routes.json";
+export const ROUTE_SNAPSHOT_NAME = "cli-models.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const DISPATCH_STATE_NAME = "dispatch.json";
 

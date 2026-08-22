@@ -30,7 +30,7 @@ const gpt55 = { ...xai, id: "gpt-5.5-extra@high", route_id: "gpt-5.5-extra" };
 const luna = { ...xai, id: "gpt-5.6-luna@high", route_id: "gpt-5.6-luna" };
 
 describe("route health", () => {
-  it("cools down only the failed host/route/profile/task-shape and keeps explicit selection available", () => {
+  it("cools down only the failed host/route/profile/task-shape and keeps the card audit-addressable", () => {
     const root = cwd();
     const now = new Date();
     const record = recordRouteHealth(root, {
@@ -41,10 +41,10 @@ describe("route health", () => {
     assert.equal(record?.failure_kind, "HOST_NO_TERMINAL");
     assert.equal(isCardAutoEligible(root, xai, "implement a complex repository migration", { now }), false);
     assert.equal(isCardAutoEligible(root, xai, "quick cheap routine batch fix", { now }), true, "different task shape");
-    assert.equal(isCardAutoEligible(root, native, "implement a complex repository migration", { now }), false, "forbidden families are never auto-eligible");
-    assert.equal(isCardAutoEligible(root, gpt55, "implement a complex repository migration", { now }), false, "gpt-5.5 variants are never auto-eligible");
-    assert.deepEqual(cardsForAutomaticSelection(root, [xai, native, gpt55, luna], "implement a complex repository migration"), [luna]);
-    assert.equal(requireCardId("xai/grok-4.6@high", [xai]).route_id, "xai/grok-4.6", "explicit route is not hidden");
+    assert.equal(isCardAutoEligible(root, native, "implement a complex repository migration", { now }), true);
+    assert.equal(isCardAutoEligible(root, gpt55, "implement a complex repository migration", { now }), true);
+    assert.deepEqual(cardsForAutomaticSelection(root, [xai, native, gpt55, luna], "implement a complex repository migration"), [native, gpt55, luna]);
+    assert.equal(requireCardId("xai/grok-4.6@high", [xai]).route_id, "xai/grok-4.6", "health filtering does not erase catalog evidence");
   });
 
   it("success clears the cooldown and persists the global cache with mode 0600", () => {

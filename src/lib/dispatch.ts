@@ -19,7 +19,7 @@ import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
 import { readRouteSnapshot } from "./routes.js";
-import { subagentModelPolicy } from "./model-policy.js";
+import { activeCliProfile, loadConfig } from "./config.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
@@ -34,6 +34,7 @@ function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
   if (ticket.progress === undefined) ticket.progress = null;
   if (ticket.liveness === undefined) ticket.liveness = null;
   if (ticket.selection === undefined) ticket.selection = null;
+  if (ticket.service_tier === undefined) ticket.service_tier = ticket.selection?.service_tier || null;
   if (Number(ticket.schema_version || 1) < 6) ticket.schema_version = 6;
   return ticket;
 }
@@ -208,6 +209,7 @@ export interface DispatchSpec {
   route_id: string;
   model: string;
   reasoning_effort: string | null;
+  service_tier: string | null;
   fork_context: false;
   read_only: boolean;
   mode: ExecutionMode;
@@ -233,6 +235,7 @@ function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id
     route_id: ticket.route_id,
     model: ticket.route_id,
     reasoning_effort: ticket.reasoning_effort || null,
+    service_tier: ticket.service_tier || null,
     fork_context: false,
     read_only: ticket.read_only,
     mode: ticket.mode,
@@ -259,6 +262,7 @@ function receiptModeMatches(ticket: SpawnTicket, receipt: DelegationReceipt): bo
     || receipt.execution.fork_context !== false
     || receipt.execution.max_depth !== 1
     || ticket.read_only !== (ticket.mode === "read-only")
+    || (ticket.service_tier || null) !== (receipt.route.service_tier || null)
     || receipt.git_policy.worker_may_stage !== false
     || receipt.git_policy.worker_may_branch !== false
     || receipt.git_policy.worker_may_rebase !== false
@@ -299,10 +303,6 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
   if (!ticket.route_id) {
     code = "NO_EXECUTABLE_ROUTE";
     message = `ticket ${ticket.id} has no executable route for this host`;
-  } else if (!subagentModelPolicy(ticket.route_id, ticket.model_id).allowed) {
-    const policy = subagentModelPolicy(ticket.route_id, ticket.model_id);
-    code = policy.code;
-    message = `ticket ${ticket.id}: ${policy.reason}`;
   } else if (ticket.fork_context !== false) {
     code = "FULL_CONTEXT_NOT_ALLOWED";
     message = `ticket ${ticket.id} must use fork_context=false`;
@@ -314,19 +314,41 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string): { t
     message = `ticket ${ticket.id} exhausted its attempt budget`;
   } else if (!ticket.selection || !["user", "ops-config", "baton-recommendation"].includes(ticket.selection.confirmed_by) || ticket.selection.selected_model_id !== ticket.model_id) {
     code = "MODEL_SELECTION_NOT_CONFIRMED";
-    message = `ticket ${ticket.id} has no valid user-confirmed, Baton-recommended, or ops-config model selection`;
+    message = `ticket ${ticket.id} has no valid Baton-recommended or ops-config model selection`;
   } else {
     const catalog = readRouteSnapshot(cwd);
     const route = catalog?.routes.find((item) => !item.disabled && item.route_id === ticket.route_id);
     if (!catalog) {
       code = "ROUTE_SNAPSHOT_REQUIRED";
-      message = `ticket ${ticket.id} requires a Baton route snapshot synced from OpenCodex`;
-    } else if (!route) {
-      code = "OPEN_CODEX_ROUTE_UNAVAILABLE";
-      message = `ticket ${ticket.id} route ${ticket.route_id} is absent or disabled in the synced OpenCodex snapshot`;
-    } else if (ticket.reasoning_effort && !route.reasoning_efforts.includes(ticket.reasoning_effort)) {
-      code = "OPEN_CODEX_PROFILE_UNAVAILABLE";
-      message = `ticket ${ticket.id} profile ${ticket.reasoning_effort} is absent from the synced OpenCodex snapshot`;
+      message = `ticket ${ticket.id} requires a CLI model catalog captured by baton config`;
+    } else {
+      try {
+        const config = loadConfig(cwd);
+        const profile = activeCliProfile(config);
+        if (!profile.enabled || catalog.cli !== config.cli.active) {
+          code = "CLI_CONFIG_DISABLED";
+          message = `ticket ${ticket.id} requires the active ${config.cli.active} configuration to be enabled`;
+        } else if (!profile.subagent_models.includes(ticket.route_id)) {
+          code = "CLI_MODEL_NOT_CONFIGURED";
+          message = `ticket ${ticket.id} model ${ticket.route_id} is not in cli.${config.cli.active}.subagent_models`;
+        }
+      } catch (error) {
+        if ((error as { code?: string }).code !== "BATON_NOT_INITIALIZED") throw error;
+        // Direct library consumers from before CLI profiles still receive the
+        // catalog validation below. The public CLI requires initialization.
+      }
+    }
+    if (!code && !route) {
+      code = "CLI_MODEL_UNAVAILABLE";
+      message = `ticket ${ticket.id} model ${ticket.route_id} is absent from the active CLI model catalog`;
+    } else if (!code && ticket.reasoning_effort && !route!.reasoning_efforts.includes(ticket.reasoning_effort)) {
+      code = "CLI_REASONING_EFFORT_UNAVAILABLE";
+      message = `ticket ${ticket.id} reasoning effort ${ticket.reasoning_effort} was not returned for ${ticket.route_id}`;
+    } else if (!code && ticket.service_tier
+      && !route!.service_tiers.includes(ticket.service_tier)
+      && !route!.additional_speed_tiers.includes(ticket.service_tier)) {
+      code = "CLI_SERVICE_TIER_UNAVAILABLE";
+      message = `ticket ${ticket.id} service tier ${ticket.service_tier} was not returned for ${ticket.route_id}`;
     }
   }
   if (!code && !ticket.receipt_id) {

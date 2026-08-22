@@ -1,7 +1,6 @@
 # baton director config
-# OpenCodex live routes generate the visible card set dynamically.
-# AA capability data generates ranked evidence and inferred positioning.
-# Baton accepts no local model definitions, aliases, or route overrides.
+# Each CLI owns its picker-visible model catalog. Baton stores only labels and
+# the exact models the user allows subagents to call.
 
 [director]
 # Desired Baton concurrency ceiling. The host/session limit can be lower;
@@ -9,17 +8,19 @@
 max_concurrent = 4
 # Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1
-# Free model selection is opt-in. When false, Baton queues the exact route/profile
-# selected by its recommendation policy without opening the selector.
-model_selection = false
 
-# Optional user-global routes for mechanical work. Empty means the director
-# executes that class. Every non-empty value is an exact OpenCodex route.
+[cli]
+active = "codex"
+
+[cli.codex]
+enabled = false
+runner = ""
+longctx = ""
+subagent_models = []
+
+# Action classification remains global. Model labels live under the CLI above.
 [ops.runner]
-route = ""
 actions = ["test", "build", "lint", "typecheck"]
 
 [ops.longctx]
-route = ""
-min_context_tokens = 1048576
 actions = ["search", "digest", "git-summarize", "git-commit"]

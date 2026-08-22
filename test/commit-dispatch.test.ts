@@ -6,9 +6,9 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 import { run } from "../src/cli.js";
-import { emptyConfig, saveConfig } from "../src/lib/config.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { configureCodex } from "./configure.js";
 import { fakeEnv, withHome } from "./home.js";
 
 function sink() { return { write() { return true; } }; }
@@ -45,10 +45,10 @@ async function createCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<
     { id: "k3[1m]", provider: "kimi", contextWindow: 1_048_576 },
     { id: "mimo-v2.5-pro", provider: "mimo", contextWindow: 262_144 },
   ] });
-  const config = emptyConfig();
-  config.ops.runner.route = "mimo/mimo-v2.5-pro";
-  config.ops.longctx.route = "kimi/k3[1m]";
-  saveConfig(cwd, config, { env });
+  configureCodex(cwd, env, ["kimi/k3[1m]", "mimo/mimo-v2.5-pro"], {
+    runner: "mimo/mimo-v2.5-pro",
+    longctx: "kimi/k3[1m]",
+  });
   const out = capture();
   assert.equal(await run(["spawn", "git commit staged changes", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
   assert.equal(readTicket(cwd).mode, "commit-only");

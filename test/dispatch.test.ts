@@ -46,6 +46,7 @@ function makeTicket(id, overrides = {}) {
     model_id: "example-coder",
     route_id: "codex/default",
     reasoning_effort: null,
+    service_tier: null,
     fork_context: false,
     mode: "read-only",
     read_only: true,
@@ -73,7 +74,7 @@ function writeTicket(cwd, ticket) {
       proposal_id: "sel-test",
       approval_id: `approval-${ticket.id}`,
       approved_at: ticket.created_at,
-      confirmed_by: "user",
+      confirmed_by: "baton-recommendation",
       catalog_fingerprint: readRouteSnapshot(cwd).fingerprint,
       recommended_model_id: ticket.model_id,
       selected_model_id: ticket.model_id,
@@ -222,7 +223,7 @@ describe("reserveNext", () => {
     assert.deepEqual(codes, [["t-writer", "RECEIPT_MISMATCH"], ["t-forker", "FULL_CONTEXT_NOT_ALLOWED"]]);
   });
 
-  it("never dispatches a ticket whose model selection was not user-confirmed", () => {
+  it("never dispatches a ticket without automatic or configured selection evidence", () => {
     const cwd = makeProject();
     writeTicket(cwd, makeTicket("t-unconfirmed", { selection: null }));
 
@@ -233,7 +234,7 @@ describe("reserveNext", () => {
     assert.equal(readTicket(cwd, "t-unconfirmed").status, "errored");
   });
 
-  it("fails closed when an approved reasoning profile disappears from the synced OpenCodex snapshot", () => {
+  it("fails closed when an approved reasoning effort disappears from the CLI snapshot", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-profile-"));
     publishRouteSnapshot(cwd, { models: [{
       id: "codex/default", namespaced: "codex/default", provider: "codex", reasoningEfforts: ["high"],
@@ -249,19 +250,53 @@ describe("reserveNext", () => {
 
     const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     assert.deepEqual(result.reserved, []);
-    assert.equal(result.blocked[0].code, "OPEN_CODEX_PROFILE_UNAVAILABLE");
+    assert.equal(result.blocked[0].code, "CLI_REASONING_EFFORT_UNAVAILABLE");
     assert.equal(readTicket(cwd, "t-profile").route_id, "codex/default");
   });
 
-  it("never dispatches built-in forbidden family tickets, including legacy tickets", () => {
+  it("fails closed when an automatically selected service tier disappears", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-tier-"));
+    publishRouteSnapshot(cwd, { models: [{
+      id: "gpt-5.6-sol", reasoningEfforts: ["high"], serviceTiers: [{ id: "priority" }],
+    }] });
+    const ticket = makeTicket("t-tier", {
+      model_id: "gpt-5.6-sol@high",
+      route_id: "gpt-5.6-sol",
+      reasoning_effort: "high",
+      service_tier: "priority",
+      selection: {
+        proposal_id: "sel-test",
+        approval_id: "approval-t-tier",
+        approved_at: at(0),
+        confirmed_by: "baton-recommendation",
+        catalog_fingerprint: readRouteSnapshot(cwd).fingerprint,
+        recommended_model_id: "gpt-5.6-sol@high",
+        selected_model_id: "gpt-5.6-sol@high",
+        service_tier: "priority",
+        changed_by_user: false,
+      },
+    });
+    writeTicket(cwd, ticket);
+    publishRouteSnapshot(cwd, { models: [{ id: "gpt-5.6-sol", reasoningEfforts: ["high"] }] });
+
+    const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    assert.deepEqual(result.reserved, []);
+    assert.equal(result.blocked[0].code, "CLI_SERVICE_TIER_UNAVAILABLE");
+  });
+
+  it("does not hard-code family bans for CLI-returned models", () => {
     for (const [index, route] of ["gpt-5.5-extra", "gpt-5.6-sol", "cursor/gpt-5.6-terra"].entries()) {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-policy-"));
-      publishRouteSnapshot(cwd, { models: [{ id: route.split("/").at(-1), namespaced: route, provider: route.includes("/") ? "cursor" : "openai" }] });
+      publishRouteSnapshot(cwd, { models: [{
+        id: route.split("/").at(-1), namespaced: route,
+        provider: route.includes("/") ? "cursor" : "openai",
+        reasoningEfforts: ["high"],
+      }] });
       writeTicket(cwd, makeTicket(`t-forbidden-${index}`, { model_id: `${route}@high`, route_id: route, reasoning_effort: "high" }));
       const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
-      assert.deepEqual(result.reserved, []);
-      assert.equal(result.blocked[0].code, "SUBAGENT_MODEL_FAMILY_FORBIDDEN");
-      assert.equal(readTicket(cwd, `t-forbidden-${index}`).status, "errored");
+      assert.deepEqual(result.blocked, []);
+      assert.equal(result.reserved[0].route_id, route);
+      assert.equal(readTicket(cwd, `t-forbidden-${index}`).status, "dispatching");
     }
   });
 });

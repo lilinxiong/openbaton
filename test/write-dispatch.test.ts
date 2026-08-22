@@ -8,6 +8,7 @@ import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { configureCodex } from "./configure.js";
 
 function sink() { return { write() { return true; } }; }
 function capture() {
@@ -39,16 +40,21 @@ function syncModel(cwd: string) {
 }
 
 async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]): Promise<void> {
-  const configOut = capture();
-  const enabled = await run(["config", "model-selection", "on"], { cwd, env, stdout: configOut, stderr: configOut });
-  assert.equal(enabled, 0, configOut.text());
+  configureCodex(cwd, env, ["kimi/k3[1m]"]);
+  const automaticArgs: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--model") {
+      index += 1;
+      continue;
+    }
+    automaticArgs.push(args[index]);
+  }
   const proposalOut = capture();
-  const proposed = await run([...args, "--json"], { cwd, env, stdout: proposalOut, stderr: proposalOut });
+  const proposed = await run([...automaticArgs, "--json"], { cwd, env, stdout: proposalOut, stderr: proposalOut });
   assert.equal(proposed, 0, proposalOut.text());
-  const proposal = JSON.parse(proposalOut.text());
-  const approvalOut = capture();
-  const approved = await run(["selection", "approve", proposal.id, "--confirm", "--json"], { cwd, env, stdout: approvalOut, stderr: approvalOut });
-  assert.equal(approved, 0, approvalOut.text());
+  const approval = JSON.parse(proposalOut.text());
+  assert.equal(approval.status, "approved");
+  assert.equal(approval.approvals[0].confirmed_by, "baton-recommendation");
 }
 
 async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
