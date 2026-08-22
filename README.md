@@ -122,6 +122,30 @@ Logical work is uncapped; physical concurrency follows the current host limit. A
 
 Read-only is the default. Write tickets require an immutable path and operation allowlist plus parent Git safety checks. The sole Git exception is an exclusive commit-only ticket over an exact parent-staged tree; it may create one audited commit and may not stage, amend, branch, rebase, tag, or push.
 
+## Mechanical ops
+
+`ops.runner` and `ops.longctx` label which mechanical actions leave the director (`test`, `build`, `lint`, `typecheck`, `search`, `digest`, `git-summarize`, `git-commit`). Empty labels keep those units on the director.
+
+The compare script runs each unit twice: through Baton tickets (spawn, bind, the same local command, complete/release), then as that command directly. It does not call host spawn tools. Live mode never git-commits; `--fixture` commits only inside a temp repo.
+
+    bun scripts/compare-mechanical-ops.ts
+    bun scripts/compare-mechanical-ops.ts --fixture
+    bun scripts/compare-mechanical-ops.ts --json
+
+Live run on this checkout, 2026-08-22. `cli=grok` `host=grok` `runner=grok-4.5` `longctx=grok-4.5` `spawn_cli_ms=202.5` `ok=true`.
+
+| task | via | direct_ms | baton_ms | overhead_ms | model | result |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| test | runner/test | 15244.1 | 17671.3 | 2427.2 | grok-4.5 | pass / pass |
+| build | runner/build | 182.1 | 243.6 | 61.5 | grok-4.5 | pass / pass |
+| typecheck | runner/typecheck | 96.3 | 146.3 | 50.0 | grok-4.5 | pass / pass |
+| search | longctx/search | 5.6 | 56.6 | 51.0 | grok-4.5 | pass / pass |
+| summarize | longctx/git-summarize | 6.6 | 56.0 | 49.4 | grok-4.5 | pass / pass |
+| ordinary | subagent | 29.0 | 80.7 | 51.7 | grok-4.5 | pass / pass |
+| commit | skipped | — | — | — | — | live mode does not git commit |
+
+Cheap commands add about 50ms for bind + complete. Baton lanes run first, so `test` overhead includes suite variance, not only ticket cost. Re-run the script to refresh these numbers.
+
 ## OpenSpec and state
 
 OpenSpec remains optional. When present, it owns task breakdown and status; Baton routes ready tasks and writes conclusions back by stable task number. Without OpenSpec, baton spawn is complete.

@@ -122,6 +122,30 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Gr
 
 默认只读。写任务必须带不可变路径和操作 allowlist，并通过 parent Git safety gate。唯一的 Git 例外是独占 commit-only ticket：它只消费 parent 已精确 staged 的 tree，允许创建一个受审计 commit，不能 stage、amend、切分支、rebase、tag 或 push。
 
+## 机械 ops
+
+`ops.runner` 和 `ops.longctx` 标注哪些机械动作离开 director（`test`、`build`、`lint`、`typecheck`、`search`、`digest`、`git-summarize`、`git-commit`）。标签为空时，这些 unit 留在 director 上执行。
+
+对比脚本把每个 unit 跑两遍：一遍走 Baton ticket（spawn、bind、同一条本地命令、complete/release），一遍直接跑同一条命令。它不调用 host spawn 工具。live 模式从不 git commit；`--fixture` 只在临时仓库里 commit。
+
+    bun scripts/compare-mechanical-ops.ts
+    bun scripts/compare-mechanical-ops.ts --fixture
+    bun scripts/compare-mechanical-ops.ts --json
+
+本仓库 live 结果，2026-08-22。`cli=grok` `host=grok` `runner=grok-4.5` `longctx=grok-4.5` `spawn_cli_ms=202.5` `ok=true`。
+
+| task | via | direct_ms | baton_ms | overhead_ms | model | result |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| test | runner/test | 15244.1 | 17671.3 | 2427.2 | grok-4.5 | pass / pass |
+| build | runner/build | 182.1 | 243.6 | 61.5 | grok-4.5 | pass / pass |
+| typecheck | runner/typecheck | 96.3 | 146.3 | 50.0 | grok-4.5 | pass / pass |
+| search | longctx/search | 5.6 | 56.6 | 51.0 | grok-4.5 | pass / pass |
+| summarize | longctx/git-summarize | 6.6 | 56.0 | 49.4 | grok-4.5 | pass / pass |
+| ordinary | subagent | 29.0 | 80.7 | 51.7 | grok-4.5 | pass / pass |
+| commit | skipped | — | — | — | — | live 不 git commit |
+
+轻量命令的 bind + complete 大约 50ms。Baton 通道先跑，所以 `test` 的 overhead 含测试套件波动，不只是 ticket 成本。要更新数字，重新跑脚本。
+
 ## OpenSpec 与状态
 
 OpenSpec 可选。存在时它负责任务拆解与状态，Baton 负责路由 ready task，并按稳定 task number 写回结论。不存在时，baton spawn 仍完整可用。
