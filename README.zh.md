@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-多模型协作 director：一个前台对话，自动选择模型与推理强度，使用原生 subagent，并保持主上下文干净。
+面向 Codex 与 Grok 的 CLI 中立 director：一个前台对话，自动选择模型与推理强度，使用原生 subagent，配置机械 ops，并保持主上下文干净。
 
 Baton 可以独立工作；存在 OpenSpec 时也可以消费它的任务。
 

@@ -1,7 +1,7 @@
 {
   "name": "@zhouliuya/openbaton",
   "version": "0.2.0",
-  "description": "Director for multi-model work. 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.",
+  "description": "CLI-neutral director for Codex and Grok: automatic model routing, native subagents, mechanical ops, and a clean main context. Standalone; OpenSpec optional.",
   "type": "module",
   "bin": {
     "baton": "dist/bin/baton.js"

@@ -61,10 +61,10 @@ function resolvedCards(cwd: string, env: NodeJS.ProcessEnv): ModelCard[] {
     .filter((card) => card.route_id && allowed.has(card.route_id));
 }
 
-const HELP = `baton — director for multi-model work
+const HELP = `baton — CLI-neutral director for Codex and Grok
 既能独立，又能 1+1>2
 
-Standalone: cards + native spawn + director context hygiene. Complete without OpenSpec.
+Standalone: cards + native spawn + mechanical ops + director context hygiene. Complete without OpenSpec.
 Together: OpenSpec owns breakdown/status; baton owns who runs each task and keeps
 the director context clean. Apply is multi-model, uncapped, card-routed execution
 of OpenSpec tasks, with conclusions written back. Not a thin adapter.

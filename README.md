@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-A director for multi-model work: one front conversation, automatic model and effort routing, native subagents, and a clean main context.
+A CLI-neutral director for Codex and Grok: one front conversation, automatic model and effort routing, native subagents, configured mechanical ops, and a clean main context.
 
 Baton works standalone and can consume OpenSpec tasks when OpenSpec is present.
 
