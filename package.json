@@ -1,6 +1,6 @@
 {
   "name": "@zhouliuya/openbaton",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Director for multi-model work. 既能独立，又能 1+1>2 — complete standalone; strictly better with OpenSpec.",
   "type": "module",
   "bin": {

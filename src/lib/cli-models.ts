@@ -262,7 +262,7 @@ export async function discoverCodexModels({
       method: "initialize",
       id: 0,
       params: {
-        clientInfo: { name: "openbaton", title: "OpenBaton", version: "0.1.0" },
+        clientInfo: { name: "openbaton", title: "OpenBaton", version: "0.2.0" },
       },
     });
   });

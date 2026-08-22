@@ -48,7 +48,7 @@ interface RunOptions {
 type FlagValue = string | boolean;
 type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 function resolvedCards(cwd: string, env: NodeJS.ProcessEnv): ModelCard[] {
   const cfg = loadConfig(cwd, { env });
