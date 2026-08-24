@@ -5,7 +5,7 @@ description: "Use this director automatically for approved Goal or multi-model e
 
 # baton
 
-You are the director. Baton is a CLI-neutral scheduling and policy layer. Its adapters are Codex and Grok; it does not use OpenCodex for model discovery, authentication, or execution.
+You are the director. Baton is a CLI-neutral scheduling and policy layer. Its registered CLI adapters are Codex, Grok, and Cursor; it does not use OpenCodex for model discovery, authentication, or execution.
 
 ## Entry routing
 
@@ -23,10 +23,10 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 
 ## Model and configuration contract
 
-1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` and stores exactly the listed picker-visible ids (JSON stdout if Grok emits it; otherwise the Available models listing). Never invent ids from login or prose lines. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p`.
+1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` and stores exactly the listed picker-visible ids (JSON stdout if Grok emits it; otherwise the Available models listing). For Cursor, Baton runs `cursor-agent models` and stores exactly the listed picker-visible ids (JSON stdout if cursor-agent emits it; otherwise the Available models listing). Never invent ids from login or prose lines. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p` or `cursor-agent -p`.
 
 2. **Configuration is per CLI and user-global.** Store each `cli.<id>` profile's enabled flag, runner label, longctx label, and subagent_models allowlist in ~/.baton/config.toml; `cli.active` is only the omitted-host legacy default.
-   - `cli.active` is a deprecated legacy default, not a global runtime selector. An explicit `--host codex|grok` resolves only that host's profile; multiple profiles may be enabled at once.
+   - `cli.active` is a deprecated legacy default, not a global runtime selector. An explicit `--host codex|grok|cursor` resolves only that host's profile; multiple profiles may be enabled at once.
    - A missing or disabled requested host fails closed. Baton never substitutes another enabled host.
    - runner and longctx are routing labels only. They do not claim speed, context-window size, or any other capability.
    - Configured runner and longctx values are included in subagent_models.
@@ -48,7 +48,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 
 ## Execution contract
 
-8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. Compact dispatch applies to every reserved ticket: runner ops, longctx ops, and ordinary `subagent_models` units. Prefer `baton spawn ... --dispatch --json` so enqueue and reserve are one call; use `baton dispatch next --host HOST --json` only for already-queued work. Then call the native subagent tool: Codex `spawn_agent`, Grok `spawn_subagent`. Pass the exact model. Pass a supported effort or selected service_tier only when the host tool can express them; otherwise report that option as unavailable instead of silently claiming it. Grok must pass `spawn_subagent.model` (omitting it inherits the parent model). fork_context=false: Grok does not pass `resume_from`. Bind the returned agent id immediately. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
+8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. Compact dispatch applies to every reserved ticket: runner ops, longctx ops, and ordinary `subagent_models` units. Prefer `baton spawn ... --dispatch --json` so enqueue and reserve are one call; use `baton dispatch next --host HOST --json` only for already-queued work. Then call the native subagent tool: Codex `spawn_agent`, Grok `spawn_subagent`, Cursor `Task`. Pass the exact model. Pass a supported effort or selected service_tier only when the host tool can express them; otherwise report that option as unavailable instead of silently claiming it. Grok must pass `spawn_subagent.model` (omitting it inherits the parent model). Cursor must pass `Task.model` (omitting it inherits the parent model). Fresh child context is the default when Grok omits `resume_from` and Cursor omits `resume`. Bind the returned agent id immediately. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
 
 9. **Read-only by default.** Writes require an explicit path/operation allowlist and a parent Git safety audit. Ordinary workers never mutate Git. The only exception is an exclusive commit-only Receipt: the parent stages and freezes the exact tree first, and the worker may perform exactly one git commit. It may not edit, add, amend, switch, branch, merge, rebase, cherry-pick, revert, tag, stash, clean, or push.
 
@@ -66,20 +66,20 @@ This loop is the same for runner ops, longctx ops, and ordinary `subagent_models
 
 1. Run `baton config --cli HOST` once or whenever that host's picker surface changes.
 2. Create tickets with `baton spawn ... --dispatch --json` or `baton apply`. `--dispatch` enqueues and reserves in one call. Use `baton dispatch next --host HOST --json` only for already-queued work.
-3. For each reserved ticket, native-spawn with the returned model, prompt, optional effort, and optional service_tier when the host exposes them, fork_context=false. Mechanical prompts are one-shot: execute the inferred command (for `git-commit`: staged diff → one message → one commit). Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`. Bind immediately with `baton dispatch bind TICKET --agent-id ID --host HOST --json`.
+3. For each reserved ticket, native-spawn with the returned model, prompt, optional effort, and optional service_tier when the host exposes them. Mechanical prompts are one-shot: execute the inferred command (for `git-commit`: staged diff → one message → one commit). Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`. Cursor hosts call `Task` with the ticket model; never `cursor-agent -p`/`--print` or a new cursor-agent process with `--model`. Bind immediately with `baton dispatch bind TICKET --agent-id ID --host HOST --json`.
 4. Wait on native completion for the requested host. Probe only while still running, or to record exact `not_found`.
 5. `baton dispatch complete TICKET --host HOST --text "..." --release --json` (or fail/timeout/close with `--host HOST --release`). Refill from that host's FIFO.
 
 ## Commands
 
     baton guard status|install|hook [--json]
-    baton config --cli codex|grok [--runner MODEL|-] [--longctx MODEL|-]
+    baton config --cli codex|grok|cursor [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
-    baton models refresh|status|candidates [--host codex|grok]
+    baton models refresh|status|candidates [--host codex|grok|cursor]
     baton cards [--ranked|--unranked] [--json]
-    baton match <text> [--host codex|grok]
-    baton spawn <request> [--host codex|grok] [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change] [--host codex|grok]
+    baton match <text> [--host codex|grok|cursor]
+    baton spawn <request> [--host codex|grok|cursor] [--unit KEY=BUSINESS_TASK ...] [--dispatch]
+    baton apply [change] [--host codex|grok|cursor]
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED --observed-capacity N --json
@@ -90,7 +90,7 @@ This loop is the same for runner ops, longctx ops, and ordinary `subagent_models
     baton dispatch release TICKET --host HOST --agent-id ID --json
     baton dispatch recover --host HOST --json
     baton dispatch status --host HOST --json
-    baton status [--host codex|grok]
+    baton status [--host codex|grok|cursor]
 
 ## Red lines
 

@@ -13,7 +13,7 @@ import { HOST_IDS, HOST_SKILL_REL } from "../src/lib/hosts.js";
 
 describe("CLI adapter contract and registry", () => {
   it("keeps one adapter contract for every registered CLI", () => {
-    assert.deepEqual(CLI_IDS, ["codex", "grok"]);
+    assert.deepEqual(CLI_IDS, ["codex", "grok", "cursor"]);
     assert.strictEqual(listCliAdapters(), CLI_ADAPTERS);
 
     for (const adapter of CLI_ADAPTERS) {
@@ -34,12 +34,15 @@ describe("CLI adapter contract and registry", () => {
     assert.equal(hostMaxConcurrent("codex"), 4);
     assert.equal(hostMaxConcurrent("grok", { GROK_MAX_CONCURRENT_SUBAGENTS: "5" }), 5);
     assert.equal(hostMaxConcurrent("grok", { GROK_MAX_CONCURRENT_SUBAGENTS: "not-a-number" }), 8);
+    assert.equal(hostMaxConcurrent("cursor"), 4);
+    assert.equal(hostMaxConcurrent("cursor", { CURSOR_MAX_CONCURRENT_SUBAGENTS: "3" }), 3);
   });
 
   it("derives one compatible config profile per registered adapter", () => {
     const empty = emptyConfig();
-    assert.deepEqual(Object.keys(empty.cli).sort(), ["active", "codex", "grok"]);
+    assert.deepEqual(Object.keys(empty.cli).sort(), ["active", "codex", "cursor", "grok"]);
     assert.deepEqual(empty.cli.codex, empty.cli.grok);
+    assert.deepEqual(empty.cli.codex, empty.cli.cursor);
 
     const migrated = normalizeConfig({
       ops: {

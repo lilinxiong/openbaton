@@ -1,7 +1,7 @@
 {
   "name": "@zhouliuya/openbaton",
   "version": "0.2.0",
-  "description": "CLI-neutral director for Codex and Grok: automatic model routing, native subagents, mechanical ops, and a clean main context. Standalone; OpenSpec optional.",
+  "description": "CLI-neutral director for Codex, Grok, and Cursor: automatic model routing, native subagents, mechanical ops, and a clean main context. Standalone; OpenSpec optional.",
   "type": "module",
   "bin": {
     "baton": "dist/bin/baton.js"

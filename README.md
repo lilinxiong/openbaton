@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-A CLI-neutral director for Codex and Grok: one front conversation, automatic model and effort routing, native subagents, configured mechanical ops, and a clean main context.
+A CLI-neutral director for Codex, Grok, and Cursor: one front conversation, automatic model and effort routing, native subagents, configured mechanical ops, and a clean main context.
 
 Baton works standalone and can consume OpenSpec tasks when OpenSpec is present.
 
@@ -16,15 +16,15 @@ Chinese: [README.zh.md](README.zh.md)
 
 ## What changed
 
-Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. Adapters are Codex and Grok:
+Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. Adapters are Codex, Grok, and Cursor:
 
 1. baton config asks which CLI to configure.
-2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` and keeps only listed ids (JSON stdout if Grok emits it; otherwise the Available models listing, ignoring login/prose lines).
+2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` and keeps only listed ids (JSON stdout if Grok emits it; otherwise the Available models listing, ignoring login/prose lines). For Cursor, Baton runs `cursor-agent models` and keeps only listed ids (JSON stdout if cursor-agent emits it; otherwise the Available models listing, ignoring login/prose lines).
 3. Baton displays exactly the picker-visible models returned by that CLI.
 4. The user assigns optional runner and longctx labels, chooses the models subagents may call, and enables or disables that CLI profile.
 5. Later work is routed automatically within that configured candidate set. There is no runtime model selector or model confirmation.
 
-Baton never executes work via `grok -p`. Dispatch host ids are `codex` and `grok`.
+Baton never executes work via `grok -p` or `cursor-agent -p`. Dispatch host ids are `codex`, `grok`, and `cursor`.
 
 Baton does not query OpenCodex, merge in a hard-coded catalog, or treat a model as unsupported because a host tool description did not list it.
 
@@ -70,7 +70,7 @@ Configured label values are automatically included in subagent_models. A disable
 Non-interactive setup is also supported:
 
     baton config \
-      --cli codex|grok \
+      --cli codex|grok|cursor \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
       --subagent-model gpt-5.6-luna \
@@ -192,9 +192,9 @@ Baton never creates project-local runtime state:
 
 ## Commands
 
-    baton init [--force] [--cli codex|grok]
+    baton init [--force] [--cli codex|grok|cursor]
     baton update
-    baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
+    baton config [--cli codex|grok|cursor] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]

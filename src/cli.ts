@@ -71,7 +71,7 @@ function runtimeHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): Retur
   return parseHostId(stringFlag(flags, "host") || cfg.cli.active);
 }
 
-const HELP = `baton — CLI-neutral director for Codex and Grok
+const HELP = `baton — CLI-neutral director for Codex, Grok, and Cursor
 既能独立，又能 1+1>2
 
 Standalone: cards + native spawn + mechanical ops + director context hygiene. Complete without OpenSpec.
@@ -82,16 +82,16 @@ The selected CLI owns model visibility; Baton routes only within the configured 
 Interactive init/config use arrow-key select; space toggles CLIs and subagent models.
 
 Usage:
-  baton init [--force] [--cli codex|grok]  initialize Baton + Codex/Grok host skills
+  baton init [--force] [--cli codex|grok|cursor]  initialize Baton + host skills
   baton update                        refresh host skills + global config defaults
   baton guard status|install|hook       inspect/install the Codex host guard or serve hook stdin
-  baton models refresh|status|candidates [--host codex|grok]  inspect/refresh one CLI model catalog
-  baton cards [--host codex|grok] [--ranked|--unranked] [--provider ID] [--json]
-  baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
+  baton models refresh|status|candidates [--host codex|grok|cursor]  inspect/refresh one CLI model catalog
+  baton cards [--host codex|grok|cursor] [--ranked|--unranked] [--provider ID] [--json]
+  baton config [--cli codex|grok|cursor] [--runner MODEL|-] [--longctx MODEL|-]
                [--subagent-model MODEL|all] [--enable|--disable]
-  baton match <text> [--host codex|grok]  disclose preferred/candidate models without creating work
-  baton spawn <request> [--host codex|grok] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
-  baton apply [change] [--host codex|grok]  automatically choose per OpenSpec unit
+  baton match <text> [--host codex|grok|cursor]  disclose preferred/candidate models without creating work
+  baton spawn <request> [--host codex|grok|cursor] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
+  baton apply [change] [--host codex|grok|cursor]  automatically choose per OpenSpec unit
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -107,7 +107,7 @@ Usage:
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json
   baton dispatch status --host HOST --json
-  baton status [--host codex|grok]  director queue + OpenSpec status if present
+  baton status [--host codex|grok|cursor]  director queue + OpenSpec status if present
   baton help | --help | -h
   baton version | --version | -v
 `;
@@ -192,7 +192,7 @@ async function cmdInit(
 ): Promise<number> {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
-  if (flags.tools) throw new Error("--tools is not supported; baton init installs Codex and Grok host skills");
+  if (flags.tools) throw new Error("--tools is not supported; baton init installs registered host skills");
   const cliFlag = stringFlag(flags, "cli");
   let clis: CliId[] | undefined;
   if (cliFlag) clis = [parseCliId(cliFlag)];

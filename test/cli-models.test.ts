@@ -6,11 +6,15 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import {
   discoverCliModels,
+  discoverCursorModels,
   discoverGrokModels,
   normalizeCodexModels,
+  normalizeCursorModels,
   normalizeGrokModels,
+  parseCursorModelText,
   parseGrokModelText,
   resolveCodexCommand,
+  resolveCursorCommand,
   resolveGrokCommand,
 } from "../src/lib/cli-models.js";
 import type { CodedError } from "../src/types.js";
@@ -224,6 +228,121 @@ describe("Grok CLI model adapter", () => {
         spawnImpl: fakeSpawn(() => ({ code: 0, hang: true })),
       }),
       (error: unknown) => (error as CodedError).code === "GROK_MODEL_DISCOVERY_TIMEOUT",
+    );
+  });
+});
+
+const CURSOR_MODELS_TEXT = `Available models
+
+auto - Auto (default)
+composer-2.5 - Composer 2.5 (current)
+gemini-3.7-flash-high - Gemini 3.7 Flash
+`;
+
+describe("Cursor CLI model adapter", () => {
+  it("normalizes array, data, and models envelopes without inventing ids", () => {
+    const sample = [
+      { id: "composer-2.5", name: "Composer 2.5", is_default: true },
+      { model: "gemini-3.7-flash-high", displayName: "Gemini 3.7 Flash" },
+      { id: "hidden-x", hidden: true },
+    ];
+    const fromArray = normalizeCursorModels(sample);
+    const fromData = normalizeCursorModels({ data: sample });
+    const fromModels = normalizeCursorModels({ models: sample });
+    for (const models of [fromArray, fromData, fromModels]) {
+      assert.deepEqual(models.map((model) => model.id), ["composer-2.5", "gemini-3.7-flash-high"]);
+      assert.equal(models[0].is_default, true);
+    }
+  });
+
+  it("rejects a payload without models", () => {
+    assert.throws(() => normalizeCursorModels({ nope: true }), /envelope/);
+  });
+
+  it("honors BATON_CURSOR_PATH when executable and otherwise PATH", () => {
+    assert.equal(resolveCursorCommand({ ...process.env, BATON_CURSOR_PATH: process.execPath, PATH: "" }), process.execPath);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cursor-path-"));
+    const executable = path.join(dir, process.platform === "win32" ? "cursor-agent.cmd" : "cursor-agent");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
+    assert.equal(resolveCursorCommand({ PATH: dir, HOME: "", BATON_CURSOR_PATH: "" }), executable);
+    assert.equal(resolveCursorCommand({ PATH: "", HOME: "", BATON_CURSOR_PATH: "/missing/cursor-agent" }), null);
+  });
+
+  it("does not resolve a generic agent binary on PATH", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cursor-no-agent-"));
+    const executable = path.join(dir, process.platform === "win32" ? "agent.cmd" : "agent");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
+    assert.equal(resolveCursorCommand({ PATH: dir, HOME: "", BATON_CURSOR_PATH: "" }), null);
+  });
+
+  it("parses official cursor-agent models text and does not invent ids from login prose", () => {
+    const models = parseCursorModelText(CURSOR_MODELS_TEXT);
+    assert.deepEqual(models.map((model) => model.id), ["auto", "composer-2.5", "gemini-3.7-flash-high"]);
+    assert.equal(models[0].is_default, true);
+    assert.equal(models[1].display_name, "Composer 2.5");
+    assert.throws(() => parseCursorModelText("✓ Logged in as user@example.com\n"), /no model ids/);
+  });
+
+  it("accepts JSON stdout from cursor-agent models when the CLI emits it", () => {
+    const models = parseCursorModelText(JSON.stringify({ models: [{ id: "composer-2.5", name: "Composer 2.5" }] }));
+    assert.deepEqual(models.map((model) => model.id), ["composer-2.5"]);
+    assert.equal(models[0].display_name, "Composer 2.5");
+  });
+
+  it("discovers models from cursor-agent models without passing --json", async () => {
+    const calls: string[] = [];
+    const catalog = await discoverCursorModels({
+      command: "/bin/cursor-agent",
+      spawnImpl: fakeSpawn((args) => {
+        calls.push(args.join(" "));
+        if (args[0] === "models") return { code: 0, stdout: CURSOR_MODELS_TEXT };
+        if (args[0] === "--version") return { code: 0, stdout: "2026.08.11-e8db854\n" };
+        return { code: 1, stderr: "unexpected" };
+      }),
+    });
+    assert.equal(catalog.cli, "cursor");
+    assert.equal(catalog.version, "2026.08.11-e8db854");
+    assert.deepEqual(catalog.models.map((model) => model.id), ["auto", "composer-2.5", "gemini-3.7-flash-high"]);
+    assert.deepEqual(calls.filter((call) => call.startsWith("models")), ["models"]);
+  });
+
+  it("routes discoverCliModels(cursor) through discoverCursorModels", async () => {
+    const catalog = await discoverCliModels("cursor", {
+      command: "/bin/cursor-agent",
+      spawnImpl: fakeSpawn((args) => {
+        if (args[0] === "models") return { code: 0, stdout: JSON.stringify([{ id: "composer-2.5" }]) };
+        if (args[0] === "--version") return { code: 1, stderr: "no" };
+        return { code: 1 };
+      }),
+    });
+    assert.equal(catalog.cli, "cursor");
+    assert.deepEqual(catalog.models.map((model) => model.id), ["composer-2.5"]);
+  });
+
+  it("codes missing binary and failed discovery", async () => {
+    await assert.rejects(
+      () => discoverCursorModels({ env: { PATH: "", HOME: "" } }),
+      (error: unknown) => (error as CodedError).code === "CLI_NOT_AVAILABLE",
+    );
+    await assert.rejects(
+      () => discoverCursorModels({
+        command: "/bin/cursor-agent",
+        spawnImpl: fakeSpawn(() => ({ code: 1, stderr: "boom" })),
+      }),
+      (error: unknown) => (error as CodedError).code === "CURSOR_MODEL_DISCOVERY_FAILED",
+    );
+  });
+
+  it("times out hung cursor-agent models", async () => {
+    await assert.rejects(
+      () => discoverCursorModels({
+        command: "/bin/cursor-agent",
+        timeoutMs: 20,
+        spawnImpl: fakeSpawn(() => ({ code: 0, hang: true })),
+      }),
+      (error: unknown) => (error as CodedError).code === "CURSOR_MODEL_DISCOVERY_TIMEOUT",
     );
   });
 });

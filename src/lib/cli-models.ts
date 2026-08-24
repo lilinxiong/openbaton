@@ -20,6 +20,13 @@ export {
 } from "../adapters/codex.js";
 
 export {
+  discoverCursorModels,
+  normalizeCursorModels,
+  parseCursorModelText,
+  resolveCursorCommand,
+} from "../adapters/cursor.js";
+
+export {
   discoverGrokModels,
   normalizeGrokModels,
   parseGrokModelText,

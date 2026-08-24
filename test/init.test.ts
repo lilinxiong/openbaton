@@ -17,11 +17,12 @@ describe("Codex init and update", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-"));
       const env = fakeEnv(home);
       const result = await initProject(cwd, { env });
-      assert.deepEqual(result.tools, ["codex", "grok"]);
+      assert.deepEqual(result.tools, ["codex", "grok", "cursor"]);
 
       const directorSkill = fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8");
       const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
       const grokSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.grok), "utf8");
+      const cursorSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.cursor), "utf8");
       for (const skill of [directorSkill, hostSkill]) {
         assert.match(skill, /model\/list/);
         assert.match(skill, /gpt-5\.4-mini/);
@@ -38,12 +39,17 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /Never `git commit` from this director session while the matching runner\/longctx label/);
       assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
+      assert.match(cursorSkill, /cursor-agent models/);
+      assert.match(cursorSkill, /native `Task`/);
+      assert.match(cursorSkill, /--host cursor/);
+      assert.match(cursorSkill, /cursor-agent -p/);
+      assert.match(cursorSkill, /Empty `runner`\/`longctx`: director executes them and must not block/);
       assert.match(directorSkill, /An empty label keeps that action on the director and must not block the flow/);
       assert.match(directorSkill, /Compact dispatch applies to every reserved ticket/);
       assert.match(directorSkill, /\[--dispatch\]/);
       assert.match(directorSkill, /\[--release\]/);
-      assert.match(directorSkill, /Codex and Grok|adapters are Codex and Grok/i);
-      assert.match(directorSkill, /spawn_subagent/);
+      assert.match(directorSkill, /registered CLI adapters are Codex, Grok, and Cursor/i);
+      assert.match(directorSkill, /spawn_subagent|Task/);
 
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.active, "codex");
@@ -55,6 +61,7 @@ describe("Codex init and update", () => {
       };
       assert.deepEqual(config.cli.codex, emptyProfile);
       assert.deepEqual(config.cli.grok, emptyProfile);
+      assert.deepEqual(config.cli.cursor, emptyProfile);
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
@@ -127,6 +134,26 @@ describe("Codex init and update", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-cap-"));
       const env = { ...fakeEnv(home), GROK_MAX_CONCURRENT_SUBAGENTS: "6" };
       await initProject(cwd, { env, cli: "grok" });
+      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 6);
+    });
+  });
+
+  it("writes Cursor's host concurrent cap when --cli cursor is selected", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-cursor-"));
+      const env = fakeEnv(home);
+      await initProject(cwd, { env, cli: "cursor" });
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.active, "cursor");
+      assert.equal(config.director.max_concurrent, 4);
+    });
+  });
+
+  it("honors CURSOR_MAX_CONCURRENT_SUBAGENTS when initializing Cursor", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-cursor-cap-"));
+      const env = { ...fakeEnv(home), CURSOR_MAX_CONCURRENT_SUBAGENTS: "6" };
+      await initProject(cwd, { env, cli: "cursor" });
       assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 6);
     });
   });

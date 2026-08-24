@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
  * list; keeping the id type here lets each adapter implement the contract
  * without importing the registry back into itself.
  */
-export const REGISTERED_CLI_IDS = ["codex", "grok"] as const;
+export const REGISTERED_CLI_IDS = ["codex", "grok", "cursor"] as const;
 export type CliId = (typeof REGISTERED_CLI_IDS)[number];
 
 export interface CliReasoningEffort {
