@@ -10,6 +10,8 @@ export type ExecutionMode = "read-only" | "write" | "commit-only";
 
 export interface DelegationReceipt {
   schema_version: 4;
+  /** Host profile that owns this receipt. Old receipts may omit it. */
+  host?: string;
   receipt_id: string;
   ticket_id: string;
   issued_at: string;
@@ -61,17 +63,20 @@ export function buildReadOnlyReceipt({
   issuedAt = new Date(),
   maxAttempts = 1,
   selection = null,
+  host = selection?.host || null,
 }: {
   ticketId: string;
   card: ModelCard;
   issuedAt?: Date | string | number;
   maxAttempts?: number;
   selection?: ModelSelectionApproval | null;
+  host?: string | null;
 }): DelegationReceipt {
   const timestamp = (issuedAt instanceof Date ? issuedAt : new Date(issuedAt)).toISOString();
   const attempts = Math.max(1, Math.floor(maxAttempts));
   return {
     schema_version: 4,
+    ...(host ? { host } : {}),
     receipt_id: `rcpt-${ticketId}-a1`,
     ticket_id: ticketId,
     issued_at: timestamp,

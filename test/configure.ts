@@ -12,10 +12,6 @@ export function configureCli(
 ): void {
   const config = fs.existsSync(configPath(cwd, { env })) ? loadConfig(cwd, { env }) : emptyConfig();
   config.cli.active = cli;
-  for (const id of ["codex", "grok"] as const) {
-    if (id === cli) continue;
-    config.cli[id].enabled = false;
-  }
   config.cli[cli] = {
     enabled,
     runner,

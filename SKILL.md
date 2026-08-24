@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use this director automatically for approved Goal or multi-model execution and configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or commit-only staged work. Skip ordinary discussion and tasks needing neither delegation nor ops routing."
+description: "Use this director automatically for approved Goal or multi-model execution and configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or commit-only staged work. Before any shell, patch, or native-agent tool call, complete the Baton host-guard preflight. Skip ordinary discussion and tasks needing neither delegation nor ops routing."
 ---
 
 # baton
@@ -13,11 +13,21 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 - For approved multi-agent execution, run Baton to create immutable tickets, dispatch them through the current host's native subagent tool, and wait for their conclusions.
 - If another execution skill is explicitly requested, preserve its scope. Baton may route its executable work units but must not rewrite the request.
 
+## Host-guard preflight (mandatory in Codex)
+
+- Before any `Bash`, `apply_patch`/ `Edit`/ `Write`, or native `Agent` call, run `baton guard status`. Baton init/update installs a merged `~/.codex/hooks.json` entry; in Codex open `/hooks`, review the Baton-owned `PreToolUse` and `SubagentStart` entries, and trust them before continuing.
+- The Codex guard fails closed for direct director shell and code-write calls. Reserve a Baton ticket, native-spawn the exact worker, and bind the returned identity with `baton dispatch bind ...` before the worker uses tools. A child starting during the spawn-to-bind race remains denied until the bind is visible.
+- Baton control-plane commands (`baton init`, `baton guard`, `baton spawn`, `baton dispatch`, `baton status`, and related inspection/configuration commands) are the narrow direct-command exemption. Do not hide work behind a shell wrapper or a chained command.
+- If more than one Codex ticket is dispatching, the native `Agent` task text must include the exact reserved ticket id (for example `spn-0001`); an ambiguous task is denied by the guard.
+- Specialized tool paths may opt out of Codex's default hook path. The hook is an enforcement guardrail, not a replacement for immutable Receipts, worker path allowlists, and the parent Git safety audit.
+
 ## Model and configuration contract
 
 1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` and stores exactly the listed picker-visible ids (JSON stdout if Grok emits it; otherwise the Available models listing). Never invent ids from login or prose lines. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p`.
 
-2. **Configuration is per CLI and user-global.** Store the active CLI, enabled flag, runner label, longctx label, and subagent_models allowlist in ~/.baton/config.toml under [cli] and [cli.<id>].
+2. **Configuration is per CLI and user-global.** Store each `cli.<id>` profile's enabled flag, runner label, longctx label, and subagent_models allowlist in ~/.baton/config.toml; `cli.active` is only the omitted-host legacy default.
+   - `cli.active` is a deprecated legacy default, not a global runtime selector. An explicit `--host codex|grok` resolves only that host's profile; multiple profiles may be enabled at once.
+   - A missing or disabled requested host fails closed. Baton never substitutes another enabled host.
    - runner and longctx are routing labels only. They do not claim speed, context-window size, or any other capability.
    - Configured runner and longctx values are included in subagent_models.
    - A disabled CLI profile contributes no candidates.
@@ -54,31 +64,33 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its ad
 
 This loop is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets.
 
-1. Run baton config once or whenever the selected CLI picker surface changes.
+1. Run `baton config --cli HOST` once or whenever that host's picker surface changes.
 2. Create tickets with `baton spawn ... --dispatch --json` or `baton apply`. `--dispatch` enqueues and reserves in one call. Use `baton dispatch next --host HOST --json` only for already-queued work.
 3. For each reserved ticket, native-spawn with the returned model, prompt, optional effort, and optional service_tier when the host exposes them, fork_context=false. Mechanical prompts are one-shot: execute the inferred command (for `git-commit`: staged diff → one message → one commit). Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`. Bind immediately with `baton dispatch bind TICKET --agent-id ID --host HOST --json`.
-4. Wait on native completion. Probe only while still running, or to record exact `not_found`.
-5. `baton dispatch complete TICKET --text "..." --release --json` (or fail/timeout/close with `--release`). Refill from FIFO.
+4. Wait on native completion for the requested host. Probe only while still running, or to record exact `not_found`.
+5. `baton dispatch complete TICKET --host HOST --text "..." --release --json` (or fail/timeout/close with `--host HOST --release`). Refill from that host's FIFO.
 
 ## Commands
 
-    baton config [--cli codex|grok] [--runner MODEL|-] [--longctx MODEL|-]
+    baton guard status|install|hook [--json]
+    baton config --cli codex|grok [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
-    baton models refresh|status|candidates
+    baton models refresh|status|candidates [--host codex|grok]
     baton cards [--ranked|--unranked] [--json]
-    baton match <text>
-    baton spawn <request> [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change]
+    baton match <text> [--host codex|grok]
+    baton spawn <request> [--host codex|grok] [--unit KEY=BUSINESS_TASK ...] [--dispatch]
+    baton apply [change] [--host codex|grok]
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
-    baton dispatch defer TICKET --code AGENT_LIMIT_REACHED --observed-capacity N --json
-    baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
-    baton dispatch progress TICKET --phase PHASE --text "short status" --json
-    baton dispatch complete TICKET --text "short conclusion" [--release] --json
-    baton dispatch fail|timeout|close TICKET [--release] --json
-    baton dispatch release TICKET --agent-id ID --json
-    baton dispatch recover|status --json
-    baton status
+    baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED --observed-capacity N --json
+    baton dispatch probe TICKET --host HOST --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
+    baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" --json
+    baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
+    baton dispatch fail|timeout|close TICKET --host HOST [--release] --json
+    baton dispatch release TICKET --host HOST --agent-id ID --json
+    baton dispatch recover --host HOST --json
+    baton dispatch status --host HOST --json
+    baton status [--host codex|grok]
 
 ## Red lines
 

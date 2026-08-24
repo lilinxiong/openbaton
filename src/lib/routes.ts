@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { routeSnapshotPath } from "./paths.js";
+import { hostRouteSnapshotPath, routeSnapshotPath } from "./paths.js";
 import type { ProviderQuotaDisclosure } from "./provider-quotas.js";
 import {
   listStoredRouteMappings,
@@ -140,6 +140,9 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
 
 interface PublishRouteSnapshotOptions {
   cli?: string;
+  /** Explicit runtime host. When omitted, preserve the legacy unkeyed file. */
+  host?: string;
+  env?: NodeJS.ProcessEnv;
   engineVersion?: string | null;
   providerQuotas?: ProviderQuotaDisclosure[];
   quotaRefreshError?: string | null;
@@ -149,11 +152,14 @@ export function publishRouteSnapshot(
   cwd: string,
   catalog: unknown,
   now: Date = new Date(),
-  { cli = "codex", engineVersion = null, providerQuotas, quotaRefreshError }: PublishRouteSnapshotOptions = {},
+  { cli = "codex", host, env, engineVersion = null, providerQuotas, quotaRefreshError }: PublishRouteSnapshotOptions = {},
 ): { changed: boolean; snapshot: RouteSnapshot } {
+  if (host && String(cli).trim().toLowerCase() !== String(host).trim().toLowerCase()) {
+    throw new Error(`HOST_MISMATCH: route snapshot cli ${cli} does not match host ${host}`);
+  }
   const routes = normalizeRouteCatalog(catalog);
   const fingerprint = crypto.createHash("sha256").update(stableRoutes(routes)).digest("hex");
-  const file = routeSnapshotPath(cwd);
+  const file = host ? hostRouteSnapshotPath(cwd, host, env) : routeSnapshotPath(cwd, env);
   let previous: Partial<RouteSnapshot> | null = null;
   if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
   const normalizedEngineVersion = String(engineVersion || "").trim() || null;
@@ -178,32 +184,59 @@ export function publishRouteSnapshot(
     provider_quotas: quotaUpdate ? structuredClone(providerQuotas || []) : structuredClone(previous?.provider_quotas || []),
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+  const content = `${JSON.stringify(snapshot, null, 2)}\n`;
+  const files = host ? [...new Set([file, routeSnapshotPath(cwd, env)])] : [file];
+  for (const target of files) {
+    const temp = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(temp, content, { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(temp, target);
+    } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+  }
   return { changed: !sameCatalog, snapshot };
 }
 
-export function readRouteSnapshot(cwd: string): RouteSnapshot | null {
-  const file = routeSnapshotPath(cwd);
-  if (!fs.existsSync(file)) return null;
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
-  if (parsed.schema_version !== 5 || parsed.source !== "cli" || typeof parsed.cli !== "string" || !Array.isArray(parsed.routes) || !Array.isArray(parsed.provider_quotas)) return null;
-  return parsed as RouteSnapshot;
+export interface RouteSnapshotReadOptions {
+  host?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
-export function routeSnapshotSchemaVersion(cwd: string): number | null {
-  const file = routeSnapshotPath(cwd);
-  if (!fs.existsSync(file)) return null;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { schema_version?: unknown };
-    const value = Number(parsed.schema_version);
-    return Number.isInteger(value) ? value : null;
-  } catch {
-    return null;
+function validSnapshot(value: Partial<RouteSnapshot>): value is RouteSnapshot {
+  return value.schema_version === 5
+    && value.source === "cli"
+    && typeof value.cli === "string"
+    && Array.isArray(value.routes)
+    && Array.isArray(value.provider_quotas);
+}
+
+export function readRouteSnapshot(cwd: string, options: RouteSnapshotReadOptions | string = {}): RouteSnapshot | null {
+  const resolved = typeof options === "string" ? { host: options } : options;
+  const { host, env } = resolved;
+  const keyed = host ? hostRouteSnapshotPath(cwd, host, env) : null;
+  // An explicit host may use the matching legacy snapshot for compatibility,
+  // but never a snapshot captured for another host. A malformed/mismatched
+  // keyed snapshot is a hard isolation failure and cannot fall through.
+  const candidates = keyed ? [keyed, routeSnapshotPath(cwd, env)] : [routeSnapshotPath(cwd, env)];
+  for (const file of candidates) {
+    if (!fs.existsSync(file)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+      if (!validSnapshot(parsed)) continue;
+      if (host && parsed.cli !== host) {
+        if (file === keyed) return null;
+        continue;
+      }
+      return parsed;
+    } catch {
+      if (file === keyed) return null;
+    }
   }
+  return null;
+}
+
+export function routeSnapshotSchemaVersion(cwd: string, options: RouteSnapshotReadOptions | string = {}): number | null {
+  return readRouteSnapshot(cwd, options)?.schema_version ?? null;
 }
 
 export interface RouteCandidate {
@@ -371,8 +404,12 @@ function applyPositioning(candidates: RouteCandidate[]): void {
   }
 }
 
-export function buildRouteCandidates(cwd: string, capabilityDbPath: string): RouteCandidate[] {
-  const snapshot = readRouteSnapshot(cwd);
+export function buildRouteCandidates(
+  cwd: string,
+  capabilityDbPath: string,
+  { host, env }: { host?: string; env?: NodeJS.ProcessEnv } = {},
+): RouteCandidate[] {
+  const snapshot = readRouteSnapshot(cwd, { host, env });
   const mergedMappings = new Map<string, StoredRouteMapping>();
   for (const mapping of listStoredRouteMappings({ dbPath: capabilityDbPath })) {
     mergedMappings.set(`${mapping.routeId}\0${mapping.profile}`, mapping);

@@ -300,11 +300,13 @@ describe("reserveNext", () => {
     }
   });
 
-  it("accepts grok as a dispatch host and rejects unknown hosts", () => {
+  it("keeps a Codex ticket queued when a Grok dispatcher scans it and rejects unknown hosts", () => {
     const cwd = makeProject();
     seedQueued(cwd, 1);
     const reserved = reserveNext(cwd, { capacity: 1, host: "grok", now: at(10) });
-    assert.equal(readTicket(cwd, reserved.reserved[0].ticket_id).dispatch_host, "grok");
+    assert.equal(reserved.reserved.length, 0);
+    assert.equal(reserved.blocked[0]?.code, "HOST_MISMATCH");
+    assert.equal(readTicket(cwd, "t-0001").status, "queued");
     expectDispatchError(
       () => reserveNext(cwd, { capacity: 1, host: "claude", now: at(20) }),
       "INVALID_HOST",

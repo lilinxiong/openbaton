@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, hostHome, displayHomePath } from "./paths.js";
+import { listCliAdapters } from "../adapters/registry.js";
 
 export { hostHome } from "./paths.js";
 
-export const HOST_IDS = ["codex", "grok"] as const;
+export type HostId = ReturnType<typeof listCliAdapters>[number]["host"]["id"];
 
-export type HostId = (typeof HOST_IDS)[number];
+/** Host ids are the ids declared by the registered CLI adapters. */
+export const HOST_IDS = listCliAdapters().map((adapter) => adapter.host.id) as readonly HostId[];
 
 export function isHostId(value: string): value is HostId {
   return (HOST_IDS as readonly string[]).includes(value);
@@ -18,10 +20,9 @@ export function parseHostId(value: string): HostId {
   throw new Error(`invalid host: ${value || "<empty>"} (expected ${HOST_IDS.join("|")})`);
 }
 
-export const HOST_SKILL_REL: Record<HostId, string> = {
-  codex: ".codex/skills/baton/SKILL.md",
-  grok: ".grok/skills/baton/SKILL.md",
-};
+export const HOST_SKILL_REL: Record<HostId, string> = Object.fromEntries(
+  listCliAdapters().map((adapter) => [adapter.host.id, adapter.host.skillPath]),
+) as Record<HostId, string>;
 
 export interface HostEnvOptions {
   cwd?: string;

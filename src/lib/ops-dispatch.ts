@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { canonicalWorkspaceRoot } from "./paths.js";
-import { loadConfig } from "./config.js";
+import { cliProfileForHost, loadConfig } from "./config.js";
 import { configuredRoute, type OpsAction, type OpsProfileId } from "./ops-config.js";
 import { inferOpsAction, inferOpsActionFromContext } from "./ops-task.js";
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
@@ -9,6 +9,7 @@ import { buildCommitReceipt } from "./receipt.js";
 import { captureCommitBaseline } from "./safety.js";
 import type { StandalonePlan } from "./spawn.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
+import type { HostId } from "./hosts.js";
 
 export type OpsResolution =
   | { kind: "not-ops" }
@@ -35,8 +36,8 @@ export function hasStagedDiff(cwd: string): boolean {
   }
 }
 
-function cardForRoute(cards: ModelCard[], routeId: string, cwd: string): ModelCard | null {
-  const snapshot = readRouteSnapshot(cwd);
+function cardForRoute(cards: ModelCard[], routeId: string, cwd: string, host?: HostId): ModelCard | null {
+  const snapshot = readRouteSnapshot(cwd, { host });
   const route = snapshot?.routes.find((item) => item.route_id === routeId);
   const preferred = route?.default_reasoning_effort;
   const effort = preferred && route?.reasoning_efforts.includes(preferred) ? preferred : route?.reasoning_efforts[0];
@@ -50,10 +51,10 @@ export function resolveOpsDispatch(
   cwd: string,
   description: unknown,
   cards: ModelCard[],
-  { env }: { env?: NodeJS.ProcessEnv } = {},
+  { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
 ): OpsResolution {
   const action = inferOpsAction(description);
-  return resolveOpsActionDispatch(cwd, action, cards, { env });
+  return resolveOpsActionDispatch(cwd, action, cards, { env, host });
 }
 
 export function resolveOpsUnitDispatch(
@@ -61,25 +62,32 @@ export function resolveOpsUnitDispatch(
   requestDescription: unknown,
   unitDescription: unknown,
   cards: ModelCard[],
-  { env }: { env?: NodeJS.ProcessEnv } = {},
+  { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
 ): OpsResolution {
   const action = inferOpsActionFromContext(requestDescription, unitDescription);
-  return resolveOpsActionDispatch(cwd, action, cards, { env });
+  return resolveOpsActionDispatch(cwd, action, cards, { env, host });
 }
 
 function resolveOpsActionDispatch(
   cwd: string,
   action: OpsAction | null,
   cards: ModelCard[],
-  { env }: { env?: NodeJS.ProcessEnv } = {},
+  { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
 ): OpsResolution {
   if (!action) return { kind: "not-ops" };
   if (action === "git-commit" && !hasStagedDiff(cwd)) return { kind: "empty-index", action };
-  const configured = configuredRoute(loadConfig(cwd, { env }).ops, action);
+  const config = loadConfig(cwd, { env });
+  const profile = cliProfileForHost(config, host);
+  const ops = {
+    ...config.ops,
+    runner: { ...config.ops.runner, route: profile.runner },
+    longctx: { ...config.ops.longctx, route: profile.longctx },
+  };
+  const configured = profile.enabled ? configuredRoute(ops, action) : null;
   if (!configured) {
     return { kind: "director", action, reason: "ops route is empty; director executes this mechanical unit" };
   }
-  const choices = listOpsRouteChoices(cwd, configured.profile, cards, { env });
+  const choices = listOpsRouteChoices(cwd, configured.profile, cards, { env, host });
   if (!findOpsRouteChoice(choices, configured.route)) {
     return {
       kind: "director",
@@ -87,7 +95,7 @@ function resolveOpsActionDispatch(
       reason: `ops ${configured.profile} model is unset or unusable; director executes this mechanical unit`,
     };
   }
-  const card = cardForRoute(cards, configured.route, cwd);
+  const card = cardForRoute(cards, configured.route, cwd, host);
   if (!card?.route_id) {
     return {
       kind: "director",
@@ -96,11 +104,12 @@ function resolveOpsActionDispatch(
     };
   }
   const approval: ModelSelectionApproval = {
+    host,
     proposal_id: "ops-config",
     approval_id: `ops-${configured.profile}-${action}`,
     approved_at: new Date().toISOString(),
     confirmed_by: "ops-config",
-    catalog_fingerprint: readRouteSnapshot(cwd)?.fingerprint || "",
+    catalog_fingerprint: readRouteSnapshot(cwd, { host })?.fingerprint || "",
     recommended_model_id: card.id,
     selected_model_id: card.id,
     changed_by_user: false,

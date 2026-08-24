@@ -76,6 +76,9 @@ export interface SpawnTicket extends UnknownRecord {
   max_attempts: number;
   agent_id: string | null;
   host: string | null;
+  /** Requested runtime host captured before dispatch; unlike `host`, this is
+   * present before a worker binds and is immutable across queue transitions. */
+  target_host?: string;
   error: TicketError | null;
   conclusion: string | null;
   receipt_id: string | null;
@@ -149,6 +152,7 @@ interface BuildSpawnTicketOptions {
   deliverable?: string | null;
   doneWhen?: string | null;
   selection?: ModelSelectionApproval | null;
+  targetHost?: string | null;
   now?: Date | string | number;
 }
 
@@ -166,6 +170,7 @@ export function buildSpawnTicket({
   deliverable = null,
   doneWhen = null,
   selection = null,
+  targetHost = selection?.host || null,
   now = new Date(),
 }: BuildSpawnTicketOptions): SpawnTicket {
   assertSubagentModelAllowed(routeId, modelId);
@@ -196,6 +201,7 @@ export function buildSpawnTicket({
     max_attempts: 1,
     agent_id: null,
     host: null,
+    ...(targetHost ? { target_host: targetHost } : {}),
     error: null,
     conclusion: null,
     receipt_id: null,
@@ -220,6 +226,7 @@ interface PlanStandaloneOptions {
   deliverable?: string | null;
   doneWhen?: string | null;
   selectionApproval?: ModelSelectionApproval | null;
+  host?: string | null;
   forceDelegate?: boolean;
 }
 
@@ -227,7 +234,7 @@ export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
   | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
-export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, forceDelegate = false }: PlanStandaloneOptions): StandalonePlan {
+export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, host = null, forceDelegate = false }: PlanStandaloneOptions): StandalonePlan {
   if (!forceDelegate && directorMayRun(description)) {
     return {
       director_local: true,
@@ -253,8 +260,10 @@ export function planStandaloneSpawn({ description, prompt = null, cards, explici
     deliverable,
     doneWhen,
     selection: selectionApproval,
+    targetHost: host || selectionApproval?.host || null,
   });
-  const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at, selection: selectionApproval });
+  const resolvedHost = host || selectionApproval?.host || null;
+  const receipt = buildReadOnlyReceipt({ ticketId: id, card, maxAttempts: ticket.max_attempts, issuedAt: ticket.created_at, selection: selectionApproval, host: resolvedHost });
   ticket.receipt_id = receipt.receipt_id;
   return { director_local: false, ticket, receipt, queue: { running: 0, queued: 1 } };
 }

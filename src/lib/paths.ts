@@ -22,6 +22,16 @@ export const ROUTE_SNAPSHOT_NAME = "cli-models.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const DISPATCH_STATE_NAME = "dispatch.json";
 
+/** Host-keyed state names. The unkeyed names above remain readable as the
+ * legacy default for old Baton installations. */
+export function hostRouteSnapshotName(host: string): string {
+  return `cli-models-${String(host).trim().toLowerCase()}.json`;
+}
+
+export function hostDispatchStateName(host: string): string {
+  return `dispatch-${String(host).trim().toLowerCase()}.json`;
+}
+
 /**
  * User home for host + director files.
  * HOME = env.HOME || env.USERPROFILE || os.homedir()
@@ -94,8 +104,14 @@ export function artificialAnalysisManifestPath(cwd: string): string {
   return path.join(capabilitiesCacheDir(cwd), AA_MANIFEST_NAME);
 }
 
-export function routeSnapshotPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(batonHomeDir(env), CACHE_DIR, ROUTE_SNAPSHOT_NAME);
+export function routeSnapshotPath(_cwd: string, envOrHost?: NodeJS.ProcessEnv | string, host?: string): string {
+  const env = typeof envOrHost === "string" ? undefined : envOrHost;
+  const resolvedHost = typeof envOrHost === "string" ? envOrHost : host;
+  return path.join(batonHomeDir(env), CACHE_DIR, resolvedHost ? hostRouteSnapshotName(resolvedHost) : ROUTE_SNAPSHOT_NAME);
+}
+
+export function hostRouteSnapshotPath(_cwd: string, host: string, env?: NodeJS.ProcessEnv): string {
+  return routeSnapshotPath(_cwd, env, host);
 }
 
 export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
@@ -103,8 +119,14 @@ export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
 }
 
 /** Dispatcher runtime state (remembered capacity) for one workspace. */
-export function dispatchStatePath(cwd: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(runsDir(cwd, env), DISPATCH_STATE_NAME);
+export function dispatchStatePath(cwd: string, envOrHost?: NodeJS.ProcessEnv | string, host?: string): string {
+  const env = typeof envOrHost === "string" ? undefined : envOrHost;
+  const resolvedHost = typeof envOrHost === "string" ? envOrHost : host;
+  return path.join(runsDir(cwd, env), resolvedHost ? hostDispatchStateName(resolvedHost) : DISPATCH_STATE_NAME);
+}
+
+export function hostDispatchStatePath(cwd: string, host: string, env?: NodeJS.ProcessEnv): string {
+  return dispatchStatePath(cwd, env, host);
 }
 
 export function dispatchLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {

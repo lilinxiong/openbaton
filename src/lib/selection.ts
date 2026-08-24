@@ -64,6 +64,7 @@ export interface SelectionCandidate {
 }
 
 export interface SelectionUnit {
+  host?: string;
   key: string;
   description: string;
   prompt: string;
@@ -85,6 +86,7 @@ export interface SelectionUnit {
 
 export interface SelectionProposal {
   schema_version: 2;
+  host?: string;
   id: string;
   status: SelectionProposalStatus;
   source: "standalone" | "openspec";
@@ -109,6 +111,7 @@ export interface SelectionProposal {
   } | null;
   approvals: Array<{
     key: string;
+    host?: string;
     approval_id: string;
     confirmation_id?: string;
     confirmed_by?: ModelSelectionApproval["confirmed_by"];
@@ -120,6 +123,10 @@ export interface SelectionProposal {
     global_provider_ids?: string[];
   }>;
   history: Array<{ event: "pending_confirmation" | "approved"; at: string }>;
+}
+
+function scopedSourceFingerprint(host: string | undefined, sourceFingerprint: string): string {
+  return host ? selectionSourceFingerprint({ host, source_fingerprint: sourceFingerprint }) : sourceFingerprint;
 }
 
 function evidenceScores(capability?: CardCapabilityEvidence) {
@@ -391,6 +398,7 @@ function recommendationTieBreak(
 
 export function buildSelectionUnit({
   cwd,
+  host,
   key,
   description,
   prompt,
@@ -401,6 +409,7 @@ export function buildSelectionUnit({
   metadata = {},
 }: {
   cwd: string;
+  host?: string;
   key: string;
   description: string;
   prompt: string;
@@ -414,7 +423,7 @@ export function buildSelectionUnit({
   const complexityEstimate = estimateTaskComplexity(prompt);
   if (directorLocal) {
     return {
-      key, description, prompt, director_local: true,
+      ...(host ? { host } : {}), key, description, prompt, director_local: true,
       recommended_model_id: null, requested_model_id: null, default_model_id: null,
       recommendation_reason: "DIRECTOR_LOCAL",
       target_reasoning_effort: complexityEstimate.effort,
@@ -425,7 +434,7 @@ export function buildSelectionUnit({
     };
   }
   const policyExclusions = summarizeSubagentModelPolicyExclusions(cards);
-  const snapshot = readRouteSnapshot(cwd);
+  const snapshot = readRouteSnapshot(cwd, { host });
   if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
   const policyEligibleCards = cards.filter(isSubagentModelAllowed);
   const taskExclusions = policyEligibleCards
@@ -465,6 +474,7 @@ export function buildSelectionUnit({
   }
   const defaultModel = requestedModelId || recommended;
   return {
+    ...(host ? { host } : {}),
     key,
     description,
     prompt,
@@ -531,30 +541,34 @@ function nextProposalId(cwd: string): string {
 }
 
 export function createSelectionProposal(cwd: string, {
+  host,
   source,
   units,
   sourceFingerprint,
   payload = {},
   now = new Date(),
 }: {
+  host?: string;
   source: SelectionProposal["source"];
   units: SelectionUnit[];
   sourceFingerprint: string;
   payload?: UnknownRecord;
   now?: Date | string | number;
 }): SelectionProposal {
-  const snapshot = readRouteSnapshot(cwd);
+  const scopedHost = host || units.find((unit) => unit.host)?.host;
+  const snapshot = readRouteSnapshot(cwd, { host: scopedHost });
   if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const proposal: SelectionProposal = {
     schema_version: 2,
+    ...(scopedHost ? { host: scopedHost } : {}),
     id: nextProposalId(cwd),
     status: "pending_confirmation",
     source,
     created_at: createdAt,
     approved_at: null,
     catalog_fingerprint: snapshot.fingerprint,
-    source_fingerprint: sourceFingerprint,
+    source_fingerprint: scopedSourceFingerprint(scopedHost, sourceFingerprint),
     model_policy_id: SUBAGENT_MODEL_POLICY_ID,
     units,
     quota_pools: proposalQuotaPools(units),
@@ -594,7 +608,7 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   if (value.schema_version !== 2) {
     throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates CLI-owned model selection; create a new proposal`);
   }
-  const snapshot = readRouteSnapshot(cwd);
+  const snapshot = readRouteSnapshot(cwd, { host: value.host });
   for (const unit of value.units || []) {
     const contextEstimate = estimateTaskContext(unit.prompt || unit.description);
     const complexityEstimate = estimateTaskComplexity(unit.prompt || unit.description);

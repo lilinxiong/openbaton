@@ -1,4 +1,4 @@
-import { loadConfig } from "../lib/config.js";
+import { effectiveMaxConcurrentForHost, loadConfig } from "../lib/config.js";
 import { parseHostId, type HostId } from "../lib/hosts.js";
 import {
   bindAgent,
@@ -17,16 +17,16 @@ import type { WritableLike } from "../types.js";
 const USAGE = `usage:
   baton dispatch next --host HOST [--capacity N] [--limit N] --json
   baton dispatch bind TICKET --agent-id ID --host HOST --json
-  baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
-  baton dispatch progress TICKET --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
-  baton dispatch complete TICKET --text "short conclusion" [--release] --json
-  baton dispatch fail TICKET --code CODE --message MESSAGE [--release] --json
-  baton dispatch timeout TICKET --probe-sequence N [--message MESSAGE] [--release] --json
-  baton dispatch close TICKET [--message MESSAGE] [--release] --json
-  baton dispatch release TICKET [--agent-id ID] --json
-  baton dispatch recover [--stale-ms N] --json
-  baton dispatch status [--capacity N] --json
+  baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
+  baton dispatch probe TICKET --host HOST --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
+  baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
+  baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
+  baton dispatch fail TICKET --host HOST --code CODE --message MESSAGE [--release] --json
+  baton dispatch timeout TICKET --host HOST --probe-sequence N [--message MESSAGE] [--release] --json
+  baton dispatch close TICKET --host HOST [--message MESSAGE] [--release] --json
+  baton dispatch release TICKET --host HOST [--agent-id ID] --json
+  baton dispatch recover [--host HOST] [--stale-ms N] --json
+  baton dispatch status [--host HOST] [--capacity N] --json
 
 dispatch next remembers --capacity under ~/.baton/workspaces/<id>/runs/; later bind/complete/status/recover
 calls inherit it without repeating the flag.
@@ -70,11 +70,12 @@ function print(stdout: WritableLike, value: unknown, json = true): void {
   else stdout.write(`${String(value)}\n`);
 }
 
-function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean | undefined): number {
+function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean | undefined, host?: HostId): number {
   if (value != null) return Number(value);
-  const remembered = persistedCapacity(cwd);
+  const remembered = persistedCapacity(cwd, host);
   if (remembered != null) return remembered;
-  return loadConfig(cwd, { env }).director.max_concurrent;
+  const config = loadConfig(cwd, { env });
+  return effectiveMaxConcurrentForHost(config, host, env);
 }
 
 function dispatchHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): HostId {
@@ -87,9 +88,10 @@ function finishAndMaybeRelease(
   flags: FlagMap,
   options: Parameters<typeof finishAgent>[2],
 ) {
-  const ticket = finishAgent(cwd, id, options);
+  const host = stringFlag(flags, "host");
+  const ticket = finishAgent(cwd, id, { ...options, ...(host ? { host } : {}) });
   if (!flags.release) return ticket;
-  return releaseAgent(cwd, id, { agentId: stringFlag(flags, "agent-id") || ticket.agent_id });
+  return releaseAgent(cwd, id, { agentId: stringFlag(flags, "agent-id") || ticket.agent_id, ...(host ? { host } : {}) });
 }
 
 interface DispatchCommandOptions {
@@ -106,10 +108,11 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
   const json = Boolean(flags.json);
 
   if (sub === "next") {
+    const host = dispatchHost(flags, cwd, env);
     const result = reserveNext(cwd, {
-      capacity: capacity(cwd, env, flags.capacity),
+      capacity: capacity(cwd, env, flags.capacity, host),
       limit: flags.limit == null ? Number.MAX_SAFE_INTEGER : Number(flags.limit),
-      host: dispatchHost(flags, cwd, env),
+      host,
     });
     print(stdout, result, json);
     return result.blocked.length && result.reserved.length === 0 ? 1 : 0;
@@ -118,8 +121,9 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
   if (sub === "bind") {
     const id = values[0];
     if (!id || !flags["agent-id"]) throw new Error(USAGE.trim());
-    const ticket = bindAgent(cwd, id, { agentId: stringFlag(flags, "agent-id")!, host: dispatchHost(flags, cwd, env) });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    const host = dispatchHost(flags, cwd, env);
+    const ticket = bindAgent(cwd, id, { agentId: stringFlag(flags, "agent-id")!, host });
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host), host }) }, json);
     return 0;
   }
 
@@ -130,8 +134,10 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
       code: stringFlag(flags, "code"),
       message: stringFlag(flags, "message"),
       observedCapacity: flags["observed-capacity"] == null ? null : Number(flags["observed-capacity"]),
+      host: stringFlag(flags, "host"),
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    const host = stringFlag(flags, "host");
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host }) }, json);
     return 0;
   }
 
@@ -144,8 +150,9 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
       agentId,
       state: state as Parameters<typeof reportAgentProbe>[2]["state"],
       activity: (stringFlag(flags, "activity") || "status") as Parameters<typeof reportAgentProbe>[2]["activity"],
+      host: stringFlag(flags, "host"),
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host") }) }, json);
     return 0;
   }
 
@@ -160,8 +167,9 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
       nextStep: stringFlag(flags, "next") || null,
       blocker: stringFlag(flags, "blocker") || null,
       needsDirector: Boolean(flags["needs-input"]),
+      host: stringFlag(flags, "host"),
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host") }) }, json);
     return 0;
   }
 
@@ -169,7 +177,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
     const ticket = finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")! });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host") }) }, json);
     return 0;
   }
 
@@ -186,26 +194,29 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
       errorMessage: stringFlag(flags, "message") || null,
       probeSequence: timeoutProbeSequence ? Number(timeoutProbeSequence) : null,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host") }) }, json);
     return 0;
   }
 
   if (sub === "release") {
     const id = values[0];
     if (!id) throw new Error(USAGE.trim());
-    const ticket = releaseAgent(cwd, id, { agentId: stringFlag(flags, "agent-id") || null });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    const host = stringFlag(flags, "host");
+    const ticket = releaseAgent(cwd, id, { agentId: stringFlag(flags, "agent-id") || null, ...(host ? { host } : {}) });
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host }) }, json);
     return 0;
   }
 
   if (sub === "recover") {
-    const recovered = recoverDispatches(cwd, { staleMs: flags["stale-ms"] == null ? 60_000 : Number(flags["stale-ms"]) });
-    print(stdout, { ...recovered, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }) }, json);
+    const host = stringFlag(flags, "host");
+    const recovered = recoverDispatches(cwd, { staleMs: flags["stale-ms"] == null ? 60_000 : Number(flags["stale-ms"]), host });
+    print(stdout, { ...recovered, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host }) }, json);
     return 0;
   }
 
   if (sub === "status") {
-    print(stdout, dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity) }), json);
+    const host = stringFlag(flags, "host");
+    print(stdout, dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host }), json);
     return 0;
   }
 

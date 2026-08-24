@@ -256,9 +256,11 @@ describe("dispatch CLI", () => {
       assert.equal(firstTicket.dispatch_host, "codex");
 
       const second = await command(["dispatch", "next", "--host", "grok", "--capacity", "2", "--json"], { cwd, env });
-      assert.equal(second.code, 0, second.stderr);
+      assert.equal(second.code, 1, second.stderr);
       const secondTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0002.json"), "utf8"));
-      assert.equal(secondTicket.dispatch_host, "grok");
+      assert.equal(secondTicket.dispatch_host, undefined);
+      assert.equal(secondTicket.status, "queued");
+      assert.equal(secondTicket.error, null);
 
       const bad = await command(["dispatch", "next", "--host", "claude", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(bad.code, 1);

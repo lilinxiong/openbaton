@@ -21,6 +21,8 @@ export interface ModelCard {
 }
 
 export interface ModelSelectionApproval {
+  /** Host profile that captured and approved this model route. */
+  host?: string;
   proposal_id: string;
   approval_id: string;
   confirmation_id?: string;

@@ -1,6 +1,7 @@
 import { artificialAnalysisDbPath } from "../lib/paths.js";
 import { discoverCliModels, type CliModelDiscovery } from "../lib/cli-models.js";
 import { loadConfig } from "../lib/config.js";
+import { parseHostId, type HostId } from "../lib/hosts.js";
 import {
   buildRouteCandidates,
   publishRouteSnapshot,
@@ -13,15 +14,18 @@ export interface RouteCommandOptions {
   stdout: WritableLike;
   env?: NodeJS.ProcessEnv;
   discover?: CliModelDiscovery;
+  host?: HostId;
 }
 
 export async function refreshRouteSnapshot(options: RouteCommandOptions) {
   const { cwd, env = process.env, discover = discoverCliModels } = options;
   const config = loadConfig(cwd, { env });
-  const cli = config.cli.active;
+  const cli = options.host || config.cli.active;
   const catalog = await discover(cli, { cwd, env });
   return publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), {
     cli,
+    host: cli,
+    env,
     engineVersion: catalog.version,
     providerQuotas: [],
     quotaRefreshError: null,
@@ -39,19 +43,23 @@ export async function runRoutes(args: string[], {
   stdout,
   env = process.env,
   discover,
+  host: configuredHost,
 }: RouteCommandOptions): Promise<number> {
+  const flagIndex = args.indexOf("--host");
+  const flagHost = flagIndex >= 0 ? args[flagIndex + 1] : undefined;
+  const host = flagHost ? parseHostId(flagHost) : configuredHost;
   const sub = args[0] || "status";
   if (sub === "refresh") {
-    stdout.write(`${JSON.stringify(await refreshRouteSnapshot({ cwd, stdout, env, discover }), null, 2)}\n`);
+    stdout.write(`${JSON.stringify(await refreshRouteSnapshot({ cwd, stdout, env, discover, host }), null, 2)}\n`);
     return 0;
   }
   if (sub === "status") {
-    const snapshot = readRouteSnapshot(cwd);
+    const snapshot = readRouteSnapshot(cwd, { host, env });
     stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
     return snapshot ? 0 : 1;
   }
   if (sub === "candidates") {
-    stdout.write(`${JSON.stringify(buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd)), null, 2)}\n`);
+    stdout.write(`${JSON.stringify(buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd), { host, env }), null, 2)}\n`);
     return 0;
   }
   throw new Error("usage: baton models refresh|status|candidates");

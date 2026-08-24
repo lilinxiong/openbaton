@@ -8,18 +8,21 @@ import {
   normalizeOpsConfig,
   type OpsConfig,
 } from "./ops-config.js";
-import { CLI_IDS, type CliId } from "./cli-models.js";
+import {
+  CLI_IDS,
+  getCliAdapter,
+  listCliAdapters,
+  type CliId,
+} from "../adapters/registry.js";
 
-export const DEFAULT_MAX_CONCURRENT = 4;
-export const GROK_HOST_MAX_CONCURRENT = 8;
+export const DEFAULT_MAX_CONCURRENT = getCliAdapter("codex").host.defaultMaxConcurrent;
+export const GROK_HOST_MAX_CONCURRENT = getCliAdapter("grok").host.defaultMaxConcurrent;
 export const DEFAULT_MAX_DEPTH = 1;
 
 /** Host-native concurrent subagent cap used as Baton's director ceiling. */
 export function hostMaxConcurrent(cli: CliId, env: NodeJS.ProcessEnv = process.env): number {
-  if (cli !== "grok") return DEFAULT_MAX_CONCURRENT;
-  const override = Number(String(env.GROK_MAX_CONCURRENT_SUBAGENTS || "").trim());
-  if (Number.isFinite(override) && override > 0) return Math.floor(override);
-  return GROK_HOST_MAX_CONCURRENT;
+  const adapter = listCliAdapters().find((candidate) => candidate.id === cli);
+  return adapter ? adapter.host.maxConcurrent(env) : DEFAULT_MAX_CONCURRENT;
 }
 
 export interface DirectorSettings {
@@ -35,11 +38,11 @@ export interface CliProfileSettings {
   subagent_models: string[];
 }
 
-export interface CliSettings {
+export type CliProfiles = { [K in CliId]: CliProfileSettings };
+
+export type CliSettings = CliProfiles & {
   active: CliId;
-  codex: CliProfileSettings;
-  grok: CliProfileSettings;
-}
+};
 
 export interface Config {
   director: DirectorSettings;
@@ -56,6 +59,15 @@ export function isUnknownRecord(value: unknown): value is UnknownRecord {
 }
 
 export function emptyConfig(): Config {
+  const cliProfiles = {} as CliProfiles;
+  for (const adapter of listCliAdapters()) {
+    cliProfiles[adapter.id] = {
+      enabled: false,
+      runner: "",
+      longctx: "",
+      subagent_models: [],
+    };
+  }
   return {
     director: {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -63,18 +75,7 @@ export function emptyConfig(): Config {
     },
     cli: {
       active: "codex",
-      codex: {
-        enabled: false,
-        runner: "",
-        longctx: "",
-        subagent_models: [],
-      },
-      grok: {
-        enabled: false,
-        runner: "",
-        longctx: "",
-        subagent_models: [],
-      },
+      ...cliProfiles,
     },
     ops: emptyOpsConfig(),
   };
@@ -105,11 +106,17 @@ function stringList(value: unknown): string[] {
 }
 
 function normalizeCliProfile(value: unknown, legacyOps: OpsConfig): CliProfileSettings {
-  const profile = isUnknownRecord(value) ? value : {};
+  const hasProfile = isUnknownRecord(value);
+  const profile = hasProfile ? value : {};
+  // Legacy Baton configurations stored the runner/longctx labels under the
+  // global ops table.  Migrate that table only when the host profile itself
+  // is absent.  An explicitly present profile (including an empty disabled
+  // profile) must never inherit another host's routes.
+  const fallback = hasProfile ? emptyOpsConfig() : legacyOps;
   const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
   const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
-  const runner = rawRunner || legacyOps.runner.route;
-  const longctx = rawLongctx || legacyOps.longctx.route;
+  const runner = rawRunner || fallback.runner.route;
+  const longctx = rawLongctx || fallback.longctx.route;
   const configured = stringList(profile.subagent_models ?? profile.subagentModels);
   const migrated = [runner, longctx].filter(Boolean);
   const subagentModels = configured.length ? configured : [...new Set(migrated)];
@@ -126,15 +133,32 @@ function normalizeCli(value: unknown, legacyOps: OpsConfig): CliSettings {
   const cli = isUnknownRecord(value) ? value : {};
   const requested = String(cli.active || "codex").trim();
   const active = (CLI_IDS as readonly string[]).includes(requested) ? requested as CliId : "codex";
-  return {
-    active,
-    codex: normalizeCliProfile(cli.codex, legacyOps),
-    grok: normalizeCliProfile(cli.grok, emptyOpsConfig()),
-  };
+  const profiles = {} as CliProfiles;
+  for (const adapter of listCliAdapters()) {
+    profiles[adapter.id] = normalizeCliProfile(
+      cli[adapter.id],
+      adapter.legacyOpsProfile ? legacyOps : emptyOpsConfig(),
+    );
+  }
+  return { active, ...profiles };
 }
 
 export function activeCliProfile(config: Pick<Config, "cli">): CliProfileSettings {
   return config.cli[config.cli.active];
+}
+
+/**
+ * Resolve a host-scoped profile.  `cli.active` is intentionally only the
+ * deprecated default for callers that have no host context; an explicit host
+ * always wins and is never redirected through that field.
+ */
+export function cliProfileForHost(config: Pick<Config, "cli">, host?: CliId): CliProfileSettings {
+  return config.cli[host || config.cli.active];
+}
+
+export function resolveCliHost(config: Pick<Config, "cli">, host?: string | null): CliId {
+  const value = String(host || config.cli.active).trim().toLowerCase();
+  return (CLI_IDS as readonly string[]).includes(value) ? value as CliId : config.cli.active;
 }
 
 export function configuredSubagentModels(config: Pick<Config, "cli">): string[] {
@@ -142,7 +166,26 @@ export function configuredSubagentModels(config: Pick<Config, "cli">): string[] 
   return profile.enabled ? [...profile.subagent_models] : [];
 }
 
+export function configuredSubagentModelsForHost(config: Pick<Config, "cli">, host?: CliId): string[] {
+  const profile = cliProfileForHost(config, host);
+  return profile.enabled ? [...profile.subagent_models] : [];
+}
+
+export function enabledForHost(config: Pick<Config, "cli">, host?: CliId): boolean {
+  return cliProfileForHost(config, host).enabled;
+}
+
 function serializeConfig(cfg: Config): UnknownRecord {
+  const profiles: UnknownRecord = {};
+  for (const adapter of listCliAdapters()) {
+    const profile = cfg.cli[adapter.id];
+    profiles[adapter.id] = {
+      enabled: profile.enabled,
+      runner: profile.runner,
+      longctx: profile.longctx,
+      subagent_models: profile.subagent_models,
+    };
+  }
   return {
     director: {
       max_concurrent: cfg.director.max_concurrent,
@@ -151,18 +194,7 @@ function serializeConfig(cfg: Config): UnknownRecord {
     },
     cli: {
       active: cfg.cli.active,
-      codex: {
-        enabled: cfg.cli.codex.enabled,
-        runner: cfg.cli.codex.runner,
-        longctx: cfg.cli.codex.longctx,
-        subagent_models: cfg.cli.codex.subagent_models,
-      },
-      grok: {
-        enabled: cfg.cli.grok.enabled,
-        runner: cfg.cli.grok.runner,
-        longctx: cfg.cli.grok.longctx,
-        subagent_models: cfg.cli.grok.subagent_models,
-      },
+      ...profiles,
     },
     ops: {
       runner: {
@@ -208,4 +240,15 @@ export function saveConfig(cwd: string, cfg: unknown, options: ConfigEnvOptions 
 
 export function effectiveMaxConcurrent(cfg: Config): number {
   return cfg.director.max_concurrent;
+}
+
+/** Host-specific cap. The old director value remains the compatibility
+ * fallback for unqualified/legacy callers. */
+export function effectiveMaxConcurrentForHost(
+  cfg: Config,
+  host?: CliId,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (!host) return cfg.director.max_concurrent;
+  return hostMaxConcurrent(host, env);
 }

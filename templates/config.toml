@@ -12,6 +12,8 @@ max_concurrent = 4
 max_depth = 1
 
 [cli]
+# Deprecated compatibility default for commands without --host. Explicit
+# runtime commands resolve only the requested [cli.<host>] profile.
 active = "codex"
 
 [cli.codex]

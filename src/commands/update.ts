@@ -4,6 +4,7 @@ import { packageRoot, batonHomeDir, skillPath, configPath, displayHomePath } fro
 import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
+import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
 
 export interface UpdateProjectOptions {
   forceSkill?: boolean;
@@ -12,6 +13,7 @@ export interface UpdateProjectOptions {
 
 export interface UpdateProjectResult {
   actions: string[];
+  guard: CodexHooksInstallResult;
 }
 
 /**
@@ -55,6 +57,8 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
 
   const hosts = refreshInstalledHostSkills(cwd, { env });
   actions.push(...hosts.actions);
+  const guard = installCodexHooks({ cwd, env });
+  actions.push(`${guard.action} Codex Baton host guard at ${guard.display_path}; trust it from /hooks`);
 
-  return { actions };
+  return { actions, guard };
 }

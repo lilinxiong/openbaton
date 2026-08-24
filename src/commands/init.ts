@@ -4,6 +4,7 @@ import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } fro
 import { installHostSkills, type HostId } from "../lib/hosts.js";
 import type { CliId } from "../lib/cli-models.js";
 import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
+import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
 
 export interface InitProjectOptions {
   force?: boolean;
@@ -16,6 +17,7 @@ export interface InitProjectResult {
   created: string[];
   skipped: string[];
   tools: HostId[];
+  guard: CodexHooksInstallResult;
 }
 
 export async function initProject(cwd: string, options: InitProjectOptions = {}): Promise<InitProjectResult> {
@@ -48,13 +50,18 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const hosts = installHostSkills(cwd, { force, env });
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
+  const guard = installCodexHooks({ cwd, env });
+  if (guard.changed) created.push(guard.display_path);
 
   if (cli) {
     const cfg = loadConfig(cwd, { env });
     cfg.cli.active = cli;
+    // Initializing a named host opts that profile in without touching any
+    // other profile. Its model/route allowlist remains user-owned.
+    cfg.cli[cli].enabled = true;
     cfg.director.max_concurrent = hostMaxConcurrent(cli, env);
     saveConfig(cwd, cfg, { env });
   }
 
-  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools };
+  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools, guard };
 }

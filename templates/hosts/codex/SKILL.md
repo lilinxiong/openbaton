@@ -1,21 +1,32 @@
 ---
 name: baton
-description: "Use Baton automatically for approved multi-model execution and configured mechanical ops. Skip ordinary discussion and tasks that need neither delegation nor ops routing."
+description: "Use Baton automatically for approved multi-model execution and configured mechanical ops. Complete the Baton Codex host-guard preflight before shell, patch, or native-agent tools. Skip ordinary discussion and tasks that need neither delegation nor ops routing."
 ---
 
 # baton
 
 You are the Codex host director. Baton is the scheduling and policy layer; it is not bound to OpenCodex.
 
+## Mandatory host-guard preflight
+
+- Before any `Bash`, `apply_patch`/`Edit`/`Write`, or native `Agent` call, run `baton guard status`. After `baton init` or `baton update`, open Codex `/hooks`, review the Baton-owned `PreToolUse` and `SubagentStart` entries, and trust them.
+- The guard denies direct director shell/code writes. Reserve and dispatch a Baton ticket, start the native worker, and bind its returned identity before the worker uses tools; the spawn-to-bind race stays denied until binding is visible.
+- Only direct `baton ...` control-plane commands are exempt. Specialized Codex tool paths may opt out of the default hook path, so retain Receipt and parent Git safety checks.
+- If more than one ticket is dispatching, include the exact reserved ticket id (for example `spn-0001`) in the native `Agent` task text; the guard denies an ambiguous reservation.
+
 ## Model contract
 
+- Codex is the invoking host. For every runtime command that resolves a
+  profile or model, pass `--host codex`; `cli.active` is only the deprecated
+  default for old unqualified commands. A disabled `cli.codex` profile fails
+  closed and never falls back to Grok.
 - baton config selects the CLI first. For Codex, obtain exactly the picker-visible models from app-server model/list with hidden models excluded.
 - Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.codex] in the user-global config.
 - runner and longctx are labels only. They do not imply context-window or other capability support.
 - Every Codex-returned model is configurable, including gpt-5.4-mini and gpt-5.3-codex-spark. A missing name in host-tool prose is not proof of unsupported execution.
 - Runtime model choice is automatic from the configured allowlist. Do not show a selector, request model confirmation, accept --model/--route overrides, inherit the parent model, or silently fall back.
 - Match model, supported reasoning effort, and speed preference from Codex catalog metadata, optional local evidence, and route health. Missing benchmark evidence does not make a configured model unusable.
-- At dispatch, require the active profile to be enabled and require the exact model and effort to remain in the captured Codex catalog. Record an actual native spawn rejection against that attempt and report it without substitution.
+- At dispatch, require `cli.codex` to be enabled and require the exact model and effort to remain in the captured Codex catalog. Record an actual native spawn rejection against that attempt and report it without substitution.
 
 ## Execution contract
 
@@ -28,16 +39,17 @@ You are the Codex host director. Baton is the scheduling and policy layer; it is
 
 ## Commands
 
-    baton config [--cli codex] [--runner MODEL|-] [--longctx MODEL|-]
+    baton guard status|install|hook [--json]
+    baton config --cli codex [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
-    baton models refresh|status|candidates
-    baton match <text>
-    baton spawn <request> [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change]
+    baton models refresh|status|candidates --host codex
+    baton match <text> --host codex
+    baton spawn <request> --host codex [--unit KEY=BUSINESS_TASK ...] [--dispatch]
+    baton apply [change] --host codex
     baton dispatch next --host codex --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host codex --json
-    baton dispatch probe|progress|complete|fail|timeout|close|release TICKET
-    baton dispatch recover|status --json
+    baton dispatch probe|progress|complete|fail|timeout|close|release TICKET --host codex
+    baton dispatch recover|status --host codex --json
 
 ## Red lines
 

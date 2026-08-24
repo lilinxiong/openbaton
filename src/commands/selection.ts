@@ -1,4 +1,5 @@
 import { loadConfig } from "../lib/config.js";
+import { parseHostId } from "../lib/hosts.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
@@ -51,6 +52,7 @@ function approvalFor(
   context: ApprovalContext,
 ): ModelSelectionApproval {
   return {
+    host: proposal.host,
     proposal_id: proposal.id,
     approval_id: `approval-${proposal.id}-${key.replaceAll(/[^a-zA-Z0-9_.-]/g, "-")}`,
     confirmation_id: context.confirmation_id,
@@ -70,17 +72,17 @@ function approvalFor(
 
 function currentSourceFingerprint(proposal: SelectionProposal): string {
   if (proposal.source === "standalone") {
-    if (proposal.payload.source_shape === "multi-unit-v1") return selectionSourceFingerprint({
-      source_shape: "multi-unit-v1",
-      description: String(proposal.payload.description || ""),
-      units: Array.isArray(proposal.payload.units)
-        ? proposal.payload.units.map((item) => {
-          const unit = item && typeof item === "object" ? item as Record<string, unknown> : {};
-          return { key: String(unit.key || ""), description: String(unit.description || "") };
-        })
-        : [],
-    });
-    return selectionSourceFingerprint({
+    if (proposal.payload.source_shape === "multi-unit-v1") return scopedSelectionSourceFingerprint(proposal, {
+        source_shape: "multi-unit-v1",
+        description: String(proposal.payload.description || ""),
+        units: Array.isArray(proposal.payload.units)
+          ? proposal.payload.units.map((item) => {
+            const unit = item && typeof item === "object" ? item as Record<string, unknown> : {};
+            return { key: String(unit.key || ""), description: String(unit.description || "") };
+          })
+          : [],
+      });
+    return scopedSelectionSourceFingerprint(proposal, {
       description: proposal.payload.description,
       task_kind: proposal.payload.task_kind || null,
       deliverable: proposal.payload.deliverable || null,
@@ -93,7 +95,12 @@ function currentSourceFingerprint(proposal: SelectionProposal): string {
   const tasks = loadTasksFromChangeDir(changeDir).tasks
     .filter((task) => task.status === "pending")
     .map((task) => ({ number: task.number, description: task.description, section: task.section }));
-  return selectionSourceFingerprint(tasks);
+  return scopedSelectionSourceFingerprint(proposal, tasks);
+}
+
+function scopedSelectionSourceFingerprint(proposal: SelectionProposal, value: unknown): string {
+  const base = selectionSourceFingerprint(value);
+  return proposal.host ? selectionSourceFingerprint({ host: proposal.host, source_fingerprint: base }) : base;
 }
 
 function recommendedCandidate(proposal: SelectionProposal, key: string): SelectionCandidate {
@@ -113,7 +120,7 @@ function validateProposal(cwd: string, proposal: SelectionProposal): void {
   if (proposal.model_policy_id !== SUBAGENT_MODEL_POLICY_ID) {
     throw new Error("MODEL_POLICY_CHANGED: this proposal predates the configured CLI allowlist policy; create a new proposal");
   }
-  const snapshot = readRouteSnapshot(cwd);
+  const snapshot = readRouteSnapshot(cwd, { host: proposal.host });
   if (!snapshot || snapshot.fingerprint !== proposal.catalog_fingerprint) {
     throw new Error("ROUTE_SNAPSHOT_STALE: refresh the active CLI model catalog and create a new proposal");
   }
@@ -176,6 +183,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
   const context = automaticContext(proposal, [...candidates.values()]);
   const selected = new Map<string, ModelCard>();
   const approvals = new Map<string, ModelSelectionApproval>();
+  const selectionHost = proposal.host || loadConfig(cwd, { env }).cli.active;
   const includedTasks = new Set(proposal.units.map((unit) => unit.key));
   for (const unit of proposal.units) {
     if (unit.director_local) continue;
@@ -190,7 +198,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     cards,
     includeTask: (task) => includedTasks.has(task.number),
     selectCard: (task) => selected.get(task.number),
-    selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt),
+    selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt, selectionHost),
     selectionApprovals: approvals,
   });
   if (result.error || result.blocked.length) throw new Error(result.error || result.blocked.map((item) => `${item.id}: ${item.error}`).join("; "));
@@ -238,6 +246,7 @@ function finalizeSelectionApproval(
   proposal.history.push({ event: "approved", at: proposal.approved_at });
   proposal.approvals = result.approvals.map(({ key, approval }) => ({
     key,
+    host: approval.host,
     approval_id: approval.approval_id,
     confirmation_id: approval.confirmation_id,
     confirmed_by: approval.confirmed_by,
@@ -296,11 +305,13 @@ export function approveRecommendedSelection({
 export function runSelection(args: string[], {
   cwd,
   stdout,
+  host,
 }: {
   cwd: string;
   stdout: WritableLike;
   cards: ModelCard[];
   env?: NodeJS.ProcessEnv;
+  host?: string;
 }): number {
   const sub = args[0] || "show";
   if (sub !== "show") {
@@ -309,6 +320,9 @@ export function runSelection(args: string[], {
   const id = args[1];
   if (!id) throw new Error("usage: baton selection show PROPOSAL [--json]");
   const proposal = readSelectionProposal(cwd, id);
+  if (host && proposal.host && parseHostId(host) !== parseHostId(proposal.host)) {
+    throw new Error(`HOST_MISMATCH: selection ${id} belongs to ${proposal.host}, not ${host}`);
+  }
   if (args.includes("--json")) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
   else printSelectionProposal(stdout, proposal);
   return 0;

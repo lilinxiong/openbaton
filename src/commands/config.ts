@@ -155,6 +155,8 @@ async function configureCliProfile(
   if (!catalog.models.length) throw new Error(`${cli} returned no picker-visible models`);
   publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), {
     cli,
+    host: cli,
+    env,
     engineVersion: catalog.version,
     providerQuotas: [],
     quotaRefreshError: null,
@@ -282,6 +284,8 @@ export async function runConfig(args: string[], {
   }
 
   const active = clis[0];
+  // Keep `active` only as the backwards-compatible default for commands that
+  // do not provide --host. Explicit host callers resolve their own profile.
   current.cli.active = active;
   current.director.max_concurrent = hostMaxConcurrent(active, env);
   const file = saveConfig(cwd, current, { env });

@@ -5,8 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import type { CliModelCatalog } from "../src/lib/cli-models.js";
-import { spawnsDir } from "../src/lib/paths.js";
+import { receiptsDir, selectionsDir, spawnsDir } from "../src/lib/paths.js";
+import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
+import { configureCli } from "./configure.js";
 
 function capture() {
   const chunks: string[] = [];
@@ -48,6 +50,14 @@ async function initAndConfigure(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
     "config", "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
     "--subagent-model", "all", "--enable",
   ], { cwd, env, stdout: out, stderr: out, discover: async () => structuredClone(CATALOG) }), 0, out.text());
+}
+
+async function initHostProfiles(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
+  assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+  publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model", provider: "codex" }] }, new Date(), { cli: "codex", host: "codex", env });
+  publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model", provider: "grok" }] }, new Date(), { cli: "grok", host: "grok", env });
+  configureCli(cwd, env, "codex", ["codex/model"]);
+  configureCli(cwd, env, "grok", ["grok/model"]);
 }
 
 describe("CLI automatic model routing", () => {
@@ -130,6 +140,75 @@ describe("CLI automatic model routing", () => {
         cwd, env, stdout: out, stderr: out,
       }), 1);
       assert.match(out.text(), /MODEL_SELECTION_REMOVED/);
+    });
+  });
+
+  it("captures the resolved host and never relabels tickets across Codex and Grok", async () => {
+    await withHome(async (home) => {
+      const explicitCodex = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-codex-"));
+      const codexEnv = fakeEnv(home);
+      await initHostProfiles(explicitCodex, codexEnv);
+      const codexOut = capture();
+      assert.equal(await run(["spawn", "implement the Codex host unit", "--host", "codex", "--json"], { cwd: explicitCodex, env: codexEnv, stdout: codexOut, stderr: codexOut }), 0, codexOut.text());
+      const codexTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(explicitCodex), "spn-0001.json"), "utf8"));
+      const codexReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(explicitCodex), `${codexTicket.receipt_id}.json`), "utf8"));
+      const codexProposal = JSON.parse(fs.readFileSync(path.join(selectionsDir(explicitCodex), "sel-0001.json"), "utf8"));
+      assert.equal(codexProposal.host, "codex");
+      assert.equal(codexProposal.approvals[0].host, "codex");
+      assert.equal(codexTicket.target_host, "codex");
+      assert.equal(codexTicket.model_id, "codex/model");
+      assert.equal(codexReceipt.host, "codex");
+
+      const disabledCodex = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-disabled-"));
+      const disabledEnv = fakeEnv(home);
+      await initHostProfiles(disabledCodex, disabledEnv);
+      configureCli(disabledCodex, disabledEnv, "codex", ["codex/model"], { enabled: false });
+      configureCli(disabledCodex, disabledEnv, "grok", ["grok/model"]);
+      const disabledOut = capture();
+      assert.equal(await run(["spawn", "implement the disabled Codex unit", "--host", "codex", "--json"], { cwd: disabledCodex, env: disabledEnv, stdout: disabledOut, stderr: disabledOut }), 1);
+      assert.match(disabledOut.text(), /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i);
+      assert.equal(fs.existsSync(path.join(spawnsDir(disabledCodex), "spn-0001.json")), false);
+
+      const explicitGrok = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-grok-"));
+      const grokEnv = fakeEnv(home);
+      await initHostProfiles(explicitGrok, grokEnv);
+      const grokOut = capture();
+      assert.equal(await run(["spawn", "implement the Grok host unit", "--host", "grok", "--json"], { cwd: explicitGrok, env: grokEnv, stdout: grokOut, stderr: grokOut }), 0, grokOut.text());
+      const grokTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(explicitGrok), "spn-0001.json"), "utf8"));
+      const grokReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(explicitGrok), `${grokTicket.receipt_id}.json`), "utf8"));
+      assert.equal(grokTicket.target_host, "grok");
+      assert.equal(grokTicket.model_id, "grok/model");
+      assert.equal(grokReceipt.host, "grok");
+
+      const omitted = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-omitted-"));
+      const omittedEnv = fakeEnv(home);
+      await initHostProfiles(omitted, omittedEnv);
+      const omittedOut = capture();
+      assert.equal(await run(["spawn", "implement the legacy-default unit", "--json"], { cwd: omitted, env: omittedEnv, stdout: omittedOut, stderr: omittedOut }), 0, omittedOut.text());
+      const omittedTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(omitted), "spn-0001.json"), "utf8"));
+      const omittedReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(omitted), `${omittedTicket.receipt_id}.json`), "utf8"));
+      assert.equal(omittedTicket.target_host, "grok");
+      assert.equal(omittedReceipt.host, "grok");
+      const wrongReserve = capture();
+      assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd: omitted, env: omittedEnv, stdout: wrongReserve, stderr: wrongReserve }), 1);
+      assert.match(wrongReserve.text(), /HOST_MISMATCH|targets grok/i);
+
+      const releaseMismatch = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-release-"));
+      const releaseEnv = fakeEnv(home);
+      await initHostProfiles(releaseMismatch, releaseEnv);
+      const releaseSpawn = capture();
+      assert.equal(await run(["spawn", "implement the release unit", "--host", "grok", "--json"], { cwd: releaseMismatch, env: releaseEnv, stdout: releaseSpawn, stderr: releaseSpawn }), 0, releaseSpawn.text());
+      for (const argv of [
+        ["dispatch", "next", "--host", "grok", "--capacity", "1", "--json"],
+        ["dispatch", "bind", "spn-0001", "--host", "grok", "--agent-id", "agent-grok", "--json"],
+        ["dispatch", "complete", "spn-0001", "--host", "grok", "--text", "done", "--json"],
+      ]) {
+        const output = capture();
+        assert.equal(await run(argv, { cwd: releaseMismatch, env: releaseEnv, stdout: output, stderr: output }), 0, output.text());
+      }
+      const wrongRelease = capture();
+      assert.equal(await run(["dispatch", "release", "spn-0001", "--host", "codex", "--agent-id", "agent-grok", "--json"], { cwd: releaseMismatch, env: releaseEnv, stdout: wrongRelease, stderr: wrongRelease }), 1);
+      assert.match(wrongRelease.text(), /HOST_MISMATCH|targets grok/i);
     });
   });
 });

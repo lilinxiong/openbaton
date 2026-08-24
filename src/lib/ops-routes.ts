@@ -4,7 +4,8 @@ import { quotaForProvider } from "./provider-quotas.js";
 import { quotaPoolForCandidate } from "./quota-pools.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
 import type { OpsProfileId } from "./ops-config.js";
-import { activeCliProfile, loadConfig } from "./config.js";
+import type { CliId } from "../adapters/contract.js";
+import { cliProfileForHost, loadConfig } from "./config.js";
 import type { ModelCard } from "../types.js";
 
 export interface OpsRouteChoice {
@@ -31,8 +32,9 @@ function remainingFor(
   cwd: string,
   cards: ModelCard[],
   route: ExecutableRoute,
+  host?: string,
 ): { remaining_percent: number | null; quota_label: string | null; exhausted: boolean } {
-  const snapshot = readRouteSnapshot(cwd);
+  const snapshot = readRouteSnapshot(cwd, { host });
   if (!snapshot) return { remaining_percent: null, quota_label: null, exhausted: false };
   const card = cardForRoute(cards, route.route_id);
   const quota = quotaForProvider(snapshot, route.provider || card?.provider);
@@ -53,6 +55,7 @@ function commonEligible(
   cwd: string,
   cards: ModelCard[],
   route: ExecutableRoute,
+  host?: string,
 ): boolean {
   if (route.disabled) return false;
   const card = cardForRoute(cards, route.route_id) || {
@@ -65,33 +68,33 @@ function commonEligible(
   if (card.executable === false) return false;
   if (!isSubagentModelAllowed(card)) return false;
   if (taskCapabilityExclusion(card)) return false;
-  return !remainingFor(cwd, cards, route).exhausted;
+  return !remainingFor(cwd, cards, route, host).exhausted;
 }
 
 export function listOpsRouteChoices(
   cwd: string,
   _profile: OpsProfileId,
   cards: ModelCard[],
-  { env = process.env }: { env?: NodeJS.ProcessEnv } = {},
+  { env = process.env, host }: { env?: NodeJS.ProcessEnv; host?: CliId } = {},
 ): OpsRouteChoice[] {
-  const snapshot = readRouteSnapshot(cwd);
+  const snapshot = readRouteSnapshot(cwd, { host, env });
   let allowed = new Set<string>();
   try {
     const config = loadConfig(cwd, { env });
-    const cli = activeCliProfile(config);
-    if (cli.enabled && snapshot?.cli === config.cli.active) allowed = new Set(cli.subagent_models);
+    const cli = cliProfileForHost(config, host);
+    if (cli.enabled && snapshot?.cli === (host || config.cli.active)) allowed = new Set(cli.subagent_models);
   } catch (error) {
     if ((error as { code?: string }).code === "BATON_NOT_INITIALIZED") return [];
     throw error;
   }
-  const routes = (snapshot?.routes || []).filter((route) => allowed.has(route.route_id) && commonEligible(cwd, cards, route));
+  const routes = (snapshot?.routes || []).filter((route) => allowed.has(route.route_id) && commonEligible(cwd, cards, route, host));
   // runner and longctx are user labels. They do not assert or filter model
   // capabilities such as context-window size.
   const filtered = routes;
 
   const unique = new Map<string, OpsRouteChoice>();
   for (const route of filtered) {
-    const quota = remainingFor(cwd, cards, route);
+    const quota = remainingFor(cwd, cards, route, host);
     unique.set(route.route_id, {
       route_id: route.route_id,
       provider: route.provider,
