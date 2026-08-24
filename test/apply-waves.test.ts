@@ -31,6 +31,9 @@ describe("apply wave overlay", () => {
     assert.equal(plan.waves.length, 1);
     assert.equal(plan.ready?.parallel, true);
     assert.deepEqual(plan.ready?.task_ids, ["1.1", "1.2"]);
+    assert.deepEqual(plan.order_ready?.task_ids, ["1.1", "1.2"]);
+    assert.equal(plan.order_ready?.waves.length, 1);
+    assert.equal(plan.order_ready?.section, "Config");
   });
 
   it("keeps shared or missing paths serial", () => {
@@ -41,6 +44,9 @@ describe("apply wave overlay", () => {
     assert.equal(shared.waves.length, 2);
     assert.equal(shared.ready?.parallel, false);
     assert.deepEqual(shared.ready?.task_ids, ["1.1"]);
+    assert.deepEqual(shared.order_ready?.task_ids, ["1.1", "1.2"]);
+    assert.equal(shared.order_ready?.section, "Config");
+    assert.equal(shared.order_ready?.waves.length, 2);
 
     const missing = planApplyWaves([
       task({ section: "Config", number: "1.1", description: "remove the global default CLI" }),
@@ -58,5 +64,9 @@ describe("apply wave overlay", () => {
     assert.equal(plan.ready?.section, "1. Config schema");
     assert.deepEqual(plan.ready?.task_ids, ["1.1"]);
     assert.deepEqual(plan.waves[1]?.task_ids, ["2.1"]);
+    assert.deepEqual(plan.order_ready?.task_ids, ["1.1"]);
+    assert.equal(plan.order_ready?.section, "1. Config schema");
+    assert.equal(plan.order_ready?.waves.length, 1);
+    assert.ok(plan.waves.some((wave) => wave.section === "2. Host resolution"));
   });
 });

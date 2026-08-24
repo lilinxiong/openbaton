@@ -712,6 +712,38 @@ export function reportAgentProgress(cwd: string, id: string, {
   });
 }
 
+function relativeLedgerPath(cwd: string, tasksPath: unknown): string | null {
+  if (typeof tasksPath !== "string" || !tasksPath) return null;
+  const relative = path.relative(cwd, tasksPath).replaceAll("\\", "/");
+  if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) return null;
+  return relative;
+}
+
+function peerWriteAllowlists(cwd: string, ticket: SpawnTicket): string[][] {
+  const lists: string[][] = [];
+  const ledger = new Set<string>();
+  const ownLedger = relativeLedgerPath(cwd, ticket.openspec?.tasks_path);
+  if (ownLedger) ledger.add(ownLedger);
+  for (const other of listSpawns(cwd)) {
+    const otherLedger = relativeLedgerPath(cwd, other.openspec?.tasks_path);
+    if (otherLedger) ledger.add(otherLedger);
+    if (other.id === ticket.id || other.mode !== "write" || !other.receipt_id) continue;
+    const overlapping = Boolean(other.started_at)
+      || other.status === "dispatching"
+      || other.status === "running"
+      || other.status === "completed";
+    if (!overlapping) continue;
+    try {
+      const allowlist = readReceipt(cwd, other.receipt_id).scope.write_allowlist;
+      if (allowlist.length) lists.push(allowlist);
+    } catch {
+      continue;
+    }
+  }
+  if (ledger.size) lists.push([...ledger]);
+  return lists;
+}
+
 interface FinishOptions {
   status: "completed" | "errored" | "timed_out" | "closed";
   conclusion?: string | null;
@@ -777,7 +809,11 @@ export function finishAgent(cwd: string, id: string, {
       if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
       const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation =>
         ["write", "create", "delete", "rename", "chmod"].includes(item));
-      const verdict = auditWorktree(cwd, receipt.baseline, { write_allowlist: receipt.scope.write_allowlist, allowed_operations: allowedOperations });
+      const verdict = auditWorktree(cwd, receipt.baseline, {
+        write_allowlist: receipt.scope.write_allowlist,
+        allowed_operations: allowedOperations,
+        peer_write_allowlists: peerWriteAllowlists(cwd, ticket),
+      });
       ticket.safety_verdict = verdict as unknown as UnknownRecord;
       if (!verdict.accepted) {
         transition(ticket, expected, "errored", {

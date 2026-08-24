@@ -98,6 +98,29 @@ describe("parent shared-worktree safety gate", () => {
     assert.equal(verdict.accepted, true);
   });
 
+  it("ignores sibling write-ticket paths while still rejecting unaffiliated dirt", () => {
+    const cwd = fixture();
+    const baseline = captureBaseline(cwd);
+    fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
+    fs.writeFileSync(path.join(cwd, "sibling.txt"), "PEER\n");
+    fs.appendFileSync(path.join(cwd, "denied.txt"), "UNRELATED\n");
+    const accepted = auditWorktree(cwd, baseline, {
+      write_allowlist: ["allowed.txt"],
+      allowed_operations: ["write", "create"],
+      peer_write_allowlists: [["sibling.txt"]],
+    });
+    assert.equal(accepted.accepted, false);
+    assert.ok(!accepted.violations.some((item) => item.path === "sibling.txt"));
+    assert.ok(accepted.violations.some((item) => item.code === "E_OUT_OF_SCOPE_PATH" && item.path === "denied.txt"));
+
+    const peersOnly = auditWorktree(cwd, baseline, {
+      write_allowlist: ["allowed.txt"],
+      allowed_operations: ["write", "create"],
+      peer_write_allowlists: [["sibling.txt"], ["denied.txt"]],
+    });
+    assert.equal(peersOnly.accepted, true);
+  });
+
   it("classifies executable mode changes as chmod rather than write", () => {
     const cwd = fixture();
     const baseline = captureBaseline(cwd);

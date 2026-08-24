@@ -149,4 +149,149 @@ describe("baton apply waves", () => {
       assert.deepEqual(receipt.scope.allowed_operations, ["read"]);
     });
   });
+
+  it("dispatches later same-section order_ready cluster outside ready_wave", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-order-ready-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      gitRepo(cwd);
+      configureCodex(cwd, env, ["kimi/k3[1m]"]);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] }, new Date(), { cli: "codex", host: "codex" });
+      const changeDir = path.join(cwd, "openspec", "changes", "shared-split");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), `# Shared split
+
+## 1. Config
+
+- [ ] 1.1 remove active from src/lib/config.ts
+- [ ] 1.2 stop copying routes in src/lib/config.ts
+`);
+      const planned = await command(["apply", "shared-split", "--host", "codex", "--json"], { cwd, env });
+      assert.equal(planned.code, 0, planned.stderr || planned.stdout);
+      const plan = JSON.parse(planned.stdout);
+      assert.deepEqual(plan.ready_wave.task_ids, ["1.1"]);
+      assert.deepEqual(plan.order_ready.task_ids, ["1.1", "1.2"]);
+      assert.ok(!plan.ready_wave.task_ids.includes("1.2"));
+
+      const result = await command([
+        "apply", "shared-split", "--host", "codex", "--dispatch", "--json",
+        "--unit", "1.2", "--write-path", "src/lib/hosts.ts",
+      ], { cwd, env });
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.tickets.length, 1);
+      const ticketFiles = fs.readdirSync(spawnsDir(cwd)).filter((name) => name.endsWith(".json"));
+      assert.equal(ticketFiles.length, 1);
+      const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), ticketFiles[0]), "utf8"));
+      assert.equal(ticket.mode, "write");
+      const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
+      assert.deepEqual(receipt.scope.write_allowlist, ["src/lib/hosts.ts"]);
+    });
+  });
+
+  it("rejects later-section dispatch while earlier section is pending", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-section-order-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      gitRepo(cwd);
+      configureCodex(cwd, env, ["kimi/k3[1m]"]);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] }, new Date(), { cli: "codex", host: "codex" });
+      const changeDir = path.join(cwd, "openspec", "changes", "section-order");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), `# Section order
+
+## 1. Config schema
+
+- [ ] 1.1 implement src/lib/config.ts types
+
+## 2. Host resolution
+
+- [ ] 2.1 implement src/cli.ts help
+`);
+      const result = await command([
+        "apply", "section-order", "--host", "codex", "--dispatch", "--json",
+        "--unit", "2.1", "--write-path", "src/cli.ts",
+      ], { cwd, env });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /APPLY_SECTION_ORDER/);
+      assert.equal(fs.existsSync(spawnsDir(cwd)), false);
+    });
+  });
+
+  it("rejects pairwise intersecting write paths in one dispatch", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-write-conflict-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      gitRepo(cwd);
+      configureCodex(cwd, env, ["kimi/k3[1m]"]);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] }, new Date(), { cli: "codex", host: "codex" });
+      const changeDir = path.join(cwd, "openspec", "changes", "write-conflict");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), `# Write conflict
+
+## 1. Config schema
+
+- [ ] 1.1 implement src/lib/config.ts types
+- [ ] 1.2 implement src/lib/hosts.ts detection
+`);
+      const result = await command([
+        "apply", "write-conflict", "--host", "codex", "--dispatch", "--json",
+        "--unit", "1.1", "--write-path", "src/lib/config.ts",
+        "--unit", "1.2", "--write-path", "src/lib/config.ts",
+      ], { cwd, env });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /APPLY_WRITE_CONFLICT/);
+      assert.equal(fs.existsSync(spawnsDir(cwd)), false);
+    });
+  });
+
+  it("completes two parallel write tickets without treating sibling files as out of scope", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-parallel-complete-"));
+      const env = fakeEnv(home);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      gitRepo(cwd);
+      fs.mkdirSync(path.join(cwd, "src", "lib"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "src", "lib", "config.ts"), "config\n");
+      fs.writeFileSync(path.join(cwd, "src", "lib", "hosts.ts"), "hosts\n");
+      execFileSync("git", ["add", "src/lib/config.ts", "src/lib/hosts.ts"], { cwd });
+      execFileSync("git", ["commit", "-m", "paths"], { cwd });
+      configureCodex(cwd, env, ["kimi/k3[1m]"]);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] }, new Date(), { cli: "codex", host: "codex" });
+      const changeDir = path.join(cwd, "openspec", "changes", "parallel-complete");
+      fs.mkdirSync(changeDir, { recursive: true });
+      fs.writeFileSync(path.join(changeDir, "tasks.md"), `# Parallel complete
+
+## 1. Config schema
+
+- [ ] 1.1 implement src/lib/config.ts types
+- [ ] 1.2 implement src/lib/hosts.ts detection
+`);
+      const result = await command([
+        "apply", "parallel-complete", "--host", "codex", "--dispatch", "--json", "--capacity", "4",
+        "--unit", "1.1", "--write-path", "src/lib/config.ts",
+        "--unit", "1.2", "--write-path", "src/lib/hosts.ts",
+      ], { cwd, env });
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      const body = JSON.parse(result.stdout);
+      const ids = body.tickets.map((ticket: { id: string }) => ticket.id);
+      assert.equal(ids.length, 2);
+      assert.equal((await command(["dispatch", "bind", ids[0], "--agent-id", "agent-a", "--host", "codex", "--json"], { cwd, env })).code, 0);
+      assert.equal((await command(["dispatch", "bind", ids[1], "--agent-id", "agent-b", "--host", "codex", "--json"], { cwd, env })).code, 0);
+      fs.appendFileSync(path.join(cwd, "src", "lib", "config.ts"), "A\n");
+      fs.appendFileSync(path.join(cwd, "src", "lib", "hosts.ts"), "B\n");
+      const first = await command(["dispatch", "complete", ids[0], "--host", "codex", "--text", "unit one done", "--json"], { cwd, env });
+      assert.equal(first.code, 0, first.stderr || first.stdout);
+      const firstTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${ids[0]}.json`), "utf8"));
+      assert.equal(firstTicket.status, "completed", JSON.stringify(firstTicket.error));
+      const second = await command(["dispatch", "complete", ids[1], "--host", "codex", "--text", "unit two done", "--json"], { cwd, env });
+      assert.equal(second.code, 0, second.stderr || second.stdout);
+      const secondTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${ids[1]}.json`), "utf8"));
+      assert.equal(secondTicket.status, "completed", JSON.stringify(secondTicket.error));
+    });
+  });
+
 });

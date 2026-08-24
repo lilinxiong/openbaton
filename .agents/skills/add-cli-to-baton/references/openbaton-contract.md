@@ -63,7 +63,7 @@ Every new CLI MUST ship the same director/worker routing table in its runtime sk
 
 If the target exposes a PreToolUse-compatible hook, the shared host guard MUST implement ticket-presence: no reserved ticket → director mutating tools allowed; reserved/dispatching/running worker tickets → director implementation writes denied; bound workers stay inside the Receipt. MUST NOT ship fail-closed-always or allow-always. Cursor and other hookless hosts still MUST ship the table in the runtime skill; missing a hook is not a license to implement declared classified work in the parent.
 
-Keep the adapter-boundary and model/configuration invariants above. Do not rewrite OpenSpec apply skills. OpenSpec apply intercept remains in the target host Baton skill via `baton apply` plan → director `--write-path`/`--read-only` filter → scoped `--dispatch`.
+Keep the adapter-boundary and model/configuration invariants above. Do not rewrite OpenSpec apply skills. OpenSpec apply intercept remains in the target host Baton skill via `baton apply` plan → director filter of the order-ready frontier (`--write-path`/`--read-only`) → pack by section order, write-set intersection, and host cap → one scoped `--dispatch` with multiple `--unit` flags.
 
 ## Runtime skill and native protocol
 
@@ -80,7 +80,7 @@ The runtime sequence remains logically equivalent across hosts:
 
 Do not substitute a shell-launched coding CLI, print mode, or new top-level session for a native child agent.
 
-OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` waves through `baton apply` plan → director `--write-path`/`--read-only` filter → scoped `baton apply --dispatch` and native children.
+OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` through `baton apply` plan → director filter of the order-ready frontier (`--write-path`/`--read-only`) → pack by section order, write-set intersection, and host cap → one scoped `baton apply --dispatch` with multiple `--unit` flags and same-turn native children.
 
 ## User-visible completion
 

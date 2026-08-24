@@ -21,9 +21,17 @@ export interface ApplyWave {
   tasks: ApplyWaveTask[];
 }
 
+export interface ApplyOrderReady {
+  section: string;
+  task_ids: string[];
+  waves: ApplyWave[];
+}
+
 export interface ApplyWavePlan {
   waves: ApplyWave[];
   ready: ApplyWave | null;
+  /** First pending section's remaining waves; null when nothing is pending. */
+  order_ready: ApplyOrderReady | null;
 }
 
 export function applyTaskId(task: Pick<OpenSpecTask, "number" | "line_index">): string {
@@ -142,5 +150,22 @@ export function planApplyWaves(tasks: OpenSpecTask[]): ApplyWavePlan {
       waves.push(makeWave(waves.length, section, group));
     }
   }
-  return { waves, ready: waves[0] || null };
+
+  const ready = waves[0] || null;
+  let order_ready: ApplyOrderReady | null = null;
+  if (ready) {
+    const sectionWaves = waves.filter((wave) => wave.section === ready.section);
+    const seen = new Set<string>();
+    const task_ids: string[] = [];
+    for (const wave of sectionWaves) {
+      for (const id of wave.task_ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        task_ids.push(id);
+      }
+    }
+    order_ready = { section: ready.section, task_ids, waves: sectionWaves };
+  }
+
+  return { waves, ready, order_ready };
 }

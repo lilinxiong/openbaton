@@ -45,7 +45,7 @@ Same table on every host. Do not invent a host-specific split.
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
 - Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
 - OpenSpec is optional and remains workflow owner when present. Do not rewrite `tasks.md` structure. Baton state stays under ~/.baton, never in the project.
-- When `cli.grok.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Plan with `baton apply <change> --host grok --json`. Filter each ready-wave unit here (`--write-path` or `--read-only`). Then `baton apply <change> --host grok --dispatch --json --unit ID --write-path PATH` (or `--read-only`). Never `--dispatch` without `--unit` scope. Native-spawn reserved tickets in that wave in parallel with `spawn_subagent` (exact `model`, `background=true`, no `resume_from`), then bind immediately. After the wave completes, plan/filter/dispatch again. Independent tasks must run in parallel; overlapping or later-section work stays serial. If `cli.grok.enabled` is false, fail closed and do not borrow another CLI.
+- When `cli.grok.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Plan with `baton apply <change> --host grok --json`. Filter the order-ready frontier here (`--write-path` or `--read-only`). Pack by section order, director write-set intersection, and host cap. Then one `baton apply <change> --host grok --dispatch --json --unit ID --write-path PATH --unit ID --write-path PATH` (or `--read-only`). Never `--dispatch` without `--unit` scope. Native-spawn every reserved ticket from that call in the same turn with `spawn_subagent` (exact `model`, `background=true`, no `resume_from`), then bind immediately. When a slot frees, refill with the same three predicates. Later sections stay serial while an earlier section is pending. If `cli.grok.enabled` is false, fail closed and do not borrow another CLI.
 - Install this skill at ~/.grok/skills/baton/SKILL.md. `grok inspect [--json]` shows discovered config including skills.
 
 ## Commands
@@ -56,7 +56,7 @@ Same table on every host. Do not invent a host-specific split.
     baton match <text> --host grok
     baton spawn <request> --host grok [--unit KEY=BUSINESS_TASK ...] [--dispatch]
     baton apply [change] --host grok
-    baton apply [change] --host grok --dispatch --unit ID --write-path PATH|--read-only
+    baton apply [change] --host grok --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host grok --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host grok --json
     baton dispatch probe|progress|complete|fail|timeout|close|release TICKET --host grok

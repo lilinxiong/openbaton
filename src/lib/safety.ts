@@ -39,6 +39,8 @@ export interface StatusEntry {
 export interface SafetyPolicy {
   write_allowlist: string[];
   allowed_operations: SafetyOperation[];
+  /** Allowlists of overlapping write tickets. Dirt on those paths is their audit, not this one. */
+  peer_write_allowlists?: string[][];
 }
 
 export interface SafetyViolation {
@@ -372,6 +374,13 @@ export function pathAllowed(candidate: string, allowlist: string[]): boolean {
   return allowlist.some((entry) => globPattern(entry).test(normalized));
 }
 
+function coveredByPeers(candidate: string, original: string | undefined, peers?: string[][]): boolean {
+  if (!peers?.length) return false;
+  if (!peers.some((list) => pathAllowed(candidate, list))) return false;
+  if (!original) return true;
+  return peers.some((list) => pathAllowed(original, list));
+}
+
 function operationOf(entry: StatusEntry): SafetyOperation {
   if (entry.code === "??" || entry.code.includes("A")) return "create";
   if (entry.code.includes("R") || entry.code.includes("C")) return "rename";
@@ -406,6 +415,8 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
         violations.push({ code: "E_OUT_OF_SCOPE_OP", path: change.path, original_path: change.original_path, operation: change.operation, message: "change operation is not authorized" });
         continue;
       }
+    } else if (coveredByPeers(change.path, change.original_path, policy.peer_write_allowlists)) {
+      continue;
     } else if (baselineDirt.has(change.path)) {
       const expected = checksums[change.path];
       const actual = checksumWorktreePath(root, change.path);
@@ -429,6 +440,7 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
 
   for (const entry of baseline.dirty_entries) {
     if (pathAllowed(entry.path, policy.write_allowlist)) continue;
+    if (coveredByPeers(entry.path, entry.original_path, policy.peer_write_allowlists)) continue;
     if (entries.some((item) => item.path === entry.path)) continue;
     violations.push({
       code: "E_OUT_OF_SCOPE_PATH",

@@ -21,8 +21,10 @@ import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/sp
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId, planApplyWaves } from "./lib/apply-waves.js";
 import { parseApplyUnitScopes, scopeRecord } from "./lib/apply-scope.js";
+import { APPLY_WRITE_CONFLICT, findBatchWriteConflicts, findInFlightWriteConflicts } from "./lib/apply-batch.js";
 import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
+import { readReceipt } from "./lib/receipt.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
@@ -39,6 +41,8 @@ import { CLI_IDS, parseCliId, type CliId, type CliModelDiscovery } from "./lib/c
 import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/prompt.js";
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
+
+const APPLY_SECTION_ORDER = "APPLY_SECTION_ORDER";
 
 interface RunOptions {
   cwd?: string;
@@ -98,8 +102,8 @@ Usage:
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
   baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
   baton apply [change] [--host ${HOSTS}]  plan the ready OpenSpec wave (no tickets)
-  baton apply [change] [--host ${HOSTS}] --dispatch --unit ID --write-path PATH|--read-only
-               director-scoped dispatch of that wave; --dispatch without --unit is rejected
+  baton apply [change] [--host ${HOSTS}] --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
+               director-scoped dispatch of the order-ready subset; --dispatch without --unit is rejected
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -531,8 +535,8 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   const changeDir = resolveApplyChange(cwd, change);
   const pending = loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending");
   const overlay = planApplyWaves(pending);
-  const readyIds = new Set(overlay.ready?.task_ids || []);
-  const wavePayload = { waves: overlay.waves, ready_wave: overlay.ready };
+  const orderReadyIds = new Set(overlay.order_ready?.task_ids || []);
+  const wavePayload = { waves: overlay.waves, ready_wave: overlay.ready, order_ready: overlay.order_ready };
   if (!dispatch) {
     if (flags.json) stdout.write(`${JSON.stringify(wavePayload, null, 2)}\n`);
     else printApplyWaves(stdout, overlay);
@@ -543,12 +547,49 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     err.code = "TASK_SCOPE_REQUIRED";
     throw err;
   }
-  const tasks = pending.filter((task) => readyIds.has(applyTaskId(task)) && scopes.has(task.number));
-  if (!tasks.length) {
-    const err = new Error("TASK_SCOPE_REQUIRED: scoped units are not in the ready wave") as CodedError;
-    err.code = "TASK_SCOPE_REQUIRED";
+  const pendingById = new Map(pending.map((task) => [applyTaskId(task), task]));
+  for (const unitId of scopes.keys()) {
+    const task = pendingById.get(unitId) || pending.find((item) => item.number === unitId);
+    if (!task) {
+      const err = new Error("TASK_SCOPE_REQUIRED: scoped units are not pending tasks") as CodedError;
+      err.code = "TASK_SCOPE_REQUIRED";
+      throw err;
+    }
+    if (!orderReadyIds.has(applyTaskId(task))) {
+      const err = new Error(`${APPLY_SECTION_ORDER}: section order is not satisfied`) as CodedError;
+      err.code = APPLY_SECTION_ORDER;
+      throw err;
+    }
+  }
+  const pairwise = findBatchWriteConflicts(scopes);
+  if (pairwise.length) {
+    const err = new Error(`${APPLY_WRITE_CONFLICT}: write sets intersect`) as CodedError;
+    err.code = APPLY_WRITE_CONFLICT;
     throw err;
   }
+  const liveStatuses = new Set(["reserved", "dispatching", "running"]);
+  const inflight = listSpawns(cwd)
+    .filter((ticket) => liveStatuses.has(ticket.status))
+    .filter((ticket) => (ticket.target_host || ticket.dispatch_host || ticket.host) === host)
+    .map((ticket) => {
+      const write_allowlist = ticket.receipt_id
+        ? readReceipt(cwd, ticket.receipt_id).scope.write_allowlist
+        : null;
+      return {
+        id: ticket.id,
+        status: ticket.status,
+        mode: ticket.mode,
+        read_only: ticket.read_only,
+        write_allowlist,
+      };
+    });
+  const inflightConflicts = findInFlightWriteConflicts(scopes, inflight);
+  if (inflightConflicts.length) {
+    const err = new Error(`${APPLY_WRITE_CONFLICT}: write sets intersect`) as CodedError;
+    err.code = APPLY_WRITE_CONFLICT;
+    throw err;
+  }
+  const tasks = pending.filter((task) => orderReadyIds.has(applyTaskId(task)) && scopes.has(task.number));
   const units = [];
   for (const task of tasks) {
     const prompt = formatTaskPrompt(task);

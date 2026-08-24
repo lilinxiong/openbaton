@@ -101,8 +101,13 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /Never `git commit` from this director session while the matching runner\/longctx label/);
       assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
-      assert.match(grokSkill, /Filter each ready-wave unit/);
-      assert.match(hostSkill, /Filter each ready-wave unit/);
+      assert.match(grokSkill, /order-ready frontier/);
+      assert.match(grokSkill, /write-set intersection/);
+      assert.match(grokSkill, /host cap/);
+      assert.match(grokSkill, /--unit ID --write-path PATH --unit ID/);
+      assert.match(hostSkill, /order-ready frontier/);
+      assert.match(hostSkill, /write-set intersection/);
+      assert.match(hostSkill, /host cap/);
       assert.match(grokSkill, /When `cli.grok.enabled` is true and the user applies an OpenSpec change/);
       assert.match(grokSkill, /Do not edit OpenSpec apply skills/);
       assert.match(hostSkill, /When `cli.codex.enabled` is true and the user applies an OpenSpec change/);
