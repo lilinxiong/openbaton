@@ -229,6 +229,10 @@ function readKeys(
       if (typeof tty.setRawMode === "function") {
         try { tty.setRawMode(wasRaw); } catch { /* ignore */ }
       }
+      // emitKeypressEvents + resume() leaves stdin flowing. The CLI
+      // entrypoint sets process.exitCode instead of process.exit(), so a
+      // flowing TTY would keep `baton config` alive after it prints.
+      if (typeof tty.pause === "function") tty.pause();
       action();
     };
     const fail = (cause: unknown): void => stop(() => reject(cause instanceof Error ? cause : new Error(String(cause))));

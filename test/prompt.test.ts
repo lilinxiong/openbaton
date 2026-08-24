@@ -97,6 +97,34 @@ describe("terminal select prompts", () => {
     });
     tty.stdin.write("\x03");
     await assert.rejects(pending, /cancelled/);
+    assert.equal(tty.stdin.isPaused(), true);
+    assert.equal((tty.stdin as NodeJS.ReadStream).isRaw, false);
+  });
+
+  it("pauses stdin after each prompt so the process can exit", async () => {
+    const tty = fakeTty();
+    const first = tty.prompt.select({
+      message: "Select CLI",
+      choices: [
+        { value: "codex", label: "codex" },
+        { value: "grok", label: "grok" },
+      ],
+    });
+    tty.stdin.write("\r");
+    assert.equal(await first, "codex");
+    assert.equal(tty.stdin.isPaused(), true);
+    assert.equal((tty.stdin as NodeJS.ReadStream).isRaw, false);
+
+    const second = tty.prompt.select({
+      message: "Enable this grok configuration?",
+      choices: [
+        { value: true, label: "yes" },
+        { value: false, label: "no" },
+      ],
+    });
+    tty.stdin.write("\r");
+    assert.equal(await second, true);
+    assert.equal(tty.stdin.isPaused(), true);
   });
 
   it("requires a TTY for interactive prompts", () => {
