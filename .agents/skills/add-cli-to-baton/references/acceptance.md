@@ -38,6 +38,34 @@ Add or extend tests for all applicable items.
 
 Prefer shared conformance assertions over duplicated target-only tests. Add target-specific fixtures and behavior tests only where its protocol differs. Avoid tests that merely regex-match documentation wording.
 
+## Director/worker routing acceptance
+
+A new host is incomplete unless these gates pass. Keep the automated coverage above; this section is a completeness check on the runtime skill and shared guard.
+
+### Runtime skill completeness
+
+Inspect the installed target runtime Baton skill. It MUST name the shared director/worker table with the same three rows:
+
+- Empty labels / undeclared / unclassified → director
+- Declared classified work → native subagents
+- OpenSpec only lightens orchestration
+
+Omitting the table or substituting a host-specific exception is not `PASS`. Unit tests still must not merely regex-match documentation wording; this gate is an acceptance completeness check that the runtime skill contains the table, not a wording-regex unit test.
+
+### Hook-capable hosts
+
+If the target exposes a PreToolUse-compatible hook that Baton installs, acceptance MUST require ticket-presence:
+
+- no reserved ticket → director mutating tools allowed
+- reserved/dispatching/running worker tickets → director implementation writes denied; standalone baton control-plane commands still allowed
+- bound workers stay inside the Receipt
+
+`fail-closed-always` and `allow-always` are both incomplete.
+
+### Hookless hosts
+
+Hosts without a compatible hook (Cursor today) still MUST ship the table in the runtime skill. Missing a hook is not a license to implement declared classified work in the parent. Do not pretend a missing hook enforces the table.
+
 ## Repository gates
 
 Run focused tests while implementing, then run all repository-standard gates. At minimum for the current repository:
@@ -90,7 +118,7 @@ The native call proves current host/session/account callability only. Do not gen
 
 ## Terminal outcomes
 
-- `PASS`: every required automated, build/package, live catalog, native child-agent, init/config, Baton lifecycle, leak, and repository audit gate passed.
+- `PASS`: every required automated, build/package, live catalog, native child-agent, init/config, Baton lifecycle, director/worker routing, leak, and repository audit gate passed.
 - `CATALOG_ONLY`: the target's catalog is usable but it lacks a qualifying native exact-model child agent; do not leave it registered as executable.
 - `UNSUPPORTED`: a required target capability is intrinsically unavailable; identify the failed gate and evidence.
 - `BLOCKED`: authentication, permission, installation, trust, quota, network, or another external condition prevents completion; state the exact next action.

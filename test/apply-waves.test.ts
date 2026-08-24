@@ -20,6 +20,7 @@ describe("apply wave overlay", () => {
       "templates/config.toml",
     ]);
     assert.deepEqual(extractMentionedPaths("ignore cli.active and enabled flags"), []);
+    assert.deepEqual(extractMentionedPaths("reserved/dispatching/running worker tickets"), []);
   });
 
   it("runs disjoint paths in one section together", () => {

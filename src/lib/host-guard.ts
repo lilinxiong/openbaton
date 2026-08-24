@@ -458,7 +458,15 @@ function allowOutput(event: string, host: string, additionalContext?: string): R
   return { decision: "allow", ...body };
 }
 
-function denied(event: string, reason: HostGuardReason, input: HookInput, ticketId: string | null = null, agentId: string | null = null, host = DEFAULT_GUARD_HOST): GuardDecision {
+function denied(
+  event: string,
+  reason: HostGuardReason,
+  input: HookInput,
+  ticketId: string | null = null,
+  agentId: string | null = null,
+  host = DEFAULT_GUARD_HOST,
+  message: string | null = null,
+): GuardDecision {
   return {
     allowed: false,
     event,
@@ -466,7 +474,7 @@ function denied(event: string, reason: HostGuardReason, input: HookInput, ticket
     reason,
     ticket_id: ticketId,
     agent_id: agentId,
-    output: reasonOutput(event, reason, host),
+    output: reasonOutput(event, message || reason, host),
   };
 }
 
@@ -573,6 +581,17 @@ function exclusiveGitTickets(state: HostGuardState, host: string): GuardTicket[]
   return state.tickets.filter((ticket) => (ticket.status === "running" || ticket.status === "dispatching")
     && isGuardTicket(ticket, host)
     && (ticket.mode === "commit-only" || ticket.mode === "write"));
+}
+
+/** Reserved/dispatching/running tickets for this host — the PreToolUse work signal. */
+function hostWorkerTickets(state: HostGuardState, host: string): GuardTicket[] {
+  return state.tickets.filter((ticket) => (ticket.status === "dispatching" || ticket.status === "running")
+    && isGuardTicket(ticket, host));
+}
+
+function isDirectorMutatingTool(name: string, command: string): boolean {
+  return name === "apply_patch" || name === "Edit" || name === "Write"
+    || (name === "Bash" && (isShellWriteCommand(command) || isDirectorStageCommand(command)));
 }
 
 /** Director-only caller: not a Grok child session and not a bound native agent_id. */
@@ -787,8 +806,12 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   const host = guardHost(options);
   const name = toolName(input);
   const command = stringValue(toolInput(input).command) || "";
-  const deny = (reason: HostGuardReason, ticketId: string | null = null, agentId: string | null = null) =>
-    denied(event, reason, input, ticketId, agentId, host);
+  const deny = (
+    reason: HostGuardReason,
+    ticketId: string | null = null,
+    agentId: string | null = null,
+    message: string | null = null,
+  ) => denied(event, reason, input, ticketId, agentId, host, message);
   const allow = (ticketId: string | null = null, agentId: string | null = null, extra?: string) =>
     allowed(event, input, ticketId, agentId, extra, host);
   if (!state.active) return allow();
@@ -821,10 +844,8 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
     const spawnIdentity = identityFor(state, input, host);
     if (spawnIdentity.ticket) return deny(HOST_GUARD_REASONS.nested_agent, spawnIdentity.ticket.id, spawnIdentity.id);
     const reserved = reservedTickets(state, host);
-    if (!reserved.length) {
-      if (host === "grok") return allow();
-      return deny(HOST_GUARD_REASONS.no_reserved_ticket);
-    }
+    // No reserved work for this host: undeclared native-child spawn is allowed.
+    if (!reserved.length) return allow();
     const matched = findReserved(state, input, host);
     if (!matched) {
       return deny(reserved.length > 1
@@ -840,39 +861,52 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   }
   const identity = identityFor(state, input, host);
   if (!identity.ticket) {
-    if (host === "grok") {
-      const mutating = name === "apply_patch" || name === "Edit" || name === "Write"
-        || (name === "Bash" && (isShellWriteCommand(command) || isDirectorStageCommand(command)));
-      if (identity.binding && identity.binding.state === "pending" && mutating) {
+    const mutating = isDirectorMutatingTool(name, command);
+
+    // Root must not borrow a child turn binding.
+    if (isRootIdentity(input) && identity.binding) {
+      return deny(HOST_GUARD_REASONS.agent_identity_mismatch, null, identity.id);
+    }
+
+    // Unbound native child: pending bind / identity races (not idle director).
+    if (!isDirectorCaller(input)) {
+      if (identity.binding && identity.id && identity.binding.agent_id !== identity.id) {
+        return deny(HOST_GUARD_REASONS.agent_identity_mismatch, null, identity.id);
+      }
+      if (identity.binding && identity.binding.ticket_id) {
+        // Grok children may inspect before bind; mutations wait for bind.
+        if (host === "grok" && !mutating) return allow();
         return deny(HOST_GUARD_REASONS.spawn_bind_pending, identity.binding.ticket_id, identity.id);
       }
-      if (mutating && exclusiveGitTickets(state, host).some((ticket) => ticket.mode === "commit-only")) {
-        return deny(HOST_GUARD_REASONS.commit_only_command);
+      if (reservedTickets(state, host).length > 0) {
+        if (host === "grok" && !mutating) return allow();
+        return deny(HOST_GUARD_REASONS.spawn_bind_pending, null, identity.id);
       }
-      return allow();
+      if (grokSubagentPayload(input) && grokRunningTickets(state, host).length > 1) {
+        if (!mutating) return allow();
+        return deny(HOST_GUARD_REASONS.agent_identity_mismatch, null, identity.id);
+      }
+      const hasAnotherBoundAgent = Boolean(identity.id) && state.tickets.some((ticket) => ticket.status === "running"
+        && ticket.agent_id
+        && isGuardTicket(ticket, host)
+        && ticket.agent_id !== identity.id);
+      if (hasAnotherBoundAgent) {
+        return deny(HOST_GUARD_REASONS.agent_identity_mismatch, null, identity.id);
+      }
     }
-    const hasAnotherBoundAgent = Boolean(identity.id) && state.tickets.some((ticket) => ticket.status === "running"
-      && ticket.agent_id
-      && isGuardTicket(ticket, host)
-      && ticket.agent_id !== identity.id);
-    const reason = isRootIdentity(input) && identity.binding
-      ? HOST_GUARD_REASONS.agent_identity_mismatch
-      : isRootIdentity(input)
-        ? (name === "Bash" ? HOST_GUARD_REASONS.director_shell : HOST_GUARD_REASONS.director_code_write)
-      : identity.binding && identity.id && identity.binding.agent_id !== identity.id
-      ? HOST_GUARD_REASONS.agent_identity_mismatch
-      : identity.binding && identity.binding.ticket_id
-        ? HOST_GUARD_REASONS.spawn_bind_pending
-      : reservedTickets(state, host).length > 0
-      ? HOST_GUARD_REASONS.spawn_bind_pending
-      : grokSubagentPayload(input) && grokRunningTickets(state, host).length > 1
-      ? HOST_GUARD_REASONS.agent_identity_mismatch
-      : hasAnotherBoundAgent
-        ? HOST_GUARD_REASONS.agent_identity_mismatch
-      : name === "Bash"
-        ? HOST_GUARD_REASONS.director_shell
-        : HOST_GUARD_REASONS.director_code_write;
-    return deny(reason, null, identity.id);
+
+    if (mutating && exclusiveGitTickets(state, host).some((ticket) => ticket.mode === "commit-only")) {
+      return deny(HOST_GUARD_REASONS.commit_only_command);
+    }
+
+    // Shared Codex/Grok/Claude policy: worker tickets deny director implementation writes.
+    const blocking = hostWorkerTickets(state, host);
+    if (mutating && blocking.length > 0) {
+      const code = name === "Bash" ? HOST_GUARD_REASONS.director_shell : HOST_GUARD_REASONS.director_code_write;
+      const blockingIds = blocking.map((ticket) => ticket.id).join(", ");
+      return deny(code, null, identity.id, `${code}: ${blockingIds}`);
+    }
+    return allow();
   }
 
   if (name === "Bash") {

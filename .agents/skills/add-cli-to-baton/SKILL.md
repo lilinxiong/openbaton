@@ -47,13 +47,23 @@ Before production registration, prove the target's core gates from [references/c
 
 If model discovery works but no qualifying native child-agent mechanism exists, finish `CATALOG_ONLY` without registering the target as executable. If a core capability is intrinsically absent, finish `UNSUPPORTED`. If login, permission, installation, trust, or another external condition prevents a decisive probe, finish `BLOCKED` with the exact next action. Never weaken a gate merely to make the target appear in `baton init`.
 
+## Director/worker routing (completion invariant)
+
+The target runtime skill MUST include the same director/worker routing table as every other host. Same words. Do not invent a host-specific split. Producing a runtime skill without this table, or inventing a host-specific split, means the adapter work is incomplete.
+
+- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
+- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+
+Hook-capable targets must use the shared ticket-presence guard (no reserved ticket → director mutating tools allowed; reserved/dispatching/running worker tickets → director implementation writes denied; bound workers stay inside the Receipt), not a private invert such as fail-closed-always or allow-always. Missing a hook is not a license to implement declared classified work in the parent.
+
 ## Implement complete host parity
 
 Once the core gates pass, implement the adapter instead of stopping at an assessment:
 
 1. Build a capability-closure matrix against the current Codex and Grok adapters, runtime skills, commands, and tests. Every shared capability is required. Evaluate every host-specific capability and implement the target-native equivalent when the target exposes one; record why a non-shared feature is inapplicable rather than silently omitting it.
 2. Add the target adapter behind the shared contract. Keep executable resolution, version detection, model discovery, normalization, host metadata, and classified errors inside the adapter boundary.
-3. Add the target runtime Baton skill and its correct installation/update location. Translate native tool names and lifecycle instructions; do not copy Codex- or Grok-specific claims that are false for the target.
+3. Add the target runtime Baton skill and its correct installation/update location. Include the director/worker routing table above. Translate native tool names and lifecycle instructions; do not copy Codex- or Grok-specific claims that are false for the target. If the target exposes a PreToolUse-compatible hook, wire the shared ticket-presence guard rather than a host-private policy.
 4. Extend config, route refresh, matching, spawn, dispatch, lifecycle, status, help, packaging, and documentation through registry-derived behavior. Remove newly exposed hard-coded host lists instead of adding scattered target branches.
 5. Preserve host-scoped configuration. `cli.<target>.enabled` controls Baton only in that host; `cli.active` remains only the compatibility default for unqualified legacy commands. A disabled or missing target profile must fail closed and never borrow another host's profile or model.
 6. Preserve automatic model selection from the enabled target allowlist. Runner and longctx remain labels. Do not add runtime model overrides, human model confirmation, parent-model inheritance, or cross-model fallback.

@@ -53,9 +53,21 @@ Implement and test the target module before production registration when practic
 - Runner and longctx are user routing labels, not capability claims, and configured labels belong in the target allowlist.
 - Dispatch validates the exact selected model and effort against the captured target catalog. A rejected execution remains a rejected exact attempt.
 
+## Director/worker routing invariant
+
+Every new CLI MUST ship the same director/worker routing table in its runtime skill. Same words on every host. Do not invent a host-specific split. A host is incomplete if its runtime skill omits this table or substitutes a host-specific exception.
+
+- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
+- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+
+If the target exposes a PreToolUse-compatible hook, the shared host guard MUST implement ticket-presence: no reserved ticket → director mutating tools allowed; reserved/dispatching/running worker tickets → director implementation writes denied; bound workers stay inside the Receipt. MUST NOT ship fail-closed-always or allow-always. Cursor and other hookless hosts still MUST ship the table in the runtime skill; missing a hook is not a license to implement declared classified work in the parent.
+
+Keep the adapter-boundary and model/configuration invariants above. Do not rewrite OpenSpec apply skills. OpenSpec apply intercept remains in the target host Baton skill via `baton apply` plan → director `--write-path`/`--read-only` filter → scoped `--dispatch`.
+
 ## Runtime skill and native protocol
 
-Write a target-specific runtime skill instead of copying an existing template verbatim. It must accurately name the target's native child-agent tool, exact-model parameter, context-isolation setting, lifecycle calls, concurrency behavior, and skill/guard limitations.
+Write a target-specific runtime skill instead of copying an existing template verbatim. It must accurately name the target's native child-agent tool, exact-model parameter, context-isolation setting, lifecycle calls, concurrency behavior, and skill/guard limitations. It MUST include the director/worker routing table above.
 
 The runtime sequence remains logically equivalent across hosts:
 
@@ -68,7 +80,7 @@ The runtime sequence remains logically equivalent across hosts:
 
 Do not substitute a shell-launched coding CLI, print mode, or new top-level session for a native child agent.
 
-OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` waves through `baton apply --dispatch` and native children.
+OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` waves through `baton apply` plan → director `--write-path`/`--read-only` filter → scoped `baton apply --dispatch` and native children.
 
 ## User-visible completion
 

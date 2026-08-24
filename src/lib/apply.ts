@@ -18,8 +18,10 @@ import {
   OpenSpecError,
 } from "./openspec.js";
 import { buildSpawnTicket, nextSpawnId, writeSpawn, readSpawn } from "./spawn.js";
-import { buildReadOnlyReceipt, writeReceipt } from "./receipt.js";
+import { buildReadOnlyReceipt, buildWriteReceipt, writeReceipt } from "./receipt.js";
+import { captureBaseline } from "./safety.js";
 import { runsDir } from "./paths.js";
+import type { ApplyUnitScopeMap } from "./apply-scope.js";
 import type { SpawnTicket } from "./spawn.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 
@@ -141,6 +143,7 @@ interface ApplyChangeInput {
   selectCard?: (task: OpenSpecTask, cards: ApplyModelCard[]) => ApplyModelCard | undefined;
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
   selectionApprovals?: Map<string, ModelSelectionApproval>;
+  unitScopes?: ApplyUnitScopeMap;
 }
 
 function errorMessage(error: unknown): string {
@@ -241,7 +244,7 @@ export function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map() }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map(), unitScopes }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
@@ -266,6 +269,16 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       local.push(unit);
       continue;
     }
+    const scope = unitScopes?.get(unit.id);
+    if (unitScopes && !scope) {
+      blocked.push({
+        id: unit.id,
+        description: unit.description,
+        error: "director scope is required before dispatch",
+        code: "TASK_SCOPE_REQUIRED",
+      });
+      continue;
+    }
     const id = nextSpawnId(cwd, "os");
     const ticket: OpenSpecTicket = buildSpawnTicket({
       id,
@@ -276,6 +289,7 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       reasoningEffort: unit.reasoning_effort,
       serviceTier: selectionApprovals.get(unit.id)?.service_tier || null,
       source: "openspec",
+      taskKind: "concrete",
       openspec: {
         change_dir: changeDir,
         tasks_path: tasksPath,
@@ -285,19 +299,30 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       },
       selection: selectionApprovals.get(unit.id) || null,
     });
-    const receipt = buildReadOnlyReceipt({
+    const card = {
+      id: unit.model_id,
+      strengths: "",
+      route_id: unit.route_id || undefined,
+      reasoning_effort: unit.reasoning_effort || undefined,
+      provider: unit.provider || undefined,
+    };
+    let receipt = buildReadOnlyReceipt({
       ticketId: id,
-      card: {
-        id: unit.model_id,
-        strengths: "",
-        route_id: unit.route_id || undefined,
-        reasoning_effort: unit.reasoning_effort || undefined,
-        provider: unit.provider || undefined,
-      },
+      card,
       issuedAt: ticket.created_at,
       maxAttempts: ticket.max_attempts,
       selection: selectionApprovals.get(unit.id) || null,
     });
+    if (scope?.mode === "write") {
+      receipt = buildWriteReceipt({
+        base: receipt,
+        baseline: captureBaseline(cwd),
+        writeAllowlist: scope.write_paths,
+        allowedOperations: ["write", "create"],
+      });
+      ticket.mode = "write";
+      ticket.read_only = false;
+    }
     ticket.receipt_id = receipt.receipt_id;
     writeReceipt(cwd, receipt);
     writeSpawn(cwd, ticket);

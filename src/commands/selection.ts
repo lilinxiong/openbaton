@@ -5,6 +5,7 @@ import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
 import { planStandaloneSpawn, writeSpawn, type SpawnTicket } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
+import { scopesFromRecord } from "../lib/apply-scope.js";
 import { buildWriteReceipt, writeReceipt } from "../lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "../lib/safety.js";
 import { loadTasksFromChangeDir } from "../lib/openspec.js";
@@ -183,7 +184,8 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
   const context = automaticContext(proposal, [...candidates.values()]);
   const selected = new Map<string, ModelCard>();
   const approvals = new Map<string, ModelSelectionApproval>();
-  const selectionHost = proposal.host || loadConfig(cwd, { env }).cli.active;
+  const selectionHost = proposal.host;
+  if (!selectionHost) throw new Error("TASK_SCOPE_REQUIRED: apply selection requires a host");
   const includedTasks = new Set(proposal.units.map((unit) => unit.key));
   for (const unit of proposal.units) {
     if (unit.director_local) continue;
@@ -200,6 +202,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     selectCard: (task) => selected.get(task.number),
     selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt, selectionHost),
     selectionApprovals: approvals,
+    unitScopes: scopesFromRecord(proposal.payload.unit_scopes),
   });
   if (result.error || result.blocked.length) throw new Error(result.error || result.blocked.map((item) => `${item.id}: ${item.error}`).join("; "));
   return {

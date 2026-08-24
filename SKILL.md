@@ -7,16 +7,20 @@ description: "Use this director automatically for approved Goal or multi-model e
 
 You are the director. Baton is a CLI-neutral scheduling and policy layer. Its registered CLI adapters are Codex, Grok, Cursor, and Claude Code; it does not use OpenCodex for model discovery, authentication, or execution.
 
-## Entry routing
+## Director/worker routing
 
-- Ordinary discussion, diagnosis, and work that needs neither delegation nor a configured mechanical route stays on the director.
-- For approved multi-agent execution, run Baton to create immutable tickets, dispatch them through the current host's native subagent tool, and wait for their conclusions.
-- If another execution skill is explicitly requested, preserve it as workflow owner only. When this host's `cli.<id>.enabled` is true, executable work still goes through Baton. OpenSpec apply is not a director-implementation exemption: do not edit OpenSpec's apply skill; intercept execution from this Baton skill.
+Same table on every host. Do not invent a host-specific split.
+
+- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
+- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+
+Ordinary discussion and diagnosis that need neither delegation nor a configured mechanical route stay on the director. For approved multi-agent execution, create immutable tickets, dispatch them through the current host's native subagent tool, and wait for their conclusions. If another execution skill is explicitly requested, preserve it as workflow owner only; when this host's `cli.<id>.enabled` is true, executable work still goes through Baton.
 
 ## Host-guard preflight (mandatory in Codex and Claude Code)
 
 - Before any `Bash`, `apply_patch`/ `Edit`/ `Write`, or native `Agent` call, run `baton guard status --host HOST`. Baton init/update installs a merged `~/.codex/hooks.json` entry for Codex and merged `PreToolUse`/`SubagentStart` entries in `~/.claude/settings.json` for Claude Code, preserving unrelated hooks in both. In Codex open `/hooks`, review the Baton-owned entries, and trust them before continuing; Claude Code applies user settings hooks without a trust prompt (review them with `/hooks`). Grok and Cursor have no equivalent hook surface, so those hosts have no guard interception and must not claim one.
-- The guard fails closed for direct director shell and code-write calls, and serves only its own host's tickets: a Codex guard never satisfies itself with a Claude ticket, and the reverse. Reserve a Baton ticket, native-spawn the exact worker, and bind the returned identity with `baton dispatch bind ...` before the worker uses tools. A child starting during the spawn-to-bind race remains denied until the bind is visible.
+- Ticket presence is the declared-work signal: with no reserved ticket for this host, director mutating tools are allowed (undeclared / empty-label work). While this host has a reserved, dispatching, or running worker ticket, director implementation writes are denied. The guard serves only its own host's tickets: a Codex guard never satisfies itself with a Claude ticket, and the reverse. Reserve a Baton ticket, native-spawn the exact worker, and bind the returned identity with `baton dispatch bind ...` before the worker uses tools. A child starting during the spawn-to-bind race remains denied until the bind is visible.
 - Baton control-plane commands (`baton init`, `baton guard`, `baton spawn`, `baton dispatch`, `baton status`, and related inspection/configuration commands) are the narrow direct-command exemption. Do not hide work behind a shell wrapper or a chained command.
 - If more than one ticket for this host is dispatching, the native `Agent` task text must include the exact reserved ticket id (for example `spn-0001`); an ambiguous task is denied by the guard.
 - Specialized tool paths may opt out of Codex's default hook path, and in Claude Code `SubagentStart` cannot cancel a child (`PreToolUse` is the enforcing gate). The hook is an enforcement guardrail, not a replacement for immutable Receipts, worker path allowlists, and the parent Git safety audit.
@@ -56,7 +60,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its re
 
 11. **Activity-driven lifecycle.** Concrete workers return concise conclusions; checkpointed deliberative workers may also return compact phase/result/next-step/blocker state. Persist host probes separately from business progress. Native completion is the activity signal. Probe only while the agent is still running, or to record exact not_found. A wait timeout is polling cadence, not ticket timeout. Finish with complete/fail/timeout/close plus `--release` before refilling capacity. Do not add probe or close round-trips after a native terminal result.
 
-12. **OpenSpec remains optional.** When present, consume its tasks/status and write conclusions back. Do not reimplement its workflow and do not rewrite `tasks.md` structure. Without it, baton spawn remains complete. When the invoking host profile is enabled and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution: run `baton apply <change> --host HOST --dispatch --json`, native-spawn every reserved ticket in that ready wave in parallel, bind immediately, then apply again after the wave completes. Independent tasks in the ready wave must run in parallel; later sections and overlapping files stay serial because apply only reserves the current wave.
+12. **OpenSpec remains optional.** When present, consume its tasks/status and write conclusions back. Do not reimplement its workflow and do not rewrite `tasks.md` structure. Without it, baton spawn remains complete. When the invoking host profile is enabled and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution in three stages: plan with `baton apply <change> --host HOST --json`; filter each ready-wave unit in this director session (`--write-path` or `--read-only`); then `baton apply <change> --host HOST --dispatch --json --unit ID --write-path PATH` (or `--read-only`). Never call `--dispatch` without per-unit scope. Native-spawn reserved tickets in that wave, bind immediately, then plan/filter/dispatch the next wave. Independent tasks in the ready wave must run in parallel; later sections and overlapping files stay serial because apply only reserves the current wave.
 
 13. **State stays user-global.** Shared cache lives under ~/.baton/cache; workspace runtime lives under ~/.baton/workspaces/<canonical-root-sha256>. Never create project-local Baton state.
 
@@ -65,7 +69,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its re
 This loop is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets.
 
 1. Run `baton config --cli HOST` once or whenever that host's picker surface changes.
-2. Create tickets with `baton spawn ... --dispatch --json` or `baton apply`. `--dispatch` enqueues and reserves in one call. Use `baton dispatch next --host HOST --json` only for already-queued work.
+2. Create tickets with `baton spawn ... --dispatch --json` or scoped `baton apply ... --dispatch --unit ID --write-path PATH`. Plan apply first; the director filters write vs read-only. Use `baton dispatch next --host HOST --json` only for already-queued work.
 3. For each reserved ticket, native-spawn with the returned model, prompt, optional effort, and optional service_tier when the host exposes them, fork_context=false. Mechanical prompts are one-shot: execute the inferred command (for `git-commit`: staged diff → one message → one commit). Grok hosts call `spawn_subagent` with the ticket model; never `grok -p` or a new grok process with `-m`/`--effort`. Cursor hosts call `Task` with the ticket model; never `cursor-agent -p`/`--print` or a new cursor-agent process with `--model`. Claude Code hosts call the `Agent` tool with a `subagent_type` whose definition pins the ticket's exact model; never `claude -p` or `claude --model`. Bind immediately with `baton dispatch bind TICKET --agent-id ID --host HOST --json`.
 4. Wait on native completion for the requested host. Probe only while still running, or to record exact `not_found`.
 5. `baton dispatch complete TICKET --host HOST --text "..." --release --json` (or fail/timeout/close with `--host HOST --release`). Refill from that host's FIFO.
@@ -79,7 +83,8 @@ This loop is the same for runner ops, longctx ops, and ordinary `subagent_models
     baton cards [--ranked|--unranked] [--json]
     baton match <text> [--host codex|grok|cursor|claude]
     baton spawn <request> [--host codex|grok|cursor|claude] [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change] [--host codex|grok|cursor|claude] [--dispatch]
+    baton apply [change] [--host codex|grok|cursor|claude]
+    baton apply [change] [--host HOST] --dispatch --unit ID --write-path PATH|--read-only
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED --observed-capacity N --json

@@ -49,22 +49,31 @@ const writeTicket = {
 };
 
 describe("Baton Codex host guard", () => {
-  it("denies direct director shell and code writes with deterministic JSON reasons", () => {
-    const directShell = evaluatePreToolUse(event("Bash", { command: "bun test" }), { state: state() });
-    assert.equal(directShell.allowed, false);
-    assert.equal(directShell.reason, HOST_GUARD_REASONS.director_shell);
-    assert.deepEqual(directShell.output, {
+  it("allows idle director mutating tools and denies them while a worker ticket is live", () => {
+    const idle = state();
+    assert.equal(evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: idle }).allowed, true);
+    assert.equal(evaluatePreToolUse(event("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" }), { state: idle }).allowed, true);
+    assert.equal(evaluatePreToolUse(event("Write", { file_path: "src/a.ts", content: "x" }), { state: idle }).allowed, true);
+    assert.equal(evaluatePreToolUse(event("Bash", { command: "rm -rf build" }), { state: idle }).allowed, true);
+
+    const live = state([readTicket]);
+    const deniedShell = evaluatePreToolUse(event("Bash", { command: "rm -rf build" }), { state: live });
+    assert.equal(deniedShell.allowed, false);
+    assert.equal(deniedShell.reason, HOST_GUARD_REASONS.director_shell);
+    assert.match(String((deniedShell.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001/);
+    assert.deepEqual(deniedShell.output, {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: HOST_GUARD_REASONS.director_shell,
+        permissionDecisionReason: `${HOST_GUARD_REASONS.director_shell}: spn-0001`,
       },
     });
 
-    const patch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: state() });
-    assert.equal(patch.allowed, false);
-    assert.equal(patch.reason, HOST_GUARD_REASONS.director_code_write);
-    assert.equal((patch.output.hookSpecificOutput as Record<string, unknown>).permissionDecision, "deny");
+    const deniedPatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: live });
+    assert.equal(deniedPatch.allowed, false);
+    assert.equal(deniedPatch.reason, HOST_GUARD_REASONS.director_code_write);
+    assert.equal((deniedPatch.output.hookSpecificOutput as Record<string, unknown>).permissionDecision, "deny");
+    assert.match(String((deniedPatch.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001/);
   });
 
   it("allows only standalone Baton control-plane commands on the director", () => {
@@ -84,7 +93,7 @@ describe("Baton Codex host guard", () => {
     assert.equal(allowed.allowed, true);
   });
 
-  it("lets the director inspect git and stage, but not commit or compose", () => {
+  it("lets the director inspect and stage; idle commit allowed, denied while a worker ticket is live", () => {
     assert.equal(isReadOnlyGitCommand("git status"), true);
     assert.equal(isReadOnlyGitCommand("git diff --cached"), true);
     assert.equal(isReadOnlyGitCommand("git log -1 --oneline"), true);
@@ -98,10 +107,15 @@ describe("Baton Codex host guard", () => {
     assert.equal(inspect.allowed, true);
     const stage = evaluatePreToolUse(event("Bash", { command: "git add -A" }), { state: state() });
     assert.equal(stage.allowed, true);
-    const commit = evaluatePreToolUse(event("Bash", { command: "git commit -m x" }), { state: state() });
+    const idleCommit = evaluatePreToolUse(event("Bash", { command: "git commit -m x" }), { state: state() });
+    assert.equal(idleCommit.allowed, true);
+
+    const live = state([readTicket]);
+    const commit = evaluatePreToolUse(event("Bash", { command: "git commit -m x" }), { state: live });
     assert.equal(commit.allowed, false);
     assert.equal(commit.reason, HOST_GUARD_REASONS.director_shell);
-    const composed = evaluatePreToolUse(event("Bash", { command: "git add -A; rm -rf src" }), { state: state() });
+    assert.match(String((commit.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001/);
+    const composed = evaluatePreToolUse(event("Bash", { command: "git add -A; rm -rf src" }), { state: live });
     assert.equal(composed.allowed, false);
   });
 
@@ -211,8 +225,15 @@ describe("Baton Codex host guard", () => {
       turn_id: "root-turn",
       agent_type: "root",
     }), { state: bound });
-    assert.equal(root.allowed, false);
-    assert.equal(root.reason, HOST_GUARD_REASONS.director_shell);
+    assert.equal(root.allowed, true);
+
+    const rootWrite = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, {
+      turn_id: "root-turn",
+      agent_type: "root",
+    }), { state: bound });
+    assert.equal(rootWrite.allowed, false);
+    assert.equal(rootWrite.reason, HOST_GUARD_REASONS.director_code_write);
+    assert.match(String((rootWrite.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001/);
 
     const rootBorrow = evaluatePreToolUse(event("Bash", { command: "npm test" }, {
       turn_id: "child-turn-1",
@@ -264,8 +285,11 @@ describe("Baton Codex host guard", () => {
     const writePatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_id: "native-2" }), { state: bound });
     assert.equal(writePatch.allowed, true);
     const noIdentity = evaluatePreToolUse(event("Bash", { command: "npm test" }), { state: bound });
-    assert.equal(noIdentity.allowed, false);
-    assert.equal(noIdentity.reason, HOST_GUARD_REASONS.director_shell);
+    assert.equal(noIdentity.allowed, true);
+    const noIdentityWrite = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: bound });
+    assert.equal(noIdentityWrite.allowed, false);
+    assert.equal(noIdentityWrite.reason, HOST_GUARD_REASONS.director_code_write);
+    assert.match(String((noIdentityWrite.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001|spn-0002/);
     const wrongIdentity = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-unknown" }), { state: bound });
     assert.equal(wrongIdentity.allowed, false);
     assert.equal(wrongIdentity.reason, HOST_GUARD_REASONS.agent_identity_mismatch);
@@ -305,10 +329,9 @@ describe("host guard host scoping", () => {
     const allowed = evaluatePreToolUse(event("Agent", { prompt: "run the ticket" }), { state: claudeOnly, host: "claude" });
     assert.equal(allowed.allowed, true);
     assert.equal(allowed.ticket_id, "spn-0101");
-    // A Codex guard sees no reservation of its own, so it fails closed.
-    const denied = evaluatePreToolUse(event("Agent", { prompt: "run the ticket" }), { state: claudeOnly, host: "codex" });
-    assert.equal(denied.allowed, false);
-    assert.equal(denied.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+    // Codex with no Codex reserved ticket allows unmatched Agent (undeclared native-child spawn).
+    const unmatched = evaluatePreToolUse(event("Agent", { prompt: "run the ticket" }), { state: claudeOnly, host: "codex" });
+    assert.equal(unmatched.allowed, true);
   });
 
   it("records a SubagentStart identity only for its own host reservation", () => {
@@ -341,6 +364,64 @@ describe("host guard host scoping", () => {
     assert.equal(legacy.allowed, true);
     assert.equal(legacy.ticket_id, "spn-0001");
   });
+});
+
+describe("Codex/Claude ticket-presence director edits", () => {
+  function batonOnPath(): { bareDir: string; env: { PATH: string } } {
+    const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ticket-presence-"));
+    const bare = path.join(bareDir, "baton");
+    fs.writeFileSync(bare, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(bare, 0o755);
+    return { bareDir, env: { PATH: bareDir } };
+  }
+
+  for (const host of ["codex", "claude"] as const) {
+    it(`${host}: no reserved ticket allows director file-edit`, () => {
+      const patch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: state(), host });
+      assert.equal(patch.allowed, true);
+      const edit = evaluatePreToolUse(event("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" }), { state: state(), host });
+      assert.equal(edit.allowed, true);
+      const write = evaluatePreToolUse(event("Write", { file_path: "src/a.ts", content: "x" }), { state: state(), host });
+      assert.equal(write.allowed, true);
+    });
+
+    it(`${host}: reserved/dispatching/running ticket denies director file-edit with ticket id in reason`, () => {
+      const ticketId = host === "codex" ? "spn-0001" : "spn-0100";
+      const base = host === "codex"
+        ? readTicket
+        : { ...readTicket, id: ticketId, host: "claude", dispatch_host: "claude", agent_id: "a1c6c56" };
+
+      for (const status of ["dispatching", "running"] as const) {
+        const live = state([{
+          ...base,
+          status,
+          agent_id: status === "dispatching" ? null : base.agent_id,
+        }]);
+        const denied = evaluatePreToolUse(event(host === "codex" ? "apply_patch" : "Edit", host === "codex"
+          ? { command: "*** Begin Patch" }
+          : { file_path: "src/a.ts", old_string: "a", new_string: "b" }), { state: live, host });
+        assert.equal(denied.allowed, false);
+        assert.equal(denied.reason, HOST_GUARD_REASONS.director_code_write);
+        assert.match(String((denied.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), new RegExp(ticketId));
+      }
+    });
+
+    it(`${host}: standalone baton apply --dispatch stays allowed while a worker ticket is reserved`, () => {
+      const { env } = batonOnPath();
+      const ticketId = host === "codex" ? "spn-0001" : "spn-0100";
+      const reserved = state([{
+        ...(host === "codex" ? readTicket : { ...readTicket, id: ticketId, host: "claude", dispatch_host: "claude" }),
+        status: "dispatching",
+        agent_id: null,
+      }]);
+      const bare = evaluatePreToolUse(event("Bash", { command: "baton apply --dispatch" }), { state: reserved, host, env });
+      assert.equal(bare.allowed, true);
+      const scoped = evaluatePreToolUse(event("Bash", {
+        command: `baton apply foo --host ${host} --dispatch --json`,
+      }), { state: reserved, host, env });
+      assert.equal(scoped.allowed, true);
+    });
+  }
 });
 
 describe("Grok host guard", () => {
@@ -444,14 +525,61 @@ describe("Grok host guard", () => {
       host: "grok",
       dispatch_host: "grok",
     }]);
+    // Unique reservation matches spawn_subagent even without the ticket id in the prompt.
     const allowed = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "spawn_subagent",
-      toolInput: { prompt: "work for spn-0200", model: "grok-4.5" },
+      toolInput: { prompt: "implement the reserved unit", model: "grok-4.5" },
       cwd: "/workspace",
     }, { state: reserved, host: "grok" });
     assert.equal(allowed.allowed, true);
     assert.equal(allowed.ticket_id, "spn-0200");
+  });
+
+  it("denies unmatched Grok spawn_subagent while a ticket is dispatching", () => {
+    const reserved = state([{
+      ...readTicket,
+      id: "spn-0200",
+      status: "dispatching",
+      agent_id: null,
+      host: "grok",
+      dispatch_host: "grok",
+    }]);
+    const nonMatching = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "spawn_subagent",
+      toolInput: { prompt: "work for spn-9999", model: "grok-4.5" },
+      cwd: "/workspace",
+    }, { state: reserved, host: "grok" });
+    assert.equal(nonMatching.allowed, false);
+    assert.equal(nonMatching.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+
+    const two = state([
+      {
+        ...readTicket,
+        id: "spn-0200",
+        status: "dispatching",
+        agent_id: null,
+        host: "grok",
+        dispatch_host: "grok",
+      },
+      {
+        ...readTicket,
+        id: "spn-0201",
+        status: "dispatching",
+        agent_id: null,
+        host: "grok",
+        dispatch_host: "grok",
+      },
+    ]);
+    const ambiguous = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "spawn_subagent",
+      toolInput: { prompt: "implement the task", model: "grok-4.5" },
+      cwd: "/workspace",
+    }, { state: two, host: "grok" });
+    assert.equal(ambiguous.allowed, false);
+    assert.equal(ambiguous.reason, HOST_GUARD_REASONS.ambiguous_reserved_ticket);
   });
 
   const grokWorker = {
@@ -502,7 +630,60 @@ describe("Grok host guard", () => {
       cwd: "/workspace",
       sessionId: "parent-session",
     }, { state: bound, host: "grok" });
-    assert.equal(edit.allowed, true);
+    assert.equal(edit.allowed, false);
+    assert.equal(edit.reason, HOST_GUARD_REASONS.director_code_write);
+    assert.match(String(edit.output.reason || (edit.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0200/);
+
+    for (const status of ["dispatching", "running"] as const) {
+      const live = state([{
+        ...grokWorker,
+        status,
+        agent_id: status === "dispatching" ? null : grokWorker.agent_id,
+      }]);
+      const denied = evaluatePreToolUse({
+        hookEventName: "pre_tool_use",
+        toolName: "search_replace",
+        toolInput: { old_string: "a", new_string: "b" },
+        cwd: "/workspace",
+        sessionId: "parent-session",
+      }, { state: live, host: "grok" });
+      assert.equal(denied.allowed, false);
+      assert.equal(denied.reason, HOST_GUARD_REASONS.director_code_write);
+      assert.match(String(denied.output.reason || (denied.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0200/);
+    }
+  });
+
+  it("keeps bound Grok workers inside the Receipt for search_replace", () => {
+    const readBound = state([grokWorker]);
+    const readDenied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "search_replace",
+      toolInput: { old_string: "a", new_string: "b" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: readBound, host: "grok" });
+    assert.equal(readDenied.allowed, false);
+    assert.equal(readDenied.reason, HOST_GUARD_REASONS.write_receipt_required);
+    assert.equal(readDenied.ticket_id, "spn-0200");
+
+    const writeBound = state([{
+      ...grokWorker,
+      mode: "write",
+      read_only: false,
+      allowed_operations: ["write", "create"],
+      write_allowlist: ["src/index.ts"],
+    }]);
+    const writeAllowed = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "search_replace",
+      toolInput: { file_path: "src/index.ts", old_string: "a", new_string: "b" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: writeBound, host: "grok" });
+    assert.equal(writeAllowed.allowed, true);
+    assert.equal(writeAllowed.ticket_id, "spn-0200");
   });
 
   it("denies Grok worker writes before bind once SubagentStart recorded the session", () => {

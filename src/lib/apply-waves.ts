@@ -10,6 +10,7 @@ export interface ApplyWaveTask {
   description: string;
   director_local: boolean;
   paths: string[];
+  path_hints: string[];
 }
 
 export interface ApplyWave {
@@ -34,7 +35,6 @@ export function extractMentionedPaths(text: string): string[] {
   const source = String(text || "");
   for (const match of source.matchAll(/`([^`]+)`/g)) addPath(found, match[1]);
   for (const match of source.matchAll(ROOTED_PATH)) addPath(found, match[0]);
-  for (const match of source.matchAll(/\b[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\b/g)) addPath(found, match[0]);
   for (const match of source.matchAll(/\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]{1,10})+\b/g)) {
     if (PATH_EXT.test(match[0])) addPath(found, match[0]);
   }
@@ -56,12 +56,14 @@ function addPath(found: Set<string>, raw: string): void {
 }
 
 function toWaveTask(task: OpenSpecTask): ApplyWaveTask {
+  const paths = extractMentionedPaths(task.description);
   return {
     id: applyTaskId(task),
     section: task.section,
     description: task.description,
     director_local: directorMayRun(task.description),
-    paths: extractMentionedPaths(task.description),
+    paths,
+    path_hints: paths,
   };
 }
 

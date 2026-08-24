@@ -20,6 +20,7 @@ import { parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId, planApplyWaves } from "./lib/apply-waves.js";
+import { parseApplyUnitScopes, scopeRecord } from "./lib/apply-scope.js";
 import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
@@ -96,7 +97,9 @@ Usage:
                [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
   baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
-  baton apply [change] [--host ${HOSTS}] [--dispatch]  current ready OpenSpec wave; --dispatch also reserves
+  baton apply [change] [--host ${HOSTS}]  plan the ready OpenSpec wave (no tickets)
+  baton apply [change] [--host ${HOSTS}] --dispatch --unit ID --write-path PATH|--read-only
+               director-scoped dispatch of that wave; --dispatch without --unit is rejected
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -523,41 +526,32 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write("Create a change with OpenSpec when you want 1+1>2 apply.\n");
     return 2;
   }
-  const routeAssignments = parseTaskRoutes(multiFlag(flags, "route"));
+  const scopes = parseApplyUnitScopes(args);
+  const dispatch = flagOn(flags, "dispatch");
   const changeDir = resolveApplyChange(cwd, change);
   const pending = loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending");
   const overlay = planApplyWaves(pending);
   const readyIds = new Set(overlay.ready?.task_ids || []);
-  const tasks = pending.filter((task) => readyIds.has(applyTaskId(task)));
-  const pendingNumbers = new Set(pending.map((task) => task.number));
-  for (const number of routeAssignments.keys()) {
-    if (!pendingNumbers.has(number)) throw new Error(`--route task is not pending in this change: ${number}`);
+  const wavePayload = { waves: overlay.waves, ready_wave: overlay.ready };
+  if (!dispatch) {
+    if (flags.json) stdout.write(`${JSON.stringify(wavePayload, null, 2)}\n`);
+    else printApplyWaves(stdout, overlay);
+    return 0;
+  }
+  if (!scopes.size) {
+    const err = new Error("TASK_SCOPE_REQUIRED: pass --unit ID with --write-path PATH or --read-only") as CodedError;
+    err.code = "TASK_SCOPE_REQUIRED";
+    throw err;
+  }
+  const tasks = pending.filter((task) => readyIds.has(applyTaskId(task)) && scopes.has(task.number));
+  if (!tasks.length) {
+    const err = new Error("TASK_SCOPE_REQUIRED: scoped units are not in the ready wave") as CodedError;
+    err.code = "TASK_SCOPE_REQUIRED";
+    throw err;
   }
   const units = [];
-  const dispatched = [];
   for (const task of tasks) {
     const prompt = formatTaskPrompt(task);
-    const requested = routeAssignments.get(task.number) || null;
-    let directorLocal = directorMayRun(task.description);
-    if (!requested && !directorLocal) {
-      const ops = resolveOpsDispatch(cwd, task.description, cards, { env, host });
-      if (ops.kind === "director" || ops.kind === "empty-index") directorLocal = true;
-      else if (ops.kind === "dispatch") {
-        let planned = planStandaloneSpawn({
-          description: task.description,
-          cards,
-          explicitModel: ops.card.id,
-          cwd,
-          taskKind: "concrete",
-          selectionApproval: ops.approval,
-          host,
-        });
-        if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
-        const ticket = persistStandalonePlan(cwd, planned);
-        dispatched.push({ number: task.number, ticket, action: ops.action, profile: ops.profile });
-        continue;
-      }
-    }
     units.push(buildSelectionUnit({
       cwd,
       host,
@@ -566,28 +560,10 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
       prompt,
       cards,
       automaticCards: cardsForAutomaticSelection(cwd, cards, prompt, host),
-      requestedModelId: requested,
-      directorLocal,
+      requestedModelId: null,
+      directorLocal: directorMayRun(task.description),
       metadata: { line_index: task.line_index, section: task.section },
     }));
-  }
-  for (const item of dispatched) {
-    stdout.write(`ops-dispatch ${item.number}: ${item.profile} ${item.action} → ${item.ticket.model_id} (${item.ticket.id})\n`);
-  }
-  if (!units.length) {
-    const reservation = maybeReserveQueuedSpawn(cwd, env, flags, dispatched.length > 0);
-    const payload = {
-      dispatched: dispatched.map((item) => item.ticket),
-      waves: overlay.waves,
-      ready_wave: overlay.ready,
-    };
-    if (flags.json) stdout.write(`${JSON.stringify(withReservation(payload, reservation), null, 2)}\n`);
-    else {
-      printApplyWaves(stdout, overlay);
-      printReservation(stdout, reservation);
-      printDispatchIgnored(stdout, flags, dispatched.length > 0);
-    }
-    return 0;
   }
   const taskSource = pending.map((task) => ({ number: task.number, description: task.description, section: task.section }));
   assertRecommendedSelectionAvailable(units);
@@ -596,20 +572,17 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     host,
     units,
     sourceFingerprint: selectionSourceFingerprint(taskSource),
-    payload: { change: change || changeDir.split(/[\\/]/).at(-1), change_dir: changeDir },
+    payload: {
+      change: change || changeDir.split(/[\\/]/).at(-1),
+      change_dir: changeDir,
+      unit_scopes: scopeRecord(scopes),
+    },
   });
   const approval = approveRecommendedSelection({ cwd, proposal, cards, env });
-  const createdTickets = dispatched.length > 0 || Boolean(approval?.tickets.length);
+  const createdTickets = Boolean(approval?.tickets.length);
   const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
-  const wavePayload = {
-    waves: overlay.waves,
-    ready_wave: overlay.ready,
-  };
   if (flags.json) {
-    const payload = dispatched.length
-      ? { selection_mode: "baton-recommendation", recommendation: approval, dispatched: dispatched.map((item) => item.ticket), ...wavePayload }
-      : { selection_mode: "baton-recommendation", ...approval, ...wavePayload };
-    stdout.write(`${JSON.stringify(withReservation(payload, reservation), null, 2)}\n`);
+    stdout.write(`${JSON.stringify(withReservation({ selection_mode: "baton-recommendation", ...approval, ...wavePayload }, reservation), null, 2)}\n`);
   } else {
     printApplyWaves(stdout, overlay);
     printAutomaticRecommendation(stdout, proposal, approval);

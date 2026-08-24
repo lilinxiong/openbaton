@@ -12,9 +12,16 @@ import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
 import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
 import { configuredRoute, normalizeOpsConfig } from "../src/lib/ops-config.js";
 import { readRouteSnapshot } from "../src/lib/routes.js";
+import { spawnsDir } from "../src/lib/paths.js";
 import type { ModelCard } from "../src/types.js";
 import { parseToml } from "../src/lib/toml.js";
 import { withHome, fakeEnv } from "./home.js";
+
+function spawnTicketFiles(cwd: string): string[] {
+  const dir = spawnsDir(cwd);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter((name) => /^spn-.*\.json$/.test(name));
+}
 
 function capture() {
   const chunks: string[] = [];
@@ -315,9 +322,55 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(testOps.kind, "director");
       const commitOps = resolveOpsDispatch(cwd, "git commit staged changes", cards(cwd), { env });
       assert.ok(commitOps.kind === "director" || commitOps.kind === "empty-index");
+      const summarizeOps = resolveOpsDispatch(cwd, "write a commit message from staged files", cards(cwd), { env });
+      assert.equal(summarizeOps.kind, "director");
+      const searchOps = resolveOpsDispatch(cwd, "rg parser", cards(cwd), { env });
+      assert.equal(searchOps.kind, "director");
+
+      for (const text of [
+        "bun test",
+        "write a commit message from staged files",
+        "rg parser",
+      ]) {
+        const out = capture();
+        assert.equal(await run(["spawn", text, "--host", "codex"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+        assert.match(out.text(), /director-local/);
+        assert.deepEqual(spawnTicketFiles(cwd), []);
+
+        const dispatchOut = capture();
+        assert.equal(await run(["spawn", text, "--host", "codex", "--dispatch"], {
+          cwd, env, stdout: dispatchOut, stderr: dispatchOut,
+        }), 0, dispatchOut.text());
+        assert.match(dispatchOut.text(), /director-local/);
+        assert.match(dispatchOut.text(), /spawn --dispatch ignored; nothing queued to reserve/);
+        assert.deepEqual(spawnTicketFiles(cwd), []);
+      }
+    });
+  });
+
+  it("does not invent a model when unclassified spawn has no automatic candidate", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-unclassified-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await runConfig([
+        "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
+        "--subagent-model", "all", "--disable",
+      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CATALOG) }), 0);
+      assert.equal(loadConfig(cwd, { env }).cli.codex.enabled, false);
+
       const out = capture();
-      assert.equal(await run(["spawn", "bun test"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
-      assert.match(out.text(), /director-local/);
+      const code = await run(["spawn", "implement the parser module", "--host", "codex"], {
+        cwd, env, stdout: out, stderr: out,
+      });
+      const text = out.text();
+      assert.ok(
+        code === 0 && /director-local/i.test(text)
+          || code === 1 && /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i.test(text),
+        text,
+      );
+      assert.doesNotMatch(text, /\b(?:gpt|grok)-[^\s]*/i);
+      assert.deepEqual(spawnTicketFiles(cwd), []);
     });
   });
 

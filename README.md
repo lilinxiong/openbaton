@@ -139,6 +139,10 @@ Explicit --model, --route, baton config model-selection, selector rendering, and
 
 Baton never inherits the parent model, chooses outside the enabled allowlist, invents a reasoning effort or speed flag, or silently switches a failed ticket to another model.
 
+## Director/worker routing
+
+Empty `runner`/`longctx` labels, undeclared work, and units Baton cannot classify stay on the director. Declared classified work—non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host—runs on native subagents through Baton tickets; the director does not implement those units in the parent session. OpenSpec only lightens orchestration; it does not change who writes declared classified tasks. The same table applies on every host; do not invent a host-specific split.
+
 ## Execution lifecycle
 
 The Baton CLI creates tickets and lifecycle state; only the selected host (Codex or Grok) calls native subagent tools.

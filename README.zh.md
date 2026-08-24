@@ -139,6 +139,10 @@ Artificial Analysis 数据只是可选证据。没有 benchmark 时保持 unrank
 
 Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没返回的 effort 或 fast 参数，也不会在 ticket 失败后静默换模型。
 
+## Director/worker 路由
+
+空的 `runner`/`longctx` 标签、未声明的工作，以及 Baton 无法分类的 unit，都留在 director 上执行。已声明且已分类的工作——非空机械标签、带候选的 `baton spawn`、以及启用 host 上的 OpenSpec 可执行任务——通过 Baton ticket 交给原生 subagent；director 不得在父会话里亲自实现这些 unit。OpenSpec 只减轻编排负担，不改变谁来写已声明已分类的任务。每个 host 共用同一张表；不要另造 host 专属分工。
+
 ## 执行生命周期
 
 Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Grok）调用原生 subagent 工具。

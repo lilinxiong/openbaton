@@ -7,6 +7,14 @@ description: "Use Baton automatically for approved multi-model execution and con
 
 You are the Cursor host director. Baton is the scheduling and policy layer; it is not bound to OpenCodex.
 
+## Director/worker routing
+
+Same table on every host. Do not invent a host-specific split.
+
+- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
+- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+
 ## Model contract
 
 - Cursor is the invoking host. For every runtime command that resolves a
@@ -33,7 +41,7 @@ You are the Cursor host director. Baton is the scheduling and policy layer; it i
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
 - Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
 - OpenSpec is optional and remains workflow owner when present. Do not rewrite `tasks.md` structure. Baton state stays under ~/.baton, never in the project.
-- When `cli.cursor.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Run `baton apply <change> --host cursor --dispatch --json`. Native-spawn every reserved ticket in that ready wave in parallel with `Task` (exact `model`, `run_in_background=true`, no `resume`), then bind immediately. After the wave completes, apply again. Independent tasks must run in parallel; overlapping or later-section work stays serial. If `cli.cursor.enabled` is false, fail closed and do not borrow another CLI.
+- When `cli.cursor.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Plan with `baton apply <change> --host cursor --json`. Filter each ready-wave unit here (`--write-path` or `--read-only`). Then `baton apply <change> --host cursor --dispatch --json --unit ID --write-path PATH` (or `--read-only`). Never `--dispatch` without `--unit` scope. Native-spawn reserved tickets in that wave in parallel with `Task` (exact `model`, `run_in_background=true`, no `resume`), then bind immediately. After the wave completes, plan/filter/dispatch again. Independent tasks must run in parallel; overlapping or later-section work stays serial. If `cli.cursor.enabled` is false, fail closed and do not borrow another CLI.
 - Install this skill at ~/.cursor/skills/baton/SKILL.md.
 
 ## Commands
@@ -43,7 +51,8 @@ You are the Cursor host director. Baton is the scheduling and policy layer; it i
     baton models refresh|status|candidates --host cursor
     baton match <text> --host cursor
     baton spawn <request> --host cursor [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change] --host cursor [--dispatch]
+    baton apply [change] --host cursor
+    baton apply [change] --host cursor --dispatch --unit ID --write-path PATH|--read-only
     baton dispatch next --host cursor --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host cursor --json
     baton dispatch probe|progress|complete|fail|timeout|close|release TICKET --host cursor

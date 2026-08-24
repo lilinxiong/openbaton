@@ -11,7 +11,68 @@ import { HOST_SKILL_REL } from "../src/lib/hosts.js";
 import { parseToml } from "../src/lib/toml.js";
 import { withHome, fakeEnv } from "./home.js";
 
+/** Shared director/worker table markers every host skill must name. */
+const DIRECTOR_WORKER_TABLE_ROWS = [
+  "Empty labels / undeclared / unclassified → director",
+  "Declared classified work → native subagents",
+  "OpenSpec only lightens orchestration",
+] as const;
+
+function assertDirectorWorkerRoutingTable(skill: string, label: string): void {
+  for (const row of DIRECTOR_WORKER_TABLE_ROWS) {
+    assert.ok(skill.includes(row), `${label} omits routing row: ${row}`);
+  }
+}
+
 describe("Codex init and update", () => {
+  it("names the shared director/worker routing table in repo and installed skills", async () => {
+    const root = process.cwd();
+    assertDirectorWorkerRoutingTable(
+      fs.readFileSync(path.join(root, "SKILL.md"), "utf8"),
+      "root SKILL.md",
+    );
+    for (const host of ["codex", "grok", "cursor", "claude"] as const) {
+      assertDirectorWorkerRoutingTable(
+        fs.readFileSync(path.join(root, "templates", "hosts", host, "SKILL.md"), "utf8"),
+        `templates/hosts/${host}/SKILL.md`,
+      );
+    }
+
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-routing-"));
+      const env = fakeEnv(home);
+      await initProject(cwd, { env });
+      assertDirectorWorkerRoutingTable(
+        fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8"),
+        "installed ~/.baton/SKILL.md",
+      );
+      for (const host of ["codex", "grok", "cursor", "claude"] as const) {
+        assertDirectorWorkerRoutingTable(
+          fs.readFileSync(path.join(home, HOST_SKILL_REL[host]), "utf8"),
+          `installed ${HOST_SKILL_REL[host]}`,
+        );
+      }
+    });
+  });
+
+  it("keeps add-cli contract fixtures naming the director/worker invariant", () => {
+    const root = process.cwd();
+    const addCli = path.join(root, ".agents", "skills", "add-cli-to-baton");
+    const contract = fs.readFileSync(path.join(addCli, "references", "openbaton-contract.md"), "utf8");
+    assert.match(contract, /Director\/worker routing invariant/);
+    assert.match(contract, /ticket-presence/);
+    assert.match(contract, /fail-closed-always/);
+
+    assertDirectorWorkerRoutingTable(
+      fs.readFileSync(path.join(addCli, "SKILL.md"), "utf8"),
+      "add-cli-to-baton/SKILL.md",
+    );
+
+    const acceptance = fs.readFileSync(path.join(addCli, "references", "acceptance.md"), "utf8");
+    assert.match(acceptance, /Director\/worker routing acceptance/);
+    assert.match(acceptance, /ticket-presence/);
+  });
+
   it("installs the CLI-owned automatic-routing policy and disabled config", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-"));
@@ -40,12 +101,14 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /Never `git commit` from this director session while the matching runner\/longctx label/);
       assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
+      assert.match(grokSkill, /Filter each ready-wave unit/);
+      assert.match(hostSkill, /Filter each ready-wave unit/);
       assert.match(grokSkill, /When `cli.grok.enabled` is true and the user applies an OpenSpec change/);
       assert.match(grokSkill, /Do not edit OpenSpec apply skills/);
       assert.match(hostSkill, /When `cli.codex.enabled` is true and the user applies an OpenSpec change/);
       assert.match(cursorSkill, /When `cli.cursor.enabled` is true and the user applies an OpenSpec change/);
       assert.match(claudeSkill, /When `cli.claude.enabled` is true and the user applies an OpenSpec change/);
-      assert.match(directorSkill, /OpenSpec apply is not a director-implementation exemption/);
+      assertDirectorWorkerRoutingTable(directorSkill, "installed ~/.baton/SKILL.md");
       assert.match(cursorSkill, /cursor-agent models/);
       assert.match(cursorSkill, /native `Task`/);
       assert.match(cursorSkill, /--host cursor/);
