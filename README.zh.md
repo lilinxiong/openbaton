@@ -10,9 +10,38 @@ Baton 可以独立工作；存在 OpenSpec 时也可以消费它的任务。
     baton init
     baton config
 
-需要 Node.js 22.5+。源码 checkout：bun install && bun run baton -- COMMAND。
+需要 Node.js 22.5+。
 
 English: [README.md](README.md)
+
+## 从源码 checkout 安装
+
+Clone 本仓库后，把 checkout 链接到本机，并用仓库最新内容刷新全局 Baton 文件：
+
+```bash
+python3 scripts/update_local_baton.py
+```
+
+脚本会安装依赖、跑测试、构建、执行 `bun link`，再运行 `baton update`，让全局 `baton` 指向本 checkout 的 `dist/bin/baton.js`。
+
+首次安装时，脚本成功后还需要初始化一次：
+
+```bash
+baton init
+baton config
+```
+
+本地已有 Baton 时，同样运行该脚本即可按仓库最新代码重建并更新 skills、配置默认值和 hooks。
+
+若接受跳过测试、加快开发迭代：
+
+```bash
+python3 scripts/update_local_baton.py --skip-tests
+```
+
+在 Cursor 中也可以 clone 后直接运行 `install-local-baton` skill，流程相同。
+
+未 link 时，在 checkout 内日常命令：`bun install && bun run baton -- COMMAND`。
 
 ## 这次改造
 

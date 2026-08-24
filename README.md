@@ -10,9 +10,38 @@ Baton works standalone and can consume OpenSpec tasks when OpenSpec is present.
     baton init
     baton config
 
-Requires Node.js 22.5+. From a source checkout: bun install && bun run baton -- COMMAND.
+Requires Node.js 22.5+.
 
 Chinese: [README.zh.md](README.zh.md)
+
+## Install from a source checkout
+
+After cloning this repository, link the checkout to your machine and refresh global Baton files from it:
+
+```bash
+python3 scripts/update_local_baton.py
+```
+
+This installs dependencies, runs tests, builds, runs `bun link`, and then `baton update` so the global `baton` command points at this checkout's `dist/bin/baton.js`.
+
+On a fresh machine, run initialization once after the script succeeds:
+
+```bash
+baton init
+baton config
+```
+
+If Baton is already installed locally, run the same script to rebuild and update skills, config defaults, and hooks from the latest checkout.
+
+For a faster dev loop when you accept skipping tests:
+
+```bash
+python3 scripts/update_local_baton.py --skip-tests
+```
+
+In Cursor, you can also run the `install-local-baton` skill after cloning; it follows the same workflow.
+
+Day-to-day commands from the checkout without linking: `bun install && bun run baton -- COMMAND`.
 
 ## What changed
 
