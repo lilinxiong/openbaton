@@ -308,7 +308,7 @@ describe("reserveNext", () => {
     assert.equal(reserved.blocked[0]?.code, "HOST_MISMATCH");
     assert.equal(readTicket(cwd, "t-0001").status, "queued");
     expectDispatchError(
-      () => reserveNext(cwd, { capacity: 1, host: "claude", now: at(20) }),
+      () => reserveNext(cwd, { capacity: 1, host: "not-a-registered-host", now: at(20) }),
       "INVALID_HOST",
     );
   });

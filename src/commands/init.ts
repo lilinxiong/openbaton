@@ -5,6 +5,7 @@ import { installHostSkills, type HostId } from "../lib/hosts.js";
 import type { CliId } from "../lib/cli-models.js";
 import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
 import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
+import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
 
 export interface InitProjectOptions {
   force?: boolean;
@@ -17,7 +18,13 @@ export interface InitProjectResult {
   created: string[];
   skipped: string[];
   tools: HostId[];
+  /** Codex guard, retained under its original name for compatibility. */
   guard: CodexHooksInstallResult;
+  /** Every guard-capable host that Baton installed a hook layer for. */
+  guards: Array<
+    | ({ host: "codex" } & CodexHooksInstallResult)
+    | ({ host: "claude" } & ClaudeHooksInstallResult)
+  >;
 }
 
 export async function initProject(cwd: string, options: InitProjectOptions = {}): Promise<InitProjectResult> {
@@ -51,7 +58,14 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
   const guard = installCodexHooks({ cwd, env });
-  if (guard.changed) created.push(guard.display_path);
+  const claudeGuard = installClaudeHooks({ cwd, env });
+  const guards: InitProjectResult["guards"] = [
+    { host: "codex", ...guard },
+    { host: "claude", ...claudeGuard },
+  ];
+  for (const item of guards) {
+    if (item.changed) created.push(item.display_path);
+  }
 
   if (cli) {
     const cfg = loadConfig(cwd, { env });
@@ -63,5 +77,5 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
     saveConfig(cwd, cfg, { env });
   }
 
-  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools, guard };
+  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools, guard, guards };
 }

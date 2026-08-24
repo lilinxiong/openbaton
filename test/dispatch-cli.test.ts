@@ -262,7 +262,7 @@ describe("dispatch CLI", () => {
       assert.equal(secondTicket.status, "queued");
       assert.equal(secondTicket.error, null);
 
-      const bad = await command(["dispatch", "next", "--host", "claude", "--capacity", "1", "--json"], { cwd, env });
+      const bad = await command(["dispatch", "next", "--host", "not-a-registered-host", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(bad.code, 1);
       assert.match(bad.stderr, /invalid host/);
     });

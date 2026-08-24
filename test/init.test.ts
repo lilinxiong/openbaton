@@ -17,7 +17,7 @@ describe("Codex init and update", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-"));
       const env = fakeEnv(home);
       const result = await initProject(cwd, { env });
-      assert.deepEqual(result.tools, ["codex", "grok", "cursor"]);
+      assert.deepEqual(result.tools, ["codex", "grok", "cursor", "claude"]);
 
       const directorSkill = fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8");
       const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
@@ -48,8 +48,17 @@ describe("Codex init and update", () => {
       assert.match(directorSkill, /Compact dispatch applies to every reserved ticket/);
       assert.match(directorSkill, /\[--dispatch\]/);
       assert.match(directorSkill, /\[--release\]/);
-      assert.match(directorSkill, /registered CLI adapters are Codex, Grok, and Cursor/i);
-      assert.match(directorSkill, /spawn_subagent|Task/);
+      // The director skill must name every registered adapter and its native
+      // dispatch mechanism, so a new host cannot ship without documentation.
+      assert.match(directorSkill, /registered CLI adapters are Codex, Grok, Cursor, and Claude Code/i);
+      assert.match(directorSkill, /spawn_subagent/);
+      assert.match(directorSkill, /Task/);
+      assert.match(directorSkill, /agent definition's `model:` frontmatter/);
+      assert.match(directorSkill, /list_models/);
+      for (const host of ["codex", "grok", "cursor", "claude"]) {
+        assert.match(directorSkill, new RegExp(`--host codex\\|grok\\|cursor\\|claude`));
+        assert.ok(directorSkill.includes(host), `director skill omits ${host}`);
+      }
 
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.active, "codex");
@@ -62,6 +71,7 @@ describe("Codex init and update", () => {
       assert.deepEqual(config.cli.codex, emptyProfile);
       assert.deepEqual(config.cli.grok, emptyProfile);
       assert.deepEqual(config.cli.cursor, emptyProfile);
+      assert.deepEqual(config.cli.claude, emptyProfile);
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
@@ -115,6 +125,94 @@ describe("Codex init and update", () => {
         subagent_models: ["grok-4.5"],
       });
       assert.match(chunks.join(""), /cli: grok/);
+    });
+  });
+
+  it("installs a Claude Code runtime skill that names its own native mechanism", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-skill-"));
+      const env = fakeEnv(home);
+      await initProject(cwd, { env });
+      const skill = fs.readFileSync(path.join(home, HOST_SKILL_REL.claude), "utf8");
+      // Its own catalog source and exact-model mechanism, not Codex's or Grok's.
+      assert.match(skill, /list_models/);
+      assert.match(skill, /resolvedModel/);
+      assert.match(skill, /--host claude/);
+      assert.match(skill, /agent definition/i);
+      assert.match(skill, /claude -p/);
+      assert.match(skill, /CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS/);
+      assert.match(skill, /~\/\.claude\/skills\/baton\/SKILL\.md/);
+      // Shared contract clauses every host skill must carry.
+      assert.match(skill, /Never expose human model selection/);
+      assert.match(skill, /Empty `runner`\/`longctx`: director executes them and must not block/);
+      assert.match(skill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
+      assert.match(skill, /--dispatch --json/);
+      assert.match(skill, /OpenCodex/);
+      // It must not copy claims that are false for this host.
+      assert.doesNotMatch(skill, /spawn_subagent/);
+      assert.doesNotMatch(skill, /grok models/);
+      assert.doesNotMatch(skill, /model\/list/);
+    });
+  });
+
+  it("installs the Claude Code guard into user settings without touching unrelated keys", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-guard-"));
+      const env = fakeEnv(home);
+      const settings = path.join(home, ".claude", "settings.json");
+      fs.mkdirSync(path.dirname(settings), { recursive: true });
+      fs.writeFileSync(settings, `${JSON.stringify({
+        env: { EXAMPLE_TOKEN: "keep-me" },
+        hooks: {
+          PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo user-owned" }] }],
+        },
+      }, null, 2)}\n`);
+
+      const result = await initProject(cwd, { env });
+      const claudeGuard = result.guards.find((item) => item.host === "claude");
+      assert.ok(claudeGuard, "expected a Claude Code guard result");
+      assert.equal(claudeGuard.installed, true);
+      assert.equal(claudeGuard.trust_required, false);
+      assert.deepEqual(claudeGuard.events, ["PreToolUse", "SubagentStart"]);
+
+      const merged = JSON.parse(fs.readFileSync(settings, "utf8")) as Record<string, never>;
+      // Unrelated settings and the user's own hook survive.
+      assert.deepEqual(merged.env, { EXAMPLE_TOKEN: "keep-me" });
+      const pre = merged.hooks.PreToolUse as Array<Record<string, never>>;
+      assert.equal(pre[0].matcher, "Bash");
+      assert.equal((pre[0].hooks as Array<Record<string, string>>)[0].command, "echo user-owned");
+      // Baton's entry matches the tool name the hook boundary actually reports.
+      assert.equal(pre.at(-1)!.matcher, "Bash|Edit|Write|NotebookEdit|Agent");
+      assert.match((pre.at(-1)!.hooks as Array<Record<string, string>>)[0].command, /guard hook --host claude/);
+
+      // Repeating init is idempotent.
+      const before = fs.readFileSync(settings, "utf8");
+      await initProject(cwd, { env });
+      assert.equal(fs.readFileSync(settings, "utf8"), before);
+    });
+  });
+
+  it("writes Claude Code's host concurrent cap for a non-interactive --cli claude init", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-cap-"));
+      const env = fakeEnv(home);
+      await initProject(cwd, { env, cli: "claude" });
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.active, "claude");
+      assert.equal(config.cli.claude.enabled, true);
+      assert.equal(config.director.max_concurrent, 20);
+      // Opting one host in must not enable another.
+      assert.equal(config.cli.codex.enabled, false);
+      assert.equal(config.cli.grok.enabled, false);
+    });
+  });
+
+  it("honors CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS when initializing Claude Code", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-env-"));
+      const env = { ...fakeEnv(home), CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "7" };
+      await initProject(cwd, { env, cli: "claude" });
+      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 7);
     });
   });
 

@@ -22,13 +22,14 @@ function project(): string {
       active: "grok",
       codex: { enabled: true, runner: "codex-model", longctx: "", subagent_models: ["codex-model"] },
       grok: { enabled: true, runner: "grok-model", longctx: "", subagent_models: ["grok-model"] },
+      claude: { enabled: true, runner: "claude-model", longctx: "", subagent_models: ["claude-model"] },
     },
     ops: {},
   });
   return cwd;
 }
 
-function ticket(cwd: string, host: "codex" | "grok", id = `spn-${host}`) {
+function ticket(cwd: string, host: "codex" | "grok" | "claude", id = `spn-${host}`) {
   const route = `${host}/model`;
   const snapshot = readRouteSnapshot(cwd, { host })!;
   const selection = {
@@ -147,5 +148,90 @@ describe("host-scoped profiles", () => {
     assert.deepEqual(result.reserved, []);
     assert.deepEqual(result.blocked, []);
     assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${ordinary.id}.json`), "utf8")).status, "queued");
+  });
+});
+
+describe("Claude Code host tickets", () => {
+  function snapshots(cwd: string): void {
+    publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
+    publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
+    publishRouteSnapshot(cwd, { models: [{ id: "claude/model", namespaced: "claude/model" }] }, new Date(), { cli: "claude", host: "claude" });
+  }
+
+  it("reserves its own ticket and retains the immutable host", () => {
+    const cwd = project();
+    snapshots(cwd);
+    // Allow the exact route this ticket carries, so reservation can succeed.
+    const config = loadConfig(cwd);
+    config.cli.claude.subagent_models = ["claude/model"];
+    saveConfig(cwd, config);
+    const planned = ticket(cwd, "claude", "spn-claude-ok");
+    const result = reserveNext(cwd, { capacity: 1, host: "claude" });
+    assert.equal(result.reserved.length, 1);
+    assert.equal(result.reserved[0].ticket_id, planned.id);
+    const stored = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${planned.id}.json`), "utf8"));
+    assert.equal(stored.status, "dispatching");
+    assert.equal(stored.dispatch_host, "claude");
+    assert.equal(stored.target_host, "claude");
+  });
+
+  it("returns a host mismatch instead of letting another host consume the ticket", () => {
+    const cwd = project();
+    snapshots(cwd);
+    const planned = ticket(cwd, "claude", "spn-claude-foreign");
+    for (const host of ["codex", "grok"] as const) {
+      const result = reserveNext(cwd, { capacity: 1, host });
+      assert.equal(result.reserved.length, 0);
+      assert.equal(result.blocked[0]?.code, "HOST_MISMATCH");
+    }
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${planned.id}.json`), "utf8")).status,
+      "queued",
+    );
+  });
+
+  it("fails closed when its own profile is disabled rather than borrowing another", () => {
+    const cwd = project();
+    snapshots(cwd);
+    const config = loadConfig(cwd);
+    config.cli.claude.enabled = false;
+    saveConfig(cwd, config);
+    ticket(cwd, "claude", "spn-claude-disabled");
+    const result = reserveNext(cwd, { capacity: 1, host: "claude" });
+    assert.equal(result.reserved.length, 0);
+    assert.equal(result.blocked[0]?.code, "CLI_CONFIG_DISABLED");
+  });
+
+  it("persists its capacity separately from the other hosts", () => {
+    const cwd = project();
+    snapshots(cwd);
+    ticket(cwd, "codex", "spn-codex-cap");
+    ticket(cwd, "claude", "spn-claude-cap");
+    reserveNext(cwd, { capacity: 2, host: "codex" });
+    reserveNext(cwd, { capacity: 20, host: "claude" });
+    assert.equal(persistedCapacity(cwd, "codex"), 2);
+    assert.equal(persistedCapacity(cwd, "claude"), 20);
+    assert.ok(fs.existsSync(dispatchStatePath(cwd, process.env, "claude")));
+  });
+
+  it("defers a queued ticket at capacity without changing its model", () => {
+    const cwd = project();
+    snapshots(cwd);
+    const config = loadConfig(cwd);
+    config.cli.claude.subagent_models = ["claude/model"];
+    saveConfig(cwd, config);
+    const running = ticket(cwd, "claude", "spn-claude-running");
+    running.status = "running";
+    running.agent_id = "a1c6c5645da14e434";
+    running.host = "claude";
+    writeSpawn(cwd, running);
+    const queued = ticket(cwd, "claude", "spn-claude-queued");
+    // Capacity is already consumed by the running child.
+    const result = reserveNext(cwd, { capacity: 1, host: "claude" });
+    assert.equal(result.reserved.length, 0);
+    const stored = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${queued.id}.json`), "utf8"));
+    assert.equal(stored.status, "queued");
+    assert.equal(stored.model_id, queued.model_id);
+    assert.equal(stored.error, null);
   });
 });

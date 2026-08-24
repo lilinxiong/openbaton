@@ -86,6 +86,19 @@ export interface HostGuardOptions {
   state?: HostGuardState;
   bindingPath?: string;
   now?: Date | string | number;
+  /**
+   * Host whose guard is evaluating this hook. Each guard-capable host serves
+   * only its own tickets; a ticket from another host is never gated or
+   * satisfied here. Defaults to Codex for legacy unqualified hook installs.
+   */
+  host?: string;
+}
+
+/** Guard-capable hosts share one policy; the serving host scopes every ticket lookup. */
+export const DEFAULT_GUARD_HOST = "codex";
+
+function guardHost(options: HostGuardOptions): string {
+  return String(options.host || "").trim().toLowerCase() || DEFAULT_GUARD_HOST;
 }
 
 export interface GuardDecision {
@@ -403,15 +416,16 @@ function allowed(event: string, input: HookInput, ticketId: string | null = null
   };
 }
 
-function isCodexTicket(ticket: GuardTicket): boolean {
-  return (ticket.host || ticket.dispatch_host || "codex") === "codex";
+/** A ticket belongs to the guard only when it names the serving host. */
+function isGuardTicket(ticket: GuardTicket, host: string): boolean {
+  return (ticket.host || ticket.dispatch_host || DEFAULT_GUARD_HOST) === host;
 }
 
-function currentRunning(state: HostGuardState, agentId: string | null): GuardTicket | null {
+function currentRunning(state: HostGuardState, agentId: string | null, host: string): GuardTicket | null {
   if (!agentId) return null;
   return state.tickets.find((ticket) => ticket.status === "running"
     && ticket.agent_id === agentId
-    && isCodexTicket(ticket)) || null;
+    && isGuardTicket(ticket, host)) || null;
 }
 
 function bindingForTurn(state: HostGuardState, turnId: string | null): GuardBinding | null {
@@ -435,7 +449,7 @@ function isRootIdentity(input: HookInput): boolean {
     || type === "parent";
 }
 
-function runningByBinding(state: HostGuardState, agentId: string | null, turnId: string | null = null): GuardTicket | null {
+function runningByBinding(state: HostGuardState, agentId: string | null, host: string, turnId: string | null = null): GuardTicket | null {
   if (!agentId && !turnId) return null;
   const binding = turnId
     ? bindingForTurn(state, turnId)
@@ -445,15 +459,16 @@ function runningByBinding(state: HostGuardState, agentId: string | null, turnId:
   return state.tickets.find((ticket) => ticket.status === "running"
     && ticket.id === binding.ticket_id
     && ticket.agent_id === binding.agent_id
-    && isCodexTicket(ticket)) || null;
+    && isGuardTicket(ticket, host)) || null;
 }
 
-function reservedTickets(state: HostGuardState): GuardTicket[] {
-  return state.tickets.filter((ticket) => ticket.status === "dispatching" && (ticket.dispatch_host || ticket.host || "codex") === "codex");
+function reservedTickets(state: HostGuardState, host: string): GuardTicket[] {
+  return state.tickets.filter((ticket) => ticket.status === "dispatching"
+    && (ticket.dispatch_host || ticket.host || DEFAULT_GUARD_HOST) === host);
 }
 
-function findReserved(state: HostGuardState, input: HookInput): GuardTicket | null {
-  const reserved = reservedTickets(state);
+function findReserved(state: HostGuardState, input: HookInput, host: string): GuardTicket | null {
+  const reserved = reservedTickets(state, host);
   const requestedId = ticketIdFromInput(input);
   if (requestedId) return reserved.find((ticket) => ticket.id === requestedId) || null;
   return reserved.length === 1 ? reserved[0] : null;
@@ -552,7 +567,7 @@ function hasCommitAuthorization(ticket: GuardTicket, command: string): boolean {
     && !/\b(?:--amend|--all|-a|--only|--include|push|reset|restore|checkout|switch|branch|merge|rebase|cherry-pick|revert|tag|stash|clean)\b/i.test(command);
 }
 
-function identityFor(state: HostGuardState, input: HookInput): {
+function identityFor(state: HostGuardState, input: HookInput, host: string): {
   id: string | null;
   turnId: string | null;
   binding: GuardBinding | null;
@@ -567,8 +582,8 @@ function identityFor(state: HostGuardState, input: HookInput): {
     id,
     turnId,
     binding,
-    ticket: runningByBinding(state, id, turnId)
-      || (turnId && binding ? null : currentRunning(state, id)),
+    ticket: runningByBinding(state, id, host, turnId)
+      || (turnId && binding ? null : currentRunning(state, id, host)),
   };
 }
 
@@ -577,6 +592,7 @@ export function evaluatePreToolUse(input: HookInput, options: HostGuardOptions =
   const event = eventName(input);
   const cwd = stringValue(input.cwd) || options.cwd || process.cwd();
   const state = loadHostGuardState(cwd, options);
+  const host = guardHost(options);
   const name = toolName(input);
   const command = stringValue(toolInput(input).command) || "";
   if (!state.active) return allowed(event, input);
@@ -596,11 +612,11 @@ export function evaluatePreToolUse(input: HookInput, options: HostGuardOptions =
 
   if (name === "Agent") {
     if (!state.initialized) return denied(event, HOST_GUARD_REASONS.not_initialized, input);
-    const identity = identityFor(state, input);
+    const identity = identityFor(state, input, host);
     if (identity.ticket) return denied(event, HOST_GUARD_REASONS.nested_agent, input, identity.ticket.id, identity.id);
-    const reserved = findReserved(state, input);
+    const reserved = findReserved(state, input, host);
     if (!reserved) {
-      return denied(event, reservedTickets(state).length > 1
+      return denied(event, reservedTickets(state, host).length > 1
         ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
         : HOST_GUARD_REASONS.no_reserved_ticket, input);
     }
@@ -608,11 +624,11 @@ export function evaluatePreToolUse(input: HookInput, options: HostGuardOptions =
   }
 
   if (!state.initialized) return denied(event, HOST_GUARD_REASONS.not_initialized, input);
-  const identity = identityFor(state, input);
+  const identity = identityFor(state, input, host);
   if (!identity.ticket) {
     const hasAnotherBoundAgent = Boolean(identity.id) && state.tickets.some((ticket) => ticket.status === "running"
       && ticket.agent_id
-      && (ticket.host || ticket.dispatch_host || "codex") === "codex"
+      && isGuardTicket(ticket, host)
       && ticket.agent_id !== identity.id);
     const reason = isRootIdentity(input) && identity.binding
       ? HOST_GUARD_REASONS.agent_identity_mismatch
@@ -622,7 +638,7 @@ export function evaluatePreToolUse(input: HookInput, options: HostGuardOptions =
       ? HOST_GUARD_REASONS.agent_identity_mismatch
       : identity.binding && identity.binding.ticket_id
         ? HOST_GUARD_REASONS.spawn_bind_pending
-      : reservedTickets(state).length > 0
+      : reservedTickets(state, host).length > 0
       ? HOST_GUARD_REASONS.spawn_bind_pending
       : hasAnotherBoundAgent
         ? HOST_GUARD_REASONS.agent_identity_mismatch
@@ -703,6 +719,7 @@ export function evaluateSubagentStart(input: HookInput, options: HostGuardOption
   const event = "SubagentStart";
   const cwd = stringValue(input.cwd) || options.cwd || process.cwd();
   const state = loadHostGuardState(cwd, options);
+  const host = guardHost(options);
   if (!state.active) return allowed(event, input);
   if (state.state_error) return denied(event, HOST_GUARD_REASONS.state_unavailable, input);
   if (!state.initialized) return denied(event, HOST_GUARD_REASONS.not_initialized, input);
@@ -716,17 +733,17 @@ export function evaluateSubagentStart(input: HookInput, options: HostGuardOption
   if (bindingConflictForTurn(state, turnId, existingBinding?.ticket_id || "", agentId)) {
     return denied(event, HOST_GUARD_REASONS.agent_identity_mismatch, input, existingBinding?.ticket_id || null, agentId);
   }
-  const bound = runningByBinding(state, agentId, turnId)
-    || (turnId && existingBinding ? null : currentRunning(state, agentId));
+  const bound = runningByBinding(state, agentId, host, turnId)
+    || (turnId && existingBinding ? null : currentRunning(state, agentId, host));
   if (bound) {
     if (!existingBinding || existingBinding.agent_id !== agentId) {
       recordPendingBinding(cwd, input, state, bound, options, "bound");
     }
     return allowed(event, input, bound.id, agentId, "BATON_GUARD_SUBAGENT_BOUND");
   }
-  const reserved = findReserved(state, input);
+  const reserved = findReserved(state, input, host);
   if (!reserved) {
-    return denied(event, reservedTickets(state).length > 1
+    return denied(event, reservedTickets(state, host).length > 1
       ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
       : HOST_GUARD_REASONS.no_reserved_ticket, input, null, agentId);
   }

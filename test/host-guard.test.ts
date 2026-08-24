@@ -258,3 +258,64 @@ describe("Baton Codex host guard", () => {
     assert.equal(missingIdentity.reason, HOST_GUARD_REASONS.agent_identity_required);
   });
 });
+
+describe("host guard host scoping", () => {
+  const claudeTicket = { ...readTicket, id: "spn-0100", agent_id: "a1c6c56", host: "claude", dispatch_host: "claude" };
+  const claudeReserved = { ...claudeTicket, id: "spn-0101", status: "dispatching", agent_id: null };
+
+  it("serves only the requesting host's running ticket", () => {
+    const both = state([readTicket, claudeTicket]);
+    // The Claude guard accepts its own bound worker.
+    const own = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "a1c6c56" }), { state: both, host: "claude" });
+    assert.equal(own.allowed, true);
+    assert.equal(own.ticket_id, "spn-0100");
+    // The same guard must not satisfy itself with a Codex ticket.
+    const foreign = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: both, host: "claude" });
+    assert.equal(foreign.allowed, false);
+    // And the Codex guard must not accept a Claude worker.
+    const reverse = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "a1c6c56" }), { state: both, host: "codex" });
+    assert.equal(reverse.allowed, false);
+  });
+
+  it("gates child agents against reservations from the same host only", () => {
+    const claudeOnly = state([claudeReserved]);
+    const allowed = evaluatePreToolUse(event("Agent", { prompt: "run the ticket" }), { state: claudeOnly, host: "claude" });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.ticket_id, "spn-0101");
+    // A Codex guard sees no reservation of its own, so it fails closed.
+    const denied = evaluatePreToolUse(event("Agent", { prompt: "run the ticket" }), { state: claudeOnly, host: "codex" });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+  });
+
+  it("records a SubagentStart identity only for its own host reservation", () => {
+    const claudeOnly = state([claudeReserved]);
+    const start = evaluateSubagentStart({
+      hook_event_name: "SubagentStart",
+      cwd: "/workspace",
+      agent_id: "a2a931ffa6c987fbd",
+      agent_type: "baton-probe",
+    }, { state: claudeOnly, host: "claude" });
+    assert.equal(start.allowed, true);
+    assert.equal(start.ticket_id, "spn-0101");
+    assert.equal(start.agent_id, "a2a931ffa6c987fbd");
+    // SubagentStart cannot cancel, so it only reports the pending bind.
+    assert.equal(start.output.hookSpecificOutput?.additionalContext, "BATON_GUARD_SUBAGENT_PENDING_BIND");
+
+    const wrongHost = evaluateSubagentStart({
+      hook_event_name: "SubagentStart",
+      cwd: "/workspace",
+      agent_id: "a2a931ffa6c987fbd",
+      agent_type: "baton-probe",
+    }, { state: state([claudeReserved]), host: "codex" });
+    assert.equal(wrongHost.allowed, false);
+    assert.equal(wrongHost.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+  });
+
+  it("keeps the legacy unqualified hook install scoped to Codex", () => {
+    const both = state([readTicket, claudeTicket]);
+    const legacy = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: both });
+    assert.equal(legacy.allowed, true);
+    assert.equal(legacy.ticket_id, "spn-0001");
+  });
+});

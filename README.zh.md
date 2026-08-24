@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-面向 Codex、Grok 与 Cursor 的 CLI 中立 director：一个前台对话，自动选择模型与推理强度，使用原生 subagent，配置机械 ops，并保持主上下文干净。
+面向 Codex、Grok、Cursor 与 Claude Code 的 CLI 中立 director：一个前台对话，自动选择模型与推理强度，使用原生 subagent，配置机械 ops，并保持主上下文干净。
 
 Baton 可以独立工作；存在 OpenSpec 时也可以消费它的任务。
 
@@ -45,15 +45,17 @@ python3 scripts/update_local_baton.py --skip-tests
 
 ## 这次改造
 
-Baton 不再绑定 OpenCodex。模型发现归 CLI adapter；当前实现的是 Codex、Grok 与 Cursor adapter：
+Baton 不再绑定 OpenCodex。模型发现归 CLI adapter；当前实现的是 Codex、Grok、Cursor 与 Claude Code adapter：
 
 1. baton config 先让用户选择要配置的 CLI。
-2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。选择 Grok 后，Baton 运行 `grok models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。选择 Cursor 后，Baton 运行 `cursor-agent models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。
+2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。选择 Grok 后，Baton 运行 `grok models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。选择 Cursor 后，Baton 运行 `cursor-agent models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。选择 Claude Code 后，Baton 通过 SDK 控制协议发出 `list_models` 请求，只保留每一行的 `resolvedModel` wire id；延迟解析的 `default` 别名行与 host 标记为不可选的行都会被排除。`claude models` 输出的是散文，不是目录。
 3. 所选 CLI picker 返回什么，配置界面就完整显示什么。
 4. 用户设置可选的 runner、longctx 标签，选择允许 subagent 调用的模型，并决定是否启用这个 CLI 配置。
 5. 之后 Baton 只在这个候选集合内自动匹配，不再出现运行时模型选择器，也不需要用户确认模型。
 
-Baton 从不通过 `grok -p` 或 `cursor-agent -p` 执行任务。dispatch host id 为 `codex`、`grok` 或 `cursor`。
+Baton 从不通过 `grok -p`、`cursor-agent -p` 或 `claude -p` 执行任务。dispatch host id 为 `codex`、`grok`、`cursor` 或 `claude`。
+
+Claude Code 的原生 `Agent` 工具只接受模型别名，因此 Baton 把每张 ticket 的精确模型写进 agent 定义的 `model:` frontmatter，再用 `subagent_type` 选中它。该 host 的并发上限为 20 个子 agent（可用 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` 覆盖）。
 
 Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某个 host tool 的说明里少了一个模型，就把它判为不支持。
 
@@ -99,7 +101,7 @@ runner、longctx 只是标签，不声明模型一定快、一定有长上下文
 也可以非交互配置：
 
     baton config \
-      --cli codex|grok|cursor \
+      --cli codex|grok|cursor|claude \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
       --subagent-model gpt-5.6-luna \
@@ -221,9 +223,9 @@ Baton 不创建项目内运行时目录：
 
 ## 命令
 
-    baton init [--force] [--cli codex|grok|cursor]
+    baton init [--force] [--cli codex|grok|cursor|claude]
     baton update
-    baton config [--cli codex|grok|cursor] [--runner MODEL|-] [--longctx MODEL|-]
+    baton config [--cli codex|grok|cursor|claude] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]

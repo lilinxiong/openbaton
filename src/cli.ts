@@ -71,7 +71,10 @@ function runtimeHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): Retur
   return resolveRuntimeHost({ cwd, env, explicitHost: stringFlag(flags, "host") });
 }
 
-const HELP = `baton — CLI-neutral director for Codex, Grok, and Cursor
+/** Host list shown in usage text, derived from the adapter registry. */
+const HOSTS = CLI_IDS.join("|");
+
+const HELP = `baton — CLI-neutral director for ${CLI_IDS.join(", ")}
 既能独立，又能 1+1>2
 
 Standalone: cards + native spawn + mechanical ops + director context hygiene. Complete without OpenSpec.
@@ -82,17 +85,17 @@ The selected CLI owns model visibility; Baton routes only within the configured 
 Interactive init/config use arrow-key select; space toggles CLIs and subagent models.
 
 Usage:
-  baton init [--force] [--cli codex|grok|cursor]  initialize Baton + host skills
+  baton init [--force] [--cli ${HOSTS}]  initialize Baton + host skills
   baton update                        refresh host skills + global config defaults
-  baton guard status|install|hook       inspect/install the Codex host guard or serve hook stdin
-  baton models refresh|status|candidates [--host codex|grok|cursor]  inspect/refresh one CLI model catalog
-  baton cards [--host codex|grok|cursor] [--ranked|--unranked] [--provider ID] [--json]
+  baton guard status|install|hook [--host codex|claude]  inspect/install a host guard or serve hook stdin
+  baton models refresh|status|candidates [--host ${HOSTS}]  inspect/refresh one CLI model catalog
+  baton cards [--host ${HOSTS}] [--ranked|--unranked] [--provider ID] [--json]
   baton host detect [--json]               resolve invoking host from runtime signals
-  baton config [--cli codex|grok|cursor] [--runner MODEL|-] [--longctx MODEL|-]
+  baton config [--cli ${HOSTS}] [--runner MODEL|-] [--longctx MODEL|-]
                [--subagent-model MODEL|all] [--enable|--disable]
-  baton match <text> [--host codex|grok|cursor]  disclose preferred/candidate models without creating work
-  baton spawn <request> [--host codex|grok|cursor] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
-  baton apply [change] [--host codex|grok|cursor]  automatically choose per OpenSpec unit
+  baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
+  baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
+  baton apply [change] [--host ${HOSTS}]  automatically choose per OpenSpec unit
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -108,7 +111,7 @@ Usage:
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json
   baton dispatch status --host HOST --json
-  baton status [--host codex|grok|cursor]  director queue + OpenSpec status if present
+  baton status [--host ${HOSTS}]  director queue + OpenSpec status if present
   baton help | --help | -h
   baton version | --version | -v
 `;
@@ -195,7 +198,7 @@ async function cmdInit(
 ): Promise<number> {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
-  if (flags.tools) throw new Error("--tools is not supported; baton init installs registered host skills");
+  if (flags.tools) throw new Error(`--tools is not supported; baton init installs the ${CLI_IDS.join(", ")} host skills`);
   const cliFlag = stringFlag(flags, "cli");
   let clis: CliId[] | undefined;
   if (cliFlag) clis = [parseCliId(cliFlag)];
@@ -218,9 +221,13 @@ async function cmdInit(
   if (clis?.length) {
     stdout.write(`  cli: ${clis.join(", ")} (max_concurrent follows ${clis[0]})\n`);
   }
-  stdout.write(`  Codex guard: ${result.guard.action} at ${result.guard.display_path}\n`);
+  for (const item of result.guards) {
+    const label = item.host === "claude" ? "Claude Code" : "Codex";
+    stdout.write(`  ${label} guard: ${item.action} at ${item.display_path}\n`);
+  }
   stdout.write("  Trust it in Codex: open `/hooks`, review the Baton-owned entries, and trust them.\n");
   stdout.write("  Note: specialized tool paths may opt out of the default Codex hook path.\n");
+  stdout.write("  Claude Code applies user settings hooks without a trust prompt; review them with `/hooks`.\n");
   if (clis?.length && !cliFlag) {
     stdout.write("\n");
     return runConfig([], { cwd, stdout, stdin, env, discover, prompt, clis });

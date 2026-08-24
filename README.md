@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
 
-A CLI-neutral director for Codex, Grok, and Cursor: one front conversation, automatic model and effort routing, native subagents, configured mechanical ops, and a clean main context.
+A CLI-neutral director for Codex, Grok, Cursor, and Claude Code: one front conversation, automatic model and effort routing, native subagents, configured mechanical ops, and a clean main context.
 
 Baton works standalone and can consume OpenSpec tasks when OpenSpec is present.
 
@@ -45,15 +45,17 @@ Day-to-day commands from the checkout without linking: `bun install && bun run b
 
 ## What changed
 
-Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. Adapters are Codex, Grok, and Cursor:
+Baton is no longer coupled to OpenCodex. A CLI adapter owns model discovery. Adapters are Codex, Grok, Cursor, and Claude Code:
 
 1. baton config asks which CLI to configure.
-2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` and keeps only listed ids (JSON stdout if Grok emits it; otherwise the Available models listing, ignoring login/prose lines). For Cursor, Baton runs `cursor-agent models` and keeps only listed ids (JSON stdout if cursor-agent emits it; otherwise the Available models listing, ignoring login/prose lines).
+2. For Codex, Baton starts codex app-server and calls model/list with hidden models excluded. For Grok, Baton runs `grok models` and keeps only listed ids (JSON stdout if Grok emits it; otherwise the Available models listing, ignoring login/prose lines). For Cursor, Baton runs `cursor-agent models` and keeps only listed ids (JSON stdout if cursor-agent emits it; otherwise the Available models listing, ignoring login/prose lines). For Claude Code, Baton issues the SDK control-protocol `list_models` request and keeps each row's `resolvedModel` wire id, skipping the deferred `default` alias row and any row the host marks not selectable.
 3. Baton displays exactly the picker-visible models returned by that CLI.
 4. The user assigns optional runner and longctx labels, chooses the models subagents may call, and enables or disables that CLI profile.
 5. Later work is routed automatically within that configured candidate set. There is no runtime model selector or model confirmation.
 
-Baton never executes work via `grok -p` or `cursor-agent -p`. Dispatch host ids are `codex`, `grok`, and `cursor`.
+Baton never executes work via `grok -p`, `cursor-agent -p`, or `claude -p`. Dispatch host ids are `codex`, `grok`, `cursor`, and `claude`.
+
+Claude Code's native `Agent` tool takes only a model alias, so Baton pins each ticket's exact model in an agent definition's `model:` frontmatter and selects it by `subagent_type`. Its host cap is 20 concurrent children (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`).
 
 Baton does not query OpenCodex, merge in a hard-coded catalog, or treat a model as unsupported because a host tool description did not list it.
 
@@ -99,7 +101,7 @@ Configured label values are automatically included in subagent_models. A disable
 Non-interactive setup is also supported:
 
     baton config \
-      --cli codex|grok|cursor \
+      --cli codex|grok|cursor|claude \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
       --subagent-model gpt-5.6-luna \
@@ -221,9 +223,9 @@ Baton never creates project-local runtime state:
 
 ## Commands
 
-    baton init [--force] [--cli codex|grok|cursor]
+    baton init [--force] [--cli codex|grok|cursor|claude]
     baton update
-    baton config [--cli codex|grok|cursor] [--runner MODEL|-] [--longctx MODEL|-]
+    baton config [--cli codex|grok|cursor|claude] [--runner MODEL|-] [--longctx MODEL|-]
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates
     baton cards [--ranked|--unranked] [--json]

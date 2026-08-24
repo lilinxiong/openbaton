@@ -33,6 +33,12 @@ export {
   resolveGrokCommand,
 } from "../adapters/grok.js";
 
+export {
+  discoverClaudeModels,
+  normalizeClaudeModels,
+  resolveClaudeCommand,
+} from "../adapters/claude.js";
+
 export type {
   CliAdapter,
   CliHostMetadata,

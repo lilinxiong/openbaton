@@ -8,10 +8,11 @@ import type {
 import { codexAdapter } from "./codex.js";
 import { cursorAdapter } from "./cursor.js";
 import { grokAdapter } from "./grok.js";
+import { claudeAdapter } from "./claude.js";
 import { codedError } from "./shared.js";
 
 /** The only source of truth for supported CLI adapters in this release. */
-export const CLI_ADAPTERS = [codexAdapter, grokAdapter, cursorAdapter] as const;
+export const CLI_ADAPTERS = [codexAdapter, grokAdapter, cursorAdapter, claudeAdapter] as const;
 
 /** Public compatibility list, now derived from the registry. */
 export const CLI_IDS = CLI_ADAPTERS.map((adapter) => adapter.id) as readonly CliId[];
