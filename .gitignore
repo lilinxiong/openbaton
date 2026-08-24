@@ -3,10 +3,4 @@ dist
 *.log
 *.tgz
 .DS_Store
-.agents/*
-!.agents/skills/
-!.agents/skills/**
 openspec/**
-**/opsx-**.md
-**/skills/openspec-**
-.agents/skills/.openspec-target
