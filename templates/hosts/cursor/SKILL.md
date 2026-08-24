@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use Baton automatically for approved multi-model execution and configured mechanical ops. Skip ordinary discussion and tasks that need neither delegation nor ops routing."
+description: "Use Baton automatically for approved multi-model execution, configured mechanical ops, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Skip ordinary discussion."
 ---
 
 # baton

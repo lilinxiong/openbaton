@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use this director automatically for approved Goal or multi-model execution and configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or commit-only staged work. Before any shell, patch, or native-agent tool call, complete the Baton host-guard preflight. Skip ordinary discussion and tasks needing neither delegation nor ops routing."
+description: "Use this director automatically for approved Goal or multi-model execution, configured mechanical ops including build, test, lint, typecheck, search, digest, git-summarize, or commit-only staged work, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Before any shell, patch, or native-agent tool call, complete the Baton host-guard preflight. Skip ordinary discussion."
 ---
 
 # baton
