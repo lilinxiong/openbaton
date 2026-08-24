@@ -2,6 +2,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+/** Runtime signals that would otherwise leak the invoking CLI into isolated tests. */
+const HOST_SIGNAL_KEYS = [
+  "BATON_HOST",
+  "GROK_AGENT",
+  "GROK_SESSION_ID",
+  "CURSOR_AGENT",
+  "CURSOR_CONVERSATION_ID",
+  "CODEX_SANDBOX",
+  "CODEX_INTERNAL",
+];
+
+function withoutHostSignals(env) {
+  const next = { ...env };
+  for (const key of HOST_SIGNAL_KEYS) delete next[key];
+  return next;
+}
+
 export function withHome(fn) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-home-"));
   const prev = process.env.HOME;
@@ -22,7 +39,7 @@ export function withHome(fn) {
 }
 
 export function fakeEnv(home, extra = {}) {
-  return { ...process.env, HOME: home, ...extra };
+  return { ...withoutHostSignals(process.env), HOME: home, ...extra };
 }
 
 /** Isolate direct library tests whose runtime paths resolve through process.env.HOME. */
