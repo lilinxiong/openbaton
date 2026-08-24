@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, hostHome, displayHomePath } from "./paths.js";
 import { listCliAdapters } from "../adapters/registry.js";
+import { loadConfig, resolveCliHost } from "./config.js";
+import type { ConfigEnvOptions } from "./config.js";
 
 export { hostHome } from "./paths.js";
 
@@ -18,6 +20,49 @@ export function parseHostId(value: string): HostId {
   const host = String(value || "").trim().toLowerCase();
   if (isHostId(host)) return host;
   throw new Error(`invalid host: ${value || "<empty>"} (expected ${HOST_IDS.join("|")})`);
+}
+
+export interface ResolveRuntimeHostOptions extends ConfigEnvOptions {
+  cwd: string;
+  explicitHost?: string | null;
+}
+
+/** Host ids that appear to be the current invoking runtime from environment signals. */
+export function detectInvokingHosts(env: NodeJS.ProcessEnv = process.env): HostId[] {
+  return listCliAdapters()
+    .filter((adapter) => adapter.host.isInvoking?.(env))
+    .map((adapter) => adapter.host.id);
+}
+
+/** Resolve the invoking host from explicit flags/env, runtime signals, or legacy config. */
+export function detectInvokingHost(env: NodeJS.ProcessEnv = process.env): HostId | null {
+  const explicit = String(env.BATON_HOST || "").trim().toLowerCase();
+  if (explicit) return parseHostId(explicit);
+  const matches = detectInvokingHosts(env);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(`ambiguous invoking host: ${matches.join(", ")} (set BATON_HOST to disambiguate)`);
+  }
+  return null;
+}
+
+export function resolveRuntimeHost(options: ResolveRuntimeHostOptions): HostId {
+  const env = options.env || process.env;
+  const explicit = String(options.explicitHost || env.BATON_HOST || "").trim();
+  if (explicit) return parseHostId(explicit);
+  const detected = detectInvokingHost(env);
+  if (detected) return detected;
+  return resolveCliHost(loadConfig(options.cwd, { env }));
+}
+
+export function inferHostFromTickets(tickets: Array<{ target_host?: string | null; dispatch_host?: string | null; host?: string | null; selection?: { host?: string | null } | null }>): HostId | null {
+  const hosts = new Set<HostId>();
+  for (const ticket of tickets) {
+    const value = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host;
+    if (value) hosts.add(parseHostId(String(value)));
+  }
+  if (hosts.size === 1) return [...hosts][0];
+  return null;
 }
 
 export const HOST_SKILL_REL: Record<HostId, string> = Object.fromEntries(

@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.js";
-import { loadConfig } from "../src/lib/config.js";
+import { resolveRuntimeHost } from "../src/lib/hosts.js";
 
 const samplesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "samples");
 
@@ -275,8 +275,7 @@ async function enqueueTickets(
 export async function compareSample(mode: "standalone" | "openspec"): Promise<SampleComparison> {
   const env = process.env;
   const sequentialWorkspace = copySample(mode);
-  const cfg = loadConfig(sequentialWorkspace, { env });
-  const host = cfg.cli.active;
+  const host = resolveRuntimeHost({ cwd: sequentialWorkspace, env });
   const units = mode === "openspec" ? OPENSPEC_UNITS : STANDALONE_UNITS;
   const request = fs.readFileSync(path.join(sequentialWorkspace, "REQUEST.txt"), "utf8").trim();
 

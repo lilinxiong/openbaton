@@ -6,27 +6,43 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  batonHome,
+  readRouteSnapshot,
+  resolveInvokingHost,
+  userHome,
+} from "./lib/host.mjs";
 
 const samplesDir = path.dirname(fileURLToPath(import.meta.url));
-const workspaceArg = process.argv[2];
-const mode = process.argv[3];
+const argv = process.argv.slice(2);
+const hostFlagIndex = argv.indexOf("--host");
+const explicitHost = hostFlagIndex >= 0 ? argv[hostFlagIndex + 1] : null;
+if (hostFlagIndex >= 0 && !explicitHost) fail("usage: --host requires codex|grok|cursor");
+const positional = hostFlagIndex >= 0
+  ? argv.filter((_, index) => index !== hostFlagIndex && index !== hostFlagIndex + 1)
+  : argv;
+const workspaceArg = positional[0];
+const mode = positional[1];
 if (!workspaceArg || !new Set(["standalone", "openspec"]).has(mode)) {
-  fail("usage: bun samples/verify.mjs WORKSPACE standalone|openspec");
+  fail("usage: bun samples/verify.mjs [--host codex|grok|cursor] WORKSPACE standalone|openspec");
 }
 
 const workspace = fs.realpathSync(path.resolve(workspaceArg));
 const root = git(["rev-parse", "--show-toplevel"]).trim();
 if (fs.realpathSync(root) !== workspace) fail("workspace must be its own Git root");
 
-const home = process.env.HOME || os.homedir();
+const home = userHome();
+const batonRoot = batonHome();
 const workspaceId = crypto.createHash("sha256").update(workspace).digest("hex");
-const batonWorkspace = path.join(home, ".baton", "workspaces", workspaceId);
+const batonWorkspace = path.join(batonRoot, "workspaces", workspaceId);
 const tickets = readJsonDirectory(path.join(batonWorkspace, "spawns"))
   .filter((ticket) => ticket.source === (mode === "openspec" ? "openspec" : "standalone"))
   .sort((a, b) => String(a.id).localeCompare(String(b.id)));
 const proposals = readJsonDirectory(path.join(batonWorkspace, "selections"))
   .filter((proposal) => proposal.source === (mode === "openspec" ? "openspec" : "standalone"))
   .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+const host = resolveInvokingHost({ explicitHost, env: process.env, tickets });
 
 assert(tickets.length === 5, `expected 5 ${mode} tickets, got ${tickets.length}`);
 assert(tickets.every((ticket) => ticket.status === "completed"), "every ticket must be completed");
@@ -38,8 +54,12 @@ assert(tickets.every((ticket) => {
   const expected = ticket.reasoning_effort ? `${ticket.route_id}@${ticket.reasoning_effort}` : ticket.route_id;
   return ticket.model_id === expected;
 }), "model_id must preserve the selected route/reasoning-effort pair");
+assert(tickets.every((ticket) => {
+  const ticketHost = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host;
+  return ticketHost === host;
+}), `every ticket must target the invoking host ${host}`);
 
-verifyAutomaticSelection(tickets, proposals);
+verifyAutomaticSelection(tickets, proposals, host);
 
 const concrete = tickets.filter((ticket) => ticket.work_unit?.kind === "concrete");
 const deliberative = tickets.filter((ticket) => ticket.work_unit?.kind === "deliberative");
@@ -49,12 +69,13 @@ assert(concrete.every((ticket) => ticket.coordination?.mode === "terminal-only")
 assert(deliberative[0].coordination?.mode === "checkpointed", "deliberative ticket must be checkpointed");
 assert(Number(deliberative[0].progress?.sequence || 0) >= 1, "deliberative ticket must persist at least one progress checkpoint");
 
-verifyQueueRefill(tickets, batonWorkspace);
+verifyQueueRefill(tickets, batonWorkspace, host);
 verifyWorkspace(mode);
 
 process.stdout.write(`${JSON.stringify({
   ok: true,
   mode,
+  host,
   workspace,
   routing: "automatic",
   tickets: tickets.map((ticket) => ({
@@ -71,7 +92,7 @@ process.stdout.write(`${JSON.stringify({
   business_oracle: path.join(samplesDir, "EXPECTED.md"),
 }, null, 2)}\n`);
 
-function verifyAutomaticSelection(items, selections) {
+function verifyAutomaticSelection(items, selections, expectedHost) {
   assert(selections.length === 1, `one request must create exactly one ${mode} proposal, got ${selections.length}`);
   const proposal = selections[0];
   const delegatedUnits = proposal.units.filter((unit) => !unit.director_local);
@@ -82,6 +103,7 @@ function verifyAutomaticSelection(items, selections) {
   assert(proposal.confirmation?.scope === "proposal", "automatic approval is scoped to its request proposal");
   assert(proposal.confirmation?.confirmed_by === "baton-recommendation", "approval must not claim user model confirmation");
   assert(proposal.history?.[0]?.event === "pending_confirmation" && proposal.history?.some((event) => event.event === "approved"), "proposal must retain create-then-auto-approve audit order");
+  if (proposal.host) assert(proposal.host === expectedHost, `proposal must target the invoking host ${expectedHost}`);
 
   if (mode === "standalone") {
     const sourceRequest = fs.readFileSync(path.join(workspace, "REQUEST.txt"), "utf8").trim();
@@ -101,6 +123,7 @@ function verifyAutomaticSelection(items, selections) {
     const selectedCandidate = unit.candidates.find((candidate) => candidate.model_id === unit.recommended_model_id);
     assert((approval?.service_tier || null) === (selectedCandidate?.service_tier || null), `${proposal.id}/${unit.key} must persist its automatic service tier`);
     assert(approval?.changed_by_user === false, `${proposal.id}/${unit.key} must not record a user override`);
+    if (approval?.host) assert(approval.host === expectedHost, `${proposal.id}/${unit.key} must target the invoking host ${expectedHost}`);
   }
 
   for (const ticket of items) {
@@ -112,29 +135,31 @@ function verifyAutomaticSelection(items, selections) {
     const unitKey = selection?.unit_key || (mode === "openspec" ? ticket.openspec?.number : null);
     const unit = proposal.units.find((item) => item.key === unitKey);
     assert(unit?.recommended_model_id === ticket.model_id, `${ticket.id} must use its unit recommendation`);
+    if (selection?.host) assert(selection.host === expectedHost, `${ticket.id} must target the invoking host ${expectedHost}`);
   }
 
-  const snapshotPath = path.join(home, ".baton", "cache", "cli-models.json");
-  assert(fs.existsSync(snapshotPath), "Baton must persist the active CLI model snapshot");
-  const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
-  assert(snapshot.schema_version === 5 && snapshot.source === "cli" && snapshot.cli === "codex", "snapshot must use the Codex CLI-owned schema");
+  const snapshot = readRouteSnapshot(home, expectedHost);
+  assert(snapshot, `Baton must persist the ${expectedHost} CLI model snapshot`);
+  assert(snapshot.schema_version === 5 && snapshot.source === "cli" && snapshot.cli === expectedHost, `snapshot must use the ${expectedHost} CLI-owned schema`);
   const routes = new Map(snapshot.routes.map((route) => [route.route_id, route]));
   for (const ticket of items) {
     const route = routes.get(ticket.route_id);
-    assert(route && !route.disabled, `${ticket.id} route must exist in the current Codex snapshot`);
+    assert(route && !route.disabled, `${ticket.id} route must exist in the current ${expectedHost} snapshot`);
     if (ticket.reasoning_effort) {
-      assert(route.reasoning_efforts.includes(ticket.reasoning_effort), `${ticket.id} effort must be returned by Codex for ${ticket.route_id}`);
+      assert(route.reasoning_efforts.includes(ticket.reasoning_effort), `${ticket.id} effort must be returned by ${expectedHost} for ${ticket.route_id}`);
     }
     if (ticket.service_tier) {
-      assert(route.service_tiers.includes(ticket.service_tier) || route.additional_speed_tiers.includes(ticket.service_tier), `${ticket.id} service tier must be returned by Codex for ${ticket.route_id}`);
+      assert(route.service_tiers.includes(ticket.service_tier) || route.additional_speed_tiers.includes(ticket.service_tier), `${ticket.id} service tier must be returned by ${expectedHost} for ${ticket.route_id}`);
     }
   }
 }
 
-function verifyQueueRefill(items, runtimeRoot) {
-  const dispatchState = path.join(runtimeRoot, "runs", "dispatch.json");
-  if (!fs.existsSync(dispatchState)) return;
-  const capacity = Number(JSON.parse(fs.readFileSync(dispatchState, "utf8")).capacity);
+function verifyQueueRefill(items, runtimeRoot, expectedHost) {
+  const dispatchState = path.join(runtimeRoot, "runs", `dispatch-${expectedHost}.json`);
+  const legacyState = path.join(runtimeRoot, "runs", "dispatch.json");
+  const file = fs.existsSync(dispatchState) ? dispatchState : legacyState;
+  if (!fs.existsSync(file)) return;
+  const capacity = Number(JSON.parse(fs.readFileSync(file, "utf8")).capacity);
   if (!Number.isInteger(capacity) || capacity >= items.length) return;
   const releases = items.map((ticket) => Date.parse(ticket.slot_released_at || "")).filter(Number.isFinite).sort((a, b) => a - b);
   const reservations = items.map((ticket) => Date.parse(ticket.history?.find((entry) => entry.event === "dispatch_reserved")?.at || "")).filter(Number.isFinite);

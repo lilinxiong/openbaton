@@ -90,19 +90,20 @@ describe("built-in Baton capability samples", () => {
       "requires_manual_choice",
       "baton-recommendation",
       "configured-cli-subagent-allowlist-v1",
-      "cli-models.json",
+      "readRouteSnapshot",
       'snapshot.source === "cli"',
-      'snapshot.cli === "codex"',
+      "snapshot.cli === expectedHost",
       "reasoning_efforts",
       "service_tier",
+      "resolveInvokingHost",
     ]) assert.match(verifierSuite, new RegExp(marker));
     const expected = fs.readFileSync(path.join(samples, "EXPECTED.md"), "utf8");
     assert.match(expected, /one proposal containing all of its units/i);
     assert.match(expected, /no selector or user confirmation/i);
-    assert.match(expected, /Mini and Spark remain eligible/i);
+    assert.match(expected, /hard-coded family bans/i);
     const instructions = fs.readFileSync(path.join(samples, "README.md"), "utf8");
     assert.match(instructions, /no runtime model picker or confirmation step/i);
-    assert.match(instructions, /comes directly from Codex `model\/list`/i);
+    assert.match(instructions, /invoking CLI/i);
     assert.match(instructions, /runner.*longctx.*labels only/is);
     assert.doesNotMatch(instructions, /selection render|one Submit|manual selector/i);
   });

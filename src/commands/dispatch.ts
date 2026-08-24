@@ -1,5 +1,5 @@
 import { effectiveMaxConcurrentForHost, loadConfig } from "../lib/config.js";
-import { parseHostId, type HostId } from "../lib/hosts.js";
+import { parseHostId, resolveRuntimeHost, type HostId } from "../lib/hosts.js";
 import {
   bindAgent,
   deferDispatch,
@@ -79,7 +79,7 @@ function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean |
 }
 
 function dispatchHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): HostId {
-  return parseHostId(stringFlag(flags, "host") || loadConfig(cwd, { env }).cli.active);
+  return resolveRuntimeHost({ cwd, env, explicitHost: stringFlag(flags, "host") });
 }
 
 function finishAndMaybeRelease(

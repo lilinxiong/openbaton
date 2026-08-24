@@ -23,7 +23,9 @@ baton models
 baton cards
 ```
 
-`baton config` must select and enable the Codex profile, assign optional `runner` and `longctx` labels, and choose the models subagents may call. The catalog shown by the command comes directly from Codex `model/list`; Baton does not obtain or augment it from OpenCodex. `runner` and `longctx` are labels only and do not assert model context-window capabilities.
+`baton config` must enable the invoking CLI profile, assign optional `runner` and `longctx` labels, and choose the models subagents may call. The catalog shown by the command comes directly from that CLI's own model source; Baton does not obtain or augment it from OpenCodex. `runner` and `longctx` are labels only and do not assert model context-window capabilities.
+
+When running from Codex, configure `[cli.codex]`. From Cursor, configure `[cli.cursor]`. From Grok, configure `[cli.grok]`. Verification resolves the invoking host dynamically from runtime signals, `BATON_HOST`, or `--host`; it does not assume `cli.active`.
 
 `bun link` is required only when testing this source checkout. A normally installed package already provides `baton` on `PATH`.
 
@@ -33,11 +35,11 @@ The ordinary business request is decomposed once. Baton records an auditable pro
 
 Every automatic choice must satisfy all of the following:
 
-- the exact base model was returned by the active Codex catalog and is present in `cli.codex.subagent_models`;
-- the chosen reasoning effort and any non-null service tier are values Codex returned for that model;
+- the exact base model was returned by the invoking CLI catalog and is present in that host's enabled `subagent_models`;
+- when the catalog reports reasoning efforts or service tiers, the chosen values must come from that model's catalog entry;
 - `confirmed_by=baton-recommendation` and `changed_by_user=false` are persisted as audit evidence;
 - a zero benchmark score, score tie, or missing Artificial Analysis record does not open a manual-choice flow;
-- no hard-coded family ban removes a configured Codex model, including `gpt-5.4-mini` or `gpt-5.3-codex-spark`.
+- no hard-coded family ban removes a configured model that the invoking CLI returned and the user enabled.
 
 ## Standalone path
 
@@ -45,11 +47,13 @@ Every automatic choice must satisfy all of the following:
 bun samples/bootstrap.mjs standalone
 ```
 
-Use the printed workspace in the current Codex task and pass the printed request to the trigger unchanged. After it finishes:
+Use the printed workspace in the current host task and pass the printed request to the trigger unchanged. After it finishes:
 
 ```bash
 bun samples/verify.mjs <workspace> standalone
 ```
+
+The verifier resolves the invoking host automatically. Override with `BATON_HOST=cursor` or `bun samples/verify.mjs --host cursor <workspace> standalone` when needed.
 
 Expected properties:
 

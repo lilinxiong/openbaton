@@ -4,6 +4,7 @@ import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
+import { runHost } from "./commands/host.js";
 import { cliPromptChoices, runConfig } from "./commands/config.js";
 import { runGuard } from "./commands/guard.js";
 import {
@@ -15,7 +16,7 @@ import {
 import { cliProfileForHost, configuredSubagentModelsForHost, effectiveMaxConcurrentForHost, loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
-import { parseHostId } from "./lib/hosts.js";
+import { parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
@@ -67,8 +68,7 @@ function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, host?: ReturnType<ty
 }
 
 function runtimeHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): ReturnType<typeof parseHostId> {
-  const cfg = loadConfig(cwd, { env });
-  return parseHostId(stringFlag(flags, "host") || cfg.cli.active);
+  return resolveRuntimeHost({ cwd, env, explicitHost: stringFlag(flags, "host") });
 }
 
 const HELP = `baton — CLI-neutral director for Codex, Grok, and Cursor
@@ -87,6 +87,7 @@ Usage:
   baton guard status|install|hook       inspect/install the Codex host guard or serve hook stdin
   baton models refresh|status|candidates [--host codex|grok|cursor]  inspect/refresh one CLI model catalog
   baton cards [--host codex|grok|cursor] [--ranked|--unranked] [--provider ID] [--json]
+  baton host detect [--json]               resolve invoking host from runtime signals
   baton config [--cli codex|grok|cursor] [--runner MODEL|-] [--longctx MODEL|-]
                [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text> [--host codex|grok|cursor]  disclose preferred/candidate models without creating work
@@ -166,6 +167,8 @@ export async function run(argv: string[], {
       case "routes":
       case "models":
         return await runRoutes(args, { cwd, stdout, env, discover });
+      case "host":
+        return runHost(args, { cwd, stdout, env });
       case "conversation":
         return runConversation(args, { stdout });
       case "status":

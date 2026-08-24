@@ -4,17 +4,30 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveInvokingHost } from "./lib/host.mjs";
 
-const standaloneArg = process.argv[2];
-const openspecArg = process.argv[3];
+const argv = process.argv.slice(2);
+const hostFlagIndex = argv.indexOf("--host");
+const explicitHost = hostFlagIndex >= 0 ? argv[hostFlagIndex + 1] : null;
+if (hostFlagIndex >= 0 && !explicitHost) fail("usage: --host requires codex|grok|cursor");
+const positional = hostFlagIndex >= 0
+  ? argv.filter((_, index) => index !== hostFlagIndex && index !== hostFlagIndex + 1)
+  : argv;
+const standaloneArg = positional[0];
+const openspecArg = positional[1];
 if (!standaloneArg || !openspecArg) {
-  fail("usage: bun samples/verify-bundle.mjs STANDALONE_WORKSPACE OPENSPEC_WORKSPACE");
+  fail("usage: bun samples/verify-bundle.mjs [--host codex|grok|cursor] STANDALONE_WORKSPACE OPENSPEC_WORKSPACE");
 }
 
 const runs = [
   load(path.resolve(standaloneArg), "standalone"),
   load(path.resolve(openspecArg), "openspec"),
 ];
+const host = resolveInvokingHost({
+  explicitHost,
+  env: process.env,
+  tickets: runs.flatMap(({ tickets }) => tickets),
+});
 
 for (const { proposal, tickets, mode } of runs) {
   assert(proposal.status === "approved", `${mode} proposal must be approved`);
@@ -25,6 +38,7 @@ for (const { proposal, tickets, mode } of runs) {
     approval.confirmed_by === "baton-recommendation"
     && approval.changed_by_user === false
     && approval.selected_model_id === approval.recommended_model_id
+    && (!approval.host || approval.host === host)
   ), `${mode} approvals must preserve unchanged Baton recommendations`);
   assert(tickets.length === 5, `${mode} must contain five tickets`);
   assert(tickets.every((ticket) =>
@@ -32,11 +46,13 @@ for (const { proposal, tickets, mode } of runs) {
     && ticket.selection?.changed_by_user === false
     && ticket.selection?.selected_model_id === ticket.model_id
     && (ticket.selection?.service_tier || null) === (ticket.service_tier || null)
-  ), `${mode} tickets must carry automatic-selection evidence`);
+    && (ticket.target_host || ticket.selection?.host || host) === host
+  ), `${mode} tickets must carry automatic-selection evidence for host ${host}`);
 }
 
 process.stdout.write(`${JSON.stringify({
   ok: true,
+  host,
   routing: "automatic",
   standalone: runs[0].workspace,
   openspec: runs[1].workspace,

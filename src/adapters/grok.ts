@@ -26,6 +26,9 @@ export const GROK_HOST_METADATA: CliHostMetadata = {
     if (Number.isFinite(override) && override > 0) return Math.floor(override);
     return 8;
   },
+  isInvoking: (env = process.env) =>
+    String(env.GROK_AGENT || "").trim() === "1"
+    || Boolean(String(env.GROK_SESSION_ID || "").trim()),
 };
 
 /** Resolve the official Grok Build binary, without inventing a fallback path. */

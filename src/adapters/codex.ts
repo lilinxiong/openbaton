@@ -24,6 +24,8 @@ export const CODEX_HOST_METADATA: CliHostMetadata = {
   skillPath: ".codex/skills/baton/SKILL.md",
   defaultMaxConcurrent: 4,
   maxConcurrent: () => 4,
+  isInvoking: (env = process.env) =>
+    Boolean(String(env.CODEX_SANDBOX || env.CODEX_INTERNAL || "").trim()),
 };
 
 /** Resolve the selected Codex CLI, with the desktop bundle as a fallback. */

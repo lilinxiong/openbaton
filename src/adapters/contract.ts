@@ -65,6 +65,8 @@ export interface CliHostMetadata {
   maxConcurrentEnv?: string;
   /** Resolve the cap exactly as the host exposes it to Baton. */
   maxConcurrent: (env?: NodeJS.ProcessEnv) => number;
+  /** Return true when this host appears to be the current invoking runtime. */
+  isInvoking?: (env?: NodeJS.ProcessEnv) => boolean;
 }
 
 /**
