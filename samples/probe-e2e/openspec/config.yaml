@@ -1,0 +1,5 @@
+schema: spec-driven
+context: |
+  Small JavaScript utility probe for Baton host end-to-end verification.
+  Workers implement src/utils/format.js, src/utils/validate.js, and src/index.js.
+  Run bun verify-local.mjs after implementation.

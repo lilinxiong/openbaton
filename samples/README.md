@@ -96,3 +96,42 @@ bun samples/verify-bundle.mjs <standalone-workspace> <openspec-workspace>
 ```
 
 Business answers are listed in [EXPECTED.md](EXPECTED.md). Read them after the run, not before asking Codex to perform the audit.
+
+## Probe E2E path (post-adapter coding)
+
+Use after `/add-cli-to-baton` to verify parallel implement tasks, serial integration, and OpenSpec apply in an isolated git worktree.
+
+The fixed template lives in `samples/probe-e2e/` (including its embedded `openspec/` tree). It is **not** stored in the repo-root `openspec/` directory, which is gitignored.
+
+```bash
+bun samples/bootstrap-probe.mjs --host cursor --worktree ../openbaton-probe-cursor
+```
+
+Open a fresh chat in the printed worktree and run:
+
+```text
+/openspec-apply-change probe-e2e
+```
+
+Pass `REQUEST.txt` unchanged. After apply:
+
+```bash
+bun samples/verify-probe.mjs --host cursor ../openbaton-probe-cursor
+```
+
+Expected properties:
+
+- change `probe-e2e` with three tasks: `1.1`, `1.2` parallel, then `2.1` serial;
+- workers create `src/utils/format.js`, `src/utils/validate.js`, and `src/index.js`;
+- `bun verify-local.mjs` exits zero;
+- OpenSpec strict validation passes;
+- Baton tickets use automatic recommendation evidence and release without leak.
+
+Cleanup after PASS:
+
+```bash
+git worktree remove ../openbaton-probe-cursor
+git branch -D probe/cursor-e2e
+```
+
+Orchestration skill: `/verify-cli-baton-e2e <target>`.
