@@ -1,12 +1,18 @@
-import readline from "node:readline/promises";
 import {
   CLI_IDS,
   discoverCliModels,
   type CliId,
   type CliModel,
+  type CliModelCatalog,
   type CliModelDiscovery,
 } from "../lib/cli-models.js";
-import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
+import { hostMaxConcurrent, loadConfig, saveConfig, type Config } from "../lib/config.js";
+import {
+  createTerminalPrompt,
+  isInteractiveIo,
+  type PromptChoice,
+  type SelectPrompt,
+} from "../lib/prompt.js";
 import { publishRouteSnapshot } from "../lib/routes.js";
 import type { WritableLike } from "../types.js";
 
@@ -16,7 +22,9 @@ export interface ConfigCommandOptions {
   stdin?: NodeJS.ReadableStream;
   env?: NodeJS.ProcessEnv;
   discover?: CliModelDiscovery;
-  readLine?: () => Promise<string>;
+  prompt?: SelectPrompt;
+  /** Skip the CLI picker and configure these CLIs in order. */
+  clis?: CliId[];
 }
 
 function repeated(args: string[], name: string): string[] {
@@ -41,42 +49,23 @@ function optionalModelFlag(args: string[], name: string): string | undefined {
   return value === "-" ? "" : value;
 }
 
-async function defaultReadLine(stdin: NodeJS.ReadableStream, stdout: WritableLike): Promise<string> {
-  const rl = readline.createInterface({ input: stdin, output: stdout as NodeJS.WritableStream });
-  try {
-    return await rl.question("> ");
-  } finally {
-    rl.close();
-  }
-}
-
-function printClis(stdout: WritableLike): void {
-  stdout.write("CLIs\n");
-  CLI_IDS.forEach((cli, index) => stdout.write(`  ${index + 1}. ${cli}\n`));
-}
-
 function parseCliChoice(value: string): CliId {
   const text = value.trim().toLowerCase();
-  const index = Number(text);
-  if (Number.isInteger(index) && index >= 1 && index <= CLI_IDS.length) return CLI_IDS[index - 1];
   if ((CLI_IDS as readonly string[]).includes(text)) return text as CliId;
   throw new Error(`invalid CLI choice: ${value}`);
 }
 
 function modelLabel(model: CliModel): string {
-  return `${model.display_name} (${model.id})${model.description ? ` — ${model.description}` : ""}`;
+  return `${model.display_name} (${model.id})`;
 }
 
-function printModels(stdout: WritableLike, cli: CliId, models: CliModel[]): void {
-  stdout.write(`models: ${cli} catalog (picker-visible)\n`);
-  models.forEach((model, index) => stdout.write(`  ${index + 1}. ${modelLabel(model)}\n`));
+function modelHint(model: CliModel): string | undefined {
+  return model.description || undefined;
 }
 
 function modelByChoice(models: CliModel[], value: string): CliModel | null {
   const text = value.trim();
   if (!text || text === "0" || text === "-") return null;
-  const index = Number(text);
-  if (Number.isInteger(index) && index >= 1 && index <= models.length) return models[index - 1];
   return models.find((model) => model.id === text) || null;
 }
 
@@ -85,12 +74,6 @@ function requireModel(models: CliModel[], value: string, label: string): string 
   const model = modelByChoice(models, value);
   if (!model) throw new Error(`${label} model ${value} is not in the ${models.length}-model CLI response`);
   return model.id;
-}
-
-function selectedModel(models: CliModel[], value: string, label: string): string {
-  const text = value.trim();
-  if (!text || text === "0" || text === "-") return "";
-  return requireModel(models, text, label);
 }
 
 function parseModelSet(models: CliModel[], values: string[]): string[] {
@@ -106,36 +89,69 @@ function parseModelSet(models: CliModel[], values: string[]): string[] {
   return chosen;
 }
 
-function parseEnabled(value: string, current: boolean): boolean {
-  const text = value.trim().toLowerCase();
-  if (!text) return current;
-  if (["y", "yes", "1", "on", "true", "enable", "enabled"].includes(text)) return true;
-  if (["n", "no", "0", "off", "false", "disable", "disabled"].includes(text)) return false;
-  throw new Error(`invalid enabled choice: ${value}`);
+export function cliPromptChoices(): PromptChoice<CliId>[] {
+  return CLI_IDS.map((id) => ({ value: id, label: id }));
 }
 
-export async function runConfig(args: string[], {
-  cwd,
-  stdout,
-  stdin = process.stdin,
-  env = process.env,
-  discover = discoverCliModels,
-  readLine,
-}: ConfigCommandOptions): Promise<number> {
-  if (args[0] === "model-selection") {
-    throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.subagent_models; configure the candidate set with `baton config`");
-  }
-  const current = loadConfig(cwd, { env });
-  const ask = readLine || (() => defaultReadLine(stdin, stdout));
+function modelChoices(models: CliModel[]): PromptChoice<string>[] {
+  return models.map((model) => ({
+    value: model.id,
+    label: modelLabel(model),
+    hint: modelHint(model),
+  }));
+}
 
-  let cliValue = lastFlag(args, "cli");
-  if (cliValue === undefined) {
-    printClis(stdout);
-    stdout.write("\nSelect CLI:\n");
-    cliValue = await ask();
-  }
-  const cli = parseCliChoice(cliValue);
-  const catalog = await discover(cli, { cwd, env });
+function optionalModelChoices(models: CliModel[]): PromptChoice<string>[] {
+  return [
+    { value: "", label: "(empty; director)" },
+    ...modelChoices(models),
+  ];
+}
+
+function requirePrompt(
+  prompt: SelectPrompt | undefined,
+  stdin: NodeJS.ReadableStream,
+  stdout: WritableLike,
+  env: NodeJS.ProcessEnv,
+  missing: string,
+): SelectPrompt {
+  if (prompt) return prompt;
+  if (isInteractiveIo(stdin, stdout)) return createTerminalPrompt({ stdin, stdout, env });
+  throw new Error(`interactive config requires a TTY. Pass ${missing} for non-interactive use`);
+}
+
+interface CliProfileResult {
+  cli: CliId;
+  enabled: boolean;
+  runner: string | null;
+  longctx: string | null;
+  subagent_models: string[];
+  max_concurrent: number;
+  model_source: string;
+  config: string;
+}
+
+async function configureCliProfile(
+  cli: CliId,
+  args: string[],
+  {
+    cwd,
+    stdout,
+    env,
+    current,
+    catalog,
+    ask,
+    single,
+  }: {
+    cwd: string;
+    stdout: WritableLike;
+    env: NodeJS.ProcessEnv;
+    current: Config;
+    catalog: CliModelCatalog;
+    ask: () => SelectPrompt;
+    single: boolean;
+  },
+): Promise<CliProfileResult> {
   if (!catalog.models.length) throw new Error(`${cli} returned no picker-visible models`);
   publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), {
     cli,
@@ -144,29 +160,36 @@ export async function runConfig(args: string[], {
     quotaRefreshError: null,
   });
 
-  stdout.write("\n");
-  printModels(stdout, cli, catalog.models);
   const existing = current.cli[cli];
 
-  let runner = optionalModelFlag(args, "runner");
+  let runner = single ? optionalModelFlag(args, "runner") : undefined;
   if (runner === undefined) {
-    stdout.write("\nSelect runner (0 = empty; this is a label, not a capability claim):\n");
-    runner = selectedModel(catalog.models, await ask(), "runner");
+    runner = await ask().select({
+      message: "Select runner (empty = director; this is a label, not a capability claim)",
+      choices: optionalModelChoices(catalog.models),
+      initial: existing.runner,
+    });
   }
   runner = requireModel(catalog.models, runner, "runner");
 
-  let longctx = optionalModelFlag(args, "longctx");
+  let longctx = single ? optionalModelFlag(args, "longctx") : undefined;
   if (longctx === undefined) {
-    stdout.write("\nSelect longctx (0 = empty; no context-window support is assumed):\n");
-    longctx = selectedModel(catalog.models, await ask(), "longctx");
+    longctx = await ask().select({
+      message: "Select longctx (empty = director; no context-window support is assumed)",
+      choices: optionalModelChoices(catalog.models),
+      initial: existing.longctx,
+    });
   }
   longctx = requireModel(catalog.models, longctx, "longctx");
 
-  const subagentFlags = repeated(args, "subagent-model");
+  const subagentFlags = single ? repeated(args, "subagent-model") : [];
   let subagentModels: string[];
   if (!subagentFlags.length) {
-    stdout.write("\nSelect models callable by subagents (comma-separated indexes/ids, `all`, or 0):\n");
-    subagentModels = parseModelSet(catalog.models, [await ask()]);
+    subagentModels = await ask().multiSelect({
+      message: "Select models callable by subagents",
+      choices: modelChoices(catalog.models),
+      initial: existing.subagent_models.filter((id) => catalog.models.some((model) => model.id === id)),
+    });
   } else {
     subagentModels = parseModelSet(catalog.models, subagentFlags);
   }
@@ -183,33 +206,107 @@ export async function runConfig(args: string[], {
   if (args.includes("--enable")) enabled = true;
   else if (args.includes("--disable")) enabled = false;
   else {
-    stdout.write(`\nEnable this ${cli} configuration? [y/n] (current: ${existing.enabled ? "on" : "off"}):\n`);
-    enabled = parseEnabled(await ask(), existing.enabled);
+    enabled = await ask().select({
+      message: `Enable this ${cli} configuration?`,
+      choices: [
+        { value: true, label: "yes" },
+        { value: false, label: "no" },
+      ],
+      initial: existing.enabled || existing.subagent_models.length === 0,
+    });
   }
 
-  current.cli.active = cli;
   current.cli[cli] = { enabled, runner, longctx, subagent_models: subagentModels };
-  current.ops.runner.route = enabled ? runner : "";
-  current.ops.longctx.route = enabled ? longctx : "";
-  current.director.max_concurrent = hostMaxConcurrent(cli, env);
   const file = saveConfig(cwd, current, { env });
-  const result = {
+  return {
     cli,
     enabled,
     runner: runner || null,
     longctx: longctx || null,
     subagent_models: subagentModels,
-    max_concurrent: current.director.max_concurrent,
+    max_concurrent: hostMaxConcurrent(cli, env),
     model_source: `${cli} catalog`,
     config: file,
   };
-  if (args.includes("--json")) stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
+  stdout.write(`  cli: ${result.cli} (${result.enabled ? "enabled" : "disabled"})\n`);
+  stdout.write(`  runner: ${result.runner || "(empty; director)"}\n`);
+  stdout.write(`  longctx: ${result.longctx || "(empty; director)"}\n`);
+  stdout.write(`  subagent models: ${result.subagent_models.length ? result.subagent_models.join(", ") : "(none)"}\n`);
+}
+
+export async function runConfig(args: string[], {
+  cwd,
+  stdout,
+  stdin = process.stdin,
+  env = process.env,
+  discover = discoverCliModels,
+  prompt,
+  clis: presetClis,
+}: ConfigCommandOptions): Promise<number> {
+  if (args[0] === "model-selection") {
+    throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.subagent_models; configure the candidate set with `baton config`");
+  }
+  const current = loadConfig(cwd, { env });
+  const ask = (): SelectPrompt => requirePrompt(
+    prompt, stdin, stdout, env,
+    "--cli, --runner, --longctx, --subagent-model, and --enable|--disable",
+  );
+
+  const flaggedCli = lastFlag(args, "cli");
+  const clis = presetClis?.length
+    ? presetClis
+    : flaggedCli === undefined
+      ? await ask().multiSelect({
+        message: "Select CLI",
+        choices: cliPromptChoices(),
+        initial: [current.cli.active],
+        required: true,
+      })
+      : [parseCliChoice(flaggedCli)];
+  if (!clis.length) throw new Error("select at least one CLI");
+
+  const single = clis.length === 1;
+  const results: CliProfileResult[] = [];
+  let activeCatalog: CliModelCatalog | null = null;
+  for (let index = 0; index < clis.length; index += 1) {
+    const cli = clis[index];
+    if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
+    const catalog = await discover(cli, { cwd, env });
+    if (index === 0) activeCatalog = catalog;
+    results.push(await configureCliProfile(cli, args, {
+      cwd, stdout, env, current, catalog, ask, single,
+    }));
+  }
+
+  const active = clis[0];
+  current.cli.active = active;
+  current.director.max_concurrent = hostMaxConcurrent(active, env);
+  const file = saveConfig(cwd, current, { env });
+  if (activeCatalog) {
+    publishRouteSnapshot(cwd, { models: activeCatalog.models }, new Date(), {
+      cli: active,
+      engineVersion: activeCatalog.version,
+      providerQuotas: [],
+      quotaRefreshError: null,
+    });
+  }
+
+  const payload = single
+    ? { ...results[0], max_concurrent: current.director.max_concurrent, config: file }
+    : {
+      active,
+      profiles: results,
+      max_concurrent: current.director.max_concurrent,
+      config: file,
+    };
+  if (args.includes("--json")) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   else {
     stdout.write(`\nwrote ${file}\n`);
-    stdout.write(`  cli: ${cli} (${enabled ? "enabled" : "disabled"})\n`);
-    stdout.write(`  runner: ${runner || "(empty; director)"}\n`);
-    stdout.write(`  longctx: ${longctx || "(empty; director)"}\n`);
-    stdout.write(`  subagent models: ${subagentModels.length ? subagentModels.join(", ") : "(none)"}\n`);
+    for (const result of results) writeProfile(stdout, result);
+    if (!single) stdout.write(`  active: ${active}\n`);
     stdout.write(`  max_concurrent: ${current.director.max_concurrent}\n`);
     stdout.write("  later routing: automatic; no model confirmation UI\n");
   }

@@ -95,29 +95,39 @@ describe("per-CLI configuration and ops labels", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-"));
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
-      const answers = [
-        "1", // codex
-        "6", // runner = Mini
-        "4", // longctx = 5.5 (label only)
-        "3,6,7", // Luna, Mini, Spark
-        "yes",
-      ];
       const out = capture();
-      let prompts = 0;
+      const selects: unknown[] = [
+        "gpt-5.4-mini",
+        "gpt-5.5",
+        true,
+      ];
+      const multiSelects: unknown[][] = [
+        ["codex"],
+        ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
+      ];
       const code = await runConfig([], {
         cwd,
         env,
         stdout: out,
         discover: async () => structuredClone(CATALOG),
-        readLine: async () => {
-          prompts += 1;
-          return answers.shift() || "";
+        prompt: {
+          async select() {
+            const value = selects.shift();
+            if (value === undefined) throw new Error("unexpected select");
+            return value as never;
+          },
+          async multiSelect() {
+            const value = multiSelects.shift();
+            if (!value) throw new Error("unexpected multiSelect");
+            return value as never[];
+          },
         },
       });
       assert.equal(code, 0, out.text());
-      assert.equal(prompts, 5);
-      assert.match(out.text(), /5\.4 Mini \(gpt-5\.4-mini\)/);
-      assert.match(out.text(), /5\.3 Codex Spark \(gpt-5\.3-codex-spark\)/);
+      assert.equal(selects.length, 0);
+      assert.equal(multiSelects.length, 0);
+      assert.match(out.text(), /gpt-5\.4-mini/);
+      assert.match(out.text(), /gpt-5\.3-codex-spark/);
       assert.match(out.text(), /no model confirmation UI/);
 
       const config = loadConfig(cwd, { env });
@@ -132,6 +142,87 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal((parsed.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((parsed.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
       assert.equal(readRouteSnapshot(cwd)?.routes.length, 7);
+    });
+  });
+
+  it("configures each selected CLI in order", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-multi-cli-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const grokCatalog: CliModelCatalog = {
+        cli: "grok",
+        version: "grok 1.0.8",
+        models: [model("grok-4.5", "Grok 4.5", "Fast"), model("grok-4.6", "Grok 4.6", "Flagship")],
+      };
+      const selects: unknown[] = [
+        "gpt-5.4-mini",
+        "gpt-5.5",
+        true,
+        "grok-4.5",
+        "",
+        true,
+      ];
+      const multiSelects: unknown[][] = [
+        ["codex", "grok"],
+        ["gpt-5.6-luna", "gpt-5.4-mini"],
+        ["grok-4.5", "grok-4.6"],
+      ];
+      const out = capture();
+      assert.equal(await runConfig([], {
+        cwd,
+        env,
+        stdout: out,
+        discover: async (cli) => structuredClone(cli === "grok" ? grokCatalog : CATALOG),
+        prompt: {
+          async select() {
+            const value = selects.shift();
+            if (value === undefined) throw new Error("unexpected select");
+            return value as never;
+          },
+          async multiSelect() {
+            const value = multiSelects.shift();
+            if (!value) throw new Error("unexpected multiSelect");
+            return value as never[];
+          },
+        },
+      }), 0, out.text());
+      assert.equal(selects.length, 0);
+      assert.equal(multiSelects.length, 0);
+      assert.match(out.text(), /── codex \(1\/2\) ──/);
+      assert.match(out.text(), /── grok \(2\/2\) ──/);
+      assert.match(out.text(), /active: codex/);
+
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.active, "codex");
+      assert.equal(config.director.max_concurrent, 4);
+      assert.deepEqual(config.cli.codex, {
+        enabled: true,
+        runner: "gpt-5.4-mini",
+        longctx: "gpt-5.5",
+        subagent_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.5"],
+      });
+      assert.deepEqual(config.cli.grok, {
+        enabled: true,
+        runner: "grok-4.5",
+        longctx: "",
+        subagent_models: ["grok-4.5", "grok-4.6"],
+      });
+      assert.equal(readRouteSnapshot(cwd)?.cli, "codex");
+      assert.equal(readRouteSnapshot(cwd)?.routes.length, 7);
+    });
+  });
+
+  it("refuses interactive config without a TTY or flags", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-tty-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const out = capture();
+      assert.equal(await run(["config"], {
+        cwd, env, stdout: out, stderr: out, discover: async () => structuredClone(CATALOG),
+      }), 1);
+      assert.match(out.text(), /interactive config requires a TTY/);
     });
   });
 

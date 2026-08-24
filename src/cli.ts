@@ -5,7 +5,7 @@ import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
-import { runConfig } from "./commands/config.js";
+import { cliPromptChoices, runConfig } from "./commands/config.js";
 import {
   approveRecommendedSelection,
   assertRecommendedSelectionAvailable,
@@ -32,7 +32,8 @@ import {
 } from "./lib/selection.js";
 import { directorMayRun } from "./lib/hygiene.js";
 import { SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
-import { parseCliId, type CliModelDiscovery } from "./lib/cli-models.js";
+import { CLI_IDS, parseCliId, type CliId, type CliModelDiscovery } from "./lib/cli-models.js";
+import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/prompt.js";
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
 
@@ -40,9 +41,11 @@ interface RunOptions {
   cwd?: string;
   stdout?: WritableLike;
   stderr?: WritableLike;
+  stdin?: NodeJS.ReadableStream;
   env?: NodeJS.ProcessEnv;
   discover?: CliModelDiscovery;
   fetchImpl?: typeof fetch;
+  prompt?: SelectPrompt;
 }
 
 type FlagValue = string | boolean;
@@ -69,6 +72,7 @@ Together: OpenSpec owns breakdown/status; baton owns who runs each task and keep
 the director context clean. Apply is multi-model, uncapped, card-routed execution
 of OpenSpec tasks, with conclusions written back. Not a thin adapter.
 The selected CLI owns model visibility; Baton routes only within the configured candidate set.
+Interactive init/config use arrow-key select; space toggles CLIs and subagent models.
 
 Usage:
   baton init [--force] [--cli codex|grok]  initialize Baton + Codex/Grok host skills
@@ -103,9 +107,11 @@ export async function run(argv: string[], {
   cwd = process.cwd(),
   stdout = process.stdout,
   stderr = process.stderr,
+  stdin = process.stdin,
   env = process.env,
   discover,
   fetchImpl,
+  prompt,
 }: RunOptions = {}): Promise<number> {
   const args = argv.slice();
   const cmd = args.shift() || "help";
@@ -123,7 +129,7 @@ export async function run(argv: string[], {
         stdout.write(`baton ${VERSION}\n`);
         return 0;
       case "init":
-        return await cmdInit(args, cwd, stdout, env);
+        return await cmdInit(args, cwd, stdout, env, stdin, prompt, discover);
       case "update":
         return cmdUpdate(cwd, stdout, env);
       case "cards":
@@ -131,7 +137,7 @@ export async function run(argv: string[], {
       case "match":
         return cmdMatch(args, cwd, stdout, env);
       case "config":
-        return await runConfig(args, { cwd, stdout, env, discover });
+        return await runConfig(args, { cwd, stdout, stdin, env, discover, prompt });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
@@ -162,18 +168,45 @@ export async function run(argv: string[], {
   }
 }
 
-async function cmdInit(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
+async function cmdInit(
+  args: string[],
+  cwd: string,
+  stdout: WritableLike,
+  env: NodeJS.ProcessEnv,
+  stdin: NodeJS.ReadableStream,
+  prompt?: SelectPrompt,
+  discover?: CliModelDiscovery,
+): Promise<number> {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
   if (flags.tools) throw new Error("--tools is not supported; baton init installs Codex and Grok host skills");
   const cliFlag = stringFlag(flags, "cli");
-  const cli = cliFlag ? parseCliId(cliFlag) : undefined;
-  const result = await initProject(cwd, { force, cli, env });
+  let clis: CliId[] | undefined;
+  if (cliFlag) clis = [parseCliId(cliFlag)];
+  else if (prompt || isInteractiveIo(stdin, stdout)) {
+    const ask = prompt || createTerminalPrompt({ stdin, stdout, env });
+    let initial: CliId = CLI_IDS[0];
+    try { initial = loadConfig(cwd, { env }).cli.active; } catch { /* first init */ }
+    clis = await ask.multiSelect({
+      message: "Select CLI",
+      choices: cliPromptChoices(),
+      initial: [initial],
+      required: true,
+    });
+    if (!clis.length) throw new Error("select at least one CLI");
+  }
+  const result = await initProject(cwd, { force, cli: clis?.[0], env });
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
-  if (cli) stdout.write(`  cli: ${cli} (max_concurrent follows this host)\n`);
-  stdout.write("\nNext: run `baton config`; choose a CLI, its runner/longctx labels, and the subagent candidate models.\n");
+  if (clis?.length) {
+    stdout.write(`  cli: ${clis.join(", ")} (max_concurrent follows ${clis[0]})\n`);
+  }
+  if (clis?.length && !cliFlag) {
+    stdout.write("\n");
+    return runConfig([], { cwd, stdout, stdin, env, discover, prompt, clis });
+  }
+  stdout.write("\nNext: run `baton config`; choose CLIs, their runner/longctx labels, and the subagent candidate models.\n");
   stdout.write("Model visibility comes from the selected CLI. Later routing is automatic.\n");
   stdout.write("OpenSpec is optional. baton is complete without it.\n");
   return 0;

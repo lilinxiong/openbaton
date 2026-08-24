@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { run } from "../src/cli.js";
 import { initProject } from "../src/commands/init.js";
 import { updateProject } from "../src/commands/update.js";
 import { loadConfig } from "../src/lib/config.js";
@@ -59,6 +60,54 @@ describe("Codex init and update", () => {
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((raw.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
+    });
+  });
+
+  it("selects CLIs from an interactive picker and configures each in order", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-select-"));
+      const env = fakeEnv(home);
+      const chunks: string[] = [];
+      const stdout = { write(value: unknown) { chunks.push(String(value)); return true; } };
+      const grokModels = [{
+        id: "grok-4.5", model: "grok-4.5", display_name: "Grok 4.5", description: "Fast",
+        hidden: false, reasoning_efforts: [{ id: "low", description: "" }], default_reasoning_effort: "low",
+        input_modalities: ["text"], additional_speed_tiers: [], service_tiers: [],
+        default_service_tier: null, is_default: false,
+      }];
+      const selects: unknown[] = ["", "", true];
+      const multiSelects: unknown[][] = [["grok"], ["grok-4.5"]];
+      assert.equal(await run(["init"], {
+        cwd,
+        env,
+        stdout,
+        stderr: stdout,
+        discover: async () => ({ cli: "grok", version: "test", models: grokModels }),
+        prompt: {
+          async select() {
+            const value = selects.shift();
+            if (value === undefined) throw new Error("unexpected select");
+            return value as never;
+          },
+          async multiSelect() {
+            const value = multiSelects.shift();
+            if (!value) throw new Error("unexpected multiSelect");
+            return value as never[];
+          },
+        },
+      }), 0);
+      assert.equal(selects.length, 0);
+      assert.equal(multiSelects.length, 0);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.active, "grok");
+      assert.equal(config.director.max_concurrent, 8);
+      assert.deepEqual(config.cli.grok, {
+        enabled: true,
+        runner: "",
+        longctx: "",
+        subagent_models: ["grok-4.5"],
+      });
+      assert.match(chunks.join(""), /cli: grok/);
     });
   });
 
