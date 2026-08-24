@@ -151,7 +151,7 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Gr
 
 逻辑任务不封顶；物理并发遵守当前 host 上限。AgentLimitReached 只把同一 ticket 延后，不消耗 attempt，也不换模型。轮询 timeout 不是 worker 失败；只有 exact agent 被 probe 为 not_found 后，ticket 才能 timeout。
 
-默认只读。写任务必须带不可变路径和操作 allowlist，并通过 parent Git safety gate。唯一的 Git 例外是独占 commit-only ticket：它只消费 parent 已精确 staged 的 tree，允许创建一个受审计 commit，不能 stage、amend、切分支、rebase、tag 或 push。
+默认只读。写任务必须带不可变路径和操作 allowlist，并通过 parent Git safety gate。已有的未提交改动会记入 baseline，worker 可以在 allowlist 上增量，不能改无关脏文件。唯一的 Git 例外是独占 commit-only ticket：它只消费 parent 已精确 staged 的 tree，允许创建一个受审计 commit，不能 stage、amend、切分支、rebase、tag 或 push。
 
 ## 机械 ops
 

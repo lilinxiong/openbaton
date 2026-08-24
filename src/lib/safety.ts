@@ -12,6 +12,8 @@ export interface GitBaseline {
   index_path: string;
   index_checksum: string | null;
   dirty_entries: StatusEntry[];
+  /** Content fingerprint of each dirty path so incremental writes can keep pre-existing dirt. */
+  dirty_checksums: Record<string, string>;
   captured_at: string;
 }
 
@@ -91,6 +93,18 @@ function git(cwd: string, args: string[]): string {
 function checksumFile(file: string): string | null {
   if (!fs.existsSync(file)) return null;
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function checksumWorktreePath(root: string, rel: string): string {
+  const absolute = path.join(root, rel);
+  try {
+    const stat = fs.lstatSync(absolute);
+    if (stat.isSymbolicLink()) return `symlink:${fs.readlinkSync(absolute)}`;
+    if (stat.isDirectory()) return `dir:${stat.mode}`;
+    return checksumFile(absolute) || "missing";
+  } catch {
+    return "missing";
+  }
 }
 
 function checksumValue(value: unknown): string {
@@ -185,13 +199,20 @@ export function captureBaseline(worktree: string, now: Date = new Date()): GitBa
   const indexRelative = git(repoRoot, ["rev-parse", "--git-path", "index"]).trim();
   const indexPath = path.isAbsolute(indexRelative) ? indexRelative : path.join(repoRoot, indexRelative);
   const dirtyEntries = parsePorcelainV1Z(git(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
+  const resolvedRoot = fs.realpathSync(repoRoot);
+  const dirtyChecksums: Record<string, string> = {};
+  for (const entry of dirtyEntries) {
+    dirtyChecksums[entry.path] = checksumWorktreePath(resolvedRoot, entry.path);
+    if (entry.original_path) dirtyChecksums[entry.original_path] = checksumWorktreePath(resolvedRoot, entry.original_path);
+  }
   return {
-    repo_root: fs.realpathSync(repoRoot),
+    repo_root: resolvedRoot,
     head,
     branch,
     index_path: indexPath,
     index_checksum: checksumFile(indexPath),
     dirty_entries: dirtyEntries,
+    dirty_checksums: dirtyChecksums,
     captured_at: now.toISOString(),
   };
 }
@@ -363,7 +384,6 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   const root = fs.realpathSync(git(worktree, ["rev-parse", "--show-toplevel"]).trim());
   const violations: SafetyViolation[] = [];
   if (root !== baseline.repo_root) violations.push({ code: "E_BASELINE_REPO_MISMATCH", message: "baseline belongs to another repository" });
-  if (baseline.dirty_entries.length) violations.push({ code: "E_DIRTY_BASELINE", message: "write workers require a clean declared baseline" });
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   if (head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
   if (checksumFile(baseline.index_path) !== baseline.index_checksum) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the Git index" });
@@ -375,13 +395,26 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
       .filter((item): item is string => Boolean(item)),
   );
   const changes = entries.map((entry) => ({ ...entry, operation: modeChanged.has(entry.path) ? "chmod" as const : operationOf(entry) }));
+  const baselineDirt = new Map(baseline.dirty_entries.map((entry) => [entry.path, entry]));
+  const checksums = baseline.dirty_checksums || {};
+
   for (const change of changes) {
-    if (!pathAllowed(change.path, policy.write_allowlist) || (change.original_path && !pathAllowed(change.original_path, policy.write_allowlist))) {
-      violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: change.path, original_path: change.original_path, operation: change.operation, message: "changed path is outside the Receipt allowlist" });
+    const inScope = pathAllowed(change.path, policy.write_allowlist)
+      && (!change.original_path || pathAllowed(change.original_path, policy.write_allowlist));
+    if (inScope) {
+      if (!policy.allowed_operations.includes(change.operation)) {
+        violations.push({ code: "E_OUT_OF_SCOPE_OP", path: change.path, original_path: change.original_path, operation: change.operation, message: "change operation is not authorized" });
+        continue;
+      }
+    } else if (baselineDirt.has(change.path)) {
+      const expected = checksums[change.path];
+      const actual = checksumWorktreePath(root, change.path);
+      if (expected !== actual) {
+        violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: change.path, original_path: change.original_path, operation: change.operation, message: "worker mutated pre-existing dirt outside the Receipt allowlist" });
+      }
       continue;
-    }
-    if (!policy.allowed_operations.includes(change.operation)) {
-      violations.push({ code: "E_OUT_OF_SCOPE_OP", path: change.path, original_path: change.original_path, operation: change.operation, message: "change operation is not authorized" });
+    } else {
+      violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: change.path, original_path: change.original_path, operation: change.operation, message: "changed path is outside the Receipt allowlist" });
       continue;
     }
     const absolute = path.join(root, change.path);
@@ -392,6 +425,18 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
         violations.push({ code: "E_SYMLINK_ESCAPE", path: change.path, operation: change.operation, message: "symlink target escapes repository or Receipt scope" });
       }
     }
+  }
+
+  for (const entry of baseline.dirty_entries) {
+    if (pathAllowed(entry.path, policy.write_allowlist)) continue;
+    if (entries.some((item) => item.path === entry.path)) continue;
+    violations.push({
+      code: "E_OUT_OF_SCOPE_PATH",
+      path: entry.path,
+      original_path: entry.original_path,
+      operation: operationOf(entry),
+      message: "worker cleared pre-existing dirt outside the Receipt allowlist",
+    });
   }
   return { accepted: violations.length === 0, changes, violations };
 }

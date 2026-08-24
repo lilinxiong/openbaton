@@ -66,19 +66,26 @@ describe("parent shared-worktree safety gate", () => {
     assert.ok(afterCommit.violations.some((item) => item.code === "E_HEAD_MUTATION"));
   });
 
-  it("rejects dirty baselines and unsafe allowlist paths", () => {
+  it("allows incremental writes on a dirty allowlisted file and freezes unrelated dirt", () => {
     const cwd = fixture();
     fs.appendFileSync(path.join(cwd, "allowed.txt"), "PREEXISTING\n");
+    fs.appendFileSync(path.join(cwd, "denied.txt"), "PREEXISTING_DENIED\n");
     const baseline = captureBaseline(cwd);
-    const verdict = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
-    assert.ok(verdict.violations.some((item) => item.code === "E_DIRTY_BASELINE"));
+    assert.ok(baseline.dirty_entries.length > 0);
+    fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
+    const accepted = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
+    assert.equal(accepted.accepted, true);
+    fs.appendFileSync(path.join(cwd, "denied.txt"), "WORKER_TOUCHED\n");
+    const rejected = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
+    assert.equal(rejected.accepted, false);
+    assert.ok(rejected.violations.some((item) => item.code === "E_OUT_OF_SCOPE_PATH" && item.path === "denied.txt"));
     assert.equal(pathAllowed("allowed.txt", ["allowed.txt"]), true);
     assert.equal(pathAllowed("allowed.txt.bak", ["allowed.txt"]), false);
     assert.equal(pathAllowed("../outside", ["**"]), false);
     assert.throws(() => pathAllowed("allowed.txt", ["../**"]), /invalid write allowlist/);
   });
 
-  it("treats project-local .baton as ordinary worktree dirt because runtime is global", () => {
+  it("keeps pre-existing project-local .baton dirt out of an allowlisted write", () => {
     const cwd = fixture();
     fs.mkdirSync(path.join(cwd, ".baton", "receipts"), { recursive: true });
     fs.mkdirSync(path.join(cwd, ".baton", "spawns"), { recursive: true });
@@ -86,9 +93,9 @@ describe("parent shared-worktree safety gate", () => {
     fs.writeFileSync(path.join(cwd, ".baton", "spawns", "spn-0001.json"), "{}\n");
     const baseline = captureBaseline(cwd);
     assert.ok(baseline.dirty_entries.some((entry) => entry.path.startsWith(".baton/")));
+    fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
     const verdict = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
-    assert.equal(verdict.accepted, false);
-    assert.ok(verdict.violations.some((item) => item.code === "E_DIRTY_BASELINE"));
+    assert.equal(verdict.accepted, true);
   });
 
   it("classifies executable mode changes as chmod rather than write", () => {

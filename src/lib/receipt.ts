@@ -116,7 +116,6 @@ export function buildWriteReceipt({
 }): DelegationReceipt {
   if (!writeAllowlist.length) throw new ReceiptError("write Receipt requires a non-empty allowlist", "WRITE_ALLOWLIST_REQUIRED");
   if (!allowedOperations.length) throw new ReceiptError("write Receipt requires allowed operations", "WRITE_OPERATIONS_REQUIRED");
-  if (baseline.dirty_entries.length) throw new ReceiptError("write Receipt requires a clean Git baseline", "DIRTY_BASELINE");
   return {
     ...structuredClone(base),
     execution: { ...base.execution, mode: "write" },

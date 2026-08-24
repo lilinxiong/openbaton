@@ -802,11 +802,8 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   if (state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
   if (name === "Bash" && isDirectorCaller(input) && isReadOnlyGitCommand(command)) return allow();
   if (name === "Bash" && isDirectorCaller(input) && isDirectorStageCommand(command)) {
-    const blockers = exclusiveGitTickets(state, host);
-    if (blockers.length) {
-      return deny(blockers.some((ticket) => ticket.mode === "commit-only")
-        ? HOST_GUARD_REASONS.commit_only_command
-        : HOST_GUARD_REASONS.write_receipt_required);
+    if (exclusiveGitTickets(state, host).some((ticket) => ticket.mode === "commit-only")) {
+      return deny(HOST_GUARD_REASONS.commit_only_command);
     }
     return allow();
   }
@@ -817,21 +814,43 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   }
 
   if (name === "Agent") {
-    if (!state.initialized) return deny(HOST_GUARD_REASONS.not_initialized);
-    const identity = identityFor(state, input, host);
-    if (identity.ticket) return deny(HOST_GUARD_REASONS.nested_agent, identity.ticket.id, identity.id);
-    const reserved = findReserved(state, input, host);
-    if (!reserved) {
-      return deny(reservedTickets(state, host).length > 1
+    if (!state.initialized) {
+      if (host === "grok") return allow();
+      return deny(HOST_GUARD_REASONS.not_initialized);
+    }
+    const spawnIdentity = identityFor(state, input, host);
+    if (spawnIdentity.ticket) return deny(HOST_GUARD_REASONS.nested_agent, spawnIdentity.ticket.id, spawnIdentity.id);
+    const reserved = reservedTickets(state, host);
+    if (!reserved.length) {
+      if (host === "grok") return allow();
+      return deny(HOST_GUARD_REASONS.no_reserved_ticket);
+    }
+    const matched = findReserved(state, input, host);
+    if (!matched) {
+      return deny(reserved.length > 1
         ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
         : HOST_GUARD_REASONS.no_reserved_ticket);
     }
-    return allow(reserved.id, null);
+    return allow(matched.id, null);
   }
 
-  if (!state.initialized) return deny(HOST_GUARD_REASONS.not_initialized);
+  if (!state.initialized) {
+    if (host === "grok") return allow();
+    return deny(HOST_GUARD_REASONS.not_initialized);
+  }
   const identity = identityFor(state, input, host);
   if (!identity.ticket) {
+    if (host === "grok") {
+      const mutating = name === "apply_patch" || name === "Edit" || name === "Write"
+        || (name === "Bash" && (isShellWriteCommand(command) || isDirectorStageCommand(command)));
+      if (identity.binding && identity.binding.state === "pending" && mutating) {
+        return deny(HOST_GUARD_REASONS.spawn_bind_pending, identity.binding.ticket_id, identity.id);
+      }
+      if (mutating && exclusiveGitTickets(state, host).some((ticket) => ticket.mode === "commit-only")) {
+        return deny(HOST_GUARD_REASONS.commit_only_command);
+      }
+      return allow();
+    }
     const hasAnotherBoundAgent = Boolean(identity.id) && state.tickets.some((ticket) => ticket.status === "running"
       && ticket.agent_id
       && isGuardTicket(ticket, host)

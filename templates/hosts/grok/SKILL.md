@@ -9,9 +9,9 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
 
 ## Mandatory host-guard preflight
 
-- Before any `run_terminal_command`, `search_replace`, or native `spawn_subagent` that is not a Baton control-plane command, the installed `~/.grok/hooks/baton.json` PreToolUse entry denies unbound director work. After `baton init` or `baton update`, review it with `/hooks`. Global Grok hooks apply without a trust prompt.
-- Reserve a Baton ticket, native-spawn with exact `model`, and bind the returned identity before the worker uses tools. Vanilla OpenSpec apply is not rewritten; the hook is the intercept. Grok PreToolUse omits Codex `agent_id`; the guard recognizes a bound worker from `subagentType` plus the unique running Grok ticket, or a `sessionId` recorded at SubagentStart. The main session has no `subagentType` and stays director-gated.
-- Standalone `baton ...` control-plane commands are exempt. The director may also run standalone read-only git (`status`, `diff`, `log`, …) and standalone `git add` to stage a commit-only tree. `git commit`, `reset`, `push`, composed shell, code writes, and unbound `spawn_subagent` stay denied. If more than one Grok ticket is dispatching, include the exact reserved ticket id in the `spawn_subagent` prompt.
+- The installed `~/.grok/hooks/baton.json` PreToolUse entry only enforces Baton constraints. Ordinary Grok shell, edits, and `spawn_subagent` stay allowed. After `baton init` or `baton update`, review it with `/hooks`. Global Grok hooks apply without a trust prompt.
+- Reserve a Baton ticket, native-spawn with exact `model`, and bind the returned identity before that worker uses tools. Vanilla OpenSpec apply is not rewritten; the hook is the intercept. Grok PreToolUse omits Codex `agent_id`; a bound Baton worker is recognized from `subagentType` plus the unique running Grok ticket, or a `sessionId` recorded at SubagentStart.
+- Baton intercepts: reserved `spawn_subagent` must match the reserved ticket; bound workers stay inside the Receipt; a live commit-only ticket freezes the index (director must not `git add`/`commit`/edit until it finishes). If more than one Grok ticket is dispatching, include the exact reserved ticket id in the `spawn_subagent` prompt.
 
 ## Model contract
 

@@ -151,7 +151,7 @@ The Baton CLI creates tickets and lifecycle state; only the selected host (Codex
 
 Logical work is uncapped; physical concurrency follows the current host limit. AgentLimitReached defers the same ticket without consuming an attempt or changing its model. Polling timeouts are not worker failures; a ticket can time out only after the exact agent is probed as not_found.
 
-Read-only is the default. Write tickets require an immutable path and operation allowlist plus parent Git safety checks. The sole Git exception is an exclusive commit-only ticket over an exact parent-staged tree; it may create one audited commit and may not stage, amend, branch, rebase, tag, or push.
+Read-only is the default. Write tickets require an immutable path and operation allowlist plus parent Git safety checks. Pre-existing uncommitted work is kept as baseline dirt; the worker may continue allowlisted files incrementally and must not mutate unrelated dirt. The sole Git exception is an exclusive commit-only ticket over an exact parent-staged tree; it may create one audited commit and may not stage, amend, branch, rebase, tag, or push.
 
 ## Mechanical ops
 

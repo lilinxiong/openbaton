@@ -127,22 +127,21 @@ describe("Grok guard CLI", () => {
     });
   });
 
-  it("denies unbound Grok director edits and allows standalone baton apply", async () => {
+  it("does not block ordinary Grok edits before Baton init and allows standalone baton apply", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-guard-hook-"));
       const env = fakeEnv(home);
-      const denied = capture();
+      const edit = capture();
       const input = JSON.stringify({
         hookEventName: "pre_tool_use",
         toolName: "search_replace",
         toolInput: { old_string: "a", new_string: "b" },
         cwd,
       });
-      assert.equal(await run(["guard", "hook", "--host", "grok"], { cwd, env, stdin: input, stdout: denied, stderr: denied }), 0, denied.text());
-      const result = JSON.parse(denied.text());
-      assert.equal(result.decision, "deny");
-      assert.equal(result.reason, "BATON_GUARD_NOT_INITIALIZED");
-      assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+      assert.equal(await run(["guard", "hook", "--host", "grok"], { cwd, env, stdin: input, stdout: edit, stderr: edit }), 0, edit.text());
+      const result = JSON.parse(edit.text());
+      assert.equal(result.decision, "allow");
+      assert.equal(result.hookSpecificOutput.permissionDecision, "allow");
 
       const allowed = capture();
       const apply = JSON.stringify({

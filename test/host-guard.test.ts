@@ -346,16 +346,15 @@ describe("host guard host scoping", () => {
 describe("Grok host guard", () => {
   const grokOpts = { state: state(), host: "grok" as const };
 
-  it("denies camelCase unbound search_replace and allows baton apply", () => {
+  it("does not intercept ordinary Grok edits when no Baton ticket is reserved", () => {
     const edit = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "search_replace",
       toolInput: { old_string: "a", new_string: "b" },
       cwd: "/workspace",
     }, grokOpts);
-    assert.equal(edit.allowed, false);
-    assert.equal(edit.reason, HOST_GUARD_REASONS.director_code_write);
-    assert.equal(edit.output.decision, "deny");
+    assert.equal(edit.allowed, true);
+    assert.equal(edit.output.decision, "allow");
 
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-bin-"));
     fs.writeFileSync(path.join(bin, "baton"), "#!/bin/sh\nexit 0\n");
@@ -394,8 +393,14 @@ describe("Grok host guard", () => {
       toolInput: { command: "git commit -m x" },
       cwd: "/workspace",
     }, grokOpts);
-    assert.equal(commit.allowed, false);
-    assert.equal(commit.reason, HOST_GUARD_REASONS.director_shell);
+    assert.equal(commit.allowed, true);
+    const tests = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "bun test" },
+      cwd: "/workspace",
+    }, grokOpts);
+    assert.equal(tests.allowed, true);
   });
 
   it("does not let the Grok director stage while a commit-only ticket is live", () => {
@@ -420,15 +425,33 @@ describe("Grok host guard", () => {
     assert.equal(denied.reason, HOST_GUARD_REASONS.commit_only_command);
   });
 
-  it("denies spawn_subagent without a reserved Grok ticket", () => {
-    const denied = evaluatePreToolUse({
+  it("allows ordinary Grok spawn_subagent when no Baton ticket is reserved", () => {
+    const allowed = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "spawn_subagent",
       toolInput: { prompt: "implement the task", model: "grok-4.5" },
       cwd: "/workspace",
     }, grokOpts);
-    assert.equal(denied.allowed, false);
-    assert.equal(denied.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+    assert.equal(allowed.allowed, true);
+  });
+
+  it("still requires a reserved Grok ticket when Baton has one dispatching", () => {
+    const reserved = state([{
+      ...readTicket,
+      id: "spn-0200",
+      status: "dispatching",
+      agent_id: null,
+      host: "grok",
+      dispatch_host: "grok",
+    }]);
+    const allowed = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "spawn_subagent",
+      toolInput: { prompt: "work for spn-0200", model: "grok-4.5" },
+      cwd: "/workspace",
+    }, { state: reserved, host: "grok" });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.ticket_id, "spn-0200");
   });
 
   const grokWorker = {
@@ -454,7 +477,7 @@ describe("Grok host guard", () => {
     assert.equal(allowed.output.decision, "allow");
   });
 
-  it("still denies the Grok director arbitrary shell when a worker is bound", () => {
+  it("lets the Grok director keep working while a Baton worker is bound", () => {
     const bound = state([grokWorker]);
     const inspect = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
@@ -464,23 +487,45 @@ describe("Grok host guard", () => {
       sessionId: "parent-session",
     }, { state: bound, host: "grok" });
     assert.equal(inspect.allowed, true);
-    const denied = evaluatePreToolUse({
+    const tests = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "run_terminal_command",
       toolInput: { command: "bun test" },
       cwd: "/workspace",
       sessionId: "parent-session",
     }, { state: bound, host: "grok" });
-    assert.equal(denied.allowed, false);
-    assert.equal(denied.reason, HOST_GUARD_REASONS.director_shell);
+    assert.equal(tests.allowed, true);
+    const edit = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "search_replace",
+      toolInput: { old_string: "a", new_string: "b" },
+      cwd: "/workspace",
+      sessionId: "parent-session",
+    }, { state: bound, host: "grok" });
+    assert.equal(edit.allowed, true);
   });
 
-  it("denies Grok worker tools before bind", () => {
+  it("denies Grok worker writes before bind once SubagentStart recorded the session", () => {
     const reserved = state([{ ...grokWorker, status: "dispatching", agent_id: null }]);
-    const denied = evaluatePreToolUse({
+    evaluateSubagentStart({
+      hookEventName: "subagent_start",
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: reserved, host: "grok" });
+    const inspect = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "run_terminal_command",
       toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: reserved, host: "grok" });
+    assert.equal(inspect.allowed, true);
+    const denied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "search_replace",
+      toolInput: { old_string: "a", new_string: "b" },
       cwd: "/workspace",
       sessionId: "child-session",
       subagentType: "general-purpose",
@@ -535,14 +580,14 @@ describe("Grok host guard", () => {
     assert.equal(afterBind.ticket_id, "spn-0200");
   });
 
-  it("does not let one of two running Grok tickets win without a session match", () => {
+  it("does not bind an unmatched Grok child to one of two running tickets", () => {
     const other = {
       ...grokWorker,
       id: "spn-0201",
       agent_id: "01a032d3-dead-beef-0000-000000000001",
     };
     const both = state([grokWorker, other]);
-    const denied = evaluatePreToolUse({
+    const unmatched = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "run_terminal_command",
       toolInput: { command: "git status" },
@@ -550,7 +595,7 @@ describe("Grok host guard", () => {
       sessionId: "unknown-child",
       subagentType: "general-purpose",
     }, { state: both, host: "grok" });
-    assert.equal(denied.allowed, false);
-    assert.equal(denied.reason, HOST_GUARD_REASONS.agent_identity_mismatch);
+    assert.equal(unmatched.allowed, true);
+    assert.equal(unmatched.ticket_id, null);
   });
 });
