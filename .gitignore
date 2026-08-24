@@ -3,4 +3,6 @@ dist
 *.log
 *.tgz
 .DS_Store
-.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
