@@ -11,7 +11,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its re
 
 - Ordinary discussion, diagnosis, and work that needs neither delegation nor a configured mechanical route stays on the director.
 - For approved multi-agent execution, run Baton to create immutable tickets, dispatch them through the current host's native subagent tool, and wait for their conclusions.
-- If another execution skill is explicitly requested, preserve its scope. Baton may route its executable work units but must not rewrite the request.
+- If another execution skill is explicitly requested, preserve it as workflow owner only. When this host's `cli.<id>.enabled` is true, executable work still goes through Baton. OpenSpec apply is not a director-implementation exemption: do not edit OpenSpec's apply skill; intercept execution from this Baton skill.
 
 ## Host-guard preflight (mandatory in Codex and Claude Code)
 
@@ -56,7 +56,7 @@ You are the director. Baton is a CLI-neutral scheduling and policy layer. Its re
 
 11. **Activity-driven lifecycle.** Concrete workers return concise conclusions; checkpointed deliberative workers may also return compact phase/result/next-step/blocker state. Persist host probes separately from business progress. Native completion is the activity signal. Probe only while the agent is still running, or to record exact not_found. A wait timeout is polling cadence, not ticket timeout. Finish with complete/fail/timeout/close plus `--release` before refilling capacity. Do not add probe or close round-trips after a native terminal result.
 
-12. **OpenSpec remains optional.** When present, consume its tasks/status and write conclusions back. Do not reimplement its workflow. Without it, baton spawn remains complete.
+12. **OpenSpec remains optional.** When present, consume its tasks/status and write conclusions back. Do not reimplement its workflow and do not rewrite `tasks.md` structure. Without it, baton spawn remains complete. When the invoking host profile is enabled and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution: run `baton apply <change> --host HOST --dispatch --json`, native-spawn every reserved ticket in that ready wave in parallel, bind immediately, then apply again after the wave completes. Independent tasks in the ready wave must run in parallel; later sections and overlapping files stay serial because apply only reserves the current wave.
 
 13. **State stays user-global.** Shared cache lives under ~/.baton/cache; workspace runtime lives under ~/.baton/workspaces/<canonical-root-sha256>. Never create project-local Baton state.
 
@@ -79,7 +79,7 @@ This loop is the same for runner ops, longctx ops, and ordinary `subagent_models
     baton cards [--ranked|--unranked] [--json]
     baton match <text> [--host codex|grok|cursor|claude]
     baton spawn <request> [--host codex|grok|cursor|claude] [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change] [--host codex|grok|cursor|claude]
+    baton apply [change] [--host codex|grok|cursor|claude] [--dispatch]
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED --observed-capacity N --json

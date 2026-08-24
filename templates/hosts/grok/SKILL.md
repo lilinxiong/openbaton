@@ -31,7 +31,8 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
 - Configured mechanical ops follow the labels. Empty `runner`/`longctx`: director executes them and must not block (including `git commit`). Non-empty: compact dispatch above; director may only `git add` / stage for commit-only. Mechanical workers execute only: run the inferred command, short conclusion, no exploration. `git-commit` (runner) may read the staged diff, write one message, and commit once. `git-summarize` dumps git status/log/diff only. Commit-only workers must not amend, rebase, merge, cherry-pick, revert, tag, stash, clean, or push.
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
 - Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
-- OpenSpec is optional and remains workflow owner when present. Baton state stays under ~/.baton, never in the project.
+- OpenSpec is optional and remains workflow owner when present. Do not rewrite `tasks.md` structure. Baton state stays under ~/.baton, never in the project.
+- When `cli.grok.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Run `baton apply <change> --host grok --dispatch --json`. Native-spawn every reserved ticket in that ready wave in parallel with `spawn_subagent` (exact `model`, `background=true`, no `resume_from`), then bind immediately. After the wave completes, apply again. Independent tasks must run in parallel; overlapping or later-section work stays serial. If `cli.grok.enabled` is false, fail closed and do not borrow another CLI.
 - Install this skill at ~/.grok/skills/baton/SKILL.md. `grok inspect [--json]` shows discovered config including skills.
 
 ## Commands
@@ -41,7 +42,7 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
     baton models refresh|status|candidates --host grok
     baton match <text> --host grok
     baton spawn <request> --host grok [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change] --host grok
+    baton apply [change] --host grok [--dispatch]
     baton dispatch next --host grok --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host grok --json
     baton dispatch probe|progress|complete|fail|timeout|close|release TICKET --host grok

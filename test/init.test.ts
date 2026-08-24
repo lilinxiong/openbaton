@@ -39,6 +39,11 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /Never `git commit` from this director session while the matching runner\/longctx label/);
       assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
+      assert.match(grokSkill, /When `cli.grok.enabled` is true and the user applies an OpenSpec change/);
+      assert.match(grokSkill, /Do not edit OpenSpec apply skills/);
+      assert.match(hostSkill, /When `cli.codex.enabled` is true and the user applies an OpenSpec change/);
+      assert.match(cursorSkill, /When `cli.cursor.enabled` is true and the user applies an OpenSpec change/);
+      assert.match(directorSkill, /OpenSpec apply is not a director-implementation exemption/);
       assert.match(cursorSkill, /cursor-agent models/);
       assert.match(cursorSkill, /native `Task`/);
       assert.match(cursorSkill, /--host cursor/);

@@ -68,6 +68,8 @@ The runtime sequence remains logically equivalent across hosts:
 
 Do not substitute a shell-launched coding CLI, print mode, or new top-level session for a native child agent.
 
+OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` waves through `baton apply --dispatch` and native children.
+
 ## User-visible completion
 
 The registry is the source for shared UI whenever possible. After registration, the existing init/config flow should gain the target naturally:

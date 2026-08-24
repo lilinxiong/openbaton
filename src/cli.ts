@@ -19,6 +19,7 @@ import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
 import { parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
+import { applyTaskId, planApplyWaves } from "./lib/apply-waves.js";
 import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
@@ -95,7 +96,7 @@ Usage:
                [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
   baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
-  baton apply [change] [--host ${HOSTS}]  automatically choose per OpenSpec unit
+  baton apply [change] [--host ${HOSTS}] [--dispatch]  current ready OpenSpec wave; --dispatch also reserves
   baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
@@ -522,8 +523,11 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   }
   const routeAssignments = parseTaskRoutes(multiFlag(flags, "route"));
   const changeDir = resolveApplyChange(cwd, change);
-  const tasks = loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending");
-  const pendingNumbers = new Set(tasks.map((task) => task.number));
+  const pending = loadTasksFromChangeDir(changeDir).tasks.filter((task) => task.status === "pending");
+  const overlay = planApplyWaves(pending);
+  const readyIds = new Set(overlay.ready?.task_ids || []);
+  const tasks = pending.filter((task) => readyIds.has(applyTaskId(task)));
+  const pendingNumbers = new Set(pending.map((task) => task.number));
   for (const number of routeAssignments.keys()) {
     if (!pendingNumbers.has(number)) throw new Error(`--route task is not pending in this change: ${number}`);
   }
@@ -569,10 +573,21 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     stdout.write(`ops-dispatch ${item.number}: ${item.profile} ${item.action} → ${item.ticket.model_id} (${item.ticket.id})\n`);
   }
   if (!units.length) {
-    if (flags.json) stdout.write(`${JSON.stringify({ dispatched: dispatched.map((item) => item.ticket) }, null, 2)}\n`);
+    const reservation = maybeReserveQueuedSpawn(cwd, env, flags, dispatched.length > 0);
+    const payload = {
+      dispatched: dispatched.map((item) => item.ticket),
+      waves: overlay.waves,
+      ready_wave: overlay.ready,
+    };
+    if (flags.json) stdout.write(`${JSON.stringify(withReservation(payload, reservation), null, 2)}\n`);
+    else {
+      printApplyWaves(stdout, overlay);
+      printReservation(stdout, reservation);
+      printDispatchIgnored(stdout, flags, dispatched.length > 0);
+    }
     return 0;
   }
-  const taskSource = tasks.map((task) => ({ number: task.number, description: task.description, section: task.section }));
+  const taskSource = pending.map((task) => ({ number: task.number, description: task.description, section: task.section }));
   assertRecommendedSelectionAvailable(units);
   const proposal = createSelectionProposal(cwd, {
     source: "openspec",
@@ -582,11 +597,23 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     payload: { change: change || changeDir.split(/[\\/]/).at(-1), change_dir: changeDir },
   });
   const approval = approveRecommendedSelection({ cwd, proposal, cards, env });
+  const createdTickets = dispatched.length > 0 || Boolean(approval?.tickets.length);
+  const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
+  const wavePayload = {
+    waves: overlay.waves,
+    ready_wave: overlay.ready,
+  };
   if (flags.json) {
-    stdout.write(`${JSON.stringify(dispatched.length
-      ? { selection_mode: "baton-recommendation", recommendation: approval, dispatched: dispatched.map((item) => item.ticket) }
-      : { selection_mode: "baton-recommendation", ...approval }, null, 2)}\n`);
-  } else printAutomaticRecommendation(stdout, proposal, approval);
+    const payload = dispatched.length
+      ? { selection_mode: "baton-recommendation", recommendation: approval, dispatched: dispatched.map((item) => item.ticket), ...wavePayload }
+      : { selection_mode: "baton-recommendation", ...approval, ...wavePayload };
+    stdout.write(`${JSON.stringify(withReservation(payload, reservation), null, 2)}\n`);
+  } else {
+    printApplyWaves(stdout, overlay);
+    printAutomaticRecommendation(stdout, proposal, approval);
+    printReservation(stdout, reservation);
+    printDispatchIgnored(stdout, flags, createdTickets);
+  }
   return 0;
 }
 
@@ -739,6 +766,15 @@ function printReservation(stdout: WritableLike, reservation: SpawnReservation | 
     stdout.write(`reserved ${item.ticket_id}: ${item.model}${item.mode === "commit-only" ? " (commit-only)" : ""}\n`);
   }
   for (const item of reservation.blocked) stdout.write(`blocked ${item.ticket_id}: ${item.code}\n`);
+}
+
+function printApplyWaves(stdout: WritableLike, overlay: ReturnType<typeof planApplyWaves>): void {
+  if (!overlay.waves.length) {
+    stdout.write("apply waves: none\n");
+    return;
+  }
+  const ready = overlay.ready;
+  stdout.write(`apply waves: ${overlay.waves.length} remaining; ready wave ${ready?.index ?? "-"} (${ready?.parallel ? "parallel" : "serial"}) ${(ready?.task_ids || []).join(", ")}\n`);
 }
 
 function printDispatchIgnored(stdout: WritableLike, flags: FlagMap, createdTickets: boolean): void {
