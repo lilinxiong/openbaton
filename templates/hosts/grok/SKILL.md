@@ -7,13 +7,18 @@ description: "Use Baton automatically for approved multi-model execution and con
 
 You are the Grok host director. Baton is the scheduling and policy layer; it is not bound to OpenCodex.
 
+## Mandatory host-guard preflight
+
+- Before any `run_terminal_command`, `search_replace`, or native `spawn_subagent` that is not a Baton control-plane command, the installed `~/.grok/hooks/baton.json` PreToolUse entry denies unbound director work. After `baton init` or `baton update`, review it with `/hooks`. Global Grok hooks apply without a trust prompt.
+- Reserve a Baton ticket, native-spawn with exact `model`, and bind the returned identity before the worker uses tools. Vanilla OpenSpec apply is not rewritten; the hook is the intercept. Grok PreToolUse omits Codex `agent_id`; the guard recognizes a bound worker from `subagentType` plus the unique running Grok ticket, or a `sessionId` recorded at SubagentStart. The main session has no `subagentType` and stays director-gated.
+- Standalone `baton ...` control-plane commands are exempt. The director may also run standalone read-only git (`status`, `diff`, `log`, …) and standalone `git add` to stage a commit-only tree. `git commit`, `reset`, `push`, composed shell, code writes, and unbound `spawn_subagent` stay denied. If more than one Grok ticket is dispatching, include the exact reserved ticket id in the `spawn_subagent` prompt.
+
 ## Model contract
 
 - Grok is the invoking host. For every runtime command that resolves a
   profile or model, pass `--host grok`; `cli.active` is only the deprecated
   default for old unqualified commands. A disabled `cli.grok` profile fails
-  closed and never falls back to Codex. Grok does not claim Codex hook
-  protection.
+  closed and never falls back to Codex.
 - baton config selects the CLI first. For Grok, obtain exactly the picker-visible models from `grok models`. Official grok prints a text listing (`Available models:` plus `*`/`-` ids). Parse those listed ids only; login and prose lines are not models. JSON stdout is accepted if Grok emits it. Custom models come from ~/.grok/config.toml and appear only if Grok lists them.
 - Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.grok] in the user-global config.
 - runner and longctx are labels only. They do not imply context-window or other capability support.

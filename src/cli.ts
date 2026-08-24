@@ -223,12 +223,13 @@ async function cmdInit(
     stdout.write(`  cli: ${clis.join(", ")} (max_concurrent follows ${clis[0]})\n`);
   }
   for (const item of result.guards) {
-    const label = item.host === "claude" ? "Claude Code" : "Codex";
+    const label = item.host === "claude" ? "Claude Code" : item.host === "grok" ? "Grok" : "Codex";
     stdout.write(`  ${label} guard: ${item.action} at ${item.display_path}\n`);
   }
   stdout.write("  Trust it in Codex: open `/hooks`, review the Baton-owned entries, and trust them.\n");
   stdout.write("  Note: specialized tool paths may opt out of the default Codex hook path.\n");
   stdout.write("  Claude Code applies user settings hooks without a trust prompt; review them with `/hooks`.\n");
+  stdout.write("  Grok global hooks apply without a trust prompt; review them with `/hooks`.\n");
   if (clis?.length && !cliFlag) {
     stdout.write("\n");
     return runConfig([], { cwd, stdout, stdin, env, discover, prompt, clis });
@@ -245,6 +246,7 @@ function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
   for (const a of result.actions) stdout.write(`  ${a}\n`);
   stdout.write("  Trust the Codex guard in Codex: open `/hooks` and review/trust the Baton-owned entries.\n");
   stdout.write("  Note: specialized tool paths may opt out of the default Codex hook path.\n");
+  stdout.write("  Grok global hooks apply without a trust prompt; review them with `/hooks`.\n");
   return 0;
 }
 

@@ -50,7 +50,7 @@ describe("CLI adapter contract and registry", () => {
     assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "nope" }), 20);
     assert.equal(getCliAdapter("codex").host.guard, true);
     assert.equal(getCliAdapter("claude").host.guard, true);
-    assert.equal(getCliAdapter("grok").host.guard, false);
+    assert.equal(getCliAdapter("grok").host.guard, true);
     assert.equal(getCliAdapter("cursor").host.guard, false);
   });
 

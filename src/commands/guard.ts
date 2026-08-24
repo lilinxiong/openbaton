@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import { codexHooksStatus, installCodexHooks } from "../lib/codex-hooks.js";
 import { claudeHooksStatus, installClaudeHooks } from "../lib/claude-hooks.js";
+import { grokHooksStatus, installGrokHooks } from "../lib/grok-hooks.js";
 import {
   evaluatePreToolUse,
   evaluateSubagentStart,
   HOST_GUARD_REASONS,
+  normalizeHookInput,
   type GuardDecision,
   type HookInput,
   type HostGuardOptions,
@@ -49,7 +51,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function hookEvent(value: unknown): string {
-  return isRecord(value) && typeof value.hook_event_name === "string" ? value.hook_event_name : "";
+  return String(normalizeHookInput(value).hook_event_name || "");
 }
 
 function invalidHookDecision(options: HostGuardOptions): GuardDecision {
@@ -99,18 +101,25 @@ function jsonInput(raw: string, options: HostGuardOptions): GuardDecision {
 
 type GuardStatus =
   | ReturnType<typeof codexHooksStatus>
-  | ReturnType<typeof claudeHooksStatus>;
+  | ReturnType<typeof claudeHooksStatus>
+  | ReturnType<typeof grokHooksStatus>;
 
 function guardStatusFor(host: GuardHostId, options: { cwd: string; env: NodeJS.ProcessEnv }): GuardStatus {
-  return host === "claude" ? claudeHooksStatus(options) : codexHooksStatus(options);
+  if (host === "claude") return claudeHooksStatus(options);
+  if (host === "grok") return grokHooksStatus(options);
+  return codexHooksStatus(options);
 }
 
 function installGuardFor(host: GuardHostId, options: { cwd: string; env: NodeJS.ProcessEnv }) {
-  return host === "claude" ? installClaudeHooks(options) : installCodexHooks(options);
+  if (host === "claude") return installClaudeHooks(options);
+  if (host === "grok") return installGrokHooks(options);
+  return installCodexHooks(options);
 }
 
 function hostLabel(host: GuardHostId): string {
-  return host === "claude" ? "Claude Code" : "Codex";
+  if (host === "claude") return "Claude Code";
+  if (host === "grok") return "Grok";
+  return "Codex";
 }
 
 function printStatus(stdout: WritableLike, host: GuardHostId, status: GuardStatus, json: boolean): void {
@@ -124,9 +133,11 @@ function printStatus(stdout: WritableLike, host: GuardHostId, status: GuardStatu
   stdout.write(`  command: ${status.command || "none"}\n`);
   if (status.operational_error) stdout.write(`  error: ${status.operational_error}\n`);
   if (status.trust_required) stdout.write(`  trust: run ${status.trust_command} in ${hostLabel(host)}\n`);
-  else stdout.write(`  trust: not required; user settings hooks apply directly (review with ${status.trust_command})\n`);
+  else stdout.write(`  trust: not required; ${host === "grok" ? "global Grok hooks apply directly" : "user settings hooks apply directly"} (review with ${status.trust_command})\n`);
   if (host === "claude") {
     stdout.write("  limitation: SubagentStart cannot cancel a child; PreToolUse is the enforcing gate\n");
+  } else if (host === "grok") {
+    stdout.write("  limitation: PreToolUse is the enforcing gate; vanilla OpenSpec apply is not rewritten\n");
   } else {
     stdout.write("  limitation: specialized tool paths may opt out of the default hook path\n");
   }
@@ -149,9 +160,11 @@ export function runGuard(args: string[], options: GuardCommandOptions): number {
     else {
       options.stdout.write(`${hostLabel(host)} Baton guard: ${result.action} at ${result.display_path}\n`);
       if (result.trust_required) options.stdout.write(`  trust: run ${result.trust_command} in ${hostLabel(host)}\n`);
-      else options.stdout.write(`  trust: not required; user settings hooks apply directly (review with ${result.trust_command})\n`);
+      else options.stdout.write(`  trust: not required; ${host === "grok" ? "global Grok hooks apply directly" : "user settings hooks apply directly"} (review with ${result.trust_command})\n`);
       if (host === "claude") {
         options.stdout.write("  limitation: SubagentStart cannot cancel a child; PreToolUse is the enforcing gate\n");
+      } else if (host === "grok") {
+        options.stdout.write("  limitation: PreToolUse is the enforcing gate; vanilla OpenSpec apply is not rewritten\n");
       } else {
         options.stdout.write("  limitation: specialized tool paths may opt out of the default hook path\n");
       }

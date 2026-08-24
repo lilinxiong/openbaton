@@ -6,6 +6,7 @@ import type { CliId } from "../lib/cli-models.js";
 import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
 import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
 import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
+import { installGrokHooks, type GrokHooksInstallResult } from "../lib/grok-hooks.js";
 
 export interface InitProjectOptions {
   force?: boolean;
@@ -24,6 +25,7 @@ export interface InitProjectResult {
   guards: Array<
     | ({ host: "codex" } & CodexHooksInstallResult)
     | ({ host: "claude" } & ClaudeHooksInstallResult)
+    | ({ host: "grok" } & GrokHooksInstallResult)
   >;
 }
 
@@ -59,9 +61,11 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   skipped.push(...hosts.skipped);
   const guard = installCodexHooks({ cwd, env });
   const claudeGuard = installClaudeHooks({ cwd, env });
+  const grokGuard = installGrokHooks({ cwd, env });
   const guards: InitProjectResult["guards"] = [
     { host: "codex", ...guard },
     { host: "claude", ...claudeGuard },
+    { host: "grok", ...grokGuard },
   ];
   for (const item of guards) {
     if (item.changed) created.push(item.display_path);

@@ -8,6 +8,8 @@ import {
   evaluateSubagentStart,
   HOST_GUARD_REASONS,
   isBatonControlPlaneCommand,
+  isDirectorStageCommand,
+  isReadOnlyGitCommand,
   type HostGuardState,
 } from "../src/lib/host-guard.js";
 import { currentBatonHookTargets } from "../src/lib/codex-hooks.js";
@@ -48,7 +50,7 @@ const writeTicket = {
 
 describe("Baton Codex host guard", () => {
   it("denies direct director shell and code writes with deterministic JSON reasons", () => {
-    const directShell = evaluatePreToolUse(event("Bash", { command: "git status" }), { state: state() });
+    const directShell = evaluatePreToolUse(event("Bash", { command: "bun test" }), { state: state() });
     assert.equal(directShell.allowed, false);
     assert.equal(directShell.reason, HOST_GUARD_REASONS.director_shell);
     assert.deepEqual(directShell.output, {
@@ -80,6 +82,27 @@ describe("Baton Codex host guard", () => {
     assert.equal(isBatonControlPlaneCommand("echo baton dispatch next"), false);
     const allowed = evaluatePreToolUse(event("Bash", { command: current.executable + " guard status" }), { state: state() });
     assert.equal(allowed.allowed, true);
+  });
+
+  it("lets the director inspect git and stage, but not commit or compose", () => {
+    assert.equal(isReadOnlyGitCommand("git status"), true);
+    assert.equal(isReadOnlyGitCommand("git diff --cached"), true);
+    assert.equal(isReadOnlyGitCommand("git log -1 --oneline"), true);
+    assert.equal(isReadOnlyGitCommand("git commit -m x"), false);
+    assert.equal(isDirectorStageCommand("git add -A"), true);
+    assert.equal(isDirectorStageCommand("git add src/lib/host-guard.ts test/host-guard.test.ts"), true);
+    assert.equal(isDirectorStageCommand("git add -p"), false);
+    assert.equal(isDirectorStageCommand("git add; rm -rf src"), false);
+
+    const inspect = evaluatePreToolUse(event("Bash", { command: "git status" }), { state: state() });
+    assert.equal(inspect.allowed, true);
+    const stage = evaluatePreToolUse(event("Bash", { command: "git add -A" }), { state: state() });
+    assert.equal(stage.allowed, true);
+    const commit = evaluatePreToolUse(event("Bash", { command: "git commit -m x" }), { state: state() });
+    assert.equal(commit.allowed, false);
+    assert.equal(commit.reason, HOST_GUARD_REASONS.director_shell);
+    const composed = evaluatePreToolUse(event("Bash", { command: "git add -A; rm -rf src" }), { state: state() });
+    assert.equal(composed.allowed, false);
   });
 
   it("trusts configured bare Baton and current runtime/entry pairs only", () => {
@@ -317,5 +340,217 @@ describe("host guard host scoping", () => {
     const legacy = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: both });
     assert.equal(legacy.allowed, true);
     assert.equal(legacy.ticket_id, "spn-0001");
+  });
+});
+
+describe("Grok host guard", () => {
+  const grokOpts = { state: state(), host: "grok" as const };
+
+  it("denies camelCase unbound search_replace and allows baton apply", () => {
+    const edit = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "search_replace",
+      toolInput: { old_string: "a", new_string: "b" },
+      cwd: "/workspace",
+    }, grokOpts);
+    assert.equal(edit.allowed, false);
+    assert.equal(edit.reason, HOST_GUARD_REASONS.director_code_write);
+    assert.equal(edit.output.decision, "deny");
+
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-bin-"));
+    fs.writeFileSync(path.join(bin, "baton"), "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(path.join(bin, "baton"), 0o755);
+    const allowed = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "baton apply foo --host grok --dispatch --json" },
+      cwd: "/workspace",
+    }, { state: state(), host: "grok", env: { PATH: bin } });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.output.decision, "allow");
+  });
+
+  it("lets the Grok director inspect and stage without a bound worker", () => {
+    const inspect = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+    }, grokOpts);
+    assert.equal(inspect.allowed, true);
+    assert.equal(inspect.output.decision, "allow");
+
+    const stage = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git add -A" },
+      cwd: "/workspace",
+    }, grokOpts);
+    assert.equal(stage.allowed, true);
+
+    const commit = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git commit -m x" },
+      cwd: "/workspace",
+    }, grokOpts);
+    assert.equal(commit.allowed, false);
+    assert.equal(commit.reason, HOST_GUARD_REASONS.director_shell);
+  });
+
+  it("does not let the Grok director stage while a commit-only ticket is live", () => {
+    const live = state([{
+      ...readTicket,
+      id: "spn-0200",
+      status: "running",
+      mode: "commit-only",
+      read_only: false,
+      agent_id: "01a032d3-b6e3-7960-96b7-fd152f897105",
+      host: "grok",
+      dispatch_host: "grok",
+      allowed_operations: ["commit"],
+    }]);
+    const denied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git add -A" },
+      cwd: "/workspace",
+    }, { state: live, host: "grok" });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.reason, HOST_GUARD_REASONS.commit_only_command);
+  });
+
+  it("denies spawn_subagent without a reserved Grok ticket", () => {
+    const denied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "spawn_subagent",
+      toolInput: { prompt: "implement the task", model: "grok-4.5" },
+      cwd: "/workspace",
+    }, grokOpts);
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+  });
+
+  const grokWorker = {
+    ...readTicket,
+    id: "spn-0200",
+    agent_id: "01a032d3-b6e3-7960-96b7-fd152f897105",
+    host: "grok",
+    dispatch_host: "grok",
+  };
+
+  it("allows a bound Grok worker shell when PreToolUse has subagentType but no agent_id", () => {
+    const bound = state([grokWorker]);
+    const allowed = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: bound, host: "grok" });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.ticket_id, "spn-0200");
+    assert.equal(allowed.output.decision, "allow");
+  });
+
+  it("still denies the Grok director arbitrary shell when a worker is bound", () => {
+    const bound = state([grokWorker]);
+    const inspect = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "parent-session",
+    }, { state: bound, host: "grok" });
+    assert.equal(inspect.allowed, true);
+    const denied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "bun test" },
+      cwd: "/workspace",
+      sessionId: "parent-session",
+    }, { state: bound, host: "grok" });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.reason, HOST_GUARD_REASONS.director_shell);
+  });
+
+  it("denies Grok worker tools before bind", () => {
+    const reserved = state([{ ...grokWorker, status: "dispatching", agent_id: null }]);
+    const denied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: reserved, host: "grok" });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.reason, HOST_GUARD_REASONS.spawn_bind_pending);
+  });
+
+  it("authorizes a unique bound Grok commit-only git commit without agent_id", () => {
+    const commit = state([{
+      ...grokWorker,
+      mode: "commit-only",
+      read_only: false,
+      allowed_operations: ["commit"],
+      write_allowlist: ["src/lib/host-guard.ts"],
+    }]);
+    const allowed = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git commit -m host-guard-identity" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: commit, host: "grok" });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.ticket_id, "spn-0200");
+  });
+
+  it("matches a Grok worker by child sessionId when bind id differs from SubagentStart", () => {
+    const reserved = state([{ ...grokWorker, status: "dispatching", agent_id: null }]);
+    const start = evaluateSubagentStart({
+      hookEventName: "subagent_start",
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: reserved, host: "grok" });
+    assert.equal(start.allowed, true);
+    assert.equal(start.output.hookSpecificOutput?.additionalContext, "BATON_GUARD_SUBAGENT_PENDING_BIND");
+    assert.equal(reserved.bindings[0]?.session_id, "child-session");
+    assert.equal(reserved.bindings[0]?.agent_id, "child-session");
+
+    reserved.tickets[0] = { ...reserved.tickets[0], status: "running", agent_id: grokWorker.agent_id };
+    const afterBind = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "child-session",
+      subagentType: "general-purpose",
+    }, { state: reserved, host: "grok" });
+    assert.equal(afterBind.allowed, true);
+    assert.equal(afterBind.ticket_id, "spn-0200");
+  });
+
+  it("does not let one of two running Grok tickets win without a session match", () => {
+    const other = {
+      ...grokWorker,
+      id: "spn-0201",
+      agent_id: "01a032d3-dead-beef-0000-000000000001",
+    };
+    const both = state([grokWorker, other]);
+    const denied = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "unknown-child",
+      subagentType: "general-purpose",
+    }, { state: both, host: "grok" });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.reason, HOST_GUARD_REASONS.agent_identity_mismatch);
   });
 });

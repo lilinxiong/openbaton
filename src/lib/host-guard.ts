@@ -295,36 +295,104 @@ export function loadHostGuardState(cwd: string, options: HostGuardOptions = {}):
 export const readHostGuardState = loadHostGuardState;
 export const readGuardState = loadHostGuardState;
 
+/** Grok sends camelCase keys and snake_case event values. Codex/Claude use Pascal/snake fields. */
+export function normalizeHookInput(raw: unknown): HookInput {
+  if (!record(raw)) return {};
+  const eventRaw = stringValue(raw.hook_event_name) || stringValue(raw.hookEventName) || "";
+  const lower = eventRaw.toLowerCase().replaceAll("-", "_");
+  const event = lower === "pre_tool_use" ? "PreToolUse"
+    : lower === "subagent_start" ? "SubagentStart"
+    : eventRaw;
+  const nestedInput = record(raw.tool_input) ? raw.tool_input : record(raw.toolInput) ? raw.toolInput : {};
+  return {
+    ...raw,
+    hook_event_name: event || undefined,
+    cwd: stringValue(raw.cwd) || stringValue(raw.workspaceRoot) || raw.cwd,
+    tool_name: stringValue(raw.tool_name) || stringValue(raw.toolName) || raw.tool_name,
+    tool_input: nestedInput,
+    session_id: stringValue(raw.session_id) || stringValue(raw.sessionId) || raw.session_id,
+    tool_use_id: stringValue(raw.tool_use_id) || stringValue(raw.toolUseId) || raw.tool_use_id,
+    agent_id: stringValue(raw.agent_id) || stringValue(raw.agentId) || raw.agent_id,
+    agent_type: stringValue(raw.agent_type)
+      || stringValue(raw.agentType)
+      || stringValue(raw.subagentType)
+      || stringValue(raw.subagent_type)
+      || raw.agent_type,
+    turn_id: stringValue(raw.turn_id) || stringValue(raw.turnId) || raw.turn_id,
+    promptId: stringValue(raw.promptId) || stringValue(raw.prompt_id) || raw.promptId,
+    subagentType: stringValue(raw.subagentType) || stringValue(raw.subagent_type) || raw.subagentType,
+  };
+}
+
+export function canonicalGuardToolName(name: string | null): string | null {
+  if (!name) return null;
+  const lower = name.trim().toLowerCase();
+  if (lower === "bash" || lower === "run_terminal_command") return "Bash";
+  if (lower === "edit" || lower === "write" || lower === "multiedit" || lower === "search_replace") return "Edit";
+  if (lower === "apply_patch") return "apply_patch";
+  if (lower === "agent" || lower === "spawn_subagent" || lower === "task") return "Agent";
+  return name.trim();
+}
+
 function eventName(input: HookInput, fallback = "PreToolUse"): string {
   return stringValue(input.hook_event_name) || fallback;
 }
 
 function toolName(input: HookInput): string | null {
-  return stringValue(input.tool_name);
+  return canonicalGuardToolName(stringValue(input.tool_name));
 }
 
 function toolInput(input: HookInput): Record<string, unknown> {
   return record(input.tool_input) ? input.tool_input : {};
 }
 
+function hookAgentType(input: HookInput): string | null {
+  const candidates = [input.agent_type, input.agentType, input.subagentType, input.subagent_type];
+  for (const value of candidates) {
+    const type = stringValue(value);
+    if (type) return type;
+  }
+  const nested = toolInput(input);
+  for (const key of ["agent_type", "agentType", "subagentType", "subagent_type"]) {
+    const type = stringValue(nested[key]);
+    if (type) return type;
+  }
+  return null;
+}
+
+function isRootIdentity(input: HookInput): boolean {
+  const type = hookAgentType(input)?.toLowerCase();
+  return type === "root"
+    || type === "root_agent"
+    || type === "main"
+    || type === "director"
+    || type === "parent";
+}
+
+/**
+ * Grok child sessions set `subagentType` and omit Codex `agent_id`. The main
+ * session omits `subagentType`, which is what keeps the director gated.
+ */
+function grokSubagentPayload(input: HookInput): boolean {
+  return Boolean(hookAgentType(input)) && !isRootIdentity(input);
+}
+
 function hookTurnIdentity(input: HookInput): string | null {
   const candidates = [input.turn_id, input.turnId];
+  if (grokSubagentPayload(input)) candidates.push(input.promptId, input.prompt_id);
   for (const value of candidates) {
     const id = stringValue(value);
     if (id) return id;
   }
   const nested = toolInput(input);
-  for (const key of ["turn_id", "turnId"]) {
+  const nestedKeys = grokSubagentPayload(input)
+    ? ["turn_id", "turnId", "promptId", "prompt_id"]
+    : ["turn_id", "turnId"];
+  for (const key of nestedKeys) {
     const id = stringValue(nested[key]);
     if (id) return id;
   }
   return null;
-}
-
-function hookAgentType(input: HookInput): string | null {
-  const direct = stringValue(input.agent_type);
-  if (direct) return direct;
-  return stringValue(toolInput(input).agent_type);
 }
 
 /** The Codex schema currently exposes agent_id on SubagentStart; accept aliases for host-version skew. */
@@ -356,43 +424,41 @@ function sessionId(input: HookInput): string | null {
   return stringValue(input.session_id);
 }
 
-function reasonOutput(event: string, reason: string): Record<string, unknown> {
-  if (event === "PreToolUse") {
-    return {
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: reason,
-      },
-    };
-  }
-  return {
+function reasonOutput(event: string, reason: string, host: string): Record<string, unknown> {
+  const body = event === "PreToolUse" ? {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
+  } : {
     systemMessage: reason,
     hookSpecificOutput: {
       hookEventName: "SubagentStart",
       additionalContext: reason,
     },
   };
+  if (host !== "grok") return body;
+  return { decision: "deny", reason, ...body };
 }
 
-function allowOutput(event: string, additionalContext?: string): Record<string, unknown> {
-  if (event === "PreToolUse") {
-    return {
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-      },
-    };
-  }
-  return additionalContext ? {
+function allowOutput(event: string, host: string, additionalContext?: string): Record<string, unknown> {
+  const body = event === "PreToolUse" ? {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+    },
+  } : additionalContext ? {
     hookSpecificOutput: {
       hookEventName: "SubagentStart",
       additionalContext,
     },
   } : {};
+  if (host !== "grok") return body;
+  return { decision: "allow", ...body };
 }
 
-function denied(event: string, reason: HostGuardReason, input: HookInput, ticketId: string | null = null, agentId: string | null = null): GuardDecision {
+function denied(event: string, reason: HostGuardReason, input: HookInput, ticketId: string | null = null, agentId: string | null = null, host = DEFAULT_GUARD_HOST): GuardDecision {
   return {
     allowed: false,
     event,
@@ -400,11 +466,11 @@ function denied(event: string, reason: HostGuardReason, input: HookInput, ticket
     reason,
     ticket_id: ticketId,
     agent_id: agentId,
-    output: reasonOutput(event, reason),
+    output: reasonOutput(event, reason, host),
   };
 }
 
-function allowed(event: string, input: HookInput, ticketId: string | null = null, agentId: string | null = null, additionalContext?: string): GuardDecision {
+function allowed(event: string, input: HookInput, ticketId: string | null = null, agentId: string | null = null, additionalContext?: string, host = DEFAULT_GUARD_HOST): GuardDecision {
   return {
     allowed: true,
     event,
@@ -412,7 +478,7 @@ function allowed(event: string, input: HookInput, ticketId: string | null = null
     reason: null,
     ticket_id: ticketId,
     agent_id: agentId,
-    output: allowOutput(event, additionalContext),
+    output: allowOutput(event, host, additionalContext),
   };
 }
 
@@ -434,32 +500,39 @@ function bindingForTurn(state: HostGuardState, turnId: string | null): GuardBind
   return matches.length === 1 ? matches[0] : null;
 }
 
+function bindingForSession(state: HostGuardState, session: string | null): GuardBinding | null {
+  if (!session) return null;
+  const matches = state.bindings.filter((item) => item.session_id === session);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function bindingConflictForTurn(state: HostGuardState, turnId: string | null, ticketId: string, agentId: string): boolean {
   if (!turnId) return false;
   return state.bindings.some((item) => item.turn_id === turnId
     && (item.ticket_id !== ticketId || item.agent_id !== agentId));
 }
 
-function isRootIdentity(input: HookInput): boolean {
-  const type = hookAgentType(input)?.toLowerCase();
-  return type === "root"
-    || type === "root_agent"
-    || type === "main"
-    || type === "director"
-    || type === "parent";
-}
-
-function runningByBinding(state: HostGuardState, agentId: string | null, host: string, turnId: string | null = null): GuardTicket | null {
+function runningByBinding(
+  state: HostGuardState,
+  agentId: string | null,
+  host: string,
+  turnId: string | null = null,
+  input: HookInput | null = null,
+): GuardTicket | null {
   if (!agentId && !turnId) return null;
   const binding = turnId
     ? bindingForTurn(state, turnId)
     : state.bindings.find((item) => item.agent_id === agentId) || null;
   if (!binding) return null;
   if (agentId && binding.agent_id !== agentId) return null;
-  return state.tickets.find((ticket) => ticket.status === "running"
-    && ticket.id === binding.ticket_id
-    && ticket.agent_id === binding.agent_id
-    && isGuardTicket(ticket, host)) || null;
+  const ticket = state.tickets.find((item) => item.status === "running"
+    && item.id === binding.ticket_id
+    && isGuardTicket(item, host)) || null;
+  if (!ticket?.agent_id) return null;
+  if (ticket.agent_id === binding.agent_id) return ticket;
+  // Grok bind uses the spawn return id; SubagentStart may have recorded sessionId.
+  if (host === "grok" && input && grokSubagentPayload(input)) return ticket;
+  return null;
 }
 
 function reservedTickets(state: HostGuardState, host: string): GuardTicket[] {
@@ -467,11 +540,127 @@ function reservedTickets(state: HostGuardState, host: string): GuardTicket[] {
     && (ticket.dispatch_host || ticket.host || DEFAULT_GUARD_HOST) === host);
 }
 
+function grokRunningTickets(state: HostGuardState, host: string): GuardTicket[] {
+  return state.tickets.filter((ticket) => ticket.status === "running"
+    && ticket.agent_id
+    && isGuardTicket(ticket, host));
+}
+
+/**
+ * Grok PreToolUse inside a child has `subagentType` and a child `sessionId`,
+ * not Codex `agent_id`. Match the bound ticket by recorded session, or by the
+ * unique running Grok ticket when only one worker is live.
+ */
+function grokBoundWorker(state: HostGuardState, input: HookInput, host: string): GuardTicket | null {
+  if (host !== "grok" || !grokSubagentPayload(input)) return null;
+  const bySession = bindingForSession(state, sessionId(input));
+  if (bySession) {
+    const ticket = state.tickets.find((item) => item.id === bySession.ticket_id && isGuardTicket(item, host));
+    if (ticket?.status === "running" && ticket.agent_id) return ticket;
+  }
+  const running = grokRunningTickets(state, host);
+  return running.length === 1 ? running[0] : null;
+}
+
 function findReserved(state: HostGuardState, input: HookInput, host: string): GuardTicket | null {
   const reserved = reservedTickets(state, host);
   const requestedId = ticketIdFromInput(input);
   if (requestedId) return reserved.find((ticket) => ticket.id === requestedId) || null;
   return reserved.length === 1 ? reserved[0] : null;
+}
+
+function exclusiveGitTickets(state: HostGuardState, host: string): GuardTicket[] {
+  return state.tickets.filter((ticket) => (ticket.status === "running" || ticket.status === "dispatching")
+    && isGuardTicket(ticket, host)
+    && (ticket.mode === "commit-only" || ticket.mode === "write"));
+}
+
+/** Director-only caller: not a Grok child session and not a bound native agent_id. */
+function isDirectorCaller(input: HookInput): boolean {
+  if (grokSubagentPayload(input)) return false;
+  const id = hookAgentIdentity(input);
+  return !id || isRootIdentity(input);
+}
+
+const READ_ONLY_GIT_VERBS = new Set([
+  "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree",
+  "describe", "cat-file", "blame", "shortlog", "name-rev", "rev-list",
+  "symbolic-ref", "version", "help", "grep", "reflog", "var",
+  "check-ignore", "check-attr",
+]);
+
+const DIRECTOR_STAGE_LONG_FLAGS = new Set([
+  "--all",
+  "--update",
+  "--verbose",
+  "--dry-run",
+  "--force",
+  "--intent-to-add",
+]);
+
+function gitVerb(tokens: string[]): string | null {
+  let index = 1;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "-C" || token === "-c") {
+      index += 2;
+      continue;
+    }
+    if (token === "--no-pager" || token === "-P" || token === "--literal-pathspecs" || token === "--no-optional-locks") {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--git-dir=") || token.startsWith("--work-tree=") || token.startsWith("-c")) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("-")) return null;
+    return token;
+  }
+  return null;
+}
+
+function gitArgsAfterVerb(tokens: string[]): string[] {
+  const verb = gitVerb(tokens);
+  if (!verb) return [];
+  const index = tokens.lastIndexOf(verb);
+  return index >= 0 ? tokens.slice(index + 1) : [];
+}
+
+/** Standalone read-only git used to inspect a worktree without a bound worker. */
+export function isReadOnlyGitCommand(command: unknown): boolean {
+  const tokens = standaloneCommandTokens(String(command || "").trim());
+  if (!tokens || tokens[0] !== "git") return false;
+  const verb = gitVerb(tokens);
+  if (!verb) return false;
+  if (READ_ONLY_GIT_VERBS.has(verb)) return true;
+  const rest = gitArgsAfterVerb(tokens);
+  if (verb === "remote") {
+    return rest.every((item) => !["add", "remove", "rm", "rename", "set-url", "prune"].includes(item));
+  }
+  if (verb === "branch") {
+    return !rest.some((item) => /^-([dDmcC]|[^-]*[dDmcC])/.test(item)
+      || item === "--delete" || item === "--move" || item === "--copy");
+  }
+  return false;
+}
+
+/**
+ * Standalone `git add` used to freeze a commit-only tree. Composition, patch
+ * mode, and every other git verb stay denied on the director.
+ */
+export function isDirectorStageCommand(command: unknown): boolean {
+  const tokens = standaloneCommandTokens(String(command || "").trim());
+  if (!tokens || tokens[0] !== "git" || gitVerb(tokens) !== "add") return false;
+  for (const token of gitArgsAfterVerb(tokens)) {
+    if (token === "--" || token === ".") continue;
+    if (token.startsWith("--")) {
+      if (!DIRECTOR_STAGE_LONG_FLAGS.has(token)) return false;
+      continue;
+    }
+    if (token.startsWith("-") && !/^-([AuvnfN]+)$/.test(token)) return false;
+  }
+  return true;
 }
 
 /**
@@ -575,55 +764,72 @@ function identityFor(state: HostGuardState, input: HookInput, host: string): {
 } {
   const id = hookAgentIdentity(input);
   const turnId = hookTurnIdentity(input);
-  const binding = bindingForTurn(state, turnId);
+  const binding = bindingForTurn(state, turnId)
+    || (host === "grok" && grokSubagentPayload(input) ? bindingForSession(state, sessionId(input)) : null);
   if (isRootIdentity(input)) return { id, turnId, binding, ticket: null };
   if (binding && id && binding.agent_id !== id) return { id, turnId, binding, ticket: null };
   return {
     id,
     turnId,
     binding,
-    ticket: runningByBinding(state, id, host, turnId)
-      || (turnId && binding ? null : currentRunning(state, id, host)),
+    ticket: runningByBinding(state, id, host, turnId, input)
+      || (turnId && binding ? null : currentRunning(state, id, host))
+      || grokBoundWorker(state, input, host),
   };
 }
 
 /** Enforce the director/worker boundary for the official PreToolUse event. */
-export function evaluatePreToolUse(input: HookInput, options: HostGuardOptions = {}): GuardDecision {
+export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {}): GuardDecision {
+  const input = normalizeHookInput(raw);
   const event = eventName(input);
   const cwd = stringValue(input.cwd) || options.cwd || process.cwd();
   const state = loadHostGuardState(cwd, options);
   const host = guardHost(options);
   const name = toolName(input);
   const command = stringValue(toolInput(input).command) || "";
-  if (!state.active) return allowed(event, input);
-  if (!name) return denied(event, HOST_GUARD_REASONS.invalid_input, input);
+  const deny = (reason: HostGuardReason, ticketId: string | null = null, agentId: string | null = null) =>
+    denied(event, reason, input, ticketId, agentId, host);
+  const allow = (ticketId: string | null = null, agentId: string | null = null, extra?: string) =>
+    allowed(event, input, ticketId, agentId, extra, host);
+  if (!state.active) return allow();
+  if (!name) return deny(HOST_GUARD_REASONS.invalid_input);
   if (name === "Bash" && isBatonControlPlaneCommand(command, {
     env: options.env,
     runtimePath: options.runtimePath,
     entryPath: options.entryPath,
     executablePath: options.executablePath,
-  })) return allowed(event, input);
-  if (state.state_error) return denied(event, HOST_GUARD_REASONS.state_unavailable, input);
+  })) return allow();
+  if (state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
+  if (name === "Bash" && isDirectorCaller(input) && isReadOnlyGitCommand(command)) return allow();
+  if (name === "Bash" && isDirectorCaller(input) && isDirectorStageCommand(command)) {
+    const blockers = exclusiveGitTickets(state, host);
+    if (blockers.length) {
+      return deny(blockers.some((ticket) => ticket.mode === "commit-only")
+        ? HOST_GUARD_REASONS.commit_only_command
+        : HOST_GUARD_REASONS.write_receipt_required);
+    }
+    return allow();
+  }
   if (name !== "Bash" && name !== "apply_patch" && name !== "Edit" && name !== "Write" && name !== "Agent") {
     // Codex may route specialized tools around this hook. Keep this explicit:
     // the installed matcher covers only the tools for which the policy exists.
-    return allowed(event, input);
+    return allow();
   }
 
   if (name === "Agent") {
-    if (!state.initialized) return denied(event, HOST_GUARD_REASONS.not_initialized, input);
+    if (!state.initialized) return deny(HOST_GUARD_REASONS.not_initialized);
     const identity = identityFor(state, input, host);
-    if (identity.ticket) return denied(event, HOST_GUARD_REASONS.nested_agent, input, identity.ticket.id, identity.id);
+    if (identity.ticket) return deny(HOST_GUARD_REASONS.nested_agent, identity.ticket.id, identity.id);
     const reserved = findReserved(state, input, host);
     if (!reserved) {
-      return denied(event, reservedTickets(state, host).length > 1
+      return deny(reservedTickets(state, host).length > 1
         ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
-        : HOST_GUARD_REASONS.no_reserved_ticket, input);
+        : HOST_GUARD_REASONS.no_reserved_ticket);
     }
-    return allowed(event, input, reserved.id, null);
+    return allow(reserved.id, null);
   }
 
-  if (!state.initialized) return denied(event, HOST_GUARD_REASONS.not_initialized, input);
+  if (!state.initialized) return deny(HOST_GUARD_REASONS.not_initialized);
   const identity = identityFor(state, input, host);
   if (!identity.ticket) {
     const hasAnotherBoundAgent = Boolean(identity.id) && state.tickets.some((ticket) => ticket.status === "running"
@@ -640,32 +846,34 @@ export function evaluatePreToolUse(input: HookInput, options: HostGuardOptions =
         ? HOST_GUARD_REASONS.spawn_bind_pending
       : reservedTickets(state, host).length > 0
       ? HOST_GUARD_REASONS.spawn_bind_pending
+      : grokSubagentPayload(input) && grokRunningTickets(state, host).length > 1
+      ? HOST_GUARD_REASONS.agent_identity_mismatch
       : hasAnotherBoundAgent
         ? HOST_GUARD_REASONS.agent_identity_mismatch
       : name === "Bash"
         ? HOST_GUARD_REASONS.director_shell
         : HOST_GUARD_REASONS.director_code_write;
-    return denied(event, reason, input, null, identity.id);
+    return deny(reason, null, identity.id);
   }
 
   if (name === "Bash") {
     if (isShellWriteCommand(command)) {
-      if (hasCommitAuthorization(identity.ticket, command)) return allowed(event, input, identity.ticket.id, identity.id);
+      if (hasCommitAuthorization(identity.ticket, command)) return allow(identity.ticket.id, identity.id);
       if (!hasWriteAuthorization(identity.ticket)) {
-        return denied(event, identity.ticket.mode === "commit-only"
+        return deny(identity.ticket.mode === "commit-only"
           ? HOST_GUARD_REASONS.commit_only_command
-          : HOST_GUARD_REASONS.write_receipt_required, input, identity.ticket.id, identity.id);
+          : HOST_GUARD_REASONS.write_receipt_required, identity.ticket.id, identity.id);
       }
     }
-    return allowed(event, input, identity.ticket.id, identity.id);
+    return allow(identity.ticket.id, identity.id);
   }
 
   if (!hasWriteAuthorization(identity.ticket)) {
-    return denied(event, identity.ticket.mode === "commit-only"
+    return deny(identity.ticket.mode === "commit-only"
       ? HOST_GUARD_REASONS.commit_only_command
-      : HOST_GUARD_REASONS.write_receipt_required, input, identity.ticket.id, identity.id);
+      : HOST_GUARD_REASONS.write_receipt_required, identity.ticket.id, identity.id);
   }
-  return allowed(event, input, identity.ticket.id, identity.id);
+  return allow(identity.ticket.id, identity.id);
 }
 
 function writeBindings(file: string, bindings: GuardBinding[]): void {
@@ -686,8 +894,9 @@ function recordPendingBinding(
   ticket: GuardTicket,
   options: HostGuardOptions,
   bindingState: GuardBinding["state"] = "pending",
+  resolvedAgentId: string | null = null,
 ): void {
-  const agentId = hookAgentIdentity(input);
+  const agentId = resolvedAgentId || hookAgentIdentity(input) || sessionId(input);
   if (!agentId) return;
   const turnId = hookTurnIdentity(input);
   const current = options.state
@@ -715,40 +924,45 @@ function recordPendingBinding(
  * records the native identity and emits a deterministic context message; the
  * actual PreToolUse gate remains closed until `dispatch bind` observes it.
  */
-export function evaluateSubagentStart(input: HookInput, options: HostGuardOptions = {}): GuardDecision {
+export function evaluateSubagentStart(raw: HookInput, options: HostGuardOptions = {}): GuardDecision {
+  const input = normalizeHookInput(raw);
   const event = "SubagentStart";
   const cwd = stringValue(input.cwd) || options.cwd || process.cwd();
   const state = loadHostGuardState(cwd, options);
   const host = guardHost(options);
-  if (!state.active) return allowed(event, input);
-  if (state.state_error) return denied(event, HOST_GUARD_REASONS.state_unavailable, input);
-  if (!state.initialized) return denied(event, HOST_GUARD_REASONS.not_initialized, input);
-  const agentId = hookAgentIdentity(input);
-  if (!agentId) return denied(event, HOST_GUARD_REASONS.agent_identity_required, input, null, null);
+  const deny = (reason: HostGuardReason, ticketId: string | null = null, agentId: string | null = null) =>
+    denied(event, reason, input, ticketId, agentId, host);
+  const allow = (ticketId: string | null = null, agentId: string | null = null, extra?: string) =>
+    allowed(event, input, ticketId, agentId, extra, host);
+  if (!state.active) return allow();
+  if (state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
+  if (!state.initialized) return deny(HOST_GUARD_REASONS.not_initialized);
+  const agentId = hookAgentIdentity(input) || (host === "grok" ? sessionId(input) : null);
+  if (!agentId) return deny(HOST_GUARD_REASONS.agent_identity_required, null, null);
   const turnId = hookTurnIdentity(input);
   if (isRootIdentity(input)) {
-    return denied(event, HOST_GUARD_REASONS.agent_identity_mismatch, input, null, agentId);
+    return deny(HOST_GUARD_REASONS.agent_identity_mismatch, null, agentId);
   }
   const existingBinding = bindingForTurn(state, turnId);
   if (bindingConflictForTurn(state, turnId, existingBinding?.ticket_id || "", agentId)) {
-    return denied(event, HOST_GUARD_REASONS.agent_identity_mismatch, input, existingBinding?.ticket_id || null, agentId);
+    return deny(HOST_GUARD_REASONS.agent_identity_mismatch, existingBinding?.ticket_id || null, agentId);
   }
-  const bound = runningByBinding(state, agentId, host, turnId)
+  const bound = runningByBinding(state, agentId, host, turnId, input)
     || (turnId && existingBinding ? null : currentRunning(state, agentId, host));
   if (bound) {
     if (!existingBinding || existingBinding.agent_id !== agentId) {
-      recordPendingBinding(cwd, input, state, bound, options, "bound");
+      recordPendingBinding(cwd, input, state, bound, options, "bound", agentId);
     }
-    return allowed(event, input, bound.id, agentId, "BATON_GUARD_SUBAGENT_BOUND");
+    return allow(bound.id, agentId, "BATON_GUARD_SUBAGENT_BOUND");
   }
   const reserved = findReserved(state, input, host);
   if (!reserved) {
-    return denied(event, reservedTickets(state, host).length > 1
+    return deny(reservedTickets(state, host).length > 1
       ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
-      : HOST_GUARD_REASONS.no_reserved_ticket, input, null, agentId);
+      : HOST_GUARD_REASONS.no_reserved_ticket, null, agentId);
   }
-  recordPendingBinding(cwd, input, state, reserved, options);
-  return allowed(event, input, reserved.id, agentId, "BATON_GUARD_SUBAGENT_PENDING_BIND");
+  recordPendingBinding(cwd, input, state, reserved, options, "pending", agentId);
+  return allow(reserved.id, agentId, "BATON_GUARD_SUBAGENT_PENDING_BIND");
 }
 
 export const guardPreToolUse = evaluatePreToolUse;

@@ -201,6 +201,26 @@ describe("Codex init and update", () => {
     });
   });
 
+  it("installs the Grok guard as a dedicated global hook file", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-guard-"));
+      const env = fakeEnv(home);
+      const result = await initProject(cwd, { env });
+      const grokGuard = result.guards.find((item) => item.host === "grok");
+      assert.ok(grokGuard, "expected a Grok guard result");
+      assert.equal(grokGuard.installed, true);
+      assert.equal(grokGuard.trust_required, false);
+      const hookFile = path.join(home, ".grok", "hooks", "baton.json");
+      assert.equal(fs.existsSync(hookFile), true);
+      const parsed = JSON.parse(fs.readFileSync(hookFile, "utf8"));
+      assert.match(parsed.hooks.PreToolUse[0].hooks[0].command, /guard hook --host grok/);
+      assert.match(fs.readFileSync(path.join(home, HOST_SKILL_REL.grok), "utf8"), /~\/\.grok\/hooks\/baton\.json/);
+      const applySkill = fs.readFileSync(path.join(process.cwd(), ".agents/skills/openspec-apply-change/SKILL.md"), "utf8");
+      assert.match(applySkill, /Implement tasks from an OpenSpec change/);
+      assert.doesNotMatch(applySkill, /baton apply <change>/);
+    });
+  });
+
   it("writes Claude Code's host concurrent cap for a non-interactive --cli claude init", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-cap-"));

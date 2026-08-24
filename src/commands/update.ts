@@ -6,6 +6,7 @@ import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
 import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
 import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
+import { installGrokHooks, type GrokHooksInstallResult } from "../lib/grok-hooks.js";
 
 export interface UpdateProjectOptions {
   forceSkill?: boolean;
@@ -17,6 +18,7 @@ export interface UpdateProjectResult {
   /** Codex guard, retained under its original name for compatibility. */
   guard: CodexHooksInstallResult;
   claudeGuard: ClaudeHooksInstallResult;
+  grokGuard: GrokHooksInstallResult;
 }
 
 /**
@@ -64,6 +66,8 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
   actions.push(`${guard.action} Codex Baton host guard at ${guard.display_path}; trust it from /hooks`);
   const claudeGuard = installClaudeHooks({ cwd, env });
   actions.push(`${claudeGuard.action} Claude Code Baton host guard at ${claudeGuard.display_path}; user settings hooks apply without a trust prompt`);
+  const grokGuard = installGrokHooks({ cwd, env });
+  actions.push(`${grokGuard.action} Grok Baton host guard at ${grokGuard.display_path}; global Grok hooks apply without a trust prompt`);
 
-  return { actions, guard, claudeGuard };
+  return { actions, guard, claudeGuard, grokGuard };
 }

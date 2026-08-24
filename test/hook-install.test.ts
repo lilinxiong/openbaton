@@ -43,7 +43,7 @@ describe("Codex guard CLI", () => {
       const input = JSON.stringify({
         hook_event_name: "PreToolUse",
         tool_name: "Bash",
-        tool_input: { command: "git status" },
+        tool_input: { command: "bun test" },
         cwd,
       });
       assert.equal(await run(["guard", "hook"], { cwd, env, stdin: input, stdout: out, stderr: out }), 0, out.text());
@@ -94,10 +94,9 @@ describe("Claude Code guard CLI", () => {
       assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
       assert.equal(result.hookSpecificOutput.permissionDecisionReason, "BATON_GUARD_NOT_INITIALIZED");
 
-      // Grok has no hook surface, so it is not a valid guard host.
-      const bad = capture();
-      assert.equal(await run(["guard", "status", "--host", "grok"], { cwd, env, stdout: bad, stderr: bad }), 1);
-      assert.match(bad.text(), /invalid guard host/);
+      const missing = capture();
+      assert.equal(await run(["guard", "status", "--host", "cursor"], { cwd, env, stdout: missing, stderr: missing }), 1);
+      assert.match(missing.text(), /invalid guard host/);
     });
   });
 
@@ -109,5 +108,52 @@ describe("Claude Code guard CLI", () => {
     const out = capture();
     assert.equal(await run(["help"], { stdout: out, stderr: out }), 0);
     assert.match(out.text(), new RegExp(`baton guard status\\|install\\|hook \\[--host ${GUARD_HOSTS.join("\\|")}\\]`));
+  });
+});
+
+describe("Grok guard CLI", () => {
+  it("installs a dedicated global hook file without a trust prompt", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-guard-cli-"));
+      const env = fakeEnv(home);
+      const first = capture();
+      assert.equal(await run(["guard", "install", "--host", "grok", "--json"], { cwd, env, stdout: first, stderr: first }), 0, first.text());
+      const status = JSON.parse(first.text());
+      assert.equal(status.installed, true);
+      assert.equal(status.trust_required, false);
+      assert.match(status.command, /guard hook --host grok/);
+      assert.equal(fs.existsSync(path.join(home, ".grok", "hooks", "baton.json")), true);
+      assert.equal(fs.existsSync(codexHooksPath({ env })), false);
+    });
+  });
+
+  it("denies unbound Grok director edits and allows standalone baton apply", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-guard-hook-"));
+      const env = fakeEnv(home);
+      const denied = capture();
+      const input = JSON.stringify({
+        hookEventName: "pre_tool_use",
+        toolName: "search_replace",
+        toolInput: { old_string: "a", new_string: "b" },
+        cwd,
+      });
+      assert.equal(await run(["guard", "hook", "--host", "grok"], { cwd, env, stdin: input, stdout: denied, stderr: denied }), 0, denied.text());
+      const result = JSON.parse(denied.text());
+      assert.equal(result.decision, "deny");
+      assert.equal(result.reason, "BATON_GUARD_NOT_INITIALIZED");
+      assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+
+      const allowed = capture();
+      const apply = JSON.stringify({
+        hookEventName: "pre_tool_use",
+        toolName: "run_terminal_command",
+        toolInput: { command: "baton apply remove-cli-active --host grok --dispatch --json" },
+        cwd,
+      });
+      assert.equal(await run(["guard", "hook", "--host", "grok"], { cwd, env, stdin: apply, stdout: allowed, stderr: allowed }), 0, allowed.text());
+      const applyResult = JSON.parse(allowed.text());
+      assert.equal(applyResult.decision, "allow");
+    });
   });
 });
