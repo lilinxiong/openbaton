@@ -6,7 +6,7 @@ import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { runHost } from "./commands/host.js";
 import { cliPromptChoices, runConfig } from "./commands/config.js";
-import { runGuard } from "./commands/guard.js";
+import { GUARD_HOSTS, runGuard } from "./commands/guard.js";
 import {
   approveRecommendedSelection,
   assertRecommendedSelectionAvailable,
@@ -87,7 +87,7 @@ Interactive init/config use arrow-key select; space toggles CLIs and subagent mo
 Usage:
   baton init [--force] [--cli ${HOSTS}]  initialize Baton + host skills
   baton update                        refresh host skills + global config defaults
-  baton guard status|install|hook [--host codex|claude]  inspect/install a host guard or serve hook stdin
+  baton guard status|install|hook [--host ${GUARD_HOSTS.join("|")}]  inspect/install a host guard or serve hook stdin
   baton models refresh|status|candidates [--host ${HOSTS}]  inspect/refresh one CLI model catalog
   baton cards [--host ${HOSTS}] [--ranked|--unranked] [--provider ID] [--json]
   baton host detect [--json]               resolve invoking host from runtime signals

@@ -25,6 +25,7 @@ export const CLAUDE_HOST_METADATA: CliHostMetadata = {
     if (Number.isFinite(override) && override > 0) return Math.floor(override);
     return 20;
   },
+  guard: true,
 };
 
 /** Resolve the installed Claude Code executable, without inventing a fallback path. */

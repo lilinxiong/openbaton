@@ -67,6 +67,8 @@ export interface CliHostMetadata {
   maxConcurrent: (env?: NodeJS.ProcessEnv) => number;
   /** Return true when this host appears to be the current invoking runtime. */
   isInvoking?: (env?: NodeJS.ProcessEnv) => boolean;
+  /** True when this host exposes a hook surface Baton can install and enforce. */
+  guard: boolean;
 }
 
 /**

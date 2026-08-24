@@ -10,9 +10,12 @@ import {
   type HostGuardOptions,
 } from "../lib/host-guard.js";
 import type { WritableLike } from "../types.js";
+import { listCliAdapters } from "../adapters/registry.js";
 
 /** Hosts that expose a hook surface Baton can enforce the director boundary on. */
-export const GUARD_HOSTS = ["codex", "claude"] as const;
+export const GUARD_HOSTS = listCliAdapters()
+  .filter((adapter) => adapter.host.guard)
+  .map((adapter) => adapter.host.id);
 export type GuardHostId = (typeof GUARD_HOSTS)[number];
 
 function parseGuardHost(value: string | undefined): GuardHostId {

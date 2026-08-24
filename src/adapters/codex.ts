@@ -26,6 +26,7 @@ export const CODEX_HOST_METADATA: CliHostMetadata = {
   maxConcurrent: () => 4,
   isInvoking: (env = process.env) =>
     Boolean(String(env.CODEX_SANDBOX || env.CODEX_INTERNAL || "").trim()),
+  guard: true,
 };
 
 /** Resolve the selected Codex CLI, with the desktop bundle as a fallback. */

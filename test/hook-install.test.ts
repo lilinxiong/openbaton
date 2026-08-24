@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
+import { GUARD_HOSTS } from "../src/commands/guard.js";
+import { CLI_ADAPTERS } from "../src/adapters/index.js";
 import { codexHooksPath } from "../src/lib/codex-hooks.js";
 import { claudeSettingsPath } from "../src/lib/claude-hooks.js";
 import { withHome, fakeEnv } from "./home.js";
@@ -97,5 +99,15 @@ describe("Claude Code guard CLI", () => {
       assert.equal(await run(["guard", "status", "--host", "grok"], { cwd, env, stdout: bad, stderr: bad }), 1);
       assert.match(bad.text(), /invalid guard host/);
     });
+  });
+
+  it("lists guard hosts from the adapter registry in usage", async () => {
+    assert.deepEqual(
+      GUARD_HOSTS,
+      CLI_ADAPTERS.filter((adapter) => adapter.host.guard).map((adapter) => adapter.host.id),
+    );
+    const out = capture();
+    assert.equal(await run(["help"], { stdout: out, stderr: out }), 0);
+    assert.match(out.text(), new RegExp(`baton guard status\\|install\\|hook \\[--host ${GUARD_HOSTS.join("\\|")}\\]`));
   });
 });

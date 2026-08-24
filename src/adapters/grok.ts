@@ -29,6 +29,7 @@ export const GROK_HOST_METADATA: CliHostMetadata = {
   isInvoking: (env = process.env) =>
     String(env.GROK_AGENT || "").trim() === "1"
     || Boolean(String(env.GROK_SESSION_ID || "").trim()),
+  guard: false,
 };
 
 /** Resolve the official Grok Build binary, without inventing a fallback path. */
