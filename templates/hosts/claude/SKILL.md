@@ -42,7 +42,8 @@ You are the Claude Code host director. Baton is the scheduling and policy layer;
 - Configured mechanical ops follow the labels. Empty `runner`/`longctx`: director executes them and must not block (including `git commit`). Non-empty: compact dispatch above; director may only `git add` / stage for commit-only. Mechanical workers execute only: run the inferred command, short conclusion, no exploration. `git-commit` (runner) may read the staged diff, write one message, and commit once. `git-summarize` dumps git status/log/diff only. Commit-only workers must not amend, rebase, merge, cherry-pick, revert, tag, stash, clean, or push.
 - Queue beyond current host capacity. Claude Code allows 20 concurrent child agents by default (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` overrides it) and returns "Concurrent subagent limit reached" at the cap. Treat that as backpressure: defer the same ticket without consuming an attempt or changing models. Children cannot spawn children.
 - Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
-- OpenSpec is optional and remains workflow owner when present. Baton state stays under ~/.baton, never in the project.
+- OpenSpec is optional and remains workflow owner when present. Do not rewrite `tasks.md` structure. Baton state stays under ~/.baton, never in the project.
+- When `cli.claude.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Run `baton apply <change> --host claude --dispatch --json`. Native-spawn every reserved ticket in that ready wave in parallel with the Agent tool (`subagent_type` of an exact-model definition, no `model` parameter), then bind immediately. After the wave completes, apply again. Independent tasks must run in parallel; overlapping or later-section work stays serial. If `cli.claude.enabled` is false, fail closed and do not borrow another CLI.
 - Install this skill at ~/.claude/skills/baton/SKILL.md.
 
 ## Guard
@@ -58,7 +59,7 @@ You are the Claude Code host director. Baton is the scheduling and policy layer;
     baton models refresh|status|candidates --host claude
     baton match <text> --host claude
     baton spawn <request> --host claude [--unit KEY=BUSINESS_TASK ...] [--dispatch]
-    baton apply [change] --host claude
+    baton apply [change] --host claude [--dispatch]
     baton guard status|install --host claude
     baton dispatch next --host claude --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host claude --json

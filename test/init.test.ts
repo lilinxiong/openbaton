@@ -23,6 +23,7 @@ describe("Codex init and update", () => {
       const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
       const grokSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.grok), "utf8");
       const cursorSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.cursor), "utf8");
+      const claudeSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.claude), "utf8");
       for (const skill of [directorSkill, hostSkill]) {
         assert.match(skill, /model\/list/);
         assert.match(skill, /gpt-5\.4-mini/);
@@ -43,6 +44,7 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /Do not edit OpenSpec apply skills/);
       assert.match(hostSkill, /When `cli.codex.enabled` is true and the user applies an OpenSpec change/);
       assert.match(cursorSkill, /When `cli.cursor.enabled` is true and the user applies an OpenSpec change/);
+      assert.match(claudeSkill, /When `cli.claude.enabled` is true and the user applies an OpenSpec change/);
       assert.match(directorSkill, /OpenSpec apply is not a director-implementation exemption/);
       assert.match(cursorSkill, /cursor-agent models/);
       assert.match(cursorSkill, /native `Task`/);
@@ -152,6 +154,8 @@ describe("Codex init and update", () => {
       assert.match(skill, /Empty `runner`\/`longctx`: director executes them and must not block/);
       assert.match(skill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(skill, /--dispatch --json/);
+      assert.match(skill, /When `cli.claude.enabled` is true and the user applies an OpenSpec change/);
+      assert.match(skill, /Do not edit OpenSpec apply skills/);
       assert.match(skill, /OpenCodex/);
       // It must not copy claims that are false for this host.
       assert.doesNotMatch(skill, /spawn_subagent/);
