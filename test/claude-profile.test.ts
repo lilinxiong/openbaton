@@ -114,7 +114,8 @@ describe("Claude Code appears in the shared init/config flow", () => {
       }
 
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "claude");
+      assert.equal(config.cli.claude.enabled, true);
+      assert.equal(Object.hasOwn(config.cli, "active"), false);
       assert.deepEqual(config.cli.claude, {
         enabled: true,
         runner: "claude-sonnet-5",
@@ -122,11 +123,12 @@ describe("Claude Code appears in the shared init/config flow", () => {
         // Configured labels must be truthfully present in the allowlist.
         subagent_models: ["claude-sonnet-5", "claude-opus-5[1m]"],
       });
-      assert.equal(config.director.max_concurrent, 20);
+      assert.equal(config.director.max_concurrent, 4);
       // Other host profiles are untouched.
       assert.equal(config.cli.codex.enabled, false);
       assert.equal(config.cli.grok.enabled, false);
       assert.match(stdout.text(), /cli: claude/);
+      assert.doesNotMatch(stdout.text(), /\bactive:/);
 
       const snapshot = readRouteSnapshot(cwd, { host: "claude", env });
       assert.equal(snapshot?.cli, "claude");
@@ -139,7 +141,9 @@ describe("Claude Code appears in the shared init/config flow", () => {
       const env = fakeEnv(home);
       const init = capture();
       assert.equal(await run(["init", "--cli", "claude"], { cwd, env, stdout: init, stderr: init }), 0, init.text());
-      assert.equal(loadConfig(cwd, { env }).cli.active, "claude");
+      const afterInit = loadConfig(cwd, { env });
+      assert.equal(afterInit.cli.claude.enabled, true);
+      assert.equal(Object.hasOwn(afterInit.cli, "active"), false);
 
       const out = capture();
       assert.equal(await run([
@@ -160,6 +164,9 @@ describe("Claude Code appears in the shared init/config flow", () => {
       assert.equal(payload.max_concurrent, 20);
       assert.equal(payload.model_source, "claude catalog");
       assert.deepEqual(payload.subagent_models, ["claude-sonnet-5", "claude-haiku-4-5-20251001"]);
+      assert.equal(Object.hasOwn(payload, "active"), false);
+      assert.equal(loadConfig(cwd, { env }).cli.claude.enabled, true);
+      assert.equal(Object.hasOwn(loadConfig(cwd, { env }).cli, "active"), false);
     });
   });
 

@@ -40,9 +40,7 @@ export interface CliProfileSettings {
 
 export type CliProfiles = { [K in CliId]: CliProfileSettings };
 
-export type CliSettings = CliProfiles & {
-  active: CliId;
-};
+export type CliSettings = CliProfiles;
 
 export interface Config {
   director: DirectorSettings;
@@ -73,10 +71,7 @@ export function emptyConfig(): Config {
       max_concurrent: DEFAULT_MAX_CONCURRENT,
       max_depth: DEFAULT_MAX_DEPTH,
     },
-    cli: {
-      active: "codex",
-      ...cliProfiles,
-    },
+    cli: cliProfiles,
     ops: emptyOpsConfig(),
   };
 }
@@ -131,8 +126,7 @@ function normalizeCliProfile(value: unknown, legacyOps: OpsConfig): CliProfileSe
 
 function normalizeCli(value: unknown, legacyOps: OpsConfig): CliSettings {
   const cli = isUnknownRecord(value) ? value : {};
-  const requested = String(cli.active || "codex").trim();
-  const active = (CLI_IDS as readonly string[]).includes(requested) ? requested as CliId : "codex";
+  // Legacy `active` keys are ignored; there is no configured default CLI.
   const profiles = {} as CliProfiles;
   for (const adapter of listCliAdapters()) {
     profiles[adapter.id] = normalizeCliProfile(
@@ -140,38 +134,28 @@ function normalizeCli(value: unknown, legacyOps: OpsConfig): CliSettings {
       adapter.legacyOpsProfile ? legacyOps : emptyOpsConfig(),
     );
   }
-  return { active, ...profiles };
+  return profiles;
 }
 
-export function activeCliProfile(config: Pick<Config, "cli">): CliProfileSettings {
-  return config.cli[config.cli.active];
+/** Resolve a host-scoped profile. Host is required; there is no configured default CLI. */
+export function cliProfileForHost(config: Pick<Config, "cli">, host: CliId): CliProfileSettings {
+  return config.cli[host];
 }
 
-/**
- * Resolve a host-scoped profile.  `cli.active` is intentionally only the
- * deprecated default for callers that have no host context; an explicit host
- * always wins and is never redirected through that field.
- */
-export function cliProfileForHost(config: Pick<Config, "cli">, host?: CliId): CliProfileSettings {
-  return config.cli[host || config.cli.active];
+export function resolveCliHost(host: string): CliId {
+  const value = String(host || "").trim().toLowerCase();
+  if (!(CLI_IDS as readonly string[]).includes(value)) {
+    throw new Error(`invalid host: ${host || "<empty>"} (expected ${CLI_IDS.join("|")})`);
+  }
+  return value as CliId;
 }
 
-export function resolveCliHost(config: Pick<Config, "cli">, host?: string | null): CliId {
-  const value = String(host || config.cli.active).trim().toLowerCase();
-  return (CLI_IDS as readonly string[]).includes(value) ? value as CliId : config.cli.active;
-}
-
-export function configuredSubagentModels(config: Pick<Config, "cli">): string[] {
-  const profile = activeCliProfile(config);
-  return profile.enabled ? [...profile.subagent_models] : [];
-}
-
-export function configuredSubagentModelsForHost(config: Pick<Config, "cli">, host?: CliId): string[] {
+export function configuredSubagentModelsForHost(config: Pick<Config, "cli">, host: CliId): string[] {
   const profile = cliProfileForHost(config, host);
   return profile.enabled ? [...profile.subagent_models] : [];
 }
 
-export function enabledForHost(config: Pick<Config, "cli">, host?: CliId): boolean {
+export function enabledForHost(config: Pick<Config, "cli">, host: CliId): boolean {
   return cliProfileForHost(config, host).enabled;
 }
 
@@ -192,10 +176,7 @@ function serializeConfig(cfg: Config): UnknownRecord {
       max_depth: cfg.director.max_depth,
       ...(cfg.director.runner ? { runner: cfg.director.runner } : {}),
     },
-    cli: {
-      active: cfg.cli.active,
-      ...profiles,
-    },
+    cli: profiles,
     ops: {
       runner: {
         actions: cfg.ops.runner.actions,
@@ -211,9 +192,6 @@ export function normalizeConfig(raw: unknown): Config {
   const source = isUnknownRecord(raw) ? raw : {};
   const ops = normalizeOpsConfig(source.ops);
   const cli = normalizeCli(source.cli, ops);
-  const active = cli[cli.active];
-  ops.runner.route = active.enabled ? active.runner : "";
-  ops.longctx.route = active.enabled ? active.longctx : "";
   return {
     director: normalizeDirector(source.director),
     cli,

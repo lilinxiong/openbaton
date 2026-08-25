@@ -136,7 +136,7 @@ describe("Codex init and update", () => {
       }
 
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "codex");
+      assert.equal(Object.hasOwn(config.cli, "active"), false);
       const emptyProfile = {
         enabled: false,
         runner: "",
@@ -149,6 +149,7 @@ describe("Codex init and update", () => {
       assert.deepEqual(config.cli.claude, emptyProfile);
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((raw.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
@@ -191,15 +192,19 @@ describe("Codex init and update", () => {
       assert.equal(selects.length, 0);
       assert.equal(multiSelects.length, 0);
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "grok");
-      assert.equal(config.director.max_concurrent, 8);
+      assert.equal(config.cli.grok.enabled, true);
+      assert.equal(Object.hasOwn(config.cli, "active"), false);
+      assert.equal(config.director.max_concurrent, 4);
       assert.deepEqual(config.cli.grok, {
         enabled: true,
         runner: "",
         longctx: "",
         subagent_models: ["grok-4.5"],
       });
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
       assert.match(chunks.join(""), /cli: grok/);
+      assert.doesNotMatch(chunks.join(""), /\bactive:/);
     });
   });
 
@@ -289,67 +294,87 @@ describe("Codex init and update", () => {
     });
   });
 
-  it("writes Claude Code's host concurrent cap for a non-interactive --cli claude init", async () => {
+  it("enables Claude Code for a non-interactive --cli claude init without writing active", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-cap-"));
       const env = fakeEnv(home);
       await initProject(cwd, { env, cli: "claude" });
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "claude");
       assert.equal(config.cli.claude.enabled, true);
-      assert.equal(config.director.max_concurrent, 20);
+      assert.equal(Object.hasOwn(config.cli, "active"), false);
+      assert.equal(config.director.max_concurrent, 4);
       // Opting one host in must not enable another.
       assert.equal(config.cli.codex.enabled, false);
       assert.equal(config.cli.grok.enabled, false);
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
     });
   });
 
-  it("honors CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS when initializing Claude Code", async () => {
+  it("keeps the template director cap when CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS is set during init", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-env-"));
       const env = { ...fakeEnv(home), CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "7" };
       await initProject(cwd, { env, cli: "claude" });
-      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 7);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.claude.enabled, true);
+      assert.equal(config.director.max_concurrent, 4);
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
     });
   });
 
-  it("writes Grok's host concurrent cap when --cli grok is selected", async () => {
+  it("enables Grok for --cli grok without writing active or rewriting the director cap", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-"));
       const env = fakeEnv(home);
       await initProject(cwd, { env, cli: "grok" });
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "grok");
-      assert.equal(config.director.max_concurrent, 8);
+      assert.equal(config.cli.grok.enabled, true);
+      assert.equal(Object.hasOwn(config.cli, "active"), false);
+      assert.equal(config.director.max_concurrent, 4);
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
     });
   });
 
-  it("honors GROK_MAX_CONCURRENT_SUBAGENTS when initializing Grok", async () => {
+  it("keeps the template director cap when GROK_MAX_CONCURRENT_SUBAGENTS is set during init", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-cap-"));
       const env = { ...fakeEnv(home), GROK_MAX_CONCURRENT_SUBAGENTS: "6" };
       await initProject(cwd, { env, cli: "grok" });
-      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 6);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.grok.enabled, true);
+      assert.equal(config.director.max_concurrent, 4);
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
     });
   });
 
-  it("writes Cursor's host concurrent cap when --cli cursor is selected", async () => {
+  it("enables Cursor for --cli cursor without writing active", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-cursor-"));
       const env = fakeEnv(home);
       await initProject(cwd, { env, cli: "cursor" });
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "cursor");
+      assert.equal(config.cli.cursor.enabled, true);
+      assert.equal(Object.hasOwn(config.cli, "active"), false);
       assert.equal(config.director.max_concurrent, 4);
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
     });
   });
 
-  it("honors CURSOR_MAX_CONCURRENT_SUBAGENTS when initializing Cursor", async () => {
+  it("keeps the template director cap when CURSOR_MAX_CONCURRENT_SUBAGENTS is set during init", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-cursor-cap-"));
       const env = { ...fakeEnv(home), CURSOR_MAX_CONCURRENT_SUBAGENTS: "6" };
       await initProject(cwd, { env, cli: "cursor" });
-      assert.equal(loadConfig(cwd, { env }).director.max_concurrent, 6);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.cursor.enabled, true);
+      assert.equal(config.director.max_concurrent, 4);
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
     });
   });
 

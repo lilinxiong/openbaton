@@ -69,9 +69,6 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
 
 选择 Grok（`baton init --cli grok` 或 `baton config --cli grok`）会把 Grok 的 host 上限 8 写入 max_concurrent；若设置了 GROK_MAX_CONCURRENT_SUBAGENTS 则用该值。
 
-    [cli]
-    active = "codex"
-
     [cli.codex]
     enabled = true
     runner = "gpt-5.4-mini"

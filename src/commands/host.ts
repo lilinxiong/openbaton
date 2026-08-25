@@ -1,5 +1,5 @@
 import type { WritableLike } from "../types.js";
-import { detectInvokingHost, detectInvokingHosts, resolveRuntimeHost } from "../lib/hosts.js";
+import { detectInvokingHosts, parseHostId, resolveRuntimeHost, type HostId } from "../lib/hosts.js";
 
 interface HostCommandOptions {
   cwd: string;
@@ -31,19 +31,36 @@ export function runHost(args: string[], { cwd, stdout, env = process.env }: Host
 
   if (sub !== "detect") throw new Error("usage: baton host detect [--json]");
 
-  const detected = detectInvokingHost(env);
   const matches = detectInvokingHosts(env);
-  const resolved = resolveRuntimeHost({ cwd, env });
+  const fromEnv = String(env.BATON_HOST || "").trim();
+  const invoking = fromEnv
+    ? parseHostId(fromEnv)
+    : matches.length === 1
+      ? matches[0]
+      : null;
+
+  let resolved: HostId | null = null;
+  let source: "baton_host_env" | "runtime_signal" | null = null;
+  try {
+    resolved = resolveRuntimeHost({ cwd, env });
+    source = fromEnv ? "baton_host_env" : "runtime_signal";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.startsWith("HOST_REQUIRED")) throw error;
+  }
+
   const payload = {
-    invoking: detected,
+    invoking,
     matches,
     resolved,
-    source: detected
-      ? (String(env.BATON_HOST || "").trim() ? "baton_host_env" : "runtime_signal")
-      : (String(env.BATON_HOST || "").trim() ? "baton_host_env" : "legacy_cli_active"),
+    source,
   };
 
   if (json) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
-  else stdout.write(`invoking: ${payload.invoking || "(none)"}\nresolved: ${payload.resolved} (${payload.source})\n`);
+  else {
+    const resolvedLabel = payload.resolved || "(none)";
+    const sourceLabel = payload.source ? ` (${payload.source})` : "";
+    stdout.write(`invoking: ${payload.invoking || "(none)"}\nresolved: ${resolvedLabel}${sourceLabel}\n`);
+  }
   return 0;
 }

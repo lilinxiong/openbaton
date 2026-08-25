@@ -18,10 +18,10 @@ Same table on every host. Do not invent a host-specific split.
 ## Model contract
 
 - Cursor is the invoking host. For every runtime command that resolves a
-  profile or model, pass `--host cursor`; `cli.active` is only the deprecated
-  default for old unqualified commands. A disabled `cli.cursor` profile fails
-  closed and never falls back to Codex or Grok. Cursor does not claim Codex hook
-  protection.
+  profile or model, pass `--host cursor`. Consult only `cli.cursor.enabled`;
+  never another profile. A disabled or missing `cli.cursor` profile fails closed
+  and never falls back to Codex, Grok, or any other CLI. Cursor does not claim
+  Codex hook protection.
 - baton config selects the CLI first. For Cursor, obtain exactly the picker-visible models from `cursor-agent models`. Official cursor-agent prints a text listing (`Available models` plus `id - display` lines). Parse those listed ids only; login and prose lines are not models. JSON stdout is accepted if cursor-agent emits it.
 - Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.cursor] in the user-global config.
 - runner and longctx are labels only. They do not imply context-window or other capability support.

@@ -48,7 +48,7 @@ Implement and test the target module before production registration when practic
 - Exclude hidden models only according to the target's own visibility semantics.
 - Preserve supported reasoning efforts, default effort, modalities, speed/service tiers, and default markers when the target exposes them. Missing optional metadata is empty or null, not guessed.
 - Each `cli.<id>` profile has its own `enabled`, `runner`, `longctx`, and `subagent_models` values.
-- `cli.active` is a deprecated default for commands without explicit host context, not a global execution switch.
+- There is no global default CLI and no `cli.active` field. Host resolution requires `--host`, `BATON_HOST`, or a unique runtime invoking-host signal.
 - Explicit host resolution never falls through to another enabled profile.
 - Runner and longctx are user routing labels, not capability claims, and configured labels belong in the target allowlist.
 - Dispatch validates the exact selected model and effort against the captured target catalog. A rejected execution remains a rejected exact attempt.

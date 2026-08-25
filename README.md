@@ -69,9 +69,6 @@ The user-global ~/.baton/config.toml has one profile per CLI:
 
 Selecting Grok (`baton init --cli grok` or `baton config --cli grok`) writes Grok's host cap of 8 into max_concurrent, or GROK_MAX_CONCURRENT_SUBAGENTS when set.
 
-    [cli]
-    active = "codex"
-
     [cli.codex]
     enabled = true
     runner = "gpt-5.4-mini"

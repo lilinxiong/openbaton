@@ -25,7 +25,7 @@ baton cards
 
 `baton config` must enable the invoking CLI profile, assign optional `runner` and `longctx` labels, and choose the models subagents may call. The catalog shown by the command comes directly from that CLI's own model source; Baton does not obtain or augment it from OpenCodex. `runner` and `longctx` are labels only and do not assert model context-window capabilities.
 
-When running from Codex, configure `[cli.codex]`. From Cursor, configure `[cli.cursor]`. From Grok, configure `[cli.grok]`. Verification resolves the invoking host dynamically from runtime signals, `BATON_HOST`, or `--host`; it does not assume `cli.active`.
+When running from Codex, configure `[cli.codex]`. From Cursor, configure `[cli.cursor]`. From Grok, configure `[cli.grok]`. Verification resolves the invoking host dynamically from runtime signals, `BATON_HOST`, or `--host`; there is no configured default CLI.
 
 `bun link` is required only when testing this source checkout. A normally installed package already provides `baton` on `PATH`.
 

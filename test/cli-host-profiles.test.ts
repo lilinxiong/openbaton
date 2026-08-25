@@ -1,0 +1,243 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { run } from "../src/cli.js";
+import { runConfig } from "../src/commands/config.js";
+import {
+  cliProfileForHost,
+  configuredSubagentModelsForHost,
+  effectiveMaxConcurrentForHost,
+  loadConfig,
+  saveConfig,
+} from "../src/lib/config.js";
+import { resolveRuntimeHost } from "../src/lib/hosts.js";
+import { configPath } from "../src/lib/paths.js";
+import { parseToml } from "../src/lib/toml.js";
+import type { CliModel, CliModelCatalog } from "../src/lib/cli-models.js";
+import { withHome, fakeEnv } from "./home.js";
+
+function capture() {
+  const chunks: string[] = [];
+  return {
+    write(value: unknown) { chunks.push(String(value)); },
+    text() { return chunks.join(""); },
+  };
+}
+
+function model(id: string, displayName: string, description: string): CliModel {
+  return {
+    id,
+    model: id,
+    display_name: displayName,
+    description,
+    hidden: false,
+    reasoning_efforts: [{ id: "low", description: "" }, { id: "medium", description: "" }],
+    default_reasoning_effort: "medium",
+    input_modalities: ["text"],
+    additional_speed_tiers: [],
+    service_tiers: [],
+    default_service_tier: null,
+    is_default: false,
+  };
+}
+
+const CODEX_CATALOG: CliModelCatalog = {
+  cli: "codex",
+  version: "codex-cli test",
+  models: [
+    model("gpt-5.4-mini", "5.4 Mini", "Small"),
+    model("gpt-5.5", "5.5", "General"),
+    model("gpt-5.6-luna", "5.6 Luna", "Fast"),
+  ],
+};
+
+const GROK_CATALOG: CliModelCatalog = {
+  cli: "grok",
+  version: "grok 1.0.8",
+  models: [
+    model("grok-4.5", "Grok 4.5", "Fast"),
+    model("grok-4.6", "Grok 4.6", "Flagship"),
+  ],
+};
+
+describe("cli host profiles without active", () => {
+  it("ignores a legacy active key on read and omits it on the next save", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-legacy-active-"));
+      const env = fakeEnv(home);
+      const file = configPath(cwd, { env });
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, [
+        "[director]",
+        "max_concurrent = 4",
+        "max_depth = 1",
+        "",
+        "[cli]",
+        'active = "codex"',
+        "",
+        "[cli.codex]",
+        "enabled = true",
+        'runner = "gpt-5.4-mini"',
+        'longctx = "gpt-5.5"',
+        'subagent_models = ["gpt-5.4-mini", "gpt-5.5"]',
+        "",
+        "[cli.grok]",
+        "enabled = true",
+        'runner = "grok-4.5"',
+        'longctx = ""',
+        'subagent_models = ["grok-4.5"]',
+      ].join("\n"), "utf8");
+
+      const loaded = loadConfig(cwd, { env });
+      assert.equal(Object.hasOwn(loaded.cli, "active"), false);
+      assert.equal(loaded.cli.codex.enabled, true);
+      assert.equal(loaded.cli.grok.enabled, true);
+
+      assert.throws(
+        () => resolveRuntimeHost({ cwd, env }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /HOST_REQUIRED/);
+          assert.match(error.message, /--host/);
+          assert.match(error.message, /BATON_HOST/);
+          return true;
+        },
+      );
+
+      saveConfig(cwd, loaded, { env });
+      const text = fs.readFileSync(file, "utf8");
+      assert.doesNotMatch(text, /^\s*active\s*=/m);
+      assert.doesNotMatch(text, /\[cli\]\s*$/m);
+      const parsed = parseToml(text);
+      assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
+    });
+  });
+
+  it("fails unqualified runtime commands with HOST_REQUIRED naming --host and BATON_HOST", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-required-cli-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init", "--cli", "grok"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+
+      for (const args of [["status"], ["models", "status"], ["spawn", "implement the parser"]] as const) {
+        const out = capture();
+        const code = await run([...args], { cwd, env, stdout: out, stderr: out });
+        assert.equal(code, 1, out.text());
+        assert.match(out.text(), /HOST_REQUIRED/);
+        assert.match(out.text(), /--host/);
+        assert.match(out.text(), /BATON_HOST/);
+      }
+    });
+  });
+
+  it("still resolves a unique runtime invoking-host signal", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-unique-signal-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init", "--cli", "codex"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(
+        resolveRuntimeHost({ cwd, env: { ...env, CURSOR_AGENT: "1" } }),
+        "cursor",
+      );
+    });
+  });
+
+  it("does not let a disabled host borrow another enabled profile", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-disabled-borrow-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await runConfig([
+        "--cli", "codex",
+        "--runner", "gpt-5.4-mini",
+        "--longctx", "gpt-5.5",
+        "--subagent-model", "gpt-5.6-luna",
+        "--enable",
+      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CODEX_CATALOG) }), 0);
+      assert.equal(await runConfig([
+        "--cli", "grok",
+        "--runner", "grok-4.5",
+        "--longctx", "-",
+        "--subagent-model", "grok-4.5",
+        "--enable",
+      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(GROK_CATALOG) }), 0);
+
+      const config = loadConfig(cwd, { env });
+      config.cli.codex.enabled = false;
+      saveConfig(cwd, config, { env });
+
+      const disabled = loadConfig(cwd, { env });
+      assert.equal(disabled.cli.codex.enabled, false);
+      assert.equal(disabled.cli.grok.enabled, true);
+      assert.deepEqual(configuredSubagentModelsForHost(disabled, "codex"), []);
+      assert.deepEqual(cliProfileForHost(disabled, "codex").subagent_models, [
+        "gpt-5.6-luna",
+        "gpt-5.4-mini",
+        "gpt-5.5",
+      ]);
+      assert.equal(cliProfileForHost(disabled, "codex").runner, "gpt-5.4-mini");
+      assert.notEqual(cliProfileForHost(disabled, "codex").runner, cliProfileForHost(disabled, "grok").runner);
+
+      const out = capture();
+      assert.equal(await run(["spawn", "implement the Codex unit", "--host", "codex", "--json"], {
+        cwd, env, stdout: out, stderr: out,
+      }), 1, out.text());
+      assert.match(out.text(), /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i);
+      assert.doesNotMatch(out.text(), /grok-4\.5/);
+    });
+  });
+
+  it("keeps Codex caps and labels when configuring Grok", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-leaves-codex-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await runConfig([
+        "--cli", "codex",
+        "--runner", "gpt-5.4-mini",
+        "--longctx", "gpt-5.5",
+        "--subagent-model", "gpt-5.6-luna",
+        "--enable",
+      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CODEX_CATALOG) }), 0);
+
+      const before = loadConfig(cwd, { env });
+      assert.equal(before.director.max_concurrent, 4);
+      assert.deepEqual(before.cli.codex, {
+        enabled: true,
+        runner: "gpt-5.4-mini",
+        longctx: "gpt-5.5",
+        subagent_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.5"],
+      });
+
+      const out = capture();
+      assert.equal(await runConfig([
+        "--cli", "grok",
+        "--runner", "grok-4.5",
+        "--longctx", "-",
+        "--subagent-model", "grok-4.6",
+        "--enable",
+      ], { cwd, env, stdout: out, discover: async () => structuredClone(GROK_CATALOG) }), 0, out.text());
+
+      const after = loadConfig(cwd, { env });
+      assert.deepEqual(after.cli.codex, before.cli.codex);
+      assert.equal(after.cli.grok.enabled, true);
+      assert.equal(after.cli.grok.runner, "grok-4.5");
+      assert.equal(after.director.max_concurrent, 4);
+      assert.notEqual(after.director.max_concurrent, 8);
+      assert.equal(effectiveMaxConcurrentForHost(after, "codex", env), 4);
+      assert.equal(effectiveMaxConcurrentForHost(after, "grok", env), 8);
+
+      const status = capture();
+      assert.equal(await run(["status", "--host", "codex"], { cwd, env, stdout: status, stderr: status }), 0, status.text());
+      assert.match(status.text(), /cli: codex \(enabled\)/);
+      assert.match(status.text(), /max_concurrent: 4/);
+      assert.doesNotMatch(status.text(), /max_concurrent: 8/);
+
+      const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
+      assert.equal((parsed.director as { max_concurrent: number }).max_concurrent, 4);
+    });
+  });
+});

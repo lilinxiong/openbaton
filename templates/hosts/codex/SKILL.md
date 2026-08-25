@@ -25,9 +25,9 @@ Same table on every host. Do not invent a host-specific split.
 ## Model contract
 
 - Codex is the invoking host. For every runtime command that resolves a
-  profile or model, pass `--host codex`; `cli.active` is only the deprecated
-  default for old unqualified commands. A disabled `cli.codex` profile fails
-  closed and never falls back to Grok.
+  profile or model, pass `--host codex`. Consult only `cli.codex.enabled`; never
+  another profile. A disabled or missing `cli.codex` profile fails closed and
+  never falls back to Grok or any other CLI.
 - baton config selects the CLI first. For Codex, obtain exactly the picker-visible models from app-server model/list with hidden models excluded.
 - Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.codex] in the user-global config.
 - runner and longctx are labels only. They do not imply context-window or other capability support.

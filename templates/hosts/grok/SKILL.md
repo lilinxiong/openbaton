@@ -24,9 +24,9 @@ Same table on every host. Do not invent a host-specific split.
 ## Model contract
 
 - Grok is the invoking host. For every runtime command that resolves a
-  profile or model, pass `--host grok`; `cli.active` is only the deprecated
-  default for old unqualified commands. A disabled `cli.grok` profile fails
-  closed and never falls back to Codex.
+  profile or model, pass `--host grok`. Consult only `cli.grok.enabled`; never
+  another profile. A disabled or missing `cli.grok` profile fails closed and
+  never falls back to Codex or any other CLI.
 - baton config selects the CLI first. For Grok, obtain exactly the picker-visible models from `grok models`. Official grok prints a text listing (`Available models:` plus `*`/`-` ids). Parse those listed ids only; login and prose lines are not models. JSON stdout is accepted if Grok emits it. Custom models come from ~/.grok/config.toml and appear only if Grok lists them.
 - Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.grok] in the user-global config.
 - runner and longctx are labels only. They do not imply context-window or other capability support.

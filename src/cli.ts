@@ -16,7 +16,7 @@ import {
 import { cliProfileForHost, configuredSubagentModelsForHost, effectiveMaxConcurrentForHost, loadConfig } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
-import { parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
+import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
 import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
 import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId, planApplyWaves } from "./lib/apply-waves.js";
@@ -60,15 +60,14 @@ type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
 export const VERSION = "0.2.0";
 
-function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, host?: ReturnType<typeof parseHostId>): ModelCard[] {
+function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, host: ReturnType<typeof parseHostId>): ModelCard[] {
   const cfg = loadConfig(cwd, { env });
   const profile = cliProfileForHost(cfg, host);
   const allowed = new Set(configuredSubagentModelsForHost(cfg, host));
   if (!allowed.size) return [];
-  const resolved = host || cfg.cli.active;
-  const snapshot = readRouteSnapshot(cwd, { host: resolved, env });
-  if (!snapshot || snapshot.cli !== resolved || !profile.enabled) return [];
-  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd), { host: resolved, env })
+  const snapshot = readRouteSnapshot(cwd, { host, env });
+  if (!snapshot || snapshot.cli !== host || !profile.enabled) return [];
+  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd), { host, env })
     .map((candidate) => candidate.card)
     .filter((card) => card.route_id && allowed.has(card.route_id));
 }
@@ -177,7 +176,7 @@ export async function run(argv: string[], {
         return runDispatch(args, { cwd, stdout, env });
       case "routes":
       case "models":
-        return await runRoutes(args, { cwd, stdout, env, discover });
+        return await runRoutes(args, { cwd, stdout, env, discover, host: runtimeHost(parseFlags(args), cwd, env) });
       case "host":
         return runHost(args, { cwd, stdout, env });
       case "conversation":
@@ -212,12 +211,15 @@ async function cmdInit(
   if (cliFlag) clis = [parseCliId(cliFlag)];
   else if (prompt || isInteractiveIo(stdin, stdout)) {
     const ask = prompt || createTerminalPrompt({ stdin, stdout, env });
-    let initial: CliId = CLI_IDS[0];
-    try { initial = loadConfig(cwd, { env }).cli.active; } catch { /* first init */ }
+    let initial: CliId[] = [];
+    try {
+      const detected = detectInvokingHost(env);
+      if (detected) initial = [detected];
+    } catch { /* ambiguous runtime hosts: no preselection */ }
     clis = await ask.multiSelect({
       message: "Select CLI",
       choices: cliPromptChoices(),
-      initial: [initial],
+      initial,
       required: true,
     });
     if (!clis.length) throw new Error("select at least one CLI");
@@ -227,7 +229,7 @@ async function cmdInit(
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
   if (clis?.length) {
-    stdout.write(`  cli: ${clis.join(", ")} (max_concurrent follows ${clis[0]})\n`);
+    stdout.write(`  cli: ${clis.join(", ")}\n`);
   }
   for (const item of result.guards) {
     const label = item.host === "claude" ? "Claude Code" : item.host === "grok" ? "Grok" : "Codex";
@@ -669,14 +671,14 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}\n`);
   stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
   const cliProfile = cliProfileForHost(cfg, host);
-  stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})${host !== cfg.cli.active ? ` [legacy default ${cfg.cli.active}]` : ""}\n`);
+  stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
   stdout.write(`  max_concurrent: ${effectiveMaxConcurrentForHost(cfg, host, env)} (queue beyond this; never refuse)\n`);
   const snapshot = readRouteSnapshot(cwd, { host, env });
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
   stdout.write(`  CLI models: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton config)"}\n`);
   const selections = listSelectionProposals(cwd).filter((item) => !item.host || item.host === host);
   stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
-  const spawns = listSpawns(cwd).filter((s) => (s.target_host || s.dispatch_host || s.host || cfg.cli.active) === host);
+  const spawns = listSpawns(cwd).filter((s) => (s.target_host || s.dispatch_host || s.host) === host);
   const running = spawns.filter((s) => s.status === "running").length;
   const queued = spawns.filter((s) => s.status === "queued").length;
   const dispatching = spawns.filter((s) => s.status === "dispatching").length;

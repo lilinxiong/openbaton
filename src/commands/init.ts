@@ -3,7 +3,7 @@ import path from "node:path";
 import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
 import { installHostSkills, type HostId } from "../lib/hosts.js";
 import type { CliId } from "../lib/cli-models.js";
-import { hostMaxConcurrent, loadConfig, saveConfig } from "../lib/config.js";
+import { loadConfig, saveConfig } from "../lib/config.js";
 import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
 import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
 import { installGrokHooks, type GrokHooksInstallResult } from "../lib/grok-hooks.js";
@@ -73,11 +73,9 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
 
   if (cli) {
     const cfg = loadConfig(cwd, { env });
-    cfg.cli.active = cli;
     // Initializing a named host opts that profile in without touching any
     // other profile. Its model/route allowlist remains user-owned.
     cfg.cli[cli].enabled = true;
-    cfg.director.max_concurrent = hostMaxConcurrent(cli, env);
     saveConfig(cwd, cfg, { env });
   }
 

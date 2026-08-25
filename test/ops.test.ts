@@ -138,7 +138,7 @@ describe("per-CLI configuration and ops labels", () => {
       assert.match(out.text(), /no model confirmation UI/);
 
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "codex");
+      assert.equal(config.cli.codex.enabled, true);
       assert.deepEqual(config.cli.codex, {
         enabled: true,
         runner: "gpt-5.4-mini",
@@ -146,9 +146,10 @@ describe("per-CLI configuration and ops labels", () => {
         subagent_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.5"],
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
       assert.equal((parsed.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((parsed.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
-      assert.equal(readRouteSnapshot(cwd)?.routes.length, 7);
+      assert.equal(readRouteSnapshot(cwd, { host: "codex" })?.routes.length, 7);
     });
   });
 
@@ -198,10 +199,12 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(multiSelects.length, 0);
       assert.match(out.text(), /── codex \(1\/2\) ──/);
       assert.match(out.text(), /── grok \(2\/2\) ──/);
-      assert.match(out.text(), /active: codex/);
+      assert.match(out.text(), /cli: codex/);
+      assert.doesNotMatch(out.text(), /\bactive:/);
 
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "codex");
+      assert.equal(config.cli.codex.enabled, true);
+      assert.equal(config.cli.grok.enabled, true);
       assert.equal(config.director.max_concurrent, 4);
       assert.deepEqual(config.cli.codex, {
         enabled: true,
@@ -215,8 +218,10 @@ describe("per-CLI configuration and ops labels", () => {
         longctx: "",
         subagent_models: ["grok-4.5", "grok-4.6"],
       });
-      assert.equal(readRouteSnapshot(cwd)?.cli, "codex");
-      assert.equal(readRouteSnapshot(cwd)?.routes.length, 7);
+      const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
+      assert.equal(readRouteSnapshot(cwd, { host: "codex" })?.cli, "codex");
+      assert.equal(readRouteSnapshot(cwd, { host: "codex" })?.routes.length, 7);
     });
   });
 
@@ -256,7 +261,7 @@ describe("per-CLI configuration and ops labels", () => {
     });
   });
 
-  it("writes Grok's host concurrent cap when the Grok CLI is selected", async () => {
+  it("enables the Grok profile without writing a global active CLI", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-grok-cap-"));
       const env = fakeEnv(home);
@@ -275,10 +280,13 @@ describe("per-CLI configuration and ops labels", () => {
         "--subagent-model", "grok-4.5",
         "--enable",
       ], { cwd, env, stdout: out, discover: async () => structuredClone(grokCatalog) }), 0);
-      assert.match(out.text(), /max_concurrent: 8/);
+      assert.match(out.text(), /cli: grok \(enabled\)/);
+      assert.doesNotMatch(out.text(), /\bactive:/);
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli.active, "grok");
-      assert.equal(config.director.max_concurrent, 8);
+      assert.equal(config.cli.grok.enabled, true);
+      assert.equal(config.director.max_concurrent, 4);
+      const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
     });
   });
 
@@ -295,14 +303,14 @@ describe("per-CLI configuration and ops labels", () => {
         "--enable",
       ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CATALOG) }), 0);
       const available = cards(cwd);
-      const runner = listOpsRouteChoices(cwd, "runner", available).map((choice) => choice.route_id).sort();
-      const longctx = listOpsRouteChoices(cwd, "longctx", available).map((choice) => choice.route_id).sort();
+      const runner = listOpsRouteChoices(cwd, "runner", available, { env, host: "codex" }).map((choice) => choice.route_id).sort();
+      const longctx = listOpsRouteChoices(cwd, "longctx", available, { env, host: "codex" }).map((choice) => choice.route_id).sort();
       assert.deepEqual(runner, ["gpt-5.3-codex-spark", "gpt-5.4-mini", "gpt-5.6-luna"]);
       assert.deepEqual(longctx, runner);
-      assert.ok(listOpsRouteChoices(cwd, "longctx", available).every((choice) => choice.context_window === null));
+      assert.ok(listOpsRouteChoices(cwd, "longctx", available, { env, host: "codex" }).every((choice) => choice.context_window === null));
 
-      const testRoute = resolveOpsDispatch(cwd, "bun test", available, { env });
-      const searchRoute = resolveOpsDispatch(cwd, "rg parser", available, { env });
+      const testRoute = resolveOpsDispatch(cwd, "bun test", available, { env, host: "codex" });
+      const searchRoute = resolveOpsDispatch(cwd, "rg parser", available, { env, host: "codex" });
       assert.equal(testRoute.kind, "dispatch");
       assert.equal(testRoute.kind === "dispatch" ? testRoute.route : null, "gpt-5.4-mini");
       assert.equal(searchRoute.kind, "dispatch");
@@ -318,13 +326,13 @@ describe("per-CLI configuration and ops labels", () => {
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.codex.runner, "");
       assert.equal(config.cli.codex.longctx, "");
-      const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), { env });
+      const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), { env, host: "codex" });
       assert.equal(testOps.kind, "director");
-      const commitOps = resolveOpsDispatch(cwd, "git commit staged changes", cards(cwd), { env });
+      const commitOps = resolveOpsDispatch(cwd, "git commit staged changes", cards(cwd), { env, host: "codex" });
       assert.ok(commitOps.kind === "director" || commitOps.kind === "empty-index");
-      const summarizeOps = resolveOpsDispatch(cwd, "write a commit message from staged files", cards(cwd), { env });
+      const summarizeOps = resolveOpsDispatch(cwd, "write a commit message from staged files", cards(cwd), { env, host: "codex" });
       assert.equal(summarizeOps.kind, "director");
-      const searchOps = resolveOpsDispatch(cwd, "rg parser", cards(cwd), { env });
+      const searchOps = resolveOpsDispatch(cwd, "rg parser", cards(cwd), { env, host: "codex" });
       assert.equal(searchOps.kind, "director");
 
       for (const text of [
@@ -383,8 +391,8 @@ describe("per-CLI configuration and ops labels", () => {
         "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
         "--subagent-model", "all", "--disable",
       ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CATALOG) }), 0);
-      assert.deepEqual(listOpsRouteChoices(cwd, "runner", cards(cwd)), []);
-      assert.equal(resolveOpsDispatch(cwd, "bun test", cards(cwd), { env }).kind, "director");
+      assert.deepEqual(listOpsRouteChoices(cwd, "runner", cards(cwd), { env, host: "codex" }), []);
+      assert.equal(resolveOpsDispatch(cwd, "bun test", cards(cwd), { env, host: "codex" }).kind, "director");
     });
   });
 });

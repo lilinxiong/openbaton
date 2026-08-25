@@ -19,7 +19,6 @@ function project(): string {
   saveConfig(cwd, {
     director: { max_concurrent: 4, max_depth: 1 },
     cli: {
-      active: "grok",
       codex: { enabled: true, runner: "codex-model", longctx: "", subagent_models: ["codex-model"] },
       grok: { enabled: true, runner: "grok-model", longctx: "", subagent_models: ["grok-model"] },
       claude: { enabled: true, runner: "claude-model", longctx: "", subagent_models: ["claude-model"] },
@@ -66,10 +65,10 @@ function ticket(cwd: string, host: "codex" | "grok" | "claude", id = `spn-${host
 }
 
 describe("host-scoped profiles", () => {
-  it("keeps enabled Codex and Grok profiles independent of the legacy active default", () => {
+  it("keeps enabled Codex and Grok profiles independent without a global default CLI", () => {
     const cwd = project();
     const config = loadConfig(cwd);
-    assert.equal(config.cli.active, "grok");
+    assert.equal(Object.hasOwn(config.cli, "active"), false);
     assert.equal(cliProfileForHost(config, "codex").enabled, true);
     assert.deepEqual(cliProfileForHost(config, "codex").subagent_models, ["codex-model"]);
     assert.deepEqual(cliProfileForHost(config, "grok").subagent_models, ["grok-model"]);
@@ -112,6 +111,7 @@ describe("host-scoped profiles", () => {
       ops: { runner: { route: "legacy-runner" }, longctx: { route: "legacy-longctx" } },
       cli: { active: "codex" },
     });
+    assert.equal(Object.hasOwn(config.cli, "active"), false);
     assert.equal(config.cli.codex.runner, "legacy-runner");
     assert.equal(config.cli.codex.longctx, "legacy-longctx");
     assert.equal(config.cli.grok.runner, "");

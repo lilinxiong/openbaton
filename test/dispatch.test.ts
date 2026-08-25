@@ -17,13 +17,14 @@ import {
   reportAgentProgress,
   reserveNext,
 } from "../src/lib/dispatch.js";
+import { emptyConfig, saveConfig } from "../src/lib/config.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
 import { readRouteHealth } from "../src/lib/route-health.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { isolatedHome } from "./home.js";
 
-isolatedHome("baton-dispatch-home-");
+const TEST_HOME = isolatedHome("baton-dispatch-home-");
 
 const T0 = Date.parse("2026-08-19T00:00:00.000Z");
 
@@ -31,9 +32,23 @@ function at(offsetMs) {
   return new Date(T0 + offsetMs).toISOString();
 }
 
-function makeProject() {
+function ensureTestHome() {
+  process.env.HOME = TEST_HOME;
+}
+
+function makeProject(models = [{ id: "codex/default", namespaced: "codex/default", provider: "codex" }]) {
+  ensureTestHome();
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-"));
-  publishRouteSnapshot(cwd, { models: [{ id: "codex/default", namespaced: "codex/default", provider: "codex" }] });
+  const config = emptyConfig();
+  const routeIds = [...new Set(models.map((model) => model.namespaced || model.id).filter(Boolean))];
+  config.cli.codex = {
+    enabled: true,
+    runner: "",
+    longctx: "",
+    subagent_models: routeIds,
+  };
+  saveConfig(cwd, config);
+  publishRouteSnapshot(cwd, { models }, new Date(), { cli: "codex", host: "codex" });
   return cwd;
 }
 
@@ -58,6 +73,7 @@ function makeTicket(id, overrides = {}) {
     max_attempts: 3,
     agent_id: null,
     host: null,
+    target_host: "codex",
     error: null,
     conclusion: null,
     liveness: null,
@@ -69,16 +85,20 @@ function makeTicket(id, overrides = {}) {
 }
 
 function writeTicket(cwd, ticket) {
+  ensureTestHome();
+  const capturedHost = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host || null;
   if (ticket.selection === undefined) {
     ticket.selection = {
       proposal_id: "sel-test",
       approval_id: `approval-${ticket.id}`,
       approved_at: ticket.created_at,
       confirmed_by: "baton-recommendation",
-      catalog_fingerprint: readRouteSnapshot(cwd).fingerprint,
+      catalog_fingerprint: readRouteSnapshot(cwd, { host: capturedHost || undefined })?.fingerprint
+        || readRouteSnapshot(cwd).fingerprint,
       recommended_model_id: ticket.model_id,
       selected_model_id: ticket.model_id,
       changed_by_user: false,
+      ...(capturedHost ? { host: capturedHost } : {}),
     };
   }
   if (!ticket.receipt_id) {
@@ -88,6 +108,7 @@ function writeTicket(cwd, ticket) {
       issuedAt: ticket.created_at,
       maxAttempts: ticket.max_attempts,
       selection: ticket.selection,
+      host: capturedHost,
     });
     ticket.receipt_id = receipt.receipt_id;
     writeReceipt(cwd, receipt);
@@ -235,10 +256,10 @@ describe("reserveNext", () => {
   });
 
   it("fails closed when an approved reasoning effort disappears from the CLI snapshot", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-profile-"));
-    publishRouteSnapshot(cwd, { models: [{
+    const models = [{
       id: "codex/default", namespaced: "codex/default", provider: "codex", reasoningEfforts: ["high"],
-    }] });
+    }];
+    const cwd = makeProject(models);
     writeTicket(cwd, makeTicket("t-profile", {
       model_id: "codex/default@high",
       reasoning_effort: "high",
@@ -246,7 +267,7 @@ describe("reserveNext", () => {
 
     publishRouteSnapshot(cwd, { models: [{
       id: "codex/default", namespaced: "codex/default", provider: "codex", reasoningEfforts: [],
-    }] });
+    }] }, new Date(), { cli: "codex", host: "codex" });
 
     const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     assert.deepEqual(result.reserved, []);
@@ -255,10 +276,10 @@ describe("reserveNext", () => {
   });
 
   it("fails closed when an automatically selected service tier disappears", () => {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-tier-"));
-    publishRouteSnapshot(cwd, { models: [{
-      id: "gpt-5.6-sol", reasoningEfforts: ["high"], serviceTiers: [{ id: "priority" }],
-    }] });
+    const models = [{
+      id: "gpt-5.6-sol", namespaced: "gpt-5.6-sol", reasoningEfforts: ["high"], serviceTiers: [{ id: "priority" }],
+    }];
+    const cwd = makeProject(models);
     const ticket = makeTicket("t-tier", {
       model_id: "gpt-5.6-sol@high",
       route_id: "gpt-5.6-sol",
@@ -269,15 +290,16 @@ describe("reserveNext", () => {
         approval_id: "approval-t-tier",
         approved_at: at(0),
         confirmed_by: "baton-recommendation",
-        catalog_fingerprint: readRouteSnapshot(cwd).fingerprint,
+        catalog_fingerprint: readRouteSnapshot(cwd, { host: "codex" }).fingerprint,
         recommended_model_id: "gpt-5.6-sol@high",
         selected_model_id: "gpt-5.6-sol@high",
         service_tier: "priority",
         changed_by_user: false,
+        host: "codex",
       },
     });
     writeTicket(cwd, ticket);
-    publishRouteSnapshot(cwd, { models: [{ id: "gpt-5.6-sol", reasoningEfforts: ["high"] }] });
+    publishRouteSnapshot(cwd, { models: [{ id: "gpt-5.6-sol", namespaced: "gpt-5.6-sol", reasoningEfforts: ["high"] }] }, new Date(), { cli: "codex", host: "codex" });
 
     const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     assert.deepEqual(result.reserved, []);
@@ -286,12 +308,12 @@ describe("reserveNext", () => {
 
   it("does not hard-code family bans for CLI-returned models", () => {
     for (const [index, route] of ["gpt-5.5-extra", "gpt-5.6-sol", "cursor/gpt-5.6-terra"].entries()) {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-policy-"));
-      publishRouteSnapshot(cwd, { models: [{
+      const models = [{
         id: route.split("/").at(-1), namespaced: route,
         provider: route.includes("/") ? "cursor" : "openai",
         reasoningEfforts: ["high"],
-      }] });
+      }];
+      const cwd = makeProject(models);
       writeTicket(cwd, makeTicket(`t-forbidden-${index}`, { model_id: `${route}@high`, route_id: route, reasoning_effort: "high" }));
       const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
       assert.deepEqual(result.blocked, []);
@@ -300,9 +322,32 @@ describe("reserveNext", () => {
     }
   });
 
-  it("keeps a Codex ticket queued when a Grok dispatcher scans it and rejects unknown hosts", () => {
+  it("keeps a captured-host ticket queued on mismatch and rejects unknown hosts", () => {
     const cwd = makeProject();
-    seedQueued(cwd, 1);
+    const selection = {
+      proposal_id: "sel-test",
+      approval_id: "approval-t-0001",
+      approved_at: at(0),
+      confirmed_by: "baton-recommendation",
+      catalog_fingerprint: readRouteSnapshot(cwd).fingerprint,
+      recommended_model_id: "example-coder",
+      selected_model_id: "example-coder",
+      changed_by_user: false,
+      host: "codex",
+    };
+    const ticket = makeTicket("t-0001", { target_host: "codex", selection });
+    const receipt = buildReadOnlyReceipt({
+      ticketId: ticket.id,
+      card: { id: ticket.model_id, strengths: "", route_id: ticket.route_id || undefined },
+      issuedAt: ticket.created_at,
+      maxAttempts: ticket.max_attempts,
+      selection,
+      host: "codex",
+    });
+    ticket.receipt_id = receipt.receipt_id;
+    writeReceipt(cwd, receipt);
+    writeTicket(cwd, ticket);
+
     const reserved = reserveNext(cwd, { capacity: 1, host: "grok", now: at(10) });
     assert.equal(reserved.reserved.length, 0);
     assert.equal(reserved.blocked[0]?.code, "HOST_MISMATCH");
@@ -311,6 +356,27 @@ describe("reserveNext", () => {
       () => reserveNext(cwd, { capacity: 1, host: "not-a-registered-host", now: at(20) }),
       "INVALID_HOST",
     );
+  });
+
+  it("does not attribute hostless tickets or unkeyed dispatch state to a default CLI", () => {
+    const cwd = makeProject();
+    writeTicket(cwd, makeTicket("t-hostless", { target_host: null }));
+
+    const reserved = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    assert.deepEqual(reserved.reserved, []);
+    assert.equal(reserved.blocked[0]?.ticket_id, "t-hostless");
+    assert.equal(reserved.blocked[0]?.code, "HOST_REQUIRED");
+    assert.equal(readTicket(cwd, "t-hostless").status, "queued");
+    assert.equal(readTicket(cwd, "t-hostless").dispatch_host, undefined);
+
+    const stateFile = dispatchStatePath(cwd);
+    for (const file of [stateFile, dispatchStatePath(cwd, "codex"), dispatchStatePath(cwd, "grok")]) {
+      try { fs.unlinkSync(file); } catch { /* optional */ }
+    }
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ capacity: 7 }, null, 2) + "\n");
+    assert.equal(persistedCapacity(cwd, "codex"), null);
+    assert.equal(persistedCapacity(cwd, "grok"), null);
   });
 });
 

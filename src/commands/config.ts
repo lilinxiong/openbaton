@@ -7,6 +7,7 @@ import {
   type CliModelDiscovery,
 } from "../lib/cli-models.js";
 import { hostMaxConcurrent, loadConfig, saveConfig, type Config } from "../lib/config.js";
+import { detectInvokingHost } from "../lib/hosts.js";
 import {
   createTerminalPrompt,
   isInteractiveIo,
@@ -258,13 +259,22 @@ export async function runConfig(args: string[], {
   );
 
   const flaggedCli = lastFlag(args, "cli");
+  let initialClis: CliId[] = [];
+  if (!presetClis?.length && flaggedCli === undefined) {
+    try {
+      const detected = detectInvokingHost(env);
+      if (detected) initialClis = [detected];
+    } catch {
+      // Ambiguous runtime hosts: leave the picker unselected.
+    }
+  }
   const clis = presetClis?.length
     ? presetClis
     : flaggedCli === undefined
       ? await ask().multiSelect({
         message: "Select CLI",
         choices: cliPromptChoices(),
-        initial: [current.cli.active],
+        initial: initialClis,
         required: true,
       })
       : [parseCliChoice(flaggedCli)];
@@ -272,36 +282,22 @@ export async function runConfig(args: string[], {
 
   const single = clis.length === 1;
   const results: CliProfileResult[] = [];
-  let activeCatalog: CliModelCatalog | null = null;
   for (let index = 0; index < clis.length; index += 1) {
     const cli = clis[index];
     if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
     const catalog = await discover(cli, { cwd, env });
-    if (index === 0) activeCatalog = catalog;
     results.push(await configureCliProfile(cli, args, {
       cwd, stdout, env, current, catalog, ask, single,
     }));
   }
 
-  const active = clis[0];
-  // Keep `active` only as the backwards-compatible default for commands that
-  // do not provide --host. Explicit host callers resolve their own profile.
-  current.cli.active = active;
-  current.director.max_concurrent = hostMaxConcurrent(active, env);
-  const file = saveConfig(cwd, current, { env });
-  if (activeCatalog) {
-    publishRouteSnapshot(cwd, { models: activeCatalog.models }, new Date(), {
-      cli: active,
-      engineVersion: activeCatalog.version,
-      providerQuotas: [],
-      quotaRefreshError: null,
-    });
-  }
+  // Persist only the selected profiles; do not write a global active CLI or
+  // rewrite director.max_concurrent to the last configured host's cap.
+  const file = results[results.length - 1]?.config || saveConfig(cwd, current, { env });
 
   const payload = single
-    ? { ...results[0], max_concurrent: current.director.max_concurrent, config: file }
+    ? { ...results[0], config: file }
     : {
-      active,
       profiles: results,
       max_concurrent: current.director.max_concurrent,
       config: file,
@@ -310,7 +306,6 @@ export async function runConfig(args: string[], {
   else {
     stdout.write(`\nwrote ${file}\n`);
     for (const result of results) writeProfile(stdout, result);
-    if (!single) stdout.write(`  active: ${active}\n`);
     stdout.write(`  max_concurrent: ${current.director.max_concurrent}\n`);
     stdout.write("  later routing: automatic; no model confirmation UI\n");
   }

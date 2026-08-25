@@ -18,9 +18,9 @@ Same table on every host. Do not invent a host-specific split.
 ## Model contract
 
 - Claude Code is the invoking host. For every runtime command that resolves a
-  profile or model, pass `--host claude`; `cli.active` is only the deprecated
-  default for old unqualified commands. A disabled `cli.claude` profile fails
-  closed and never falls back to Codex or Grok.
+  profile or model, pass `--host claude`. Consult only `cli.claude.enabled`;
+  never another profile. A disabled or missing `cli.claude` profile fails closed
+  and never falls back to Codex, Grok, or any other CLI.
 - baton config selects the CLI first. For Claude Code, the catalog comes from the
   SDK control protocol: `claude -p --verbose --input-format stream-json
   --output-format stream-json` plus a `{"type":"control_request","request":{"subtype":"list_models"}}`

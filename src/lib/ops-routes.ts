@@ -79,10 +79,11 @@ export function listOpsRouteChoices(
 ): OpsRouteChoice[] {
   const snapshot = readRouteSnapshot(cwd, { host, env });
   let allowed = new Set<string>();
+  if (!host) return [];
   try {
     const config = loadConfig(cwd, { env });
     const cli = cliProfileForHost(config, host);
-    if (cli.enabled && snapshot?.cli === (host || config.cli.active)) allowed = new Set(cli.subagent_models);
+    if (cli.enabled && snapshot?.cli === host) allowed = new Set(cli.subagent_models);
   } catch (error) {
     if ((error as { code?: string }).code === "BATON_NOT_INITIALIZED") return [];
     throw error;

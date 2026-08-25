@@ -93,7 +93,7 @@ describe("CLI model catalog snapshot", () => {
       saveConfig(cwd, emptyConfig(), { env });
       const calls: string[] = [];
       const stdout = sink();
-      const code = await runRoutes(["refresh"], {
+      const code = await runRoutes(["refresh", "--host", "codex"], {
         cwd,
         env,
         stdout,

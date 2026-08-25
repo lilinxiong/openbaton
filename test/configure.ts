@@ -11,7 +11,6 @@ export function configureCli(
   { runner = "", longctx = "", enabled = true }: { runner?: string; longctx?: string; enabled?: boolean } = {},
 ): void {
   const config = fs.existsSync(configPath(cwd, { env })) ? loadConfig(cwd, { env }) : emptyConfig();
-  config.cli.active = cli;
   config.cli[cli] = {
     enabled,
     runner,

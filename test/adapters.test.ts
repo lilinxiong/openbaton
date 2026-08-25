@@ -56,7 +56,7 @@ describe("CLI adapter contract and registry", () => {
 
   it("derives one compatible config profile per registered adapter", () => {
     const empty = emptyConfig();
-    assert.deepEqual(Object.keys(empty.cli).sort(), ["active", "claude", "codex", "cursor", "grok"]);
+    assert.deepEqual(Object.keys(empty.cli).sort(), ["claude", "codex", "cursor", "grok"]);
     assert.deepEqual(empty.cli.codex, empty.cli.grok);
     assert.deepEqual(empty.cli.codex, empty.cli.cursor);
     assert.deepEqual(empty.cli.claude, empty.cli.grok);
@@ -71,7 +71,7 @@ describe("CLI adapter contract and registry", () => {
         grok: { enabled: true, runner: "grok-4.5", subagent_models: ["grok-4.5"] },
       },
     });
-    assert.equal(migrated.cli.active, "grok");
+    assert.equal(Object.hasOwn(migrated.cli, "active"), false);
     assert.equal(migrated.cli.grok.enabled, true);
     assert.equal(migrated.cli.grok.longctx, "");
     assert.equal(migrated.cli.codex.runner, "legacy-runner");
@@ -91,6 +91,7 @@ describe("CLI adapter contract and registry", () => {
         claude: { enabled: false, runner: "", longctx: "", subagent_models: [] },
       },
     });
+    assert.equal(Object.hasOwn(config.cli, "active"), false);
     // A disabled host must fail closed rather than borrow another profile.
     assert.deepEqual(configuredSubagentModelsForHost(config, "claude"), []);
     assert.equal(enabledForHost(config, "claude"), false);
@@ -104,6 +105,7 @@ describe("CLI adapter contract and registry", () => {
         claude: { enabled: true, runner: "claude-sonnet-5", longctx: "claude-opus-5[1m]", subagent_models: ["claude-sonnet-5", "claude-opus-5[1m]"] },
       },
     });
+    assert.equal(Object.hasOwn(enabled.cli, "active"), false);
     assert.deepEqual(configuredSubagentModelsForHost(enabled, "claude"), ["claude-sonnet-5", "claude-opus-5[1m]"]);
     // Enabling Claude must not alter another host's profile.
     assert.deepEqual(configuredSubagentModelsForHost(enabled, "codex"), ["gpt-5.4"]);

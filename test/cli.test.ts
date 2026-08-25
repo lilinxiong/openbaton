@@ -73,7 +73,7 @@ describe("CLI automatic model routing", () => {
       const env = fakeEnv(home);
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       const out = capture();
-      assert.equal(await run(["match", "implement a migration"], { cwd, env, stdout: out, stderr: out }), 1);
+      assert.equal(await run(["match", "implement a migration", "--host", "codex"], { cwd, env, stdout: out, stderr: out }), 1);
       assert.match(out.text(), /no automatic configured candidate|no enabled CLI subagent models|run baton config/i);
     });
   });
@@ -85,7 +85,7 @@ describe("CLI automatic model routing", () => {
       await initAndConfigure(cwd, env);
 
       const match = capture();
-      assert.equal(await run(["match", "implement a quick small coding fix", "--json"], {
+      assert.equal(await run(["match", "implement a quick small coding fix", "--host", "codex", "--json"], {
         cwd, env, stdout: match, stderr: match,
       }), 0, match.text());
       const preview = JSON.parse(match.text());
@@ -93,7 +93,7 @@ describe("CLI automatic model routing", () => {
       assert.ok(preview.candidates.some((candidate: { model_id: string }) => candidate.model_id === "gpt-5.3-codex-spark@low"));
 
       const spawn = capture();
-      assert.equal(await run(["spawn", "implement a quick small coding fix", "--json"], {
+      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--json"], {
         cwd, env, stdout: spawn, stderr: spawn,
       }), 0, spawn.text());
       const approved = JSON.parse(spawn.text());
@@ -122,7 +122,7 @@ describe("CLI automatic model routing", () => {
       await initAndConfigure(cwd, env);
       const out = capture();
       assert.equal(await run([
-        "spawn", "handle housekeeping", "--unit", "status=status current state", "--unit", "typo=typo in summary", "--json",
+        "spawn", "handle housekeeping", "--host", "codex", "--unit", "status=status current state", "--unit", "typo=typo in summary", "--json",
       ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
       const result = JSON.parse(out.text());
       assert.equal(result.proposal, null);
@@ -136,7 +136,7 @@ describe("CLI automatic model routing", () => {
       const env = fakeEnv(home);
       await initAndConfigure(cwd, env);
       const out = capture();
-      assert.equal(await run(["spawn", "implement change", "--model", "gpt-5.3-codex-spark"], {
+      assert.equal(await run(["spawn", "implement change", "--host", "codex", "--model", "gpt-5.3-codex-spark"], {
         cwd, env, stdout: out, stderr: out,
       }), 1);
       assert.match(out.text(), /MODEL_SELECTION_REMOVED/);
@@ -184,14 +184,10 @@ describe("CLI automatic model routing", () => {
       const omittedEnv = fakeEnv(home);
       await initHostProfiles(omitted, omittedEnv);
       const omittedOut = capture();
-      assert.equal(await run(["spawn", "implement the legacy-default unit", "--json"], { cwd: omitted, env: omittedEnv, stdout: omittedOut, stderr: omittedOut }), 0, omittedOut.text());
-      const omittedTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(omitted), "spn-0001.json"), "utf8"));
-      const omittedReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(omitted), `${omittedTicket.receipt_id}.json`), "utf8"));
-      assert.equal(omittedTicket.target_host, "grok");
-      assert.equal(omittedReceipt.host, "grok");
-      const wrongReserve = capture();
-      assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd: omitted, env: omittedEnv, stdout: wrongReserve, stderr: wrongReserve }), 1);
-      assert.match(wrongReserve.text(), /HOST_MISMATCH|targets grok/i);
+      assert.equal(await run(["spawn", "implement the legacy-default unit", "--json"], { cwd: omitted, env: omittedEnv, stdout: omittedOut, stderr: omittedOut }), 1);
+      assert.match(omittedOut.text(), /HOST_REQUIRED/);
+      assert.match(omittedOut.text(), /--host|BATON_HOST/);
+      assert.equal(fs.existsSync(path.join(spawnsDir(omitted), "spn-0001.json")), false);
 
       const releaseMismatch = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-release-"));
       const releaseEnv = fakeEnv(home);

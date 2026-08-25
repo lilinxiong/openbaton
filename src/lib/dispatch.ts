@@ -19,7 +19,7 @@ import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
 import { readRouteSnapshot } from "./routes.js";
-import { cliProfileForHost, loadConfig, resolveCliHost } from "./config.js";
+import { cliProfileForHost, loadConfig } from "./config.js";
 import { parseHostId, type HostId } from "./hosts.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
@@ -85,10 +85,12 @@ interface ScopeRejection extends TicketError {
 
 function updateRouteHealth(cwd: string, ticket: SpawnTicket, status: TerminalDispatchStatus, error: HostTerminalError | null, at: string): void {
   if (!ticket.route_id) return;
+  const host = ticket.host || ticket.dispatch_host || ticket.target_host || ticket.selection?.host;
+  if (!host) return;
   recordRouteHealth(cwd, {
     routeId: ticket.route_id,
     profile: ticket.reasoning_effort,
-    host: ticket.host || ticket.dispatch_host || "codex",
+    host: String(host),
     taskText: ticket.prompt,
     terminalStatus: status,
     errorCode: error?.code || null,
@@ -178,9 +180,8 @@ function readDispatchState(cwd: string, host?: HostId): UnknownRecord {
     try {
       const state = JSON.parse(fs.readFileSync(file, "utf8")) as UnknownRecord;
       if (host && state.host && state.host !== host) continue;
-      if (host && !state.host && configuredDefaultHost(cwd) !== host) continue;
-      // An unkeyed state without a host is an old legacy default. It may be
-      // consumed only by the caller's resolved default host; never relabel it.
+      // Hostless unkeyed state is not attributed to any caller host.
+      if (host && !state.host) continue;
       return state;
     } catch {
       // Try the compatibility path when the keyed file is absent.
@@ -206,19 +207,17 @@ function writeDispatchState(cwd: string, state: UnknownRecord, host?: HostId): v
 
 /** Capacity persisted by `dispatch next`, or null when no dispatch session has run yet. */
 export function persistedCapacity(cwd: string, host?: HostId): number | null {
-  const resolved = host || configuredDefaultHost(cwd);
-  const value = Number(readDispatchState(cwd, resolved).capacity);
+  const value = Number(readDispatchState(cwd, host).capacity);
   return Number.isInteger(value) && value >= 1 ? value : null;
 }
 
 /** Remember the capacity used by `dispatch next` so later bind/complete/status/recover calls inherit it. */
 export function rememberDispatchCapacity(cwd: string, capacity: number, host?: HostId): number {
   const max = capacityValue(capacity);
-  const resolved = host || configuredDefaultHost(cwd);
-  const state = readDispatchState(cwd, resolved);
+  const state = readDispatchState(cwd, host);
   state.capacity = max;
-  if (resolved) state.host = resolved;
-  writeDispatchState(cwd, state, resolved);
+  if (host) state.host = host;
+  writeDispatchState(cwd, state, host);
   return max;
 }
 
@@ -251,7 +250,7 @@ export interface DispatchSpec {
 function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id: string }, receipt: DelegationReceipt): DispatchSpec {
   return {
     ticket_id: ticket.id,
-    target_host: ticket.target_host || ticket.dispatch_host || ticket.host || "codex",
+    target_host: ticketTargetHost(ticket),
     route_id: ticket.route_id,
     model: ticket.route_id,
     reasoning_effort: ticket.reasoning_effort || null,
@@ -321,12 +320,19 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host
   let code = null;
   let message = null;
   let capturedHost: HostId | null = null;
-  try { capturedHost = ticketTargetHost(cwd, ticket); } catch {
-    code = "INVALID_HOST";
-    message = `ticket ${ticket.id} has an invalid target host`;
+  try {
+    capturedHost = ticketTargetHost(ticket);
+  } catch (error) {
+    if (error instanceof DispatchError) {
+      code = error.code;
+      message = error.message;
+    } else {
+      code = "INVALID_HOST";
+      message = `ticket ${ticket.id} has an invalid target host`;
+    }
   }
   if (code) {
-    // Preserve the invalid-host error below.
+    // Preserve the host resolution error below.
   } else if (capturedHost !== host) {
     code = "HOST_MISMATCH";
     message = `ticket ${ticket.id} targets ${capturedHost}, not ${host}`;
@@ -354,10 +360,8 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host
     } else {
       try {
         const config = loadConfig(cwd);
-        // Hostless tickets resolve to the legacy default in ticketTargetHost;
-        // validate the resolved profile rather than borrowing the caller's
-        // active/global profile.
-        const profileHost = capturedHost || host;
+        // Validate the ticket's captured host profile; never borrow another CLI.
+        const profileHost = capturedHost!;
         const profile = cliProfileForHost(config, profileHost);
         if (!profile.enabled || catalog.cli !== profileHost) {
           code = "CLI_CONFIG_DISABLED";
@@ -437,32 +441,18 @@ function requireHost(host: string): HostId {
   }
 }
 
-/** Resolve the host captured by a ticket without rewriting legacy artifacts. */
-function ticketTargetHost(cwd: string, ticket: SpawnTicket): HostId {
-  const captured = ticket.target_host || ticket.dispatch_host || ticket.host;
-  if (captured) return requireHost(captured);
-  try {
-    return resolveCliHost(loadConfig(cwd));
-  } catch (error) {
-    if ((error as { code?: string }).code === "BATON_NOT_INITIALIZED") return "codex";
-    throw error;
-  }
+/** Resolve the host captured by a ticket. Hostless tickets are not attributed. */
+function ticketTargetHost(ticket: SpawnTicket): HostId {
+  const captured = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host;
+  if (captured) return requireHost(String(captured));
+  throw new DispatchError(`ticket ${ticket.id} has no captured host`, "HOST_REQUIRED", { ticketId: ticket.id });
 }
 
-function ticketMatchesHost(cwd: string, ticket: SpawnTicket, host: HostId): boolean {
+function ticketMatchesHost(ticket: SpawnTicket, host: HostId): boolean {
   try {
-    return ticketTargetHost(cwd, ticket) === host;
+    return ticketTargetHost(ticket) === host;
   } catch {
     return false;
-  }
-}
-
-function configuredDefaultHost(cwd: string): HostId | undefined {
-  try {
-    return resolveCliHost(loadConfig(cwd));
-  } catch (error) {
-    if ((error as { code?: string }).code === "BATON_NOT_INITIALIZED") return undefined;
-    throw error;
   }
 }
 
@@ -473,7 +463,7 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const tickets = fifoTickets(cwd);
-    const activeTickets = tickets.filter((ticket) => holdsHostSlot(ticket) && ticketMatchesHost(cwd, ticket, targetHost));
+    const activeTickets = tickets.filter((ticket) => holdsHostSlot(ticket) && ticketMatchesHost(ticket, targetHost));
     const active = activeTickets.length;
     const anyActive = tickets.filter(holdsHostSlot);
     let available = anyActive.some((ticket) => ticket.mode === "commit-only") ? 0 : Math.max(0, max - active);
@@ -484,9 +474,14 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
       normalizeTicketContract(ticket);
       let ticketHost: HostId;
       try {
-        ticketHost = ticketTargetHost(cwd, ticket);
-      } catch {
-        ticketHost = targetHost;
+        ticketHost = ticketTargetHost(ticket);
+      } catch (error) {
+        blocked.push({
+          ticket_id: ticket.id,
+          code: error instanceof DispatchError ? error.code : "HOST_REQUIRED",
+          message: error instanceof Error ? error.message : `ticket ${ticket.id} has no captured host`,
+        });
+        continue;
       }
       if (ticketHost !== targetHost) {
         blocked.push({ ticket_id: ticket.id, code: "HOST_MISMATCH", message: `ticket ${ticket.id} targets ${ticketHost}, not ${targetHost}` });
@@ -547,7 +542,7 @@ export function bindAgent(cwd: string, id: string, { agentId, host = "codex", no
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = normalizeTicketContract(readSpawn(cwd, id));
-    const targetHost = ticketTargetHost(cwd, ticket);
+    const targetHost = ticketTargetHost(ticket);
     if (targetHost !== host || (ticket.dispatch_host && ticket.dispatch_host !== host)) {
       throw new DispatchError(`ticket ${id} targets ${targetHost}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -583,8 +578,8 @@ export function deferDispatch(cwd: string, id: string, {
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = normalizeTicketContract(readSpawn(cwd, id));
-    if (host && ticketTargetHost(cwd, ticket) !== requireHost(host)) {
-      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(cwd, ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
+    if (host && ticketTargetHost(ticket) !== requireHost(host)) {
+      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (ticket.agent_id) throw new DispatchError(`ticket ${id} is already bound`, "AGENT_ALREADY_BOUND", { ticketId: id });
     transition(ticket, "dispatching", "queued", {
@@ -633,8 +628,8 @@ export function reportAgentProbe(cwd: string, id: string, {
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = normalizeTicketContract(readSpawn(cwd, id));
-    if (host && ticketTargetHost(cwd, ticket) !== requireHost(host)) {
-      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(cwd, ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
+    if (host && ticketTargetHost(ticket) !== requireHost(host)) {
+      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (ticket.status !== "running") {
       throw new DispatchError(`ticket ${id} is not running`, "PROBE_REQUIRES_RUNNING", { ticketId: id, currentStatus: ticket.status });
@@ -677,8 +672,8 @@ export function reportAgentProgress(cwd: string, id: string, {
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = normalizeTicketContract(readSpawn(cwd, id));
-    if (host && ticketTargetHost(cwd, ticket) !== requireHost(host)) {
-      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(cwd, ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
+    if (host && ticketTargetHost(ticket) !== requireHost(host)) {
+      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (ticket.status !== "running") {
       throw new DispatchError(`ticket ${id} is not running`, "PROGRESS_REQUIRES_RUNNING", { ticketId: id, currentStatus: ticket.status });
@@ -768,8 +763,8 @@ export function finishAgent(cwd: string, id: string, {
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = normalizeTicketContract(readSpawn(cwd, id));
-    if (host && ticketTargetHost(cwd, ticket) !== requireHost(host)) {
-      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(cwd, ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
+    if (host && ticketTargetHost(ticket) !== requireHost(host)) {
+      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
@@ -899,8 +894,8 @@ export function releaseAgent(cwd: string, id: string, { agentId = null, host, no
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
     const ticket = readSpawn(cwd, id);
-    if (host && ticketTargetHost(cwd, ticket) !== requireHost(host)) {
-      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(cwd, ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
+    if (host && ticketTargetHost(ticket) !== requireHost(host)) {
+      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (!TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is not terminal`, "RELEASE_REQUIRES_TERMINAL", { ticketId: id, currentStatus: ticket.status });
@@ -934,7 +929,7 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now }: 
     const needs_close: Array<{ ticket_id: string; agent_id: string; host: string | null }> = [];
     const targetHost = host ? requireHost(host) : undefined;
     for (const ticket of fifoTickets(cwd)) {
-      if (targetHost && ticketTargetHost(cwd, ticket) !== targetHost) continue;
+      if (targetHost && !ticketMatchesHost(ticket, targetHost)) continue;
       if (ticket.status === "running" && ticket.agent_id) {
         resumable.push({ ticket_id: ticket.id, agent_id: ticket.agent_id, host: ticket.host || ticket.dispatch_host || null });
         continue;
@@ -957,10 +952,10 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now }: 
 }
 
 export function dispatchSnapshot(cwd: string, { capacity, host, now }: { capacity?: number; host?: string; now?: TimeInput } = {}) {
-  const targetHost = host ? requireHost(host) : configuredDefaultHost(cwd);
+  const targetHost = host ? requireHost(host) : undefined;
   const max = capacity == null ? (persistedCapacity(cwd, targetHost) ?? 1) : capacityValue(capacity);
   const allTickets = fifoTickets(cwd);
-  const tickets = targetHost ? allTickets.filter((ticket) => ticketTargetHost(cwd, ticket) === targetHost) : allTickets;
+  const tickets = targetHost ? allTickets.filter((ticket) => ticketMatchesHost(ticket, targetHost)) : allTickets;
   const counts: Partial<Record<TicketStatus, number>> = {};
   for (const ticket of tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;
   const active = tickets.filter(holdsHostSlot);

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Run the same mechanical units twice: once through Baton, once directly.
- * Active CLI (codex|grok) comes from config. This script does not pick a host.
+ * Host (codex|grok|...) comes from --host, BATON_HOST, or a unique runtime signal.
  *
  *   bun scripts/compare-mechanical-ops.ts
  *   bun scripts/compare-mechanical-ops.ts --json
@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { loadConfig } from "../src/lib/config.js";
+import { resolveRuntimeHost } from "../src/lib/hosts.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import type { CliId } from "../src/lib/cli-models.js";
 
@@ -435,9 +436,9 @@ export async function runMechanicalCompare(options: CompareOptions): Promise<Com
   const timeoutMs = options.timeoutMs ?? (mode === "live" ? 10 * 60_000 : 15_000);
   const source = mode === "fixture" ? (options.workspace || createFixtureWorkspace()) : options.cwd;
   const cfg = loadConfig(source, { env });
-  const cli = cfg.cli.active;
+  const cli = resolveRuntimeHost({ cwd: source, env });
   const profile = cfg.cli[cli];
-  if (!profile.enabled) throw new Error(`active CLI ${cli} is disabled; run baton config --enable`);
+  if (!profile.enabled) throw new Error(`CLI ${cli} is disabled; run baton config --enable`);
 
   const directRoot = mode === "fixture" ? copyWorkspace(source) : source;
   const batonRoot = mode === "fixture" ? copyWorkspace(source) : source;

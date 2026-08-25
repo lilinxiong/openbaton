@@ -25,11 +25,11 @@ const CLI_MODELS: Record<CliId, { runner: string; longctx: string; models: strin
 };
 
 async function prepare(home: string, cli: CliId, labels: { runner: string; longctx: string }) {
-  const env = fakeEnv(home);
+  const env = fakeEnv(home, { BATON_HOST: cli });
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), `baton-compare-${cli}-`));
   assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
   const models = CLI_MODELS[cli];
-  publishRouteSnapshot(cwd, { models: models.models.map((id) => ({ id })) }, new Date(), { cli });
+  publishRouteSnapshot(cwd, { models: models.models.map((id) => ({ id })) }, new Date(), { cli, host: cli });
   configureCli(cwd, env, cli, models.models, { runner: labels.runner, longctx: labels.longctx, enabled: true });
   return { cwd, env, workspace: createFixtureWorkspace() };
 }

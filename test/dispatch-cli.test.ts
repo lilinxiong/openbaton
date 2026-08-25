@@ -24,13 +24,16 @@ async function command(argv, options) {
 async function approvedSpawn(argv, options) {
   configureCodex(options.cwd, options.env, ["kimi/k3[1m]"]);
   const automatic = [];
+  let hasHost = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--model") {
       index += 1;
       continue;
     }
+    if (argv[index] === "--host") hasHost = true;
     automatic.push(argv[index]);
   }
+  if (!hasHost) automatic.push("--host", "codex");
   return command([...automatic, "--json"], options);
 }
 
@@ -112,10 +115,10 @@ describe("dispatch CLI", () => {
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       configureCodex(cwd, env, ["kimi/k3[1m]"]);
-      const disabled = await command(["spawn", "implement omnimodal unit", "--model", "mimo-v2.5"], { cwd, env });
+      const disabled = await command(["spawn", "implement omnimodal unit", "--host", "codex", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(disabled.code, 1);
       assert.match(disabled.stderr, /MODEL_SELECTION_REMOVED/);
-      const bareAlias = await command(["spawn", "implement complex unit", "--model", "k3[1m]"], { cwd, env });
+      const bareAlias = await command(["spawn", "implement complex unit", "--host", "codex", "--model", "k3[1m]"], { cwd, env });
       assert.equal(bareAlias.code, 1);
       assert.match(bareAlias.stderr, /MODEL_SELECTION_REMOVED/);
       assert.equal((await approvedSpawn(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
@@ -156,7 +159,7 @@ describe("dispatch CLI", () => {
       assert.equal(snap.active, 2);
       assert.equal(snap.available, 0);
 
-      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-1", "--json"], { cwd, env });
+      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-1", "--host", "codex", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       assert.equal(JSON.parse(bound.stdout).snapshot.capacity, 2);
 
@@ -190,7 +193,7 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(fs.readFileSync(dispatchStatePath(cwd), "utf8")).capacity, 1);
 
       await command(["dispatch", "next", "--host", "codex", "--json"], { cwd, env });
-      await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-thinking", "--json"], { cwd, env });
+      await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-thinking", "--host", "codex", "--json"], { cwd, env });
       const progress = await command([
         "dispatch", "progress", "spn-0001", "--phase", "working", "--text", "mapped current states",
         "--next", "check restart recovery", "--needs-input", "--json",
@@ -211,7 +214,7 @@ describe("dispatch CLI", () => {
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await approvedSpawn(["spawn", "build the Android target", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env })).code, 0);
-      assert.equal((await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-build", "--json"], { cwd, env })).code, 0);
+      assert.equal((await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-build", "--host", "codex", "--json"], { cwd, env })).code, 0);
 
       const live = await command([
         "dispatch", "probe", "spn-0001", "--agent-id", "agent-build", "--state", "running", "--activity", "status", "--json",
@@ -241,26 +244,62 @@ describe("dispatch CLI", () => {
     });
   });
 
-  it("defaults dispatch host to the active CLI and rejects unknown hosts", async () => {
+  it("fails closed without a resolvable host and requires explicit --host", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-host-"));
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--host", "codex", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--host", "codex", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
 
-      const first = await command(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env });
+      const unresolved = await command(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env });
+      assert.equal(unresolved.code, 1);
+      assert.match(unresolved.stderr, /HOST_REQUIRED/);
+      assert.match(unresolved.stderr, /--host/);
+      assert.match(unresolved.stderr, /BATON_HOST/);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8")).status, "queued");
+
+      const first = await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(first.code, 0, first.stderr);
+      const reserved = JSON.parse(first.stdout);
+      assert.deepEqual(reserved.reserved.map((item) => item.ticket_id), ["spn-0001"]);
       const firstTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(firstTicket.dispatch_host, "codex");
+      assert.equal(firstTicket.target_host, "codex");
 
-      const second = await command(["dispatch", "next", "--host", "grok", "--capacity", "2", "--json"], { cwd, env });
-      assert.equal(second.code, 1, second.stderr);
+      const mismatch = await command(["dispatch", "next", "--host", "grok", "--capacity", "2", "--json"], { cwd, env });
+      assert.equal(mismatch.code, 1, mismatch.stderr);
+      assert.match(mismatch.stderr + mismatch.stdout, /HOST_MISMATCH/);
       const secondTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0002.json"), "utf8"));
       assert.equal(secondTicket.dispatch_host, undefined);
       assert.equal(secondTicket.status, "queued");
       assert.equal(secondTicket.error, null);
+
+      const hostlessPath = path.join(spawnsDir(cwd), "spn-0002.json");
+      const hostless = JSON.parse(fs.readFileSync(hostlessPath, "utf8"));
+      delete hostless.target_host;
+      delete hostless.dispatch_host;
+      hostless.host = null;
+      if (hostless.selection) delete hostless.selection.host;
+      fs.writeFileSync(hostlessPath, JSON.stringify(hostless, null, 2) + "\n");
+      const hostlessReserve = await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env });
+      assert.equal(hostlessReserve.code, 1, hostlessReserve.stderr);
+      const hostlessBody = JSON.parse(hostlessReserve.stdout);
+      assert.deepEqual(hostlessBody.reserved, []);
+      assert.equal(hostlessBody.blocked[0]?.ticket_id, "spn-0002");
+      assert.equal(hostlessBody.blocked[0]?.code, "HOST_REQUIRED");
+      assert.equal(JSON.parse(fs.readFileSync(hostlessPath, "utf8")).status, "queued");
+
+      const stateFile = dispatchStatePath(cwd);
+      for (const file of [stateFile, dispatchStatePath(cwd, "codex")]) {
+        try { fs.unlinkSync(file); } catch { /* optional */ }
+      }
+      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+      fs.writeFileSync(stateFile, JSON.stringify({ capacity: 9 }, null, 2) + "\n");
+      const status = await command(["dispatch", "status", "--host", "codex", "--json"], { cwd, env });
+      assert.equal(status.code, 0, status.stderr);
+      assert.notEqual(JSON.parse(status.stdout).capacity, 9);
 
       const bad = await command(["dispatch", "next", "--host", "not-a-registered-host", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(bad.code, 1);

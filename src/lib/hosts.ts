@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, hostHome, displayHomePath } from "./paths.js";
 import { listCliAdapters } from "../adapters/registry.js";
-import { loadConfig, resolveCliHost } from "./config.js";
 import type { ConfigEnvOptions } from "./config.js";
+import type { CodedError } from "../types.js";
 
 export { hostHome } from "./paths.js";
 
@@ -27,6 +27,14 @@ export interface ResolveRuntimeHostOptions extends ConfigEnvOptions {
   explicitHost?: string | null;
 }
 
+const HOST_REQUIRED_MESSAGE = "HOST_REQUIRED: pass --host or set BATON_HOST";
+
+function hostRequiredError(): CodedError {
+  const err = new Error(HOST_REQUIRED_MESSAGE) as CodedError;
+  err.code = "HOST_REQUIRED";
+  return err;
+}
+
 /** Host ids that appear to be the current invoking runtime from environment signals. */
 export function detectInvokingHosts(env: NodeJS.ProcessEnv = process.env): HostId[] {
   return listCliAdapters()
@@ -34,25 +42,28 @@ export function detectInvokingHosts(env: NodeJS.ProcessEnv = process.env): HostI
     .map((adapter) => adapter.host.id);
 }
 
-/** Resolve the invoking host from explicit flags/env, runtime signals, or legacy config. */
+/** Resolve the invoking host from BATON_HOST or a unique runtime signal. */
 export function detectInvokingHost(env: NodeJS.ProcessEnv = process.env): HostId | null {
   const explicit = String(env.BATON_HOST || "").trim().toLowerCase();
   if (explicit) return parseHostId(explicit);
   const matches = detectInvokingHosts(env);
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
-    throw new Error(`ambiguous invoking host: ${matches.join(", ")} (set BATON_HOST to disambiguate)`);
+    throw hostRequiredError();
   }
   return null;
 }
 
+/** Resolve host from --host, BATON_HOST, or a unique runtime signal. Fail closed otherwise. */
 export function resolveRuntimeHost(options: ResolveRuntimeHostOptions): HostId {
   const env = options.env || process.env;
-  const explicit = String(options.explicitHost || env.BATON_HOST || "").trim();
-  if (explicit) return parseHostId(explicit);
-  const detected = detectInvokingHost(env);
-  if (detected) return detected;
-  return resolveCliHost(loadConfig(options.cwd, { env }));
+  const fromFlag = String(options.explicitHost || "").trim();
+  if (fromFlag) return parseHostId(fromFlag);
+  const fromEnv = String(env.BATON_HOST || "").trim();
+  if (fromEnv) return parseHostId(fromEnv);
+  const matches = detectInvokingHosts(env);
+  if (matches.length === 1) return matches[0];
+  throw hostRequiredError();
 }
 
 export function inferHostFromTickets(tickets: Array<{ target_host?: string | null; dispatch_host?: string | null; host?: string | null; selection?: { host?: string | null } | null }>): HostId | null {

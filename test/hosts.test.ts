@@ -21,23 +21,31 @@ describe("invoking host resolution", () => {
     assert.equal(detectInvokingHost({ BATON_HOST: "grok", CURSOR_AGENT: "1" }), "grok");
   });
 
-  it("falls back to legacy cli.active when no runtime signal is present", () => {
+  it("fails closed with HOST_REQUIRED when no runtime signal is present", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-"));
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-cwd-"));
     const env = { HOME: home };
     const cfg = emptyConfig();
-    cfg.cli.active = "grok";
     cfg.cli.grok.enabled = true;
     saveConfig(cwd, cfg, { env });
-    assert.equal(resolveRuntimeHost({ cwd, env }), "grok");
+    assert.throws(
+      () => resolveRuntimeHost({ cwd, env }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /HOST_REQUIRED/);
+        assert.match(error.message, /--host/);
+        assert.match(error.message, /BATON_HOST/);
+        return true;
+      },
+    );
   });
 
-  it("prefers runtime detection over legacy cli.active", () => {
+  it("resolves a unique runtime detection signal without a configured default", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-"));
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-cwd-"));
     const env = { HOME: home };
     const cfg = emptyConfig();
-    cfg.cli.active = "codex";
+    cfg.cli.codex.enabled = true;
     saveConfig(cwd, cfg, { env });
     assert.equal(resolveRuntimeHost({ cwd, env: { ...env, CURSOR_AGENT: "1" } }), "cursor");
   });

@@ -42,13 +42,16 @@ function syncModel(cwd: string) {
 async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]): Promise<void> {
   configureCodex(cwd, env, ["kimi/k3[1m]"]);
   const automaticArgs: string[] = [];
+  let hasHost = false;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--model") {
       index += 1;
       continue;
     }
+    if (args[index] === "--host") hasHost = true;
     automaticArgs.push(args[index]);
   }
+  if (!hasHost) automaticArgs.push("--host", "codex");
   const proposalOut = capture();
   const proposed = await run([...automaticArgs, "--json"], { cwd, env, stdout: proposalOut, stderr: proposalOut });
   assert.equal(proposed, 0, proposalOut.text());
@@ -61,8 +64,8 @@ async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
   syncModel(cwd);
   await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
-  await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-  await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+  await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+  await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
 }
 
 async function reportMissingWriteAgent(cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
@@ -82,10 +85,10 @@ describe("write dispatch safety integration", () => {
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       syncModel(cwd);
       await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
-      await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
-      await run(["dispatch", "complete", "spn-0001", "--text", "write accepted", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "complete", "spn-0001", "--host", "codex", "--text", "write accepted", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       const ticket = readTicket(cwd, "spn-0001");
       assert.equal(ticket.status, "completed");
       assert.equal(ticket.safety_verdict.accepted, true);
@@ -100,8 +103,8 @@ describe("write dispatch safety integration", () => {
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       syncModel(cwd);
       await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
-      await run(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      await run(["dispatch", "bind", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       fs.appendFileSync(path.join(cwd, "denied.txt"), "WORKER_OUT_OF_SCOPE\n");
       await run(["dispatch", "complete", "spn-0001", "--text", "must be rejected", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
@@ -127,8 +130,8 @@ describe("write dispatch safety integration", () => {
       const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), "rcpt-spn-0002-a1.json"), "utf8"));
       assert.deepEqual(receipt.baseline.dirty_entries, []);
 
-      await run(["dispatch", "next", "--capacity", "2", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      await run(["dispatch", "bind", "spn-0002", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      await run(["dispatch", "bind", "spn-0002", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       await run(["dispatch", "complete", "spn-0002", "--text", "write accepted", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       assert.equal(readTicket(cwd, "spn-0002").status, "completed");

@@ -191,7 +191,7 @@ describe("automatic configured-model selection", () => {
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       setup(cwd, env);
       const out = capture();
-      assert.equal(await run(["spawn", "implement a quick small coding fix", "--json"], {
+      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--json"], {
         cwd,
         env,
         stdout: out,
@@ -206,21 +206,21 @@ describe("automatic configured-model selection", () => {
       assert.equal(result.tickets[0].service_tier, "fast");
 
       const audit = capture();
-      assert.equal(await run(["selection", "show", result.proposal_id, "--json"], {
+      assert.equal(await run(["selection", "show", result.proposal_id, "--host", "codex", "--json"], {
         cwd, env, stdout: audit, stderr: audit,
       }), 0, audit.text());
       assert.equal(JSON.parse(audit.text()).status, "approved");
 
       for (const action of ["render", "approve", "render-bundle"]) {
         const removed = capture();
-        assert.equal(await run(["selection", action, result.proposal_id], {
+        assert.equal(await run(["selection", action, result.proposal_id, "--host", "codex"], {
           cwd, env, stdout: removed, stderr: removed,
         }), 1);
         assert.match(removed.text(), /MODEL_SELECTION_REMOVED/);
       }
 
       const explicit = capture();
-      assert.equal(await run(["spawn", "implement a change", "--model", "gpt-5.3-codex-spark"], {
+      assert.equal(await run(["spawn", "implement a change", "--host", "codex", "--model", "gpt-5.3-codex-spark"], {
         cwd,
         env,
         stdout: explicit,
