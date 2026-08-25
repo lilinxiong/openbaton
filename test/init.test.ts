@@ -73,7 +73,7 @@ describe("Codex init and update", () => {
     assert.match(acceptance, /ticket-presence/);
   });
 
-  it("installs the CLI-owned automatic-routing policy and disabled config", async () => {
+  it("installs the CLI-owned automatic-routing policy without placeholder profiles", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-"));
       const env = fakeEnv(home);
@@ -137,19 +137,11 @@ describe("Codex init and update", () => {
 
       const config = loadConfig(cwd, { env });
       assert.equal(Object.hasOwn(config.cli, "active"), false);
-      const emptyProfile = {
-        enabled: false,
-        runner: "",
-        longctx: "",
-        subagent_models: [],
-      };
-      assert.deepEqual(config.cli.codex, emptyProfile);
-      assert.deepEqual(config.cli.grok, emptyProfile);
-      assert.deepEqual(config.cli.cursor, emptyProfile);
-      assert.deepEqual(config.cli.claude, emptyProfile);
+      assert.deepEqual(config.cli, {});
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
-      assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
+      assert.equal(raw.cli, undefined);
+      assert.doesNotMatch(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"), /^\[cli\./m);
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
       assert.equal(((raw.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
@@ -203,6 +195,7 @@ describe("Codex init and update", () => {
       });
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
+      assert.deepEqual(Object.keys(raw.cli as Record<string, unknown>), ["grok"]);
       assert.match(chunks.join(""), /cli: grok/);
       assert.doesNotMatch(chunks.join(""), /\bactive:/);
     });
@@ -304,10 +297,11 @@ describe("Codex init and update", () => {
       assert.equal(Object.hasOwn(config.cli, "active"), false);
       assert.equal(config.director.max_concurrent, 4);
       // Opting one host in must not enable another.
-      assert.equal(config.cli.codex.enabled, false);
-      assert.equal(config.cli.grok.enabled, false);
+      assert.equal(config.cli.codex, undefined);
+      assert.equal(config.cli.grok, undefined);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
+      assert.deepEqual(Object.keys(raw.cli as Record<string, unknown>), ["claude"]);
     });
   });
 
@@ -318,6 +312,7 @@ describe("Codex init and update", () => {
       await initProject(cwd, { env, cli: "claude" });
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.claude.enabled, true);
+      assert.equal(config.cli.claude.max_concurrent, undefined);
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
@@ -345,6 +340,7 @@ describe("Codex init and update", () => {
       await initProject(cwd, { env, cli: "grok" });
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.grok.enabled, true);
+      assert.equal(config.cli.grok.max_concurrent, undefined);
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
@@ -372,6 +368,7 @@ describe("Codex init and update", () => {
       await initProject(cwd, { env, cli: "cursor" });
       const config = loadConfig(cwd, { env });
       assert.equal(config.cli.cursor.enabled, true);
+      assert.equal(config.cli.cursor.max_concurrent, undefined);
       assert.equal(config.director.max_concurrent, 4);
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);

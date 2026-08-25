@@ -30,7 +30,7 @@ Same table on every host. Do not invent a host-specific split.
   it contributes only the default marker and is never a selectable model. Rows
   marked `disabled` are visible but not selectable and are excluded. `claude
   models` is a live model prompt, not a catalog; never parse its prose.
-- Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.claude] in the user-global config.
+- Store the selected profile, runner and longctx labels, and subagent_models allowlist under [cli.claude] in the user-global config. Never create unselected CLI placeholders. Persist max_concurrent/max_depth overrides only when Claude Code explicitly reports them; otherwise use the director fallbacks.
 - runner and longctx are labels only. They do not imply context-window or other capability support.
 - Every Claude-returned model is configurable. A missing name in host-tool prose is not proof of unsupported execution.
 - Runtime model choice is automatic from the configured allowlist. Do not show a selector, request model confirmation, accept --model/--route overrides, inherit the parent model, or silently fall back.

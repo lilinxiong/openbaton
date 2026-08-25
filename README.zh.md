@@ -61,13 +61,16 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
 
 ## 配置结构
 
-用户全局的 ~/.baton/config.toml 按 CLI 保存：
+用户全局的 ~/.baton/config.toml 始终保留 director 兜底值，并且只保存 init/config
+时实际选择过的 CLI profile：
 
     [director]
     max_concurrent = 4
     max_depth = 1
 
-选择 Grok（`baton init --cli grok` 或 `baton config --cli grok`）会把 Grok 的 host 上限 8 写入 max_concurrent；若设置了 GROK_MAX_CONCURRENT_SUBAGENTS 则用该值。
+`max_concurrent` 与 `max_depth` 分别兜底。CLI discovery 响应明确返回哪个值，
+Baton 才把哪个字段写入所选的 `[cli.<id>]`，该 host 使用这个真实返回值；未返回的
+字段不写入，继续使用 `[director]`。适配器默认值或环境变量不会伪装成 CLI 返回值落盘。
 
     [cli.codex]
     enabled = true
@@ -79,12 +82,6 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
       "gpt-5.3-codex-spark",
     ]
 
-    [cli.grok]
-    enabled = false
-    runner = ""
-    longctx = ""
-    subagent_models = []
-
     [ops.runner]
     actions = ["test", "build", "lint", "typecheck", "git-commit"]
 
@@ -94,6 +91,7 @@ Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某�
 runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份所选 CLI 返回的模型列表。
 
 被设置为 runner 或 longctx 的模型会自动加入 subagent_models。CLI 配置关闭时，不提供任何候选。
+未选择的 CLI 不会在文件中生成占位 table。
 
 也可以非交互配置：
 

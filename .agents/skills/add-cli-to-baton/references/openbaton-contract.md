@@ -47,7 +47,8 @@ Implement and test the target module before production registration when practic
 - Preserve exact model ids. Do not synthesize aliases or fill missing models from another source.
 - Exclude hidden models only according to the target's own visibility semantics.
 - Preserve supported reasoning efforts, default effort, modalities, speed/service tiers, and default markers when the target exposes them. Missing optional metadata is empty or null, not guessed.
-- Each `cli.<id>` profile has its own `enabled`, `runner`, `longctx`, and `subagent_models` values.
+- Only selected CLIs have `cli.<id>` profiles; init never writes unselected placeholder tables. Each present profile has its own `enabled`, `runner`, `longctx`, and `subagent_models` values.
+- Director max_concurrent/max_depth are independent fallbacks. Persist a profile override only when the target CLI explicitly reports that value; never turn an adapter guess into CLI-reported configuration.
 - There is no global default CLI and no `cli.active` field. Host resolution requires `--host`, `BATON_HOST`, or a unique runtime invoking-host signal.
 - Explicit host resolution never falls through to another enabled profile.
 - Runner and longctx are user routing labels, not capability claims, and configured labels belong in the target allowlist.

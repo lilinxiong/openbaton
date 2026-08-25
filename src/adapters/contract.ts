@@ -34,10 +34,21 @@ export interface CliModel {
   is_default: boolean;
 }
 
+/** Optional scheduling limits reported by the CLI discovery surface itself. */
+export interface CliRuntimeCapabilities {
+  max_concurrent?: number;
+  max_depth?: number;
+}
+
 export interface CliModelCatalog {
   cli: CliId;
   version: string | null;
   models: CliModel[];
+  /** Missing values are unknown and must fall back to director defaults. */
+  capabilities?: CliRuntimeCapabilities;
+  /** Flat aliases accepted from adapter implementations. */
+  max_concurrent?: number;
+  max_depth?: number;
 }
 
 export interface DiscoverCliModelsOptions {

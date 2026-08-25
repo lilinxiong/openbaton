@@ -8,10 +8,13 @@ import type {
   CliHostMetadata,
   CliModel,
   CliModelCatalog,
+  CliRuntimeCapabilities,
   DiscoverCliModelsOptions,
 } from "./contract.js";
 import {
   codedError,
+  mergeCliRuntimeCapabilities,
+  normalizeCliRuntimeCapabilities,
   normalizeReasoningEfforts,
   normalizeServiceTiers,
   record,
@@ -111,6 +114,7 @@ export async function discoverCodexModels({
     const lines = readline.createInterface({ input: child.stdout });
     const stderr: string[] = [];
     const models: CliModel[] = [];
+    let capabilities: CliRuntimeCapabilities | undefined;
     let requestId = 1;
     let version: string | null = null;
     let settled = false;
@@ -122,7 +126,12 @@ export async function discoverCodexModels({
       lines.close();
       terminate(child);
       if (error) reject(error);
-      else resolve({ cli: "codex", version, models: normalizeCodexModels(models) });
+      else resolve({
+        cli: "codex",
+        version,
+        models: normalizeCodexModels(models),
+        ...(capabilities ? { capabilities } : {}),
+      });
     };
     const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
     const requestPage = (cursor?: string) => {
@@ -155,6 +164,10 @@ export async function discoverCodexModels({
           finish(codedError(`Codex initialize failed: ${JSON.stringify(message.error)}`, "CODEX_MODEL_DISCOVERY_FAILED"));
           return;
         }
+        capabilities = mergeCliRuntimeCapabilities(
+          capabilities,
+          normalizeCliRuntimeCapabilities(message.result),
+        );
         version = String(message.result?.userAgent || "").trim() || null;
         send({ method: "initialized", params: {} });
         requestPage();
@@ -167,6 +180,10 @@ export async function discoverCodexModels({
       }
       try {
         models.push(...normalizeCodexModels(message.result));
+        capabilities = mergeCliRuntimeCapabilities(
+          capabilities,
+          normalizeCliRuntimeCapabilities(message.result),
+        );
       } catch (error) {
         finish(codedError(error instanceof Error ? error.message : String(error), "CODEX_MODEL_DISCOVERY_FAILED"));
         return;

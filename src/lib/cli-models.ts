@@ -47,6 +47,7 @@ export type {
   CliModelCatalog,
   CliModelDiscovery,
   CliReasoningEffort,
+  CliRuntimeCapabilities,
   CliServiceTier,
   DiscoverCliModelsOptions,
 } from "../adapters/contract.js";

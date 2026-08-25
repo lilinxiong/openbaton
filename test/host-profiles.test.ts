@@ -138,8 +138,9 @@ describe("host-scoped profiles", () => {
     assert.equal(Object.hasOwn(config.cli, "active"), false);
     assert.equal(config.cli.codex.runner, "legacy-runner");
     assert.equal(config.cli.codex.longctx, "legacy-longctx");
-    assert.equal(config.cli.grok.runner, "");
-    assert.equal(config.cli.grok.longctx, "");
+    assert.equal(config.cli.grok, undefined);
+    assert.equal(cliProfileForHost(config, "grok").runner, "");
+    assert.equal(cliProfileForHost(config, "grok").longctx, "");
   });
 
   it("persists capacity separately for each host", () => {

@@ -13,17 +13,22 @@ Baton persists the returned model ids and any display, reasoning-effort, or spee
 
 ## Configuration model
 
+    director
+    ├── max_concurrent   (fallback)
+    └── max_depth        (fallback)
     cli
-    ├── active
-    ├── codex
-    │   ├── enabled
-    │   ├── runner       (label only)
-    │   ├── longctx      (label only)
-    │   └── subagent_models
-    └── grok
-        └── (same fields)
+    └── <selected id>
+        ├── enabled
+        ├── runner       (label only)
+        ├── longctx      (label only)
+        ├── subagent_models
+        ├── max_concurrent?  (only when CLI-reported)
+        └── max_depth?       (only when CLI-reported)
 
 runner and longctx are labels, not capability assertions. The subagent_models list is the complete configured allowlist for that CLI. Configured labels are members of the allowlist. Disabled profiles contribute no routes.
+Unselected CLIs have no placeholder profile. Each missing scheduling limit falls
+back independently to the director value; adapter guesses do not become
+CLI-reported configuration.
 
 ## Data flow
 
@@ -32,10 +37,10 @@ runner and longctx are labels, not capability assertions. The subagent_models li
       -> CLI adapter model discovery
       -> display exact picker-visible models
       -> choose labels + subagent allowlist + enabled
-      -> persist config and CLI catalog snapshot
+      -> persist the selected profile, explicit CLI-reported limits, and CLI catalog snapshot
 
     baton spawn/apply
-      -> load active enabled profile
+      -> resolve the invoking host and load only its enabled profile
       -> intersect configured ids with saved CLI catalog
       -> create model@effort cards from CLI-supported efforts
       -> score task/model/effort/speed automatically

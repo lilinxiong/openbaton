@@ -5,10 +5,12 @@ import type {
   CliHostMetadata,
   CliModel,
   CliModelCatalog,
+  CliRuntimeCapabilities,
   DiscoverCliModelsOptions,
 } from "./contract.js";
 import {
   codedError,
+  normalizeCliRuntimeCapabilities,
   normalizeReasoningEfforts,
   normalizeServiceTiers,
   record,
@@ -230,8 +232,14 @@ export async function discoverGrokModels({
     );
   }
   let models: CliModel[];
+  let capabilities: CliRuntimeCapabilities | undefined;
   try {
     models = parseGrokModelText(modelsRun.stdout);
+    try {
+      capabilities = normalizeCliRuntimeCapabilities(JSON.parse(modelsRun.stdout));
+    } catch {
+      capabilities = undefined;
+    }
   } catch (error) {
     throw codedError(error instanceof Error ? error.message : String(error), "GROK_MODEL_DISCOVERY_FAILED");
   }
@@ -242,7 +250,7 @@ export async function discoverGrokModels({
   } catch {
     version = null;
   }
-  return { cli: "grok", version, models };
+  return { cli: "grok", version, models, ...(capabilities ? { capabilities } : {}) };
 }
 
 export const grokAdapter: CliAdapter = {

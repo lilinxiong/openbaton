@@ -125,8 +125,8 @@ describe("Claude Code appears in the shared init/config flow", () => {
       });
       assert.equal(config.director.max_concurrent, 4);
       // Other host profiles are untouched.
-      assert.equal(config.cli.codex.enabled, false);
-      assert.equal(config.cli.grok.enabled, false);
+      assert.equal(config.cli.codex, undefined);
+      assert.equal(config.cli.grok, undefined);
       assert.match(stdout.text(), /cli: claude/);
       assert.doesNotMatch(stdout.text(), /\bactive:/);
 
@@ -161,7 +161,10 @@ describe("Claude Code appears in the shared init/config flow", () => {
       assert.equal(payload.enabled, true);
       assert.equal(payload.runner, "claude-sonnet-5");
       assert.equal(payload.longctx, null);
-      assert.equal(payload.max_concurrent, 20);
+      assert.equal(payload.max_concurrent, 4);
+      assert.equal(payload.max_depth, 1);
+      assert.equal(payload.max_concurrent_source, "director");
+      assert.equal(payload.max_depth_source, "director");
       assert.equal(payload.model_source, "claude catalog");
       assert.deepEqual(payload.subagent_models, ["claude-sonnet-5", "claude-haiku-4-5-20251001"]);
       assert.equal(Object.hasOwn(payload, "active"), false);

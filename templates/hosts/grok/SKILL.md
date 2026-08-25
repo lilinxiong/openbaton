@@ -28,7 +28,7 @@ Same table on every host. Do not invent a host-specific split.
   another profile. A disabled or missing `cli.grok` profile fails closed and
   never falls back to Codex or any other CLI.
 - baton config selects the CLI first. For Grok, obtain exactly the picker-visible models from `grok models`. Official grok prints a text listing (`Available models:` plus `*`/`-` ids). Parse those listed ids only; login and prose lines are not models. JSON stdout is accepted if Grok emits it. Custom models come from ~/.grok/config.toml and appear only if Grok lists them.
-- Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.grok] in the user-global config.
+- Store the selected profile, runner and longctx labels, and subagent_models allowlist under [cli.grok] in the user-global config. Never create unselected CLI placeholders. Persist max_concurrent/max_depth overrides only when Grok explicitly reports them; otherwise use the director fallbacks.
 - runner and longctx are labels only. They do not imply context-window or other capability support.
 - Every Grok-returned model is configurable. A missing name in host-tool prose is not proof of unsupported execution.
 - Runtime model choice is automatic from the configured allowlist. Do not show a selector, request model confirmation, accept --model/--route overrides, inherit the parent model, or silently fall back.

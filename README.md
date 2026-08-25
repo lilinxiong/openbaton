@@ -61,13 +61,18 @@ Baton does not query OpenCodex, merge in a hard-coded catalog, or treat a model 
 
 ## Configuration
 
-The user-global ~/.baton/config.toml has one profile per CLI:
+The user-global ~/.baton/config.toml always has director fallbacks and contains
+only the CLI profiles selected during init/config:
 
     [director]
     max_concurrent = 4
     max_depth = 1
 
-Selecting Grok (`baton init --cli grok` or `baton config --cli grok`) writes Grok's host cap of 8 into max_concurrent, or GROK_MAX_CONCURRENT_SUBAGENTS when set.
+`max_concurrent` and `max_depth` are independent fallbacks. If a CLI discovery
+response explicitly reports either limit, Baton writes that field under the
+selected `[cli.<id>]` profile and uses it for that host. An unreported field is
+omitted and continues to use `[director]`. Adapter defaults and environment
+variables are not persisted as if the CLI had reported them.
 
     [cli.codex]
     enabled = true
@@ -79,12 +84,6 @@ Selecting Grok (`baton init --cli grok` or `baton config --cli grok`) writes Gro
       "gpt-5.3-codex-spark",
     ]
 
-    [cli.grok]
-    enabled = false
-    runner = ""
-    longctx = ""
-    subagent_models = []
-
     [ops.runner]
     actions = ["test", "build", "lint", "typecheck", "git-commit"]
 
@@ -94,6 +93,7 @@ Selecting Grok (`baton init --cli grok` or `baton config --cli grok`) writes Gro
 runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same CLI-returned model surface.
 
 Configured label values are automatically included in subagent_models. A disabled profile contributes no candidates.
+Unselected CLIs have no placeholder table in the file.
 
 Non-interactive setup is also supported:
 

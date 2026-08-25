@@ -5,10 +5,12 @@ import type {
   CliHostMetadata,
   CliModel,
   CliModelCatalog,
+  CliRuntimeCapabilities,
   DiscoverCliModelsOptions,
 } from "./contract.js";
 import {
   codedError,
+  normalizeCliRuntimeCapabilities,
   normalizeReasoningEfforts,
   normalizeServiceTiers,
   record,
@@ -195,8 +197,14 @@ export async function discoverCursorModels({
     );
   }
   let models: CliModel[];
+  let capabilities: CliRuntimeCapabilities | undefined;
   try {
     models = parseCursorModelText(modelsRun.stdout);
+    try {
+      capabilities = normalizeCliRuntimeCapabilities(JSON.parse(modelsRun.stdout));
+    } catch {
+      capabilities = undefined;
+    }
   } catch (error) {
     throw codedError(error instanceof Error ? error.message : String(error), "CURSOR_MODEL_DISCOVERY_FAILED");
   }
@@ -207,7 +215,7 @@ export async function discoverCursorModels({
   } catch {
     version = null;
   }
-  return { cli: "cursor", version, models };
+  return { cli: "cursor", version, models, ...(capabilities ? { capabilities } : {}) };
 }
 
 export const cursorAdapter: CliAdapter = {

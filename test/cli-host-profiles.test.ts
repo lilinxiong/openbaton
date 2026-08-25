@@ -9,6 +9,7 @@ import {
   cliProfileForHost,
   configuredSubagentModelsForHost,
   effectiveMaxConcurrentForHost,
+  effectiveMaxDepthForHost,
   loadConfig,
   saveConfig,
 } from "../src/lib/config.js";
@@ -189,7 +190,7 @@ describe("cli host profiles without active", () => {
     });
   });
 
-  it("keeps Codex caps and labels when configuring Grok", async () => {
+  it("uses CLI-reported limits per profile and director fallbacks when absent", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-grok-leaves-codex-"));
       const env = fakeEnv(home);
@@ -218,16 +219,29 @@ describe("cli host profiles without active", () => {
         "--longctx", "-",
         "--subagent-model", "grok-4.6",
         "--enable",
-      ], { cwd, env, stdout: out, discover: async () => structuredClone(GROK_CATALOG) }), 0, out.text());
+      ], {
+        cwd,
+        env,
+        stdout: out,
+        discover: async () => ({
+          ...structuredClone(GROK_CATALOG),
+          max_concurrent: 8,
+          max_depth: 2,
+        }),
+      }), 0, out.text());
 
       const after = loadConfig(cwd, { env });
       assert.deepEqual(after.cli.codex, before.cli.codex);
       assert.equal(after.cli.grok.enabled, true);
       assert.equal(after.cli.grok.runner, "grok-4.5");
+      assert.equal(after.cli.grok.max_concurrent, 8);
+      assert.equal(after.cli.grok.max_depth, 2);
       assert.equal(after.director.max_concurrent, 4);
       assert.notEqual(after.director.max_concurrent, 8);
       assert.equal(effectiveMaxConcurrentForHost(after, "codex", env), 4);
       assert.equal(effectiveMaxConcurrentForHost(after, "grok", env), 8);
+      assert.equal(effectiveMaxDepthForHost(after, "codex"), 1);
+      assert.equal(effectiveMaxDepthForHost(after, "grok"), 2);
 
       const status = capture();
       assert.equal(await run(["status", "--host", "codex"], { cwd, env, stdout: status, stderr: status }), 0, status.text());
@@ -238,6 +252,53 @@ describe("cli host profiles without active", () => {
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
       assert.equal((parsed.director as { max_concurrent: number }).max_concurrent, 4);
+      assert.equal(((parsed.cli as Record<string, Record<string, unknown>>).grok).max_concurrent, 8);
+      assert.equal(((parsed.cli as Record<string, Record<string, unknown>>).grok).max_depth, 2);
+    });
+  });
+
+  it("drops stale profile limits when the latest CLI response has no valid values", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-stale-cli-limits-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const args = [
+        "--cli", "grok",
+        "--runner", "grok-4.5",
+        "--longctx", "-",
+        "--subagent-model", "grok-4.5",
+        "--enable",
+      ];
+      assert.equal(await runConfig(args, {
+        cwd,
+        env,
+        stdout: capture(),
+        discover: async () => ({
+          ...structuredClone(GROK_CATALOG),
+          capabilities: { max_concurrent: 9, max_depth: 3 },
+        }),
+      }), 0);
+      assert.equal(loadConfig(cwd, { env }).cli.grok.max_concurrent, 9);
+
+      assert.equal(await runConfig(args, {
+        cwd,
+        env,
+        stdout: capture(),
+        discover: async () => ({
+          ...structuredClone(GROK_CATALOG),
+          capabilities: { max_concurrent: 0, max_depth: -1 },
+        }),
+      }), 0);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.grok.max_concurrent, undefined);
+      assert.equal(config.cli.grok.max_depth, undefined);
+      assert.equal(effectiveMaxConcurrentForHost(config, "grok", env), 4);
+      assert.equal(effectiveMaxDepthForHost(config, "grok"), 1);
+
+      const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
+      const profile = (raw.cli as Record<string, Record<string, unknown>>).grok;
+      assert.equal(profile.max_concurrent, undefined);
+      assert.equal(profile.max_depth, undefined);
     });
   });
 });

@@ -1,42 +1,19 @@
 # baton director config
-# Each CLI owns its picker-visible model catalog. Baton stores only labels and
-# the exact models the user allows subagents to call.
+# Each CLI owns its picker-visible model catalog and any scheduling limits it
+# explicitly reports. Baton stores only selected profiles.
 
 [director]
-# Desired Baton concurrency ceiling (generic file default). Runtime uses the
-# resolved host's cap: Codex 4, Grok 8 (GROK_MAX_CONCURRENT_SUBAGENTS),
-# Cursor 4 (CURSOR_MAX_CONCURRENT_SUBAGENTS), Claude Code 20
-# (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS). AgentLimitReached tightens observed
-# capacity and returns tickets to FIFO.
+# Fallback limits. A selected [cli.<id>] may override either field only when
+# that CLI's discovery response reports a real value.
 max_concurrent = 4
-# Children cannot spawn children. This is a flat tree, not a count cap.
 max_depth = 1
 
-[cli.codex]
-enabled = false
-runner = ""
-longctx = ""
-subagent_models = []
+# baton init/config writes only CLI profiles the user selected. Within a
+# profile, max_concurrent/max_depth are omitted when the CLI did not report
+# them, so the director values above remain effective.
 
-[cli.grok]
-enabled = false
-runner = ""
-longctx = ""
-subagent_models = []
-
-[cli.cursor]
-enabled = false
-runner = ""
-longctx = ""
-subagent_models = []
-
-[cli.claude]
-enabled = false
-runner = ""
-longctx = ""
-subagent_models = []
-
-# Action classification remains global. Model labels live under the CLI above.
+# Action classification remains global. Model labels live under selected CLI
+# profiles.
 [ops.runner]
 actions = ["test", "build", "lint", "typecheck", "git-commit"]
 

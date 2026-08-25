@@ -193,6 +193,24 @@ describe("Grok CLI model adapter", () => {
     assert.deepEqual(calls.filter((call) => call.startsWith("models")), ["models"]);
   });
 
+  it("preserves only explicit scheduling limits from a JSON discovery response", async () => {
+    const catalog = await discoverGrokModels({
+      command: "/bin/grok",
+      spawnImpl: fakeSpawn((args) => {
+        if (args[0] === "models") return {
+          code: 0,
+          stdout: JSON.stringify({
+            models: [{ id: "grok-4.6" }],
+            capabilities: { maxConcurrent: 6, max_depth: 2 },
+          }),
+        };
+        if (args[0] === "version") return { code: 0, stdout: "grok test\n" };
+        return { code: 1 };
+      }),
+    });
+    assert.deepEqual(catalog.capabilities, { max_concurrent: 6, max_depth: 2 });
+  });
+
   it("routes discoverCliModels(grok) through discoverGrokModels", async () => {
     const catalog = await discoverCliModels("grok", {
       command: "/bin/grok",

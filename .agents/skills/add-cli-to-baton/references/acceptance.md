@@ -17,7 +17,8 @@ Add or extend tests for all applicable items.
 
 ### Config, init, and installation
 
-- default and normalized config contains one independent target profile;
+- default config contains no CLI placeholders; selecting the target creates exactly one independent target profile;
+- CLI-reported max_concurrent/max_depth override the director fallbacks independently, while missing or invalid values remain omitted;
 - serialization and migration preserve existing Codex/Grok profiles;
 - target enable/disable is host-scoped and never falls back across hosts;
 - `baton init` interactive CLI selection includes the target and proceeds through its returned models;

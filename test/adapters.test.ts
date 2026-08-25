@@ -54,12 +54,15 @@ describe("CLI adapter contract and registry", () => {
     assert.equal(getCliAdapter("cursor").host.guard, false);
   });
 
-  it("derives one compatible config profile per registered adapter", () => {
+  it("keeps unconfigured adapters absent and resolves missing profiles as disabled", () => {
     const empty = emptyConfig();
-    assert.deepEqual(Object.keys(empty.cli).sort(), ["claude", "codex", "cursor", "grok"]);
-    assert.deepEqual(empty.cli.codex, empty.cli.grok);
-    assert.deepEqual(empty.cli.codex, empty.cli.cursor);
-    assert.deepEqual(empty.cli.claude, empty.cli.grok);
+    assert.deepEqual(Object.keys(empty.cli), []);
+    assert.deepEqual(cliProfileForHost(empty, "codex"), {
+      enabled: false,
+      runner: "",
+      longctx: "",
+      subagent_models: [],
+    });
 
     const migrated = normalizeConfig({
       ops: {
@@ -77,9 +80,8 @@ describe("CLI adapter contract and registry", () => {
     assert.equal(migrated.cli.codex.runner, "legacy-runner");
     assert.equal(migrated.cli.codex.longctx, "legacy-longctx");
     // Only the legacy Codex profile migrates the old global ops table.
-    assert.equal(migrated.cli.claude.runner, "");
-    assert.equal(migrated.cli.claude.longctx, "");
-    assert.equal(migrated.cli.claude.enabled, false);
+    assert.equal(migrated.cli.claude, undefined);
+    assert.equal(cliProfileForHost(migrated, "claude").enabled, false);
   });
 
   it("keeps a Claude profile independent of the Codex and Grok profiles", () => {

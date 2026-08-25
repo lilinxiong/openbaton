@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
-import { loadConfig } from "../src/lib/config.js";
+import { cliProfileForHost, loadConfig } from "../src/lib/config.js";
 import { resolveRuntimeHost } from "../src/lib/hosts.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import type { CliId } from "../src/lib/cli-models.js";
@@ -437,7 +437,7 @@ export async function runMechanicalCompare(options: CompareOptions): Promise<Com
   const source = mode === "fixture" ? (options.workspace || createFixtureWorkspace()) : options.cwd;
   const cfg = loadConfig(source, { env });
   const cli = resolveRuntimeHost({ cwd: source, env });
-  const profile = cfg.cli[cli];
+  const profile = cliProfileForHost(cfg, cli);
   if (!profile.enabled) throw new Error(`CLI ${cli} is disabled; run baton config --enable`);
 
   const directRoot = mode === "fixture" ? copyWorkspace(source) : source;

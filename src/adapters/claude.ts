@@ -7,9 +7,15 @@ import type {
   CliHostMetadata,
   CliModel,
   CliModelCatalog,
+  CliRuntimeCapabilities,
   DiscoverCliModelsOptions,
 } from "./contract.js";
-import { codedError, record, terminate } from "./shared.js";
+import {
+  codedError,
+  normalizeCliRuntimeCapabilities,
+  record,
+  terminate,
+} from "./shared.js";
 
 /**
  * Claude Code exposes a native concurrency ceiling of 20 child agents and a
@@ -161,7 +167,10 @@ export async function discoverClaudeModels({
 }: DiscoverCliModelsOptions = {}): Promise<CliModelCatalog> {
   const executable = String(command || resolveClaudeCommand(env) || "").trim();
   if (!executable) throw codedError("Claude Code CLI is not available; install claude or set BATON_CLAUDE_PATH", "CLI_NOT_AVAILABLE");
-  const models = await new Promise<CliModel[]>((resolve, reject) => {
+  const discovered = await new Promise<{
+    models: CliModel[];
+    capabilities?: CliRuntimeCapabilities;
+  }>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnImpl(executable, [
@@ -182,14 +191,17 @@ export async function discoverClaudeModels({
     const lines = readline.createInterface({ input: child.stdout });
     const stderr: string[] = [];
     let settled = false;
-    const finish = (error?: Error, value?: CliModel[]) => {
+    const finish = (error?: Error, value?: {
+      models: CliModel[];
+      capabilities?: CliRuntimeCapabilities;
+    }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       lines.close();
       terminate(child);
       if (error) reject(error);
-      else resolve(value || []);
+      else resolve(value || { models: [] });
     };
     const timer = setTimeout(() => {
       finish(codedError("Claude model discovery timed out", "CLAUDE_MODEL_DISCOVERY_TIMEOUT"));
@@ -216,7 +228,11 @@ export async function discoverClaudeModels({
         return;
       }
       try {
-        finish(undefined, normalizeClaudeModels(response.response));
+        const capabilities = normalizeCliRuntimeCapabilities(response.response);
+        finish(undefined, {
+          models: normalizeClaudeModels(response.response),
+          ...(capabilities ? { capabilities } : {}),
+        });
       } catch (error) {
         finish(codedError(error instanceof Error ? error.message : String(error), "CLAUDE_MODEL_DISCOVERY_FAILED"));
       }
@@ -228,11 +244,16 @@ export async function discoverClaudeModels({
       request: { subtype: "list_models" },
     })}\n`);
   });
-  if (!models.length) {
+  if (!discovered.models.length) {
     throw codedError("Claude list_models returned no selectable models", "CLAUDE_MODEL_DISCOVERY_FAILED");
   }
   const version = await runClaudeVersion(executable, { cwd, env, timeoutMs, spawnImpl });
-  return { cli: "claude", version, models };
+  return {
+    cli: "claude",
+    version,
+    models: discovered.models,
+    ...(discovered.capabilities ? { capabilities: discovered.capabilities } : {}),
+  };
 }
 
 export const claudeAdapter: CliAdapter = {

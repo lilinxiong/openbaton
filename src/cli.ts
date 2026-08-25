@@ -13,7 +13,13 @@ import {
   runSelection,
   type SelectionApprovalOutput,
 } from "./commands/selection.js";
-import { cliProfileForHost, configuredSubagentModelsForHost, effectiveMaxConcurrentForHost, loadConfig } from "./lib/config.js";
+import {
+  cliProfileForHost,
+  configuredSubagentModelsForHost,
+  effectiveMaxConcurrentForHost,
+  effectiveMaxDepthForHost,
+  loadConfig,
+} from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
 import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
 import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
@@ -673,6 +679,7 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   const cliProfile = cliProfileForHost(cfg, host);
   stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
   stdout.write(`  max_concurrent: ${effectiveMaxConcurrentForHost(cfg, host, env)} (queue beyond this; never refuse)\n`);
+  stdout.write(`  max_depth: ${effectiveMaxDepthForHost(cfg, host)}\n`);
   const snapshot = readRouteSnapshot(cwd, { host, env });
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
   stdout.write(`  CLI models: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton config)"}\n`);

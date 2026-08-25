@@ -23,7 +23,7 @@ Same table on every host. Do not invent a host-specific split.
   and never falls back to Codex, Grok, or any other CLI. Cursor does not claim
   Codex hook protection.
 - baton config selects the CLI first. For Cursor, obtain exactly the picker-visible models from `cursor-agent models`. Official cursor-agent prints a text listing (`Available models` plus `id - display` lines). Parse those listed ids only; login and prose lines are not models. JSON stdout is accepted if cursor-agent emits it.
-- Store the enabled profile, runner and longctx labels, and subagent_models allowlist under [cli.cursor] in the user-global config.
+- Store the selected profile, runner and longctx labels, and subagent_models allowlist under [cli.cursor] in the user-global config. Never create unselected CLI placeholders. Persist max_concurrent/max_depth overrides only when Cursor explicitly reports them; otherwise use the director fallbacks.
 - runner and longctx are labels only. They do not imply context-window or other capability support.
 - Every Cursor-returned model is configurable. A missing name in host-tool prose is not proof of unsupported execution.
 - Runtime model choice is automatic from the configured allowlist. Do not show a selector, request model confirmation, accept --model/--route overrides, inherit the parent model, or silently fall back.

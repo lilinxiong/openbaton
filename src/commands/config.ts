@@ -6,7 +6,15 @@ import {
   type CliModelCatalog,
   type CliModelDiscovery,
 } from "../lib/cli-models.js";
-import { hostMaxConcurrent, loadConfig, saveConfig, type Config } from "../lib/config.js";
+import {
+  cliProfileForHost,
+  effectiveMaxConcurrentForHost,
+  effectiveMaxDepthForHost,
+  loadConfig,
+  saveConfig,
+  type Config,
+} from "../lib/config.js";
+import { normalizeCliRuntimeCapabilities } from "../adapters/shared.js";
 import { detectInvokingHost } from "../lib/hosts.js";
 import {
   createTerminalPrompt,
@@ -128,6 +136,9 @@ interface CliProfileResult {
   longctx: string | null;
   subagent_models: string[];
   max_concurrent: number;
+  max_depth: number;
+  max_concurrent_source: "cli" | "director";
+  max_depth_source: "cli" | "director";
   model_source: string;
   config: string;
 }
@@ -163,7 +174,7 @@ async function configureCliProfile(
     quotaRefreshError: null,
   });
 
-  const existing = current.cli[cli];
+  const existing = cliProfileForHost(current, cli);
 
   let runner = single ? optionalModelFlag(args, "runner") : undefined;
   if (runner === undefined) {
@@ -219,7 +230,17 @@ async function configureCliProfile(
     });
   }
 
-  current.cli[cli] = { enabled, runner, longctx, subagent_models: subagentModels };
+  const capabilities = normalizeCliRuntimeCapabilities(catalog);
+  const maxConcurrent = capabilities?.max_concurrent;
+  const maxDepth = capabilities?.max_depth;
+  current.cli[cli] = {
+    enabled,
+    runner,
+    longctx,
+    subagent_models: subagentModels,
+    ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
+    ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
+  };
   const file = saveConfig(cwd, current, { env });
   return {
     cli,
@@ -227,7 +248,10 @@ async function configureCliProfile(
     runner: runner || null,
     longctx: longctx || null,
     subagent_models: subagentModels,
-    max_concurrent: hostMaxConcurrent(cli, env),
+    max_concurrent: effectiveMaxConcurrentForHost(current, cli),
+    max_depth: effectiveMaxDepthForHost(current, cli),
+    max_concurrent_source: maxConcurrent !== undefined ? "cli" : "director",
+    max_depth_source: maxDepth !== undefined ? "cli" : "director",
     model_source: `${cli} catalog`,
     config: file,
   };
@@ -238,6 +262,8 @@ function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
   stdout.write(`  runner: ${result.runner || "(empty; director)"}\n`);
   stdout.write(`  longctx: ${result.longctx || "(empty; director)"}\n`);
   stdout.write(`  subagent models: ${result.subagent_models.length ? result.subagent_models.join(", ") : "(none)"}\n`);
+  stdout.write(`  max_concurrent: ${result.max_concurrent} (${result.max_concurrent_source})\n`);
+  stdout.write(`  max_depth: ${result.max_depth} (${result.max_depth_source})\n`);
 }
 
 export async function runConfig(args: string[], {
@@ -300,13 +326,14 @@ export async function runConfig(args: string[], {
     : {
       profiles: results,
       max_concurrent: current.director.max_concurrent,
+      max_depth: current.director.max_depth,
       config: file,
     };
   if (args.includes("--json")) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   else {
     stdout.write(`\nwrote ${file}\n`);
     for (const result of results) writeProfile(stdout, result);
-    stdout.write(`  max_concurrent: ${current.director.max_concurrent}\n`);
+    stdout.write(`  director fallback: max_concurrent=${current.director.max_concurrent}, max_depth=${current.director.max_depth}\n`);
     stdout.write("  later routing: automatic; no model confirmation UI\n");
   }
   return 0;
