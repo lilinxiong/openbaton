@@ -11,6 +11,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const samples = path.join(root, "samples");
 const standalone = path.join(samples, "standalone");
 const withOpenSpec = path.join(samples, "openspec");
+const probeE2e = path.join(samples, "probe-e2e");
 
 describe("built-in Baton capability samples", () => {
   it("embeds two complete paths with trigger-neutral requests", () => {
@@ -114,6 +115,44 @@ describe("built-in Baton capability samples", () => {
       encoding: "utf8",
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+});
+
+describe("probe-e2e coding template", () => {
+  it("embeds a three-task parallel-then-serial coding probe", () => {
+    assert.ok(fs.existsSync(path.join(probeE2e, "openspec", "changes", "probe-e2e", "tasks.md")));
+    const request = fs.readFileSync(path.join(probeE2e, "REQUEST.txt"), "utf8");
+    assert.doesNotMatch(request, /baton|subagent|dispatch|openspec|route|model|provider/i);
+    assert.match(request, /同时/);
+
+    const tasksText = fs.readFileSync(path.join(probeE2e, "openspec", "changes", "probe-e2e", "tasks.md"), "utf8");
+    const tasks = parseTasks(tasksText);
+    assert.deepEqual(tasks.map((task) => task.number), ["1.1", "1.2", "2.1"]);
+    assert.deepEqual(tasks.map((task) => inferWorkUnitKind(task.description)), [
+      "concrete", "concrete", "concrete",
+    ]);
+    assert.match(tasksText, /MUST be implemented in parallel/);
+    assert.match(tasksText, /MUST run after both utility modules exist/);
+    assert.ok(!fs.existsSync(path.join(probeE2e, "src", "utils", "format.js")));
+    assert.ok(!fs.existsSync(path.join(probeE2e, "src", "utils", "validate.js")));
+    assert.ok(!fs.existsSync(path.join(probeE2e, "src", "index.js")));
+  });
+
+  it("strict-validates the probe change when OpenSpec is available", { skip: !openspecCliAvailable() }, () => {
+    const result = spawnSync("openspec", ["validate", "probe-e2e", "--strict", "--no-interactive"], {
+      cwd: probeE2e,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("ships bootstrap and verify scripts for the probe path", () => {
+    const bootstrap = fs.readFileSync(path.join(samples, "bootstrap-probe.mjs"), "utf8");
+    const verify = fs.readFileSync(path.join(samples, "verify-probe.mjs"), "utf8");
+    assert.match(bootstrap, /probe-e2e/);
+    assert.match(bootstrap, /worktree.*add/);
+    assert.match(verify, /verify-local\.mjs/);
+    assert.match(verify, /src\/utils\/format\.js/);
   });
 });
 

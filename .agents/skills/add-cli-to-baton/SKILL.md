@@ -91,3 +91,13 @@ Claim `PASS` only when all of the following are true:
 - final Baton state has no leaked active ticket, and the repository has no unintended changes.
 
 Report the evidence classes separately: static/conformance tests, build/package, live model discovery, native child-agent proof, and Baton end-to-end proof. Use the user's language and include exact blockers without dumping raw worker logs.
+
+## Handoff to Phase 2
+
+When adapter `PASS` is complete, tell the user to run the end-to-end OpenSpec coding probe:
+
+```text
+/verify-cli-baton-e2e
+```
+
+Phase 2 uses the fixed template in `samples/probe-e2e/` (not repo-root `openspec/`), a git worktree for isolation, a fresh chat for apply, and `samples/verify-probe.mjs` for machine verification. Do not claim full host acceptance until Phase 2 also passes.
