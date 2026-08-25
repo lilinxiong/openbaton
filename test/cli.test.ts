@@ -4,11 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
-import type { CliModelCatalog } from "../src/lib/cli-models.js";
+import type { CliModelCatalog } from "../src/adapters/contract.js";
 import { receiptsDir, selectionsDir, spawnsDir } from "../src/lib/paths.js";
+import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
-import { configureCli } from "./configure.js";
+import { adapterProviderFor, configureCli } from "./configure.js";
 
 function capture() {
   const chunks: string[] = [];
@@ -49,7 +50,7 @@ async function initAndConfigure(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   assert.equal(await run([
     "config", "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
     "--subagent-model", "all", "--enable",
-  ], { cwd, env, stdout: out, stderr: out, discover: async () => structuredClone(CATALOG) }), 0, out.text());
+  ], { cwd, env, stdout: out, stderr: out, adapterProvider: adapterProviderFor(CATALOG) }), 0, out.text());
 }
 
 async function initHostProfiles(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
@@ -58,6 +59,30 @@ async function initHostProfiles(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model", provider: "grok" }] }, new Date(), { cli: "grok", host: "grok", env });
   configureCli(cwd, env, "codex", ["codex/model"]);
   configureCli(cwd, env, "grok", ["grok/model"]);
+}
+
+function observeCodexDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, hookAgentId: string): void {
+  const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: "codex",
+  }, { now: new Date() }, undefined, env);
+  recordNativeIdentity(cwd, pending, hookAgentId, "hook", { now: new Date() }, undefined, env);
+}
+
+function observeGrokDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, agentId: string, sessionId: string): void {
+  const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: "grok",
+  }, { session_id: sessionId }, undefined, env);
+  recordNativeIdentity(cwd, pending, agentId, "lifecycle", { session_id: sessionId }, undefined, env);
 }
 
 describe("CLI automatic model routing", () => {
@@ -93,7 +118,7 @@ describe("CLI automatic model routing", () => {
       assert.ok(preview.candidates.some((candidate: { model_id: string }) => candidate.model_id === "gpt-5.3-codex-spark@low"));
 
       const spawn = capture();
-      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--json"], {
+      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--classification", "implementation", "--json"], {
         cwd, env, stdout: spawn, stderr: spawn,
       }), 0, spawn.text());
       const approved = JSON.parse(spawn.text());
@@ -115,18 +140,87 @@ describe("CLI automatic model routing", () => {
     });
   });
 
-  it("keeps tiny structured units on the director", async () => {
+  it("accepts Codex dispatch bind --task-name without letting it replace the hook UUID", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-bind-task-name-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+
+      const spawn = capture();
+      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--classification", "implementation", "--dispatch", "--capacity", "1", "--json"], {
+        cwd, env, stdout: spawn, stderr: spawn,
+      }), 0, spawn.text());
+      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-uuid");
+
+      const bind = capture();
+      assert.equal(await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", "codex-task-name", "--json"], {
+        cwd, env, stdout: bind, stderr: bind,
+      }), 0, bind.text());
+      assert.equal(JSON.parse(bind.text()).ticket.agent_id, "codex-hook-uuid");
+    });
+  });
+
+  it("delegates tiny implementation units when the Baton host is enabled", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-local-"));
       const env = fakeEnv(home);
       await initAndConfigure(cwd, env);
       const out = capture();
       assert.equal(await run([
-        "spawn", "handle housekeeping", "--host", "codex", "--unit", "status=status current state", "--unit", "typo=typo in summary", "--json",
+        "spawn", "handle housekeeping", "--host", "codex", "--classification", "implementation", "--unit", "status=status current state", "--unit", "typo=typo in summary", "--json",
       ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
       const result = JSON.parse(out.text());
-      assert.equal(result.proposal, null);
-      assert.deepEqual(result.director_local.map((item: { key: string }) => item.key), ["status", "typo"]);
+      assert.equal(result.status, "approved");
+      assert.equal(result.tickets.length, 2);
+      assert.deepEqual(result.director_local, []);
+    });
+  });
+
+  it("keeps director-only analysis and discussion out of worker tickets", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-director-only-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      for (const classification of ["analysis", "discussion"]) {
+        const out = capture();
+        assert.equal(await run([
+          "spawn", "review the current lifecycle", "--host", "codex", "--classification", classification, "--json",
+        ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+        const result = JSON.parse(out.text());
+        assert.equal(result.proposal, null);
+        assert.deepEqual(result.dispatched, []);
+        assert.equal(result.director_local[0].kind, "director-local");
+        assert.deepEqual(fs.existsSync(spawnsDir(cwd)) ? fs.readdirSync(spawnsDir(cwd)) : [], []);
+      }
+    });
+  });
+
+  it("fails closed before ticket creation when an enabled host has no classification", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-classification-required-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      const out = capture();
+      assert.equal(await run(["spawn", "implement an unclassified change", "--host", "codex", "--json"], {
+        cwd, env, stdout: out, stderr: out,
+      }), 1);
+      assert.match(out.text(), /CLASSIFICATION_REQUIRED/);
+      assert.deepEqual(fs.existsSync(spawnsDir(cwd)) ? fs.readdirSync(spawnsDir(cwd)) : [], []);
+    });
+  });
+
+  it("fails closed on conflicting request and unit classifications", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-classification-conflict-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "split work", "--host", "codex", "--classification", "implementation",
+        "--unit", "ops=run checks", "--unit-classification", "ops=mechanical", "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 1);
+      assert.match(out.text(), /CLASSIFICATION_CONFLICT/);
+      assert.deepEqual(fs.existsSync(spawnsDir(cwd)) ? fs.readdirSync(spawnsDir(cwd)) : [], []);
     });
   });
 
@@ -136,7 +230,7 @@ describe("CLI automatic model routing", () => {
       const env = fakeEnv(home);
       await initAndConfigure(cwd, env);
       const out = capture();
-      assert.equal(await run(["spawn", "implement change", "--host", "codex", "--model", "gpt-5.3-codex-spark"], {
+      assert.equal(await run(["spawn", "implement change", "--host", "codex", "--classification", "implementation", "--model", "gpt-5.3-codex-spark"], {
         cwd, env, stdout: out, stderr: out,
       }), 1);
       assert.match(out.text(), /MODEL_SELECTION_REMOVED/);
@@ -149,7 +243,7 @@ describe("CLI automatic model routing", () => {
       const codexEnv = fakeEnv(home);
       await initHostProfiles(explicitCodex, codexEnv);
       const codexOut = capture();
-      assert.equal(await run(["spawn", "implement the Codex host unit", "--host", "codex", "--json"], { cwd: explicitCodex, env: codexEnv, stdout: codexOut, stderr: codexOut }), 0, codexOut.text());
+      assert.equal(await run(["spawn", "implement the Codex host unit", "--host", "codex", "--classification", "implementation", "--json"], { cwd: explicitCodex, env: codexEnv, stdout: codexOut, stderr: codexOut }), 0, codexOut.text());
       const codexTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(explicitCodex), "spn-0001.json"), "utf8"));
       const codexReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(explicitCodex), `${codexTicket.receipt_id}.json`), "utf8"));
       const codexProposal = JSON.parse(fs.readFileSync(path.join(selectionsDir(explicitCodex), "sel-0001.json"), "utf8"));
@@ -165,15 +259,15 @@ describe("CLI automatic model routing", () => {
       configureCli(disabledCodex, disabledEnv, "codex", ["codex/model"], { enabled: false });
       configureCli(disabledCodex, disabledEnv, "grok", ["grok/model"]);
       const disabledOut = capture();
-      assert.equal(await run(["spawn", "implement the disabled Codex unit", "--host", "codex", "--json"], { cwd: disabledCodex, env: disabledEnv, stdout: disabledOut, stderr: disabledOut }), 1);
-      assert.match(disabledOut.text(), /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i);
+      assert.equal(await run(["spawn", "implement the disabled Codex unit", "--host", "codex", "--json"], { cwd: disabledCodex, env: disabledEnv, stdout: disabledOut, stderr: disabledOut }), 0);
+      assert.match(disabledOut.text(), /director-local|Baton host profile is disabled/i);
       assert.equal(fs.existsSync(path.join(spawnsDir(disabledCodex), "spn-0001.json")), false);
 
       const explicitGrok = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-grok-"));
       const grokEnv = fakeEnv(home);
       await initHostProfiles(explicitGrok, grokEnv);
       const grokOut = capture();
-      assert.equal(await run(["spawn", "implement the Grok host unit", "--host", "grok", "--json"], { cwd: explicitGrok, env: grokEnv, stdout: grokOut, stderr: grokOut }), 0, grokOut.text());
+      assert.equal(await run(["spawn", "implement the Grok host unit", "--host", "grok", "--classification", "implementation", "--json"], { cwd: explicitGrok, env: grokEnv, stdout: grokOut, stderr: grokOut }), 0, grokOut.text());
       const grokTicket = JSON.parse(fs.readFileSync(path.join(spawnsDir(explicitGrok), "spn-0001.json"), "utf8"));
       const grokReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(explicitGrok), `${grokTicket.receipt_id}.json`), "utf8"));
       assert.equal(grokTicket.target_host, "grok");
@@ -193,9 +287,16 @@ describe("CLI automatic model routing", () => {
       const releaseEnv = fakeEnv(home);
       await initHostProfiles(releaseMismatch, releaseEnv);
       const releaseSpawn = capture();
-      assert.equal(await run(["spawn", "implement the release unit", "--host", "grok", "--json"], { cwd: releaseMismatch, env: releaseEnv, stdout: releaseSpawn, stderr: releaseSpawn }), 0, releaseSpawn.text());
+      assert.equal(await run(["spawn", "implement the release unit", "--host", "grok", "--classification", "implementation", "--json"], { cwd: releaseMismatch, env: releaseEnv, stdout: releaseSpawn, stderr: releaseSpawn }), 0, releaseSpawn.text());
+      const nextGrok = capture();
+      assert.equal(await run(["dispatch", "next", "--host", "grok", "--capacity", "1", "--json"], {
+        cwd: releaseMismatch,
+        env: releaseEnv,
+        stdout: nextGrok,
+        stderr: nextGrok,
+      }), 0, nextGrok.text());
+      observeGrokDispatch(releaseMismatch, releaseEnv, "spn-0001", "agent-grok", "grok-session");
       for (const argv of [
-        ["dispatch", "next", "--host", "grok", "--capacity", "1", "--json"],
         ["dispatch", "bind", "spn-0001", "--host", "grok", "--agent-id", "agent-grok", "--json"],
         ["dispatch", "complete", "spn-0001", "--host", "grok", "--text", "done", "--json"],
       ]) {

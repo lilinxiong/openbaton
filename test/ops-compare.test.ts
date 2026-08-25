@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import type { CliId } from "../src/lib/cli-models.js";
+import type { CliId } from "../src/adapters/contract.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCli } from "./configure.js";
 import {
@@ -59,14 +59,14 @@ describe("mechanical ops baton vs direct comparison", () => {
         assert.equal(tasks.get("test")?.baton.kind, "ops-dispatch");
         assert.equal(tasks.get("test")?.baton.profile, "runner");
         assert.equal(tasks.get("test")?.baton.model, models.runner);
-        assert.equal(tasks.get("build")?.baton.action, "build");
-        assert.equal(tasks.get("typecheck")?.baton.action, "typecheck");
+        assert.equal(tasks.get("build")?.baton.operation, "build");
+        assert.equal(tasks.get("typecheck")?.baton.operation, "typecheck");
         assert.equal(tasks.get("search")?.baton.profile, "longctx");
-        assert.equal(tasks.get("summarize")?.baton.action, "git-summarize");
+        assert.equal(tasks.get("summarize")?.baton.operation, "summarize");
         assert.equal(tasks.get("ordinary")?.baton.kind, "subagent");
         assert.ok(models.models.includes(tasks.get("ordinary")?.baton.model || ""));
         assert.equal(tasks.get("commit")?.baton.kind, "ops-dispatch");
-        assert.equal(tasks.get("commit")?.baton.action, "git-commit");
+        assert.equal(tasks.get("commit")?.baton.operation, "git-commit");
         assert.equal(tasks.get("commit")?.baton.profile, "runner");
         assert.equal(tasks.get("commit")?.baton.model, models.runner);
         assert.equal(tasks.get("commit")?.direct.exit, 0);
@@ -78,18 +78,13 @@ describe("mechanical ops baton vs direct comparison", () => {
     });
   }
 
-  it("keeps mechanical units on the director when runner and longctx are empty", async () => {
+  it("fails closed when classified mechanical routes are empty", async () => {
     await withHome(async (home) => {
       const { env, workspace } = await prepare(home, "grok", { runner: "", longctx: "" });
-      const report = await runMechanicalCompare({ cwd: workspace, env, mode: "fixture", workspace });
-      assert.equal(report.ok, true, JSON.stringify(report.tasks, null, 2));
-      const tasks = byKey(report);
-      assert.equal(tasks.get("test")?.baton.kind, "director-local");
-      assert.equal(tasks.get("build")?.baton.kind, "director-local");
-      assert.equal(tasks.get("commit")?.baton.kind, "director-local");
-      assert.equal(tasks.get("ordinary")?.baton.kind, "subagent");
-      assert.equal(tasks.get("test")?.direct.exit, 0);
-      assert.equal(tasks.get("test")?.baton.exit, 0);
+      await assert.rejects(
+        () => runMechanicalCompare({ cwd: workspace, env, mode: "fixture", workspace }),
+        /OPS_ROUTE_UNAVAILABLE: test: ops runner route is empty; classified work is not executable on the director/,
+      );
     });
   });
 });

@@ -12,12 +12,11 @@ import type {
   TicketStatus,
 } from "./spawn.js";
 import type { UnknownRecord } from "../types.js";
-import { dispatchLockPath, dispatchStatePath, hostDispatchStatePath } from "./paths.js";
+import { dispatchLockPath, hostDispatchStatePath } from "./paths.js";
 import { readReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
 import { auditCommitOutcome, auditPreparedCommit, auditWorktree, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
-import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit.js";
 import { readRouteSnapshot } from "./routes.js";
 import { cliProfileForHost, loadConfig } from "./config.js";
 import { parseHostId, type HostId } from "./hosts.js";
@@ -26,22 +25,36 @@ import {
   withDispatchReservationEnvelope,
   type DispatchReservationIdentity,
 } from "./dispatch-reservation.js";
+import {
+  clearNativeIdentity,
+  hostIdentityAdapter,
+  isAuthoritativeNativeObservation,
+  observedNativeIdentity,
+  readHostIdentityState,
+  resolveNativeWorkerIdentity,
+} from "./host-identity.js";
+import { clearHostGuardBindingsForTicketAttempt } from "./host-guard.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
 
-function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
-  const needsContract = !ticket.work_unit;
-  if (needsContract) ticket.work_unit = compileWorkUnit(ticket.description || ticket.prompt);
-  if (!ticket.coordination) ticket.coordination = coordinationFor(ticket.work_unit);
-  if (needsContract && !ticket.prompt.includes("[Baton work unit]")) {
-    ticket.prompt = buildWorkerPrompt(ticket.prompt, ticket.work_unit, ticket.coordination);
+function requireCurrentTicket(ticket: SpawnTicket): SpawnTicket {
+  const objectValue = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const current = ticket.schema_version === 7
+    && objectValue(ticket.work_unit)
+    && objectValue(ticket.coordination)
+    && Object.hasOwn(ticket, "progress")
+    && Object.hasOwn(ticket, "liveness")
+    && Object.hasOwn(ticket, "service_tier")
+    && Object.hasOwn(ticket, "selection");
+  if (!current) {
+    throw new DispatchError(
+      `ticket ${ticket.id || "<unknown>"} is not a current-format spawn ticket`,
+      "TICKET_FORMAT_UNSUPPORTED",
+      { ticketId: ticket.id },
+    );
   }
-  if (ticket.progress === undefined) ticket.progress = null;
-  if (ticket.liveness === undefined) ticket.liveness = null;
-  if (ticket.selection === undefined) ticket.selection = null;
-  if (ticket.service_tier === undefined) ticket.service_tier = ticket.selection?.service_tier || null;
-  if (Number(ticket.schema_version || 1) < 7) ticket.schema_version = 7;
   return ticket;
 }
 
@@ -50,8 +63,7 @@ function holdsHostSlot(ticket: SpawnTicket): boolean {
   if (ticket.status === "dispatching") return true;
   if (!ticket.agent_id) return false;
   if (ticket.status === "running") return true;
-  return Number(ticket.schema_version || 1) >= 3
-    && TERMINAL_TICKET_STATUSES.has(ticket.status)
+  return TERMINAL_TICKET_STATUSES.has(ticket.status)
     && !ticket.slot_released_at;
 }
 
@@ -140,7 +152,7 @@ function transition(ticket: SpawnTicket, expected: TicketStatus | TicketStatus[]
 }
 
 function fifoTickets(cwd: string): SpawnTicket[] {
-  return listSpawns(cwd).sort((a, b) => {
+  return listSpawns(cwd).map(requireCurrentTicket).sort((a, b) => {
     const time = String(a.created_at || "").localeCompare(String(b.created_at || ""));
     return time || String(a.id).localeCompare(String(b.id));
   });
@@ -177,51 +189,40 @@ function capacityValue(capacity: unknown): number {
   return value;
 }
 
-function readDispatchState(cwd: string, host?: HostId): UnknownRecord {
-  const files = host
-    ? [hostDispatchStatePath(cwd, host), dispatchStatePath(cwd)]
-    : [dispatchStatePath(cwd)];
-  for (const file of files) {
-    try {
-      const state = JSON.parse(fs.readFileSync(file, "utf8")) as UnknownRecord;
-      if (host && state.host && state.host !== host) continue;
-      // Hostless unkeyed state is not attributed to any caller host.
-      if (host && !state.host) continue;
-      return state;
-    } catch {
-      // Try the compatibility path when the keyed file is absent.
-    }
+function readDispatchState(cwd: string, host: HostId): UnknownRecord {
+  const file = hostDispatchStatePath(cwd, host);
+  try {
+    const state = JSON.parse(fs.readFileSync(file, "utf8")) as UnknownRecord;
+    return state.host === host ? state : {};
+  } catch {
+    return {};
   }
-  return {};
 }
 
-function writeDispatchState(cwd: string, state: UnknownRecord, host?: HostId): void {
-  const file = host ? hostDispatchStatePath(cwd, host) : dispatchStatePath(cwd);
-  const files = host ? [...new Set([file, dispatchStatePath(cwd)])] : [file];
-  for (const target of files) {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const temp = target + ".tmp-" + process.pid + "-" + crypto.randomUUID();
-    try {
-      fs.writeFileSync(temp, JSON.stringify(state, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-      fs.renameSync(temp, target);
-    } finally {
-      if (fs.existsSync(temp)) fs.unlinkSync(temp);
-    }
+function writeDispatchState(cwd: string, state: UnknownRecord, host: HostId): void {
+  const file = hostDispatchStatePath(cwd, host);
+  const next = { ...state, host };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = file + ".tmp-" + process.pid + "-" + crypto.randomUUID();
+  try {
+    fs.writeFileSync(temp, JSON.stringify(next, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
   }
 }
 
 /** Capacity persisted by `dispatch next`, or null when no dispatch session has run yet. */
-export function persistedCapacity(cwd: string, host?: HostId): number | null {
+export function persistedCapacity(cwd: string, host: HostId = "codex"): number | null {
   const value = Number(readDispatchState(cwd, host).capacity);
   return Number.isInteger(value) && value >= 1 ? value : null;
 }
 
 /** Remember the capacity used by `dispatch next` so later bind/complete/status/recover calls inherit it. */
-export function rememberDispatchCapacity(cwd: string, capacity: number, host?: HostId): number {
+export function rememberDispatchCapacity(cwd: string, capacity: number, host: HostId = "codex"): number {
   const max = capacityValue(capacity);
   const state = readDispatchState(cwd, host);
   state.capacity = max;
-  if (host) state.host = host;
   writeDispatchState(cwd, state, host);
   return max;
 }
@@ -487,7 +488,7 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
     const blocked: Array<{ ticket_id: string; code: string; message: string }> = [];
     for (const ticket of tickets) {
       if (ticket.status !== "queued" || available <= 0 || reserved.length >= maxTake) continue;
-      normalizeTicketContract(ticket);
+      requireCurrentTicket(ticket);
       let ticketHost: HostId;
       try {
         ticketHost = ticketTargetHost(ticket);
@@ -534,7 +535,16 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
   });
 }
 
-interface BindOptions { agentId: string; host?: string; now?: TimeInput }
+interface BindOptions {
+  /** Native caller identity for non-Codex hosts and local synthetic binds. */
+  agentId?: string;
+  /** Codex native task_name metadata, never the authoritative worker UUID. */
+  taskName?: string;
+  /** Strict mode is automatic once the host identity ledger exists. */
+  requireIdentityObservation?: boolean;
+  host?: string;
+  now?: TimeInput;
+}
 
 const AGENT_PROBE_STATES = new Set<AgentProbeState>(["pending_init", "running", "interrupted", "shutdown", "not_found"]);
 const AGENT_PROBE_ACTIVITIES = new Set<AgentProbeActivity>(["status", "output", "heartbeat"]);
@@ -556,18 +566,74 @@ function updateTicketLiveness(
   };
 }
 
-export function bindAgent(cwd: string, id: string, { agentId, host = "codex", now }: BindOptions): SpawnTicket {
-  const workerId = String(agentId || "").trim();
-  if (!workerId) throw new DispatchError("agentId is required", "AGENT_ID_REQUIRED", { ticketId: id });
+export function bindAgent(cwd: string, id: string, {
+  agentId,
+  taskName,
+  requireIdentityObservation,
+  host = "codex",
+  now,
+}: BindOptions): SpawnTicket {
   host = requireHost(host);
+  const callerAgentId = String(agentId || "").trim() || null;
+  const codexTaskName = String(taskName || "").trim();
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    const ticket = requireCurrentTicket(readSpawn(cwd, id));
     const targetHost = ticketTargetHost(ticket);
     if (targetHost !== host || (ticket.dispatch_host && ticket.dispatch_host !== host)) {
       throw new DispatchError(`ticket ${id} targets ${targetHost}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
-    transition(ticket, "dispatching", "running", { at, event: "agent_bound", detail: { host, agent_id: workerId } });
+    // Preserve lifecycle validation precedence: an identity observation can
+    // never make a queued, running, or terminal ticket bindable.
+    if (ticket.status !== "dispatching") {
+      throw new DispatchError(
+        `invalid ticket transition ${ticket.id}: ${ticket.status} -> running`,
+        "INVALID_TICKET_TRANSITION",
+        { ticketId: id, currentStatus: ticket.status, nextStatus: "running" },
+      );
+    }
+    const observedEntry = observedNativeIdentity(cwd, {
+      ticket_id: id,
+      host,
+      reservation_id: ticket.reservation_id || null,
+      attempt: ticket.attempt,
+    });
+    const strictHost = !hostIdentityAdapter(host).callerIdentityAllowed;
+    const observed = observedEntry && isAuthoritativeNativeObservation(host, observedEntry.source)
+      ? observedEntry.agent_id
+      : null;
+    const identityState = readHostIdentityState(cwd);
+    // A host adapter that declares hook/lifecycle identity is never allowed
+    // to bind from the native caller token alone. The optional flag can make
+    // an adapter stricter for embedded callers, but cannot weaken this gate.
+    const strict = strictHost
+      || requireIdentityObservation === true
+      || Boolean(identityState.error);
+    const resolved = resolveNativeWorkerIdentity(host, {
+      callerIdentity: callerAgentId,
+      observedIdentity: observed,
+      observedSource: observedEntry && isAuthoritativeNativeObservation(host, observedEntry.source)
+        ? observedEntry.source
+        : undefined,
+      requireObserved: strict,
+    });
+    if (!resolved.ok || !resolved.identity) {
+      const code = resolved.code === "AGENT_ID_REQUIRED"
+        && host === "codex"
+        && Boolean(codexTaskName)
+        ? "AGENT_IDENTITY_REQUIRED"
+        : resolved.code;
+      const message = code === "AGENT_IDENTITY_MISMATCH"
+        ? `ticket ${id} caller identity ${resolved.caller_identity || "<empty>"} does not match authoritative identity ${resolved.observed_identity || "<empty>"}`
+        : code === "AGENT_IDENTITY_REQUIRED"
+          ? `ticket ${id} has no authoritative native identity observation`
+          : `agentId is required`;
+      throw new DispatchError(message, code, { ticketId: id });
+    }
+    const workerId = resolved.identity;
+    const detail: UnknownRecord = { host, agent_id: workerId };
+    if (host === "codex") detail.task_name = codexTaskName || null;
+    transition(ticket, "dispatching", "running", { at, event: "agent_bound", detail });
     ticket.agent_id = workerId;
     ticket.host = host;
     ticket.started_at = at;
@@ -598,11 +664,14 @@ export function deferDispatch(cwd: string, id: string, {
 }: DeferOptions = {}): SpawnTicket {
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    const ticket = requireCurrentTicket(readSpawn(cwd, id));
     if (host && ticketTargetHost(ticket) !== requireHost(host)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (ticket.agent_id) throw new DispatchError(`ticket ${id} is already bound`, "AGENT_ALREADY_BOUND", { ticketId: id });
+    const priorReservation = ticket.reservation_id;
+    const priorAttempt = ticket.attempt;
+    const priorHost = ticket.dispatch_host || ticket.host || ticket.target_host;
     transition(ticket, "dispatching", "queued", {
       at,
       event: "dispatch_deferred",
@@ -610,11 +679,22 @@ export function deferDispatch(cwd: string, id: string, {
     });
     ticket.attempt = Math.max(0, Number(ticket.attempt || 0) - 1);
     ticket.error = null;
+    if (priorHost && priorReservation) {
+      clearNativeIdentity(cwd, {
+        ticket_id: id,
+        host: priorHost,
+        reservation_id: priorReservation,
+        attempt: priorAttempt,
+      });
+    }
     delete ticket.reservation_id;
     delete ticket.dispatch_host;
     delete ticket.dispatch_requested_at;
     writeSpawn(cwd, ticket);
-    if (observedCapacity != null) rememberDispatchCapacity(cwd, observedCapacity, host ? requireHost(host) : undefined);
+    if (observedCapacity != null) {
+      const rememberedHost = host ? requireHost(host) : ticketTargetHost(ticket);
+      rememberDispatchCapacity(cwd, observedCapacity, rememberedHost);
+    }
     return ticket;
   });
 }
@@ -649,7 +729,7 @@ export function reportAgentProbe(cwd: string, id: string, {
   }
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    const ticket = requireCurrentTicket(readSpawn(cwd, id));
     if (host && ticketTargetHost(ticket) !== requireHost(host)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -693,7 +773,7 @@ export function reportAgentProgress(cwd: string, id: string, {
   if (!PROGRESS_PHASES.has(phase)) throw new DispatchError(`invalid progress phase: ${phase}`, "INVALID_PROGRESS_PHASE", { ticketId: id });
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    const ticket = requireCurrentTicket(readSpawn(cwd, id));
     if (host && ticketTargetHost(ticket) !== requireHost(host)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -741,7 +821,7 @@ function peerWriteAllowlists(cwd: string, ticket: SpawnTicket): string[][] {
   const ledger = new Set<string>();
   const ownLedger = relativeLedgerPath(cwd, ticket.openspec?.tasks_path);
   if (ownLedger) ledger.add(ownLedger);
-  for (const other of listSpawns(cwd)) {
+  for (const other of listSpawns(cwd).map(requireCurrentTicket)) {
     const otherLedger = relativeLedgerPath(cwd, other.openspec?.tasks_path);
     if (otherLedger) ledger.add(otherLedger);
     if (other.id === ticket.id || other.mode !== "write" || !other.receipt_id) continue;
@@ -771,6 +851,27 @@ interface FinishOptions {
   now?: TimeInput;
 }
 
+function clearTicketNativeIdentity(cwd: string, ticket: SpawnTicket): void {
+  const reservationId = ticket.reservation_id;
+  const host = ticket.dispatch_host || ticket.host || ticket.target_host;
+  if (reservationId && host) {
+    clearNativeIdentity(cwd, {
+      ticket_id: ticket.id,
+      host,
+      reservation_id: reservationId,
+      attempt: ticket.attempt,
+    });
+  }
+  clearHostGuardBindingsForTicketAttempt(cwd, {
+    id: ticket.id,
+    reservation_id: reservationId || null,
+    attempt: ticket.attempt,
+    host: ticket.host || null,
+    dispatch_host: ticket.dispatch_host || null,
+    agent_id: ticket.agent_id,
+  });
+}
+
 export function finishAgent(cwd: string, id: string, {
   status,
   conclusion = null,
@@ -784,7 +885,7 @@ export function finishAgent(cwd: string, id: string, {
   if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = normalizeTicketContract(readSpawn(cwd, id));
+    const ticket = requireCurrentTicket(readSpawn(cwd, id));
     if (host && ticketTargetHost(ticket) !== requireHost(host)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -849,6 +950,7 @@ export function finishAgent(cwd: string, id: string, {
         ticket.error = rejection;
         ticket.conclusion = null;
         ticket.finished_at = at;
+        clearTicketNativeIdentity(cwd, ticket);
         writeSpawn(cwd, ticket);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at);
         return ticket;
@@ -877,6 +979,7 @@ export function finishAgent(cwd: string, id: string, {
         ticket.error = rejection;
         ticket.conclusion = null;
         ticket.finished_at = at;
+        clearTicketNativeIdentity(cwd, ticket);
         writeSpawn(cwd, ticket);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at);
         return ticket;
@@ -903,6 +1006,7 @@ export function finishAgent(cwd: string, id: string, {
       }
     }
     ticket.finished_at = at;
+    clearTicketNativeIdentity(cwd, ticket);
     writeSpawn(cwd, ticket);
     updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at);
     return ticket;
@@ -933,6 +1037,7 @@ export function releaseAgent(cwd: string, id: string, { agentId = null, host, no
     }
     ticket.slot_released_at = at;
     history(ticket, "agent_slot_released", at, { agent_id: ticket.agent_id });
+    clearTicketNativeIdentity(cwd, ticket);
     writeSpawn(cwd, ticket);
     return ticket;
   });
@@ -966,6 +1071,8 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now }: 
       transition(ticket, "dispatching", "errored", { at, event: "dispatch_lease_expired", detail: { error_code: "DISPATCH_LEASE_EXPIRED" } });
       ticket.error = { code: "DISPATCH_LEASE_EXPIRED", message: "host did not bind an agent before the dispatch lease expired" };
       ticket.finished_at = at;
+      const expiredReservation = ticket.reservation_id;
+      if (expiredReservation) clearTicketNativeIdentity(cwd, ticket);
       writeSpawn(cwd, ticket);
       expired.push(ticket.id);
     }
@@ -974,10 +1081,10 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now }: 
 }
 
 export function dispatchSnapshot(cwd: string, { capacity, host, now }: { capacity?: number; host?: string; now?: TimeInput } = {}) {
-  const targetHost = host ? requireHost(host) : undefined;
+  const targetHost = host ? requireHost(host) : "codex" as HostId;
   const max = capacity == null ? (persistedCapacity(cwd, targetHost) ?? 1) : capacityValue(capacity);
   const allTickets = fifoTickets(cwd);
-  const tickets = targetHost ? allTickets.filter((ticket) => ticketMatchesHost(ticket, targetHost)) : allTickets;
+  const tickets = allTickets.filter((ticket) => ticketMatchesHost(ticket, targetHost));
   const counts: Partial<Record<TicketStatus, number>> = {};
   for (const ticket of tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;
   const active = tickets.filter(holdsHostSlot);

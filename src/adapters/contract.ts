@@ -59,11 +59,6 @@ export interface DiscoverCliModelsOptions {
   spawnImpl?: typeof spawn;
 }
 
-export type CliModelDiscovery = (
-  cli: CliId,
-  options?: DiscoverCliModelsOptions,
-) => Promise<CliModelCatalog>;
-
 /** Host-specific facts needed by the director and host skill installer. */
 export interface CliHostMetadata {
   /** Host id persisted on dispatch tickets. */
@@ -90,7 +85,13 @@ export interface CliHostMetadata {
 export interface CliAdapter {
   readonly id: CliId;
   readonly host: CliHostMetadata;
-  readonly legacyOpsProfile?: boolean;
   readonly resolveCommand: (env?: NodeJS.ProcessEnv) => string | null;
   readonly discoverModels: (options?: DiscoverCliModelsOptions) => Promise<CliModelCatalog>;
 }
+
+/**
+ * Resolve the selected host's adapter.  Commands depend on this boundary so
+ * tests can provide a current adapter without reintroducing a cross-host
+ * discovery function.
+ */
+export type CliAdapterProvider = (cli: CliId) => Pick<CliAdapter, "discoverModels">;

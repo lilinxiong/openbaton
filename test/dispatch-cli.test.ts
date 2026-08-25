@@ -4,11 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
-import { dispatchStatePath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
+import { hostDispatchStatePath, receiptsDir, runsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCodex } from "./configure.js";
 import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
+import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 
 function capture() {
   const chunks = [];
@@ -26,16 +27,28 @@ async function approvedSpawn(argv, options) {
   configureCodex(options.cwd, options.env, ["kimi/k3[1m]"]);
   const automatic = [];
   let hasHost = false;
-  for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] === "--model") {
-      index += 1;
-      continue;
-    }
-    if (argv[index] === "--host") hasHost = true;
-    automatic.push(argv[index]);
+  for (const arg of argv) {
+    if (arg === "--host") hasHost = true;
+    automatic.push(arg);
   }
   if (!hasHost) automatic.push("--host", "codex");
   return command([...automatic, "--json"], options);
+}
+
+function readTicket(cwd, id) {
+  return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
+}
+
+function observeCodexDispatch(cwd, env, id, hookAgentId) {
+  const ticket = readTicket(cwd, id);
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: "codex",
+  }, {}, undefined, env);
+  recordNativeIdentity(cwd, pending, hookAgentId, "hook", {}, undefined, env);
 }
 
 describe("dispatch CLI", () => {
@@ -45,8 +58,8 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--classification", "implementation"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--classification", "implementation"], { cwd, env })).code, 0);
       const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(ticket.receipt_id, "rcpt-spn-0001-a1");
       const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
@@ -65,7 +78,8 @@ describe("dispatch CLI", () => {
       assert.equal(reserved.reserved[0].reservation.ticket_id, "spn-0001");
       assert.deepEqual(reserved.snapshot.queued, ["spn-0002"]);
 
-      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-real-1", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
+      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-real");
+      const bound = await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-real", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       assert.equal(JSON.parse(bound.stdout).ticket.status, "running");
 
@@ -74,7 +88,7 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(completed.stdout).ticket.status, "completed");
       assert.equal(JSON.parse(completed.stdout).snapshot.available, 0);
 
-      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "agent-real-1", "--json"], { cwd, env });
+      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "codex-hook-dispatch-real", "--json"], { cwd, env });
       assert.equal(released.code, 0, released.stderr);
       assert.equal(JSON.parse(released.stdout).snapshot.available, 1);
 
@@ -90,7 +104,7 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      const spawned = await approvedSpawn(["spawn", "implement first unit", "--dispatch", "--capacity", "1"], { cwd, env });
+      const spawned = await approvedSpawn(["spawn", "implement first unit", "--classification", "implementation", "--dispatch", "--capacity", "1"], { cwd, env });
       assert.equal(spawned.code, 0, spawned.stderr || spawned.stdout);
       const payload = JSON.parse(spawned.stdout);
       assert.equal(payload.tickets[0].id, "spn-0001");
@@ -101,7 +115,8 @@ describe("dispatch CLI", () => {
       assert.deepEqual(parseDispatchReservationEnvelope(payload.reserved[0].prompt), payload.reserved[0].reservation);
       assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8")).status, "dispatching");
 
-      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-compact", "--host", "codex", "--json"], { cwd, env });
+      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-compact");
+      const bound = await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-compact", "--host", "codex", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       const completed = await command(["dispatch", "complete", "spn-0001", "--text", "first done", "--release", "--json"], { cwd, env });
       assert.equal(completed.code, 0, completed.stderr);
@@ -120,17 +135,17 @@ describe("dispatch CLI", () => {
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       configureCodex(cwd, env, ["kimi/k3[1m]"]);
-      const disabled = await command(["spawn", "implement omnimodal unit", "--host", "codex", "--model", "mimo-v2.5"], { cwd, env });
+      const disabled = await command(["spawn", "implement omnimodal unit", "--host", "codex", "--classification", "implementation", "--model", "mimo-v2.5"], { cwd, env });
       assert.equal(disabled.code, 1);
       assert.match(disabled.stderr, /MODEL_SELECTION_REMOVED/);
-      const bareAlias = await command(["spawn", "implement complex unit", "--host", "codex", "--model", "k3[1m]"], { cwd, env });
+      const bareAlias = await command(["spawn", "implement complex unit", "--host", "codex", "--classification", "implementation", "--model", "k3[1m]"], { cwd, env });
       assert.equal(bareAlias.code, 1);
       assert.match(bareAlias.stderr, /MODEL_SELECTION_REMOVED/);
-      assert.equal((await approvedSpawn(["spawn", "implement complex unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement complex unit", "--classification", "implementation"], { cwd, env })).code, 0);
 
       const conclude = await command(["conclude", "spn-0001", "--text", "fake completion"], { cwd, env });
       assert.equal(conclude.code, 1);
-      assert.match(conclude.stderr, /bound host agent/);
+      assert.match(conclude.stderr, /LEGACY_CLI_SURFACE_REMOVED/);
       const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8"));
       assert.equal(ticket.status, "queued");
       assert.equal(ticket.conclusion, null);
@@ -143,17 +158,18 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await approvedSpawn(["spawn", "implement third unit", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--classification", "implementation"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--classification", "implementation"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement third unit", "--classification", "implementation"], { cwd, env })).code, 0);
 
       const next = await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env });
       assert.equal(next.code, 0, next.stderr);
       assert.deepEqual(JSON.parse(next.stdout).reserved.map((item) => item.ticket_id), ["spn-0001", "spn-0002"]);
 
       // Capacity is persisted under ignored Baton runtime state.
-      const stateFile = dispatchStatePath(cwd);
+      const stateFile = hostDispatchStatePath(cwd, "codex");
       assert.ok(fs.existsSync(stateFile));
+      assert.equal(fs.existsSync(path.join(runsDir(cwd), "dispatch.json")), false);
       assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).capacity, 2);
 
       // Every following command is a fresh process (restart) and omits --capacity.
@@ -164,7 +180,8 @@ describe("dispatch CLI", () => {
       assert.equal(snap.active, 2);
       assert.equal(snap.available, 0);
 
-      const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-1", "--host", "codex", "--json"], { cwd, env });
+      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-capacity");
+      const bound = await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-capacity", "--host", "codex", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       assert.equal(JSON.parse(bound.stdout).snapshot.capacity, 2);
 
@@ -173,7 +190,7 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(completed.stdout).snapshot.capacity, 2);
       assert.equal(JSON.parse(completed.stdout).snapshot.available, 0);
 
-      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "agent-1", "--json"], { cwd, env });
+      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "codex-hook-dispatch-capacity", "--json"], { cwd, env });
       assert.equal(released.code, 0, released.stderr);
       assert.equal(JSON.parse(released.stdout).snapshot.available, 1);
 
@@ -183,30 +200,31 @@ describe("dispatch CLI", () => {
     });
   });
 
-  it("records checkpoint progress and treats host saturation as FIFO backpressure", async () => {
+  it("records progress and treats host saturation as FIFO backpressure", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-cli-"));
       const env = fakeEnv(home);
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await approvedSpawn(["spawn", "analyze the lifecycle", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "analyze the lifecycle", "--classification", "implementation"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env })).code, 0);
 
       const deferred = await command(["dispatch", "defer", "spn-0001", "--code", "AGENT_LIMIT_REACHED", "--observed-capacity", "1", "--json"], { cwd, env });
       assert.equal(deferred.code, 0, deferred.stderr);
       assert.equal(JSON.parse(deferred.stdout).ticket.status, "queued");
-      assert.equal(JSON.parse(fs.readFileSync(dispatchStatePath(cwd), "utf8")).capacity, 1);
+      assert.equal(JSON.parse(fs.readFileSync(hostDispatchStatePath(cwd, "codex"), "utf8")).capacity, 1);
 
       await command(["dispatch", "next", "--host", "codex", "--json"], { cwd, env });
-      await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-thinking", "--host", "codex", "--json"], { cwd, env });
+      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-thinking");
+      await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-thinking", "--host", "codex", "--json"], { cwd, env });
       const progress = await command([
         "dispatch", "progress", "spn-0001", "--phase", "working", "--text", "mapped current states",
         "--next", "check restart recovery", "--needs-input", "--json",
       ], { cwd, env });
       assert.equal(progress.code, 0, progress.stderr);
       const body = JSON.parse(progress.stdout);
-      assert.equal(body.ticket.work_unit.kind, "deliberative");
-      assert.equal(body.ticket.coordination.mode, "checkpointed");
+      assert.equal(body.ticket.work_unit.kind, "concrete");
+      assert.equal(body.ticket.coordination.mode, "terminal-only");
       assert.equal(body.ticket.progress.needs_director, true);
     });
   });
@@ -217,12 +235,13 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       await command(["init"], { cwd, env });
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await approvedSpawn(["spawn", "build the Android target", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "build the Android target", "--classification", "implementation"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env })).code, 0);
-      assert.equal((await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-build", "--host", "codex", "--json"], { cwd, env })).code, 0);
+      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-build");
+      assert.equal((await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-build", "--host", "codex", "--json"], { cwd, env })).code, 0);
 
       const live = await command([
-        "dispatch", "probe", "spn-0001", "--agent-id", "agent-build", "--state", "running", "--activity", "status", "--json",
+        "dispatch", "probe", "spn-0001", "--agent-id", "codex-hook-dispatch-build", "--state", "running", "--activity", "status", "--json",
       ], { cwd, env });
       assert.equal(live.code, 0, live.stderr);
       const liveBody = JSON.parse(live.stdout);
@@ -237,7 +256,7 @@ describe("dispatch CLI", () => {
       assert.match(timeOnly.stderr, /elapsed wait time is never timeout evidence/);
 
       const missing = await command([
-        "dispatch", "probe", "spn-0001", "--agent-id", "agent-build", "--state", "not_found", "--json",
+        "dispatch", "probe", "spn-0001", "--agent-id", "codex-hook-dispatch-build", "--state", "not_found", "--json",
       ], { cwd, env });
       assert.equal(missing.code, 0, missing.stderr);
       const missingBody = JSON.parse(missing.stdout);
@@ -255,8 +274,8 @@ describe("dispatch CLI", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
-      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--host", "codex", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
-      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--host", "codex", "--model", "kimi/k3[1m]"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement first unit", "--host", "codex", "--classification", "implementation"], { cwd, env })).code, 0);
+      assert.equal((await approvedSpawn(["spawn", "implement second unit", "--host", "codex", "--classification", "implementation"], { cwd, env })).code, 0);
 
       const unresolved = await command(["dispatch", "next", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(unresolved.code, 1);
@@ -296,8 +315,9 @@ describe("dispatch CLI", () => {
       assert.equal(hostlessBody.blocked[0]?.code, "HOST_REQUIRED");
       assert.equal(JSON.parse(fs.readFileSync(hostlessPath, "utf8")).status, "queued");
 
-      const stateFile = dispatchStatePath(cwd);
-      for (const file of [stateFile, dispatchStatePath(cwd, "codex")]) {
+      const stateFile = path.join(runsDir(cwd), "dispatch.json");
+      const keyedStateFile = hostDispatchStatePath(cwd, "codex");
+      for (const file of [stateFile, keyedStateFile]) {
         try { fs.unlinkSync(file); } catch { /* optional */ }
       }
       fs.mkdirSync(path.dirname(stateFile), { recursive: true });

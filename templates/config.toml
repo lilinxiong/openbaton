@@ -12,10 +12,6 @@ max_depth = 1
 # profile, max_concurrent/max_depth are omitted when the CLI did not report
 # them, so the director values above remain effective.
 
-# Action classification remains global. Model labels live under selected CLI
-# profiles.
-[ops.runner]
-actions = ["test", "build", "lint", "typecheck", "git-commit"]
-
-[ops.longctx]
-actions = ["search", "digest", "git-summarize"]
+# Execution classification is supplied by the director workflow contract.
+# Operation labels are audit metadata and are never serialized as a routing
+# table. Model labels live under selected CLI profiles.

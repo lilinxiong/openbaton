@@ -4,22 +4,20 @@ import {
   buildWorkerPrompt,
   compileWorkUnit,
   coordinationFor,
-  inferWorkUnitKind,
 } from "../src/lib/work-unit.js";
 
 describe("work-unit contract", () => {
-  it("keeps bounded execution terminal-only", () => {
-    assert.equal(inferWorkUnitKind("implement the parser and run its unit tests"), "concrete");
-    assert.equal(inferWorkUnitKind("修复登录超时并运行测试"), "concrete");
-    const unit = compileWorkUnit("implement the parser and run its unit tests");
+  it("requires an explicit kind", () => {
+    assert.throws(() => compileWorkUnit("implement the parser and run its unit tests" as string, undefined as never), /work unit kind is required/);
+  });
+
+  it("keeps explicitly concrete execution terminal-only", () => {
+    const unit = compileWorkUnit("implement the parser and run its unit tests", { kind: "concrete" });
     assert.equal(coordinationFor(unit).mode, "terminal-only");
   });
 
-  it("treats analysis and ambiguous work as deliberative with checkpoints", () => {
-    assert.equal(inferWorkUnitKind("analyze the lifecycle tradeoffs"), "deliberative");
-    assert.equal(inferWorkUnitKind("梳理并发模型"), "deliberative");
-    assert.equal(inferWorkUnitKind("take care of this"), "deliberative");
-    const unit = compileWorkUnit("analyze the lifecycle tradeoffs");
+  it("keeps explicitly deliberative work checkpointed", () => {
+    const unit = compileWorkUnit("analyze the lifecycle tradeoffs", { kind: "deliberative" });
     const coordination = coordinationFor(unit);
     assert.equal(coordination.mode, "checkpointed");
     assert.equal(coordination.progress_interval_ms, 60_000);
@@ -33,7 +31,7 @@ describe("work-unit contract", () => {
       doneWhen: "all null-producing branches are checked",
     });
     assert.equal(unit.kind, "concrete");
-    assert.equal(unit.classification, "explicit");
+    assert.equal("classification" in unit, false);
     assert.equal(unit.deliverable, "a finding list with line references");
   });
 });

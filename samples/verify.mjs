@@ -34,7 +34,7 @@ if (fs.realpathSync(root) !== workspace) fail("workspace must be its own Git roo
 const home = userHome();
 const batonRoot = batonHome();
 const workspaceId = crypto.createHash("sha256").update(workspace).digest("hex");
-const batonWorkspace = path.join(batonRoot, "workspaces", workspaceId);
+const batonWorkspace = path.join(batonRoot, "workspaces", workspaceId, "v2");
 const tickets = readJsonDirectory(path.join(batonWorkspace, "spawns"))
   .filter((ticket) => ticket.source === (mode === "openspec" ? "openspec" : "standalone"))
   .sort((a, b) => String(a.id).localeCompare(String(b.id)));
@@ -98,8 +98,6 @@ function verifyAutomaticSelection(items, selections, expectedHost) {
   const delegatedUnits = proposal.units.filter((unit) => !unit.director_local);
   assert(delegatedUnits.length === items.length, `expected ${items.length} delegated units, got ${delegatedUnits.length}`);
   assert(proposal.status === "approved" && proposal.approved_at, "the recommendation must be approved automatically");
-  assert(proposal.model_policy_id === "configured-cli-subagent-allowlist-v1", "proposal must bind the configured CLI allowlist policy");
-  assert(Array.isArray(proposal.policy_exclusions) && proposal.policy_exclusions.length === 0, "there must be no hard-coded model-family exclusions");
   assert(proposal.confirmation?.scope === "proposal", "automatic approval is scoped to its request proposal");
   assert(proposal.confirmation?.confirmed_by === "baton-recommendation", "approval must not claim user model confirmation");
   assert(proposal.history?.[0]?.event === "pending_confirmation" && proposal.history?.some((event) => event.event === "approved"), "proposal must retain create-then-auto-approve audit order");
@@ -156,10 +154,8 @@ function verifyAutomaticSelection(items, selections, expectedHost) {
 
 function verifyQueueRefill(items, runtimeRoot, expectedHost) {
   const dispatchState = path.join(runtimeRoot, "runs", `dispatch-${expectedHost}.json`);
-  const legacyState = path.join(runtimeRoot, "runs", "dispatch.json");
-  const file = fs.existsSync(dispatchState) ? dispatchState : legacyState;
-  if (!fs.existsSync(file)) return;
-  const capacity = Number(JSON.parse(fs.readFileSync(file, "utf8")).capacity);
+  if (!fs.existsSync(dispatchState)) return;
+  const capacity = Number(JSON.parse(fs.readFileSync(dispatchState, "utf8")).capacity);
   if (!Number.isInteger(capacity) || capacity >= items.length) return;
   const releases = items.map((ticket) => Date.parse(ticket.slot_released_at || "")).filter(Number.isFinite).sort((a, b) => a - b);
   const reservations = items.map((ticket) => Date.parse(ticket.history?.find((entry) => entry.event === "dispatch_reserved")?.at || "")).filter(Number.isFinite);

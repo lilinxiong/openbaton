@@ -17,9 +17,10 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { cliProfileForHost, loadConfig } from "../src/lib/config.js";
+import { recordNativeIdentity, recordPendingReservation, type NativeIdentitySource } from "../src/lib/host-identity.js";
 import { resolveRuntimeHost } from "../src/lib/hosts.js";
 import { spawnsDir } from "../src/lib/paths.js";
-import type { CliId } from "../src/lib/cli-models.js";
+import type { CliId } from "../src/adapters/contract.js";
 
 export const COMPARE_REQUEST = "coverage of configured mechanical routes";
 
@@ -27,17 +28,20 @@ export interface CompareUnit {
   key: string;
   phrase: string;
   argv: string[];
+  classification: "mechanical" | "long-context" | "implementation";
+  operation: string;
+  capabilities?: string[];
   commit?: boolean;
 }
 
 export const COMPARE_UNITS: CompareUnit[] = [
-  { key: "test", phrase: "bun run test", argv: ["bun", "run", "test"] },
-  { key: "build", phrase: "bun run build", argv: ["bun", "run", "build"] },
-  { key: "typecheck", phrase: "bun run check", argv: ["bun", "run", "check"] },
-  { key: "search", phrase: "rg configuredRoute src", argv: ["rg", "configuredRoute", "src"] },
-  { key: "summarize", phrase: "git status", argv: ["git", "status", "--short", "--branch"] },
-  { key: "ordinary", phrase: "Read package.json and report the bin name", argv: ["node", "-e", "const p=require('./package.json'); console.log(JSON.stringify(p.bin || p.name))"] },
-  { key: "commit", phrase: "git commit staged changes", argv: ["git", "commit", "-m", "compare-ops: staged work"], commit: true },
+  { key: "test", phrase: "bun run test", argv: ["bun", "run", "test"], classification: "mechanical", operation: "test" },
+  { key: "build", phrase: "bun run build", argv: ["bun", "run", "build"], classification: "mechanical", operation: "build" },
+  { key: "typecheck", phrase: "bun run check", argv: ["bun", "run", "check"], classification: "mechanical", operation: "typecheck" },
+  { key: "search", phrase: "rg configuredRoute src", argv: ["rg", "configuredRoute", "src"], classification: "long-context", operation: "search" },
+  { key: "summarize", phrase: "git status", argv: ["git", "status", "--short", "--branch"], classification: "long-context", operation: "summarize" },
+  { key: "ordinary", phrase: "Read package.json and report the bin name", argv: ["node", "-e", "const p=require('./package.json'); console.log(JSON.stringify(p.bin || p.name))"], classification: "implementation", operation: "read-package" },
+  { key: "commit", phrase: "git commit staged changes", argv: ["git", "commit", "-m", "compare-ops: staged work"], classification: "mechanical", operation: "git-commit", capabilities: ["commit"], commit: true },
 ];
 
 export interface LaneResult {
@@ -50,7 +54,7 @@ export interface LaneResult {
 
 export interface BatonLaneResult extends LaneResult {
   kind: "ops-dispatch" | "subagent" | "director-local" | "skipped" | "missing";
-  action: string | null;
+  operation: string | null;
   profile: string | null;
   model: string | null;
   ticket_id: string | null;
@@ -183,7 +187,7 @@ async function baton(
   if (/empty index|git-commit skipped/.test(text)) {
     return {
       payload: {
-        skipped: [{ key: "commit", action: "git-commit", reason: "empty index, nothing to commit" }],
+        skipped: [{ key: "commit", operation: "git-commit", reason: "empty index, nothing to commit" }],
         reserved: [],
       },
       ms,
@@ -192,7 +196,7 @@ async function baton(
   if (/director-local/.test(text)) {
     return {
       payload: {
-        director_local: [{ key: "commit", action: "git-commit", reason: clip(text) }],
+        director_local: [{ key: "commit", operation: "git-commit", reason: clip(text) }],
         reserved: [],
       },
       ms,
@@ -203,6 +207,29 @@ async function baton(
 
 function readTicket(cwd: string, env: NodeJS.ProcessEnv, id: string) {
   return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd, env), `${id}.json`), "utf8"));
+}
+
+function fixtureIdentitySource(host: string): NativeIdentitySource {
+  const normalized = String(host || "").trim().toLowerCase();
+  if (normalized === "grok") return "lifecycle";
+  if (normalized === "cursor") return "tool-return";
+  if (normalized === "codex" || normalized === "claude") return "hook";
+  throw new Error(`fixture compare has no authoritative identity source for host ${host}`);
+}
+
+function seedFixtureIdentity(cwd: string, env: NodeJS.ProcessEnv, ticketId: string, host: string): void {
+  const ticket = readTicket(cwd, env, ticketId) as Record<string, unknown>;
+  const normalizedHost = String(host || ticket.dispatch_host || ticket.host || "").trim().toLowerCase();
+  const agentId = `compare-${ticketId}`;
+  const context = normalizedHost === "grok" ? { session_id: agentId } : {};
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: String(ticket.reservation_id || ""),
+    ticket_id: String(ticket.id || ticketId),
+    attempt: Number(ticket.attempt || 0),
+    host: normalizedHost,
+  }, context, undefined, env);
+  recordNativeIdentity(cwd, pending, agentId, fixtureIdentitySource(normalizedHost), context, undefined, env);
 }
 
 export function createFixtureWorkspace(root?: string): string {
@@ -256,7 +283,7 @@ function skippedLane(reason: string, spawnCliMs: number | null = null): BatonLan
     stderr: "",
     skipped: reason,
     kind: "skipped",
-    action: null,
+    operation: null,
     profile: null,
     model: null,
     ticket_id: null,
@@ -294,7 +321,7 @@ async function finishTicket(options: {
   unit: CompareUnit;
   ticket: Record<string, unknown>;
   kind: BatonLaneResult["kind"];
-  action: string | null;
+  operation: string | null;
   profile: string | null;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -311,7 +338,7 @@ async function finishTicket(options: {
     stdout: "",
     stderr: "",
     kind: options.kind,
-    action: options.action,
+    operation: options.operation,
     profile: options.profile,
     model: String(options.ticket.model_id || options.ticket.route_id || ""),
     ticket_id: ticketId,
@@ -320,6 +347,7 @@ async function finishTicket(options: {
   if (!options.reserved.has(ticketId)) {
     throw new Error(`${ticketId} was created but not reserved`);
   }
+  if (options.mode === "fixture") seedFixtureIdentity(options.cwd, options.env, ticketId, options.host);
   const bound = await baton(
     ["dispatch", "bind", ticketId, "--agent-id", `compare-${ticketId}`, "--host", options.host, "--json"],
     options.cwd,
@@ -329,7 +357,7 @@ async function finishTicket(options: {
   const executed = runArgv(options.cwd, argvFor(options.unit, options.cwd, options.env, options.mode), options.env, options.timeoutMs);
   Object.assign(lane, executed);
   lane.kind = options.kind;
-  lane.action = options.action;
+  lane.operation = options.operation;
   lane.profile = options.profile;
   lane.model = String(options.ticket.model_id || options.ticket.route_id || "");
   lane.ticket_id = ticketId;
@@ -363,7 +391,7 @@ async function batonLaneForUnit(options: {
 }): Promise<BatonLaneResult> {
   const index = indexSpawn(options.payload);
   const skip = index.skipped.get(options.unit.key);
-  if (skip) return { ...skippedLane(String(skip.reason || "skipped"), options.spawnCliMs), action: String(skip.action || options.unit.key) };
+  if (skip) return { ...skippedLane(String(skip.reason || "skipped"), options.spawnCliMs), operation: String(skip.operation || options.unit.operation) };
   const director = index.local.get(options.unit.key);
   if (director) {
     const executed = runArgv(
@@ -375,20 +403,21 @@ async function batonLaneForUnit(options: {
     return {
       ...executed,
       kind: "director-local",
-      action: String(director.action || options.unit.key),
+      operation: String(director.operation || options.unit.operation),
       profile: null,
       model: null,
       ticket_id: null,
       phases: { ...emptyPhases(options.spawnCliMs), execute_ms: executed.elapsed_ms },
     };
   }
-  const ops = index.dispatched.get(options.unit.key);
+  const ops = index.dispatched.get(options.unit.key)
+    || (options.unit.commit ? index.dispatched.get("standalone") : undefined);
   if (ops) {
     return finishTicket({
       unit: options.unit,
       ticket: ops.ticket as Record<string, unknown>,
       kind: "ops-dispatch",
-      action: String(ops.action),
+      operation: String(ops.operation || options.unit.operation),
       profile: String(ops.profile),
       cwd: options.cwd,
       env: options.env,
@@ -405,7 +434,7 @@ async function batonLaneForUnit(options: {
       unit: options.unit,
       ticket: ordinary,
       kind: options.unit.commit ? "ops-dispatch" : "subagent",
-      action: options.unit.commit ? "git-commit" : null,
+      operation: options.unit.commit ? options.unit.operation : null,
       profile: options.unit.commit ? "runner" : null,
       cwd: options.cwd,
       env: options.env,
@@ -422,7 +451,7 @@ async function batonLaneForUnit(options: {
     stdout: "",
     stderr: "unit missing from baton spawn payload",
     kind: "missing",
-    action: null,
+    operation: null,
     profile: null,
     model: null,
     ticket_id: null,
@@ -447,6 +476,8 @@ export async function runMechanicalCompare(options: CompareOptions): Promise<Com
   const spawnArgs = [
     "spawn", COMPARE_REQUEST,
     ...workUnits.flatMap((unit) => ["--unit", `${unit.key}=${unit.phrase}`]),
+    ...workUnits.flatMap((unit) => ["--unit-classification", `${unit.key}=${unit.classification}`]),
+    ...workUnits.flatMap((unit) => ["--unit-operation", `${unit.key}=${unit.operation}`]),
     "--dispatch", "--json",
     "--host", cli,
     "--capacity", String(Math.max(workUnits.length, 1)),
@@ -469,7 +500,9 @@ export async function runMechanicalCompare(options: CompareOptions): Promise<Com
   if (allowCommit) {
     const commitUnit = COMPARE_UNITS.find((unit) => unit.commit)!;
     const commitSpawn = await baton([
-      "spawn", commitUnit.phrase, "--dispatch", "--json",
+      "spawn", commitUnit.phrase,
+      "--classification", JSON.stringify({ kind: commitUnit.classification, operation: commitUnit.operation, capabilities: commitUnit.capabilities || [] }),
+      "--dispatch", "--json",
       "--host", cli, "--capacity", "1",
     ], batonRoot, env);
     lanes.set(commitUnit.key, await batonLaneForUnit({
@@ -530,7 +563,7 @@ export function formatCompareReport(report: CompareReport): string {
   ];
   for (const task of report.tasks) {
     const via = task.baton.kind === "ops-dispatch" && task.baton.profile
-      ? `${task.baton.profile}/${task.baton.action}`
+      ? `${task.baton.profile}${task.baton.operation ? `/${task.baton.operation}` : ""}`
       : task.baton.kind;
     const result = [
       task.direct.skipped ? `without:${task.direct.skipped}` : `without:${task.direct.exit === 0 ? "pass" : `fail ${task.direct.exit}`}`,

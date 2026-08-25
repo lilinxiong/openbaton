@@ -5,18 +5,21 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import {
-  discoverCliModels,
-  discoverCursorModels,
-  discoverGrokModels,
   normalizeCodexModels,
-  normalizeCursorModels,
-  normalizeGrokModels,
-  parseCursorModelText,
-  parseGrokModelText,
   resolveCodexCommand,
+} from "../src/adapters/codex.js";
+import {
+  discoverCursorModels,
+  normalizeCursorModels,
+  parseCursorModelText,
   resolveCursorCommand,
+} from "../src/adapters/cursor.js";
+import {
+  discoverGrokModels,
+  normalizeGrokModels,
+  parseGrokModelText,
   resolveGrokCommand,
-} from "../src/lib/cli-models.js";
+} from "../src/adapters/grok.js";
 import type { CodedError } from "../src/types.js";
 
 describe("Codex CLI model adapter", () => {
@@ -211,19 +214,6 @@ describe("Grok CLI model adapter", () => {
     assert.deepEqual(catalog.capabilities, { max_concurrent: 6, max_depth: 2 });
   });
 
-  it("routes discoverCliModels(grok) through discoverGrokModels", async () => {
-    const catalog = await discoverCliModels("grok", {
-      command: "/bin/grok",
-      spawnImpl: fakeSpawn((args) => {
-        if (args[0] === "models") return { code: 0, stdout: JSON.stringify([{ id: "grok-4.5" }]) };
-        if (args[0] === "version") return { code: 1, stderr: "no" };
-        return { code: 1 };
-      }),
-    });
-    assert.equal(catalog.cli, "grok");
-    assert.deepEqual(catalog.models.map((model) => model.id), ["grok-4.5"]);
-  });
-
   it("codes missing binary and failed discovery", async () => {
     await assert.rejects(
       () => discoverGrokModels({ env: { PATH: "", HOME: "" } }),
@@ -324,19 +314,6 @@ describe("Cursor CLI model adapter", () => {
     assert.equal(catalog.version, "2026.08.11-e8db854");
     assert.deepEqual(catalog.models.map((model) => model.id), ["auto", "composer-2.5", "gemini-3.7-flash-high"]);
     assert.deepEqual(calls.filter((call) => call.startsWith("models")), ["models"]);
-  });
-
-  it("routes discoverCliModels(cursor) through discoverCursorModels", async () => {
-    const catalog = await discoverCliModels("cursor", {
-      command: "/bin/cursor-agent",
-      spawnImpl: fakeSpawn((args) => {
-        if (args[0] === "models") return { code: 0, stdout: JSON.stringify([{ id: "composer-2.5" }]) };
-        if (args[0] === "--version") return { code: 1, stderr: "no" };
-        return { code: 1 };
-      }),
-    });
-    assert.equal(catalog.cli, "cursor");
-    assert.deepEqual(catalog.models.map((model) => model.id), ["composer-2.5"]);
   });
 
   it("codes missing binary and failed discovery", async () => {

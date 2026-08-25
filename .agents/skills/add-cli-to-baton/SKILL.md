@@ -51,11 +51,17 @@ If model discovery works but no qualifying native child-agent mechanism exists, 
 
 The target runtime skill MUST include the same director/worker routing table as every other host. Same words. Do not invent a host-specific split. Producing a runtime skill without this table, or inventing a host-specific split, means the adapter work is incomplete.
 
-- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
-- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **Director-owned classification is authoritative.** Discussion and read-only analysis stay on the director. When the selected target profile is enabled, every ordinary implementation request—including tiny edits—must be delegated to that host's native subagent; do not apply a tiny-edit shortcut. Missing/disabled profiles or unresolved classifications fail closed. Classified mechanical work never falls back to director execution when its configured route is empty or unusable.
+- **Declared classified work → native subagents.** Classified mechanical/long-context units, authorized implementation requests, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
 - **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
 
 Hook-capable targets must use the shared ticket-presence guard (no reserved ticket → director mutating tools allowed; reserved/dispatching/running worker tickets → director implementation writes denied; bound workers stay inside the Receipt), not a private invert such as fail-closed-always or allow-always. Missing a hook is not a license to implement declared classified work in the parent.
+
+## Automatic workflow contract (completion invariant)
+
+When the selected target profile is enabled and the user authorizes execution, the director must classify every executable request before dispatch and pass that classification to Baton. Baton persists resulting tickets and Receipts; it does not invent or own a separate DAG. Discussion and read-only analysis remain director-owned. Authorized implementation nodes use the target's native child-agent tool. Mechanical classification selects the configured class route; operation labels remain audit metadata and must not become a fixed action-name matcher. Commit/publish authority stays in deterministic Receipt/Git capability checks. Missing authorization, a disabled profile, or an unresolved class fails closed.
+
+The target runtime skill and the installed global `~/.baton/SKILL.md` must describe this contract. The checkout updater must run the linked checkout's `baton update` so the active global skill is copied from this checkout after every build.
 
 ## Implement complete host parity
 

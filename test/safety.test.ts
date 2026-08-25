@@ -30,6 +30,10 @@ function fixture(): string {
   return cwd;
 }
 
+function createInternalTurnDiffRef(cwd: string, name = "worker"): void {
+  git(cwd, "update-ref", `refs/codex/turn-diffs/${name}`, "HEAD");
+}
+
 describe("parent shared-worktree safety gate", () => {
   it("accepts an allowlisted tracked write", () => {
     const cwd = fixture();
@@ -38,6 +42,52 @@ describe("parent shared-worktree safety gate", () => {
     const verdict = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
     assert.equal(verdict.accepted, true);
     assert.deepEqual(verdict.changes.map((item) => [item.path, item.operation]), [["allowed.txt", "write"]]);
+  });
+
+  it("ignores a read-only stat-cache refresh when the staged tree is unchanged", () => {
+    const cwd = fixture();
+    const baseline = captureBaseline(cwd);
+    const beforeIndex = fs.readFileSync(baseline.index_path);
+    const touchedAt = new Date(Date.now() + 2_000);
+    fs.utimesSync(path.join(cwd, "allowed.txt"), touchedAt, touchedAt);
+    git(cwd, "status", "--porcelain=v1", "--untracked-files=all");
+    assert.notDeepEqual(fs.readFileSync(baseline.index_path), beforeIndex);
+    assert.equal(git(cwd, "write-tree").trim(), baseline.index_tree);
+
+    const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+    assert.equal(verdict.accepted, true);
+    assert.ok(!verdict.violations.some((item) => item.code === "E_INDEX_MUTATION"));
+  });
+
+  it("rejects a real staged index mutation even when the write path is allowlisted", () => {
+    const cwd = fixture();
+    const baseline = captureBaseline(cwd);
+    fs.appendFileSync(path.join(cwd, "denied.txt"), "STAGED_OUT_OF_SCOPE\n");
+    git(cwd, "add", "denied.txt");
+
+    const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+    assert.equal(verdict.accepted, false);
+    assert.ok(verdict.violations.some((item) => item.code === "E_INDEX_MUTATION"));
+  });
+
+  it("rejects index control-flag mutations while tolerating stat-cache refreshes", () => {
+    for (const [flag, clear] of [["--assume-unchanged", "--no-assume-unchanged"], ["--skip-worktree", "--no-skip-worktree"]] as const) {
+      const cwd = fixture();
+      const baseline = captureBaseline(cwd);
+      git(cwd, "update-index", flag, "allowed.txt");
+      const verdict = auditWorktree(cwd, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
+      assert.equal(verdict.accepted, false, flag);
+      assert.ok(verdict.violations.some((item) => item.code === "E_INDEX_MUTATION"), flag);
+      git(cwd, "update-index", clear, "allowed.txt");
+    }
+
+    const intent = fixture();
+    const baseline = captureBaseline(intent);
+    fs.writeFileSync(path.join(intent, "intent.txt"), "intent\n");
+    git(intent, "add", "-N", "intent.txt");
+    const verdict = auditWorktree(intent, baseline, { write_allowlist: ["allowed.txt"], allowed_operations: ["write"] });
+    assert.equal(verdict.accepted, false, "intent-to-add");
+    assert.ok(verdict.violations.some((item) => item.code === "E_INDEX_MUTATION"), "intent-to-add");
   });
 
   it("reproduces V-06 and rejects allowed plus denied writes", () => {
@@ -64,6 +114,24 @@ describe("parent shared-worktree safety gate", () => {
     git(cwd, "commit", "-q", "-m", "worker commit");
     const afterCommit = auditWorktree(cwd, baseline, { write_allowlist: ["**"], allowed_operations: ["write", "create", "rename"] });
     assert.ok(afterCommit.violations.some((item) => item.code === "E_HEAD_MUTATION"));
+  });
+
+  it("rejects ordinary worker ref and reflog mutations even when files stay unchanged", () => {
+    const cwd = fixture();
+    const baseline = captureBaseline(cwd);
+    git(cwd, "tag", "worker-tag");
+    const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+    assert.equal(verdict.accepted, false);
+    assert.ok(verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
+  });
+
+  it("ignores internal codex turn-diff refs when the repository state is otherwise unchanged", () => {
+    const cwd = fixture();
+    const baseline = captureBaseline(cwd);
+    createInternalTurnDiffRef(cwd);
+    const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+    assert.equal(verdict.accepted, true);
+    assert.ok(!verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
   });
 
   it("allows incremental writes on a dirty allowlisted file and freezes unrelated dirt", () => {
@@ -176,6 +244,39 @@ describe("commit-only safety gate", () => {
     const verdict = auditPreparedCommit(cwd, baseline);
     assert.equal(verdict.accepted, false);
     assert.ok(verdict.violations.some((item) => item.code === "E_INDEX_TREE_MUTATION"));
+  });
+
+  it("ignores internal codex turn-diff refs before commit dispatch", () => {
+    const cwd = fixture();
+    fs.appendFileSync(path.join(cwd, "allowed.txt"), "STAGED\n");
+    git(cwd, "add", "allowed.txt");
+    const baseline = captureCommitBaseline(cwd);
+    createInternalTurnDiffRef(cwd);
+    const verdict = auditPreparedCommit(cwd, baseline);
+    assert.equal(verdict.accepted, true);
+    assert.ok(!verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
+  });
+
+  it("still rejects non-internal ref mutations before commit dispatch", () => {
+    const cwd = fixture();
+    fs.appendFileSync(path.join(cwd, "allowed.txt"), "STAGED\n");
+    git(cwd, "add", "allowed.txt");
+    const baseline = captureCommitBaseline(cwd);
+    git(cwd, "tag", "worker-tag");
+    const verdict = auditPreparedCommit(cwd, baseline);
+    assert.equal(verdict.accepted, false);
+    assert.ok(verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
+  });
+
+  it("rejects commit-only index control-flag changes even when the tree is unchanged", () => {
+    const cwd = fixture();
+    fs.appendFileSync(path.join(cwd, "allowed.txt"), "STAGED\n");
+    git(cwd, "add", "allowed.txt");
+    const baseline = captureCommitBaseline(cwd);
+    git(cwd, "update-index", "--skip-worktree", "allowed.txt");
+    const verdict = auditPreparedCommit(cwd, baseline);
+    assert.equal(verdict.accepted, false);
+    assert.ok(verdict.violations.some((item) => item.code === "E_INDEX_CONTROL_MUTATION"));
   });
 
   it("requires a commit only on successful completion", () => {

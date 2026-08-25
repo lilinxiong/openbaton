@@ -84,12 +84,6 @@ variables are not persisted as if the CLI had reported them.
       "gpt-5.3-codex-spark",
     ]
 
-    [ops.runner]
-    actions = ["test", "build", "lint", "typecheck", "git-commit"]
-
-    [ops.longctx]
-    actions = ["search", "digest", "git-summarize"]
-
 runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same CLI-returned model surface.
 
 Configured label values are automatically included in subagent_models. A disabled profile contributes no candidates.
@@ -138,7 +132,17 @@ Baton never inherits the parent model, chooses outside the enabled allowlist, in
 
 ## Director/worker routing
 
-Empty `runner`/`longctx` labels, undeclared work, and units Baton cannot classify stay on the director. Declared classified work—non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host—runs on native subagents through Baton tickets; the director does not implement those units in the parent session. OpenSpec only lightens orchestration; it does not change who writes declared classified tasks. The same table applies on every host; do not invent a host-specific split.
+Discussion and read-only analysis stay on the director. When the selected CLI profile is enabled, every ordinary implementation request—including tiny edits—runs through that host's native subagent; do not apply a tiny-edit shortcut. Missing/disabled profiles or unresolved classifications fail closed. Classified mechanical work never falls back to director execution when its configured route is empty or unusable. OpenSpec only lightens orchestration; it does not change who writes executable tasks. The same rule applies on every host.
+
+## Automatic workflow contract
+
+With the selected CLI profile enabled and the user authorizing execution, the director classifies each executable request and passes that structured classification to Baton before dispatch. Baton persists the resulting tickets and Receipts; it does not invent or own a separate DAG. Discussion and read-only analysis stay on the director. Authorized implementation nodes use the current host's native subagent tool. A `mechanical` classification selects the configured `runner` route (and `long-context` selects `longctx`); operation labels are audit metadata and never a fixed action-name matcher. Commit/publish authority remains the deterministic Receipt/Git capability gate. Missing authorization, a disabled profile, or unresolved classification fails closed.
+
+## Write-scope readiness
+
+Before creating or dispatching any write ticket, the director performs a read-only impact/dependency pass for that unit. The pass must resolve the affected dependencies and record a complete, exact per-unit write-path set with allowed operations. Paths are explicit; allowed operations are `write`, `create`, `delete`, `rename`, and `chmod`. Unknown impact, dependency, path, or operation keeps classification unresolved, so no implementation ticket is created or dispatched.
+
+Parallel dispatch is permitted only when every participating unit has a complete scope and pairwise disjoint write sets, including rename source/destination paths and path-prefix overlaps. Otherwise units are sequenced or remain director-local. If a worker discovers an undeclared path or operation, it stops before mutation and returns a scope decision to the director. It must never edit first and rely on terminal retry or audit to authorize the change. Mechanical routing remains based on the structured class; operation labels stay opaque audit metadata and never select a route.
 
 ## Execution lifecycle
 
@@ -146,7 +150,7 @@ The Baton CLI creates tickets and lifecycle state; only the selected host (Codex
 
 1. baton spawn or baton apply creates automatically routed tickets and immutable Receipts.
 2. The host reserves work with baton dispatch next.
-3. The host calls its native subagent tool (Codex `spawn_agent`, Grok `spawn_subagent`, Cursor `Task`, or Claude Code `Agent`) with the returned `prompt` and, when supported, `description` unchanged, plus the exact model and only the effort/service-tier options the tool can express. The first-line JSON envelope carries an opaque per-attempt reservation identity; ticket ids such as `spn-*`, `os-*`, or any future form are never classified by prefix. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
+3. The host calls its native subagent tool (Codex `spawn_agent`, including namespaced collaboration variants, Grok `spawn_subagent`, Cursor `Task`, or Claude Code `Agent`) with the returned `prompt` and, when supported, `description` unchanged, plus the exact model and only the effort/service-tier options the tool can express. The first-line JSON envelope carries an opaque per-attempt reservation identity; ticket ids such as `spn-*`, `os-*`, or any future form are never classified by prefix. Codex `task_name` is bind metadata only and never replaces the authoritative `SubagentStart` UUID. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
 4. The host binds the returned agent id, persists activity and progress, and records exactly one terminal result.
 5. The host closes the native agent and runs dispatch release before refilling FIFO.
 
@@ -154,9 +158,19 @@ Logical work is uncapped; physical concurrency follows the current host limit. A
 
 Read-only is the default. Write tickets require an immutable path and operation allowlist plus parent Git safety checks. Pre-existing uncommitted work is kept as baseline dirt; the worker may continue allowlisted files incrementally and must not mutate unrelated dirt. The sole Git exception is an exclusive commit-only ticket over an exact parent-staged tree; it may create one audited commit and may not stage, amend, branch, rebase, tag, or push.
 
+For a standalone write, pass the exact path and operations explicitly:
+
+    baton spawn "implement the migration" --host HOST --classification implementation \
+      --write-path src/migration.ts --write-ops write,create
+
+For OpenSpec, scope each unit before dispatch; only complete, disjoint scopes may share a wave:
+
+    baton apply CHANGE --host HOST --dispatch \
+      --unit ID --write-path src/migration.ts --unit ID --write-path src/config.ts
+
 ## Mechanical ops
 
-`ops.runner` and `ops.longctx` label which mechanical actions leave the director. runner: `test`, `build`, `lint`, `typecheck`, `git-commit`. longctx: `search`, `digest`, `git-summarize`. Empty labels keep those units on the director. Mechanical workers execute the inferred command and do not explore; `git-commit` may read the staged diff, write one message, and create one commit.
+The director's structured execution class selects `runner` or `longctx`; operation labels are retained for audit only. Empty or unusable labels fail closed for classified mechanical work. Mechanical workers execute the director-specified operation and do not infer commands from prose or explore. Commit-only additionally requires an explicit commit capability and the Receipt/Git safety gate; `operation = "git-commit"` alone is not authority.
 
 Benchmark: the same local command with Baton tickets (spawn, bind, run, complete/release) vs without Baton (run the command). No host model is spawned. Default mode runs in this repo and skips `git commit`; `--fixture` uses a temp repo and includes commit.
 
@@ -213,7 +227,7 @@ Peak context: default grok-4.6 about 110k–124k tokens; each Baton grok-4.5 wor
 
 ## OpenSpec and state
 
-OpenSpec remains optional. When present, it owns task breakdown and status; Baton routes ready tasks and writes conclusions back by stable task number. Without OpenSpec, baton spawn is complete.
+OpenSpec remains optional. When present, it owns task breakdown and status; Baton routes ready tasks and writes conclusions back by stable task number (or the validated source line for an unnumbered task). Without OpenSpec, baton spawn is complete.
 
 Baton never creates project-local runtime state:
 
@@ -232,7 +246,11 @@ Baton never creates project-local runtime state:
     baton cards [--ranked|--unranked] [--json]
     baton match "fix the flaky auth tests quickly"
     baton spawn "implement the migration" [--unit KEY=TEXT ...]
+                 [--classification CLASS] [--operation LABEL]
+                 [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
+                 [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
     baton apply [change]
+    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
@@ -243,6 +261,11 @@ Baton never creates project-local runtime state:
     baton dispatch release TICKET --agent-id ID --json
     baton dispatch recover|status --json
     baton status
+
+Standalone requests use one proposal shape: without `--unit`, the request is
+stored as the `standalone` unit. Classification values and fields are strict;
+operation labels are audit metadata, and neither operation nor request prose is
+used to infer a route.
 
 ## License
 

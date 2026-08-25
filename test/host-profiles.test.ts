@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { cliProfileForHost, loadConfig, normalizeConfig, saveConfig } from "../src/lib/config.js";
 import { reserveNext, persistedCapacity } from "../src/lib/dispatch.js";
-import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
+import { hostDispatchStatePath, spawnsDir } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { buildSpawnTicket, writeSpawn } from "../src/lib/spawn.js";
@@ -26,7 +26,6 @@ function project(): string {
       cursor: { enabled: true, runner: "cursor-model", longctx: "", subagent_models: ["cursor-model"] },
       claude: { enabled: true, runner: "claude-model", longctx: "", subagent_models: ["claude-model"] },
     },
-    ops: {},
   });
   return cwd;
 }
@@ -51,6 +50,7 @@ function ticket(cwd: string, host: HostId, id = `spn-${host}`) {
     prompt: "implement a host-scoped feature",
     modelId: route,
     routeId: route,
+    taskKind: "concrete",
     targetHost: host,
     selection,
   });
@@ -98,7 +98,7 @@ describe("host-scoped profiles", () => {
     assert.deepEqual(cliProfileForHost(config, "grok").subagent_models, ["grok-model"]);
   });
 
-  it("isolates keyed route snapshots and accepts only a matching legacy snapshot", () => {
+  it("isolates current host-keyed route snapshots", () => {
     const cwd = project();
     publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
     publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
@@ -130,17 +130,20 @@ describe("host-scoped profiles", () => {
     assert.equal(result.blocked[0]?.code, "HOST_MISMATCH");
   });
 
-  it("keeps old config routes on Codex and does not leak them into Grok", () => {
+  it("does not read legacy ops routes or synthesize an unselected profile", () => {
     const config = normalizeConfig({
       ops: { runner: { route: "legacy-runner" }, longctx: { route: "legacy-longctx" } },
       cli: { active: "codex" },
     });
     assert.equal(Object.hasOwn(config.cli, "active"), false);
-    assert.equal(config.cli.codex.runner, "legacy-runner");
-    assert.equal(config.cli.codex.longctx, "legacy-longctx");
+    assert.equal(config.cli.codex, undefined);
     assert.equal(config.cli.grok, undefined);
-    assert.equal(cliProfileForHost(config, "grok").runner, "");
-    assert.equal(cliProfileForHost(config, "grok").longctx, "");
+    assert.deepEqual(cliProfileForHost(config, "grok"), {
+      enabled: false,
+      runner: "",
+      longctx: "",
+      subagent_models: [],
+    });
   });
 
   it("persists capacity separately for each host", () => {
@@ -153,7 +156,7 @@ describe("host-scoped profiles", () => {
     reserveNext(cwd, { capacity: 5, host: "grok" });
     assert.equal(persistedCapacity(cwd, "codex"), 2);
     assert.equal(persistedCapacity(cwd, "grok"), 5);
-    assert.ok(fs.existsSync(dispatchStatePath(cwd, process.env, "codex")));
+    assert.ok(fs.existsSync(hostDispatchStatePath(cwd, "codex", process.env)));
     assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-codex.json")));
   });
 
@@ -236,7 +239,7 @@ describe("Claude Code host tickets", () => {
     reserveNext(cwd, { capacity: 20, host: "claude" });
     assert.equal(persistedCapacity(cwd, "codex"), 2);
     assert.equal(persistedCapacity(cwd, "claude"), 20);
-    assert.ok(fs.existsSync(dispatchStatePath(cwd, process.env, "claude")));
+    assert.ok(fs.existsSync(hostDispatchStatePath(cwd, "claude", process.env)));
   });
 
   it("defers a queued ticket at capacity without changing its model", () => {

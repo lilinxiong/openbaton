@@ -9,8 +9,17 @@ export interface GitBaseline {
   repo_root: string;
   head: string;
   branch: string;
+  /** Attached branch ref, when the baseline was captured on a branch. */
+  branch_ref: string;
   index_path: string;
-  index_checksum: string | null;
+  /** Semantic tree represented by the staged index. */
+  index_tree: string;
+  /** Semantic index-entry control flags; stat-cache bytes are deliberately omitted. */
+  index_control_checksum: string;
+  /** Complete refs and HEAD reflog captured for ordinary worker audits. */
+  refs: string[];
+  head_reflog_count: number;
+  head_reflog_checksum: string;
   dirty_entries: StatusEntry[];
   /** Content fingerprint of each dirty path so incremental writes can keep pre-existing dirt. */
   dirty_checksums: Record<string, string>;
@@ -23,6 +32,8 @@ export interface CommitBaseline {
   branch: string;
   branch_ref: string;
   staged_tree: string;
+  /** Semantic index-entry control flags; stat-cache bytes are deliberately omitted. */
+  staged_index_control_checksum: string;
   staged_paths: string[];
   refs: string[];
   head_reflog_count: number;
@@ -153,10 +164,51 @@ function stagedPaths(repoRoot: string): string[] {
     .sort();
 }
 
+function stagedTree(repoRoot: string): string {
+  return git(repoRoot, ["write-tree"]).trim();
+}
+
+/**
+ * Return a stable fingerprint of the index metadata that affects Git's
+ * interpretation of an entry.  `git ls-files --debug` also prints ctime,
+ * mtime, device, inode, uid, gid, and size; those are stat-cache fields and
+ * are intentionally excluded so a read-only `git status` refresh remains
+ * tolerated.  The flags value includes assume-unchanged, skip-worktree,
+ * intent-to-add, and future extended entry flags; only fsmonitor-valid is
+ * masked as a volatile cache bit.
+ */
+function indexControlChecksum(repoRoot: string): string {
+  const output = git(repoRoot, ["ls-files", "--debug", "-z"]);
+  const entries: string[] = [];
+  let cursor = 0;
+  while (cursor < output.length) {
+    const nul = output.indexOf("\0", cursor);
+    if (nul < 0) break;
+    const file = output.slice(cursor, nul);
+    const tail = output.slice(nul + 1);
+    // `--debug -z` NUL-terminates the pathname, then appends the debug block;
+    // the next pathname starts immediately after the flags line.
+    const match = tail.match(/(?:^|\n)[^\n]*\bflags:[ \t]*([0-9A-Fa-f]+)[ \t]*(?:\n|$)/);
+    if (!match) throw new Error(`git ls-files --debug omitted flags for ${file}`);
+    // The fsmonitor-valid bit is a volatile cache hint, not a worker-visible
+    // index mutation. Keep semantic controls (assume-unchanged,
+    // skip-worktree, intent-to-add, and future non-cache bits) in the
+    // fingerprint while masking only CE_FSMONITOR_VALID (0x80000000).
+    const flags = Number.parseInt(match[1], 16) >>> 0;
+    entries.push(`${file}\0${flags & 0x7fffffff}`);
+    cursor = nul + 1 + match.index + match[0].length;
+  }
+  entries.sort();
+  return checksumValue(entries);
+}
+
+const INTERNAL_REF_NAMESPACE = "refs/codex/turn-diffs/";
+
 function refsSnapshot(repoRoot: string): string[] {
   return git(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"])
     .split("\n")
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((entry) => !entry.startsWith(INTERNAL_REF_NAMESPACE));
 }
 
 function headReflog(repoRoot: string): string[] {
@@ -198,6 +250,9 @@ export function captureBaseline(worktree: string, now: Date = new Date()): GitBa
   const repoRoot = git(worktree, ["rev-parse", "--show-toplevel"]).trim();
   const head = git(repoRoot, ["rev-parse", "HEAD"]).trim();
   const branch = git(repoRoot, ["branch", "--show-current"]).trim();
+  const branchRef = gitOptional(repoRoot, ["symbolic-ref", "-q", "HEAD"])?.trim() || "";
+  const refs = refsSnapshot(repoRoot);
+  const reflog = headReflog(repoRoot);
   const indexRelative = git(repoRoot, ["rev-parse", "--git-path", "index"]).trim();
   const indexPath = path.isAbsolute(indexRelative) ? indexRelative : path.join(repoRoot, indexRelative);
   const dirtyEntries = parsePorcelainV1Z(git(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
@@ -211,8 +266,13 @@ export function captureBaseline(worktree: string, now: Date = new Date()): GitBa
     repo_root: resolvedRoot,
     head,
     branch,
+    branch_ref: branchRef,
     index_path: indexPath,
-    index_checksum: checksumFile(indexPath),
+    index_tree: stagedTree(repoRoot),
+    index_control_checksum: indexControlChecksum(repoRoot),
+    refs,
+    head_reflog_count: reflog.length,
+    head_reflog_checksum: checksumValue(reflog),
     dirty_entries: dirtyEntries,
     dirty_checksums: dirtyChecksums,
     captured_at: now.toISOString(),
@@ -256,6 +316,7 @@ export function captureCommitBaseline(worktree: string, now: Date = new Date()):
     branch: git(repoRoot, ["branch", "--show-current"]).trim(),
     branch_ref: branchRef,
     staged_tree: git(repoRoot, ["write-tree"]).trim(),
+    staged_index_control_checksum: indexControlChecksum(repoRoot),
     staged_paths: stagedPaths(repoRoot),
     refs,
     head_reflog_count: reflog.length,
@@ -284,6 +345,9 @@ export function auditPreparedCommit(worktree: string, baseline: CommitBaseline):
   }
   const indexTree = git(root, ["write-tree"]).trim();
   if (indexTree !== baseline.staged_tree) commitViolation(violations, "E_INDEX_TREE_MUTATION", "staged tree changed after commit authorization");
+  if (indexControlChecksum(root) !== baseline.staged_index_control_checksum) {
+    commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata changed after commit authorization");
+  }
   if (!sameList(stagedPaths(root), baseline.staged_paths)) commitViolation(violations, "E_STAGED_PATH_MUTATION", "staged paths changed after commit authorization");
   if (gitExitZero(root, ["diff", "--cached", "--quiet"])) commitViolation(violations, "E_STAGED_DIFF_MISSING", "authorized staged diff is no longer present");
   if (hasUnstagedOrUntracked(root)) commitViolation(violations, "E_WORKTREE_MUTATION", "worktree gained unstaged or untracked changes");
@@ -345,6 +409,9 @@ export function auditCommitOutcome(
   if (git(root, ["write-tree"]).trim() !== baseline.staged_tree) {
     commitViolation(violations, "E_INDEX_TREE_MUTATION", "index does not match the authorized committed tree");
   }
+  if (indexControlChecksum(root) !== baseline.staged_index_control_checksum) {
+    commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata does not match the authorized committed state");
+  }
   const status = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
   if (status.length) commitViolation(violations, "E_WORKTREE_MUTATION", "commit-only worker left tracked or untracked worktree changes");
   const operation = gitOperationInProgress(root);
@@ -392,10 +459,45 @@ function operationOf(entry: StatusEntry): SafetyOperation {
 export function auditWorktree(worktree: string, baseline: GitBaseline, policy: SafetyPolicy): SafetyVerdict {
   const root = fs.realpathSync(git(worktree, ["rev-parse", "--show-toplevel"]).trim());
   const violations: SafetyViolation[] = [];
+  const currentFormat = typeof baseline.branch_ref === "string"
+    && typeof baseline.index_tree === "string"
+    && typeof baseline.index_control_checksum === "string"
+    && Array.isArray(baseline.refs)
+    && Number.isInteger(baseline.head_reflog_count)
+    && typeof baseline.head_reflog_checksum === "string";
+  if (!currentFormat) {
+    violations.push({
+      code: "E_BASELINE_FORMAT",
+      message: "baseline is not a current-format Git safety snapshot",
+    });
+  }
   if (root !== baseline.repo_root) violations.push({ code: "E_BASELINE_REPO_MISMATCH", message: "baseline belongs to another repository" });
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   if (head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
-  if (checksumFile(baseline.index_path) !== baseline.index_checksum) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the Git index" });
+  if (currentFormat && git(root, ["branch", "--show-current"]).trim() !== baseline.branch) {
+    violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the current branch" });
+  }
+  if (currentFormat && (gitOptional(root, ["symbolic-ref", "-q", "HEAD"])?.trim() || "") !== baseline.branch_ref) {
+    violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the attached branch ref" });
+  }
+  if (currentFormat && !sameList(refsSnapshot(root), baseline.refs)) {
+    violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  }
+  if (currentFormat) {
+    const reflog = headReflog(root);
+    if (reflog.length !== baseline.head_reflog_count || checksumValue(reflog) !== baseline.head_reflog_checksum) {
+      violations.push({ code: "E_HEAD_REFLOG_MUTATION", message: "worker changed the HEAD reflog" });
+    }
+  }
+  // `git status` and similar read-only commands may refresh stat-cache bytes in
+  // the index. Compare the semantic staged tree and control metadata from the
+  // current-format Receipt; old raw index checksums are never accepted.
+  if (currentFormat) {
+    if (stagedTree(root) !== baseline.index_tree) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the staged Git index tree" });
+    if (indexControlChecksum(root) !== baseline.index_control_checksum) {
+      violations.push({ code: "E_INDEX_MUTATION", message: "worker changed Git index control metadata" });
+    }
+  }
 
   const entries = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
   const modeChanged = new Set(

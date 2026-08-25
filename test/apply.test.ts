@@ -14,7 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtureTasks = path.join(here, "fixtures/openspec/changes/demo/tasks.md");
 
 describe("applyChange", () => {
-  it("does not stop at the 9th pending task — every pending gets a ticket, director-local, or blocked", () => {
+  it("does not stop at the 9th pending task — every pending gets a ticket or is blocked", () => {
     withHome(() => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-"));
     fs.mkdirSync(path.join(cwd, "openspec", "changes", "demo"), { recursive: true });
@@ -27,6 +27,7 @@ describe("applyChange", () => {
     const handled = result.tickets.length + result.local.length + result.blocked.length;
     assert.equal(handled, pending.length);
     assert.ok(handled > 9);
+    assert.equal(result.local.length, 0);
     });
   });
 });

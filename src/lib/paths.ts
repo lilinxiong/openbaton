@@ -15,15 +15,20 @@ export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
 export const CACHE_DIR = "cache";
 export const WORKSPACES_DIR = "workspaces";
+/**
+ * Current workspace runtime-state format.
+ *
+ * The directory before this component is intentionally left untouched. It
+ * is the unversioned state written by older releases, and current code must
+ * neither inspect nor migrate it.
+ */
+export const CURRENT_RUNTIME_NAMESPACE = "v2";
 export const CAPABILITIES_DIR = "capabilities";
 export const AA_DB_NAME = "artificial-analysis.sqlite3";
 export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
-export const ROUTE_SNAPSHOT_NAME = "cli-models.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
-export const DISPATCH_STATE_NAME = "dispatch.json";
 
-/** Host-keyed state names. The unkeyed names above remain readable as the
- * legacy default for old Baton installations. */
+/** Host-keyed state names used by the current runtime. */
 export function hostRouteSnapshotName(host: string): string {
   return `cli-models-${String(host).trim().toLowerCase()}.json`;
 }
@@ -65,7 +70,7 @@ export function workspaceId(cwd: string): string {
 
 /** User-global runtime namespace for one canonical workspace. */
 export function batonDir(cwd: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(batonHomeDir(env), WORKSPACES_DIR, workspaceId(cwd));
+  return path.join(batonHomeDir(env), WORKSPACES_DIR, workspaceId(cwd), CURRENT_RUNTIME_NAMESPACE);
 }
 
 export function configPath(_cwd: string, { env }: { env?: NodeJS.ProcessEnv } = {}): string {
@@ -104,14 +109,8 @@ export function artificialAnalysisManifestPath(cwd: string): string {
   return path.join(capabilitiesCacheDir(cwd), AA_MANIFEST_NAME);
 }
 
-export function routeSnapshotPath(_cwd: string, envOrHost?: NodeJS.ProcessEnv | string, host?: string): string {
-  const env = typeof envOrHost === "string" ? undefined : envOrHost;
-  const resolvedHost = typeof envOrHost === "string" ? envOrHost : host;
-  return path.join(batonHomeDir(env), CACHE_DIR, resolvedHost ? hostRouteSnapshotName(resolvedHost) : ROUTE_SNAPSHOT_NAME);
-}
-
 export function hostRouteSnapshotPath(_cwd: string, host: string, env?: NodeJS.ProcessEnv): string {
-  return routeSnapshotPath(_cwd, env, host);
+  return path.join(batonHomeDir(env), CACHE_DIR, hostRouteSnapshotName(host));
 }
 
 export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
@@ -119,14 +118,8 @@ export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
 }
 
 /** Dispatcher runtime state (remembered capacity) for one workspace. */
-export function dispatchStatePath(cwd: string, envOrHost?: NodeJS.ProcessEnv | string, host?: string): string {
-  const env = typeof envOrHost === "string" ? undefined : envOrHost;
-  const resolvedHost = typeof envOrHost === "string" ? envOrHost : host;
-  return path.join(runsDir(cwd, env), resolvedHost ? hostDispatchStateName(resolvedHost) : DISPATCH_STATE_NAME);
-}
-
 export function hostDispatchStatePath(cwd: string, host: string, env?: NodeJS.ProcessEnv): string {
-  return dispatchStatePath(cwd, env, host);
+  return path.join(runsDir(cwd, env), hostDispatchStateName(host));
 }
 
 export function dispatchLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {

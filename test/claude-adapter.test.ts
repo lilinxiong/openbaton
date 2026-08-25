@@ -8,7 +8,7 @@ import {
   normalizeClaudeModels,
   resolveClaudeCommand,
 } from "../src/adapters/claude.js";
-import { discoverClaudeModels, discoverCliModels } from "../src/lib/cli-models.js";
+import { discoverClaudeModels } from "../src/adapters/claude.js";
 import type { CodedError } from "../src/types.js";
 
 /**
@@ -125,8 +125,7 @@ describe("Claude Code adapter host metadata", () => {
     assert.equal(CLAUDE_HOST_METADATA.skillPath, ".claude/skills/baton/SKILL.md");
     assert.equal(CLAUDE_HOST_METADATA.defaultMaxConcurrent, 20);
     assert.equal(CLAUDE_HOST_METADATA.maxConcurrentEnv, "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS");
-    // Claude Code has no legacy global ops profile to migrate.
-    assert.equal(claudeAdapter.legacyOpsProfile, undefined);
+    assert.equal(Object.hasOwn(claudeAdapter, "legacyOpsProfile"), false);
   });
 
   it("resolves the executable from PATH and honors an explicit override", () => {
@@ -326,18 +325,5 @@ describe("Claude Code model discovery", () => {
     const catalog = await discoverClaudeModels({ command: "/bin/claude", spawnImpl });
     assert.equal(catalog.version, null);
     assert.equal(catalog.models.length, 3);
-  });
-
-  it("routes the compatibility discovery facade to this adapter", async () => {
-    const catalog = await discoverCliModels("claude", {
-      command: "/bin/claude",
-      spawnImpl: fakeClaude(() => successLines(LIVE_LIST_MODELS)),
-    });
-    assert.equal(catalog.cli, "claude");
-    assert.deepEqual(catalog.models.map((model) => model.id), [
-      "claude-opus-5[1m]",
-      "claude-sonnet-5",
-      "claude-haiku-4-5-20251001",
-    ]);
   });
 });

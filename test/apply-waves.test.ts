@@ -14,6 +14,13 @@ function task(partial: Partial<OpenSpecTask> & { number: string; description: st
 }
 
 describe("apply wave overlay", () => {
+  it("gives unnumbered pending tasks a stable line id", () => {
+    const plan = planApplyWaves([
+      task({ section: "Config", number: "", line_index: 7, description: "edit src/lib/config.ts" }),
+    ]);
+    assert.deepEqual(plan.order_ready?.task_ids, ["line-7"]);
+  });
+
   it("extracts file paths and ignores dotted config keys", () => {
     assert.deepEqual(extractMentionedPaths("edit `src/lib/config.ts` and templates/config.toml"), [
       "src/lib/config.ts",
@@ -34,6 +41,8 @@ describe("apply wave overlay", () => {
     assert.deepEqual(plan.order_ready?.task_ids, ["1.1", "1.2"]);
     assert.equal(plan.order_ready?.waves.length, 1);
     assert.equal(plan.order_ready?.section, "Config");
+    assert.equal("director_local" in (plan.ready?.tasks[0] || {}), false);
+    assert.deepEqual(plan.ready?.tasks[0]?.paths, ["src/lib/config.ts"]);
   });
 
   it("keeps shared or missing paths serial", () => {

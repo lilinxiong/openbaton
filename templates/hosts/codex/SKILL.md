@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use Baton automatically for approved multi-model execution, configured mechanical ops, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Complete the Baton Codex host-guard preflight before shell, patch, or native-agent tools. Skip ordinary discussion."
+description: "Use Baton automatically for approved multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Complete the Baton Codex host-guard preflight before shell, patch, or native-agent tools. Skip ordinary discussion."
 ---
 
 # baton
@@ -11,17 +11,34 @@ You are the Codex host director. Baton is the scheduling and policy layer; it is
 
 Same table on every host. Do not invent a host-specific split.
 
-- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
-- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **Director-owned classification is authoritative.** Discussion and read-only analysis stay on the director. When `cli.codex.enabled` is true, every ordinary implementation request—including tiny edits—must be delegated through a Codex native subagent; do not apply a tiny-edit shortcut. A missing/disabled profile or unresolved classification fails closed. Classified mechanical work never falls back to director execution when its configured route is empty or unusable.
+- **Declared classified work → native subagents.** Classified mechanical/long-context units, authorized implementation requests, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
 - **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+
+## Automatic workflow contract
+
+This host's Baton workflow becomes executable only when `cli.codex.enabled` is true and the user has authorized execution. Before any native ticket, the director classifies every executable request and passes that structured classification to Baton. Baton persists the resulting tickets and Receipts; it does not invent or own a separate task DAG. Operation labels are audit metadata, never a fixed action-name routing table.
+
+- Discussion and read-only analysis stay with the director.
+- Authorized implementation nodes use native `spawn_agent`; mechanical nodes use the configured class route while preserving their operation label for audit. Commit/publish authority remains the deterministic Receipt/Git capability gate.
+- A node is ready only when all dependencies are terminal. Independent ready nodes with disjoint write sets may run in parallel within the selected CLI `max_concurrent` and `max_depth`; later nodes remain queued until prerequisites finish.
+- Missing authorization, a disabled profile, invalid director/OpenSpec ordering data, or unresolved classification fails closed to the director. Never infer dependencies, borrow another host, or dispatch implementation from prose alone.
+
+### Write-scope readiness
+
+Before creating or dispatching any write ticket, the director MUST perform a read-only impact/dependency pass for that unit. The pass must resolve the unit's affected dependencies and record a complete, exact per-unit write-path set together with its allowed operations. Every path is explicit; allowed operations are one or more of `write`, `create`, `delete`, `rename`, and `chmod`. An unknown impact, dependency, path, or operation keeps the classification unresolved, so no implementation ticket is created or dispatched.
+
+Parallel dispatch is permitted only when every participating unit has a complete scope and the write sets are pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Otherwise the director sequences the units or keeps them director-local. If a worker discovers an undeclared path or operation, it MUST stop before mutation and return a scope decision to the director. It must never edit first and rely on a terminal retry or audit to authorize the change. Mechanical routing still uses the structured execution class; operation labels remain opaque audit metadata and never choose the route.
+
+Codex identity is host-specific: bind the hook-observed child `agent_id`. The native `task_name` returned by Codex is only a non-authoritative bind carrier (`baton dispatch bind --task-name ...`) and must never replace the hook UUID or seed a hook observation. Do not apply a universal identity-field assumption.
 
 ## Mandatory host-guard preflight
 
 - Before any `Bash`, `apply_patch`/`Edit`/`Write`, or native `Agent` call, run `baton guard status`. After `baton init` or `baton update`, open Codex `/hooks`, review the Baton-owned `PreToolUse` and `SubagentStart` entries, and trust them.
 - Ticket presence is the declared-work signal: with no reserved ticket for this host, director mutating tools are allowed (undeclared / empty-label work). While this host has a reserved, dispatching, or running worker ticket, director implementation writes are denied. Reserve and dispatch a Baton ticket, start the native worker, and bind its returned identity before the worker uses tools; the spawn-to-bind race stays denied until binding is visible.
 - Only direct `baton ...` control-plane commands are exempt. Specialized Codex tool paths may opt out of the default hook path, so retain Receipt and parent Git safety checks.
-- Every reserved native spawn, including a single reservation, must pass the returned `prompt` unchanged. Its first-line JSON envelope carries an opaque per-attempt reservation identity. The guard matches that complete identity exactly and never scans ticket prefixes or business prose; missing, stale, conflicting, or reconstructed identity is denied.
-- Codex `SubagentStart` identifies the child but does not repeat the spawn tool input. Reservation authorization therefore happens at `PreToolUse`; `SubagentStart` never guesses a ticket, and the returned child id becomes authoritative only after the explicit `baton dispatch bind`.
+- Every reserved native spawn, including a single reservation, must pass the returned `prompt` unchanged. If Codex uses `spawn_agent` through a namespaced collaboration tool, pass the unchanged envelope in the same `prompt` or `message` field that the hook sees. Its first-line JSON envelope carries an opaque per-attempt reservation identity. The guard matches that complete identity exactly and never scans ticket prefixes or business prose; missing, stale, conflicting, or reconstructed identity is denied.
+- Codex `SubagentStart` identifies the child but does not repeat the spawn tool input. Reservation authorization therefore happens at `PreToolUse`; `SubagentStart` never guesses a ticket, and the returned child UUID becomes authoritative only after the explicit `baton dispatch bind`. A passed `--task-name` is metadata only.
 
 ## Model contract
 
@@ -40,7 +57,8 @@ Same table on every host. Do not invent a host-specific split.
 ## Execution contract
 
 - Create queued tickets and immutable Receipts before native dispatch. Baton CLI never calls host tools itself.
-- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host codex --json` only for already-queued work. For each reserved ticket, call native spawn_agent with the returned prompt unchanged, the exact model, optional supported reasoning effort, selected service_tier when non-null and exposed by the host, and fork_context=false, then bind immediately. If the host cannot express a selected tier, report that execution option as unavailable rather than silently claiming Fast mode. Mechanical prompts are one-shot executors: run the inferred command; `git-commit` may read the staged diff, write one message, and commit once.
+- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host codex --json` only for already-queued work. For each reserved ticket, call native spawn_agent with the returned prompt unchanged, the exact model, optional supported reasoning effort, selected service_tier when non-null and exposed by the host, and fork_context=false, then bind immediately. If the host cannot express a selected tier, report that execution option as unavailable rather than silently claiming Fast mode. Mechanical prompts are one-shot executors: run the director-supplied operation; commit requires an explicit capability plus the Receipt/Git gate.
+- Standalone work always uses the canonical multi-unit proposal shape; a request without `--unit` is the `standalone` unit. Pass only exact structured classification fields; never infer a class or operation from request prose or accept compatibility aliases.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
 - Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
@@ -54,11 +72,15 @@ Same table on every host. Do not invent a host-specific split.
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates --host codex
     baton match <text> --host codex
-    baton spawn <request> --host codex [--unit KEY=BUSINESS_TASK ...] [--dispatch]
+    baton spawn <request> --host codex [--unit KEY=BUSINESS_TASK ...]
+                 [--classification CLASS] [--operation LABEL]
+                 [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...] [--dispatch]
+    baton spawn REQUEST --host codex --classification implementation
+                 --write-path PATH --write-ops write,create,delete,rename,chmod
     baton apply [change] --host codex
     baton apply [change] --host codex --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host codex --capacity N --json
-    baton dispatch bind TICKET --agent-id ID --host codex --json
+    baton dispatch bind TICKET [--agent-id ID] [--task-name CODEX_TASK_NAME] --host codex --json
     baton dispatch probe|progress|complete|fail|timeout|close|release TICKET --host codex
     baton dispatch recover|status --host codex --json
 
@@ -68,3 +90,4 @@ Same table on every host. Do not invent a host-specific split.
 - Never add hard-coded family bans or infer unsupported status from tool documentation.
 - Never expose human model selection, select outside the enabled CLI allowlist, invent effort/speed flags, or silently substitute.
 - Never bypass Receipt/write/Git safety, convert polling cadence into failure, reimplement OpenSpec, or dump worker logs into the front conversation.
+- Never `git commit` from this director session for a classified unit. Commit-only requires an explicit commit capability and the staged Receipt/Git gate; an operation label alone is not authority. A classified mechanical unit with an empty or unusable route fails closed.

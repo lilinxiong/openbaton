@@ -82,12 +82,6 @@ Baton 才把哪个字段写入所选的 `[cli.<id>]`，该 host 使用这个真�
       "gpt-5.3-codex-spark",
     ]
 
-    [ops.runner]
-    actions = ["test", "build", "lint", "typecheck", "git-commit"]
-
-    [ops.longctx]
-    actions = ["search", "digest", "git-summarize"]
-
 runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份所选 CLI 返回的模型列表。
 
 被设置为 runner 或 longctx 的模型会自动加入 subagent_models。CLI 配置关闭时，不提供任何候选。
@@ -136,7 +130,17 @@ Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没
 
 ## Director/worker 路由
 
-空的 `runner`/`longctx` 标签、未声明的工作，以及 Baton 无法分类的 unit，都留在 director 上执行。已声明且已分类的工作——非空机械标签、带候选的 `baton spawn`、以及启用 host 上的 OpenSpec 可执行任务——通过 Baton ticket 交给原生 subagent；director 不得在父会话里亲自实现这些 unit。OpenSpec 只减轻编排负担，不改变谁来写已声明已分类的任务。每个 host 共用同一张表；不要另造 host 专属分工。
+讨论和只读分析留在 director。所选 CLI profile 启用后，所有普通实现请求（包括很小的改动）都必须交给该 host 的原生 subagent，不能使用 tiny-edit 例外。profile 缺失/关闭或分类未决时必须 fail closed。已分类的机械工作在 route 为空或不可用时也不能退回 director 执行。OpenSpec 只减轻编排负担，不改变谁来写可执行任务；所有 host 使用同一规则。
+
+## 自动工作流契约
+
+只有在所选 CLI profile 已启用、且用户明确授权执行时，工作流才允许产生原生实现任务。director 必须先给每个可执行请求分类，并把结构化分类交给 Baton；Baton 只持久化由此产生的 ticket 和 Receipt，不另造或接管 DAG。讨论与只读分析留在 director；获得授权的实现节点交给当前 host 的原生 subagent。`mechanical` 分类走 `runner`（`long-context` 走 `longctx`），operation label 只作审计元数据，不得退化成固定 action 名匹配；commit/publish 仍由确定性的 Receipt/Git capability 门禁决定。缺少授权、profile 被关闭或分类未决时必须 fail closed。
+
+## 写入范围就绪条件
+
+创建或 dispatch 任何写 ticket 之前，director 必须先对该单元做一次只读的影响/依赖梳理。梳理结果必须解析受影响的依赖，并记录完整、精确的单元级写入路径集合及允许的操作。路径必须逐项明确；允许的操作只能来自 `write`、`create`、`delete`、`rename`、`chmod`。影响、依赖、路径或操作只要未知，分类就保持未决，不创建也不 dispatch implementation ticket。
+
+只有所有参与单元的范围都完整且写集合两两不相交时，才允许并行 dispatch；rename 的源/目标路径以及路径前缀重叠也算相交。否则单元必须串行，或继续留在 director。worker 如果发现未声明的路径或操作，必须在 mutation 前停止并返回 scope decision 给 director；不能先编辑，再依赖终态 retry 或 audit 追认。机械路由仍由结构化分类决定，operation label 只是 opaque 审计元数据，不能选择 route。
 
 ## 执行生命周期
 
@@ -152,9 +156,19 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex、Grok
 
 默认只读。写任务必须带不可变路径和操作 allowlist，并通过 parent Git safety gate。已有的未提交改动会记入 baseline，worker 可以在 allowlist 上增量，不能改无关脏文件。唯一的 Git 例外是独占 commit-only ticket：它只消费 parent 已精确 staged 的 tree，允许创建一个受审计 commit，不能 stage、amend、切分支、rebase、tag 或 push。
 
+standalone 写入必须明确给出路径和操作：
+
+    baton spawn "实现迁移" --host HOST --classification implementation \
+      --write-path src/migration.ts --write-ops write,create
+
+OpenSpec dispatch 前必须给每个单元划定范围；只有完整且互不相交的范围才能进入同一 wave：
+
+    baton apply CHANGE --host HOST --dispatch \
+      --unit ID --write-path src/migration.ts --unit ID --write-path src/config.ts
+
 ## 机械 ops
 
-`ops.runner` 和 `ops.longctx` 标注哪些机械动作离开 director。runner：`test`、`build`、`lint`、`typecheck`、`git-commit`。longctx：`search`、`digest`、`git-summarize`。标签为空时，这些 unit 留在 director 上执行。机械 worker 只执行推断出的命令，不探索；`git-commit` 可以看 staged diff、写一条 message、提交一次。
+director 提供结构化执行分类，Baton 据此选择 `runner` 或 `longctx`；operation label 只保留作审计，不能选择 profile。分类机械工作遇到空/不可用 route 时必须 fail closed。机械 worker 只执行 director 指定的 operation，不从 prose 推断命令，也不探索。commit-only 还必须有显式 commit capability 和 Receipt/Git 门禁；单独的 `operation = "git-commit"` 不具备权限。
 
 Benchmark：同一条本地命令，走 Baton ticket（spawn、bind、跑命令、complete/release）vs 不用 Baton（直接跑）。不拉起 host 模型。默认在本仓库跑，跳过 `git commit`；`--fixture` 用临时仓库并包含 commit。
 
@@ -211,7 +225,7 @@ Token 来自各 session 的 `end_turn.usage`（不是账单页）。Baton 一列
 
 ## OpenSpec 与状态
 
-OpenSpec 可选。存在时它负责任务拆解与状态，Baton 负责路由 ready task，并按稳定 task number 写回结论。不存在时，baton spawn 仍完整可用。
+OpenSpec 可选。存在时它负责任务拆解与状态，Baton 负责路由 ready task，并按稳定 task number（未编号任务则按校验后的源行）写回结论。不存在时，baton spawn 仍完整可用。
 
 Baton 不创建项目内运行时目录：
 
@@ -230,7 +244,11 @@ Baton 不创建项目内运行时目录：
     baton cards [--ranked|--unranked] [--json]
     baton match "快速修复 flaky auth tests"
     baton spawn "实现迁移" [--unit KEY=TEXT ...]
+                 [--classification CLASS] [--operation LABEL]
+                 [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
+                 [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
     baton apply [change]
+    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
@@ -241,6 +259,10 @@ Baton 不创建项目内运行时目录：
     baton dispatch release TICKET --agent-id ID --json
     baton dispatch recover|status --json
     baton status
+
+Standalone 统一使用一种 proposal：没有 `--unit` 时，请求会保存为
+`standalone` 单元。分类字段和值是严格契约；operation 只作审计元数据，不能
+从 operation 或请求 prose 推断路由。
 
 ## License
 

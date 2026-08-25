@@ -1,8 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { canonicalWorkspaceRoot } from "./paths.js";
 import { cliProfileForHost, loadConfig } from "./config.js";
-import { configuredRoute, type OpsAction, type OpsProfileId } from "./ops-config.js";
-import { inferOpsAction, inferOpsActionFromContext } from "./ops-task.js";
+import { profileForClassification, type OpsProfileId } from "./ops-config.js";
+import {
+  isCommitOnlyClassification,
+  normalizeAgentTaskClassification,
+  type AgentExecutionClass,
+  type NormalizedAgentTaskClassification,
+} from "./ops-task.js";
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
 import { readRouteSnapshot } from "./routes.js";
 import { buildCommitReceipt } from "./receipt.js";
@@ -13,16 +18,45 @@ import type { HostId } from "./hosts.js";
 
 export type OpsResolution =
   | { kind: "not-ops" }
-  | { kind: "director"; action: OpsAction; reason: string }
-  | { kind: "empty-index"; action: "git-commit" }
+  | { kind: "director"; operation?: string | null; classification?: AgentExecutionClass; reason: string }
+  | { kind: "blocked"; operation?: string | null; classification?: AgentExecutionClass; reason: string }
+  | { kind: "empty-index"; operation?: string | null; classification?: AgentExecutionClass }
   | {
     kind: "dispatch";
-    action: OpsAction;
+    operation?: string | null;
+    classification?: AgentExecutionClass;
+    commit_only?: boolean;
     profile: OpsProfileId;
     route: string;
     card: ModelCard;
     approval: ModelSelectionApproval;
   };
+
+export interface OpsDispatchOptions {
+  env?: NodeJS.ProcessEnv;
+  host?: HostId;
+  /** Structured contract supplied by the director. */
+  classification?: unknown;
+  /** Operation is audit metadata and never a routing key. */
+  operation?: unknown;
+  /** Optional classification override for one declared multi-unit item. */
+  unitClassification?: unknown;
+}
+
+function suppliedClassification(options: OpsDispatchOptions): { present: boolean; value: unknown } {
+  return Object.hasOwn(options, "classification")
+    ? { present: true, value: options.classification }
+    : { present: false, value: undefined };
+}
+
+function classificationRequiredForHost(cwd: string, env: NodeJS.ProcessEnv | undefined, host: HostId | undefined): boolean {
+  if (!host) return false;
+  try {
+    return cliProfileForHost(loadConfig(cwd, { env }), host).enabled;
+  } catch {
+    return false;
+  }
+}
 
 export function hasStagedDiff(cwd: string): boolean {
   try {
@@ -51,10 +85,27 @@ export function resolveOpsDispatch(
   cwd: string,
   description: unknown,
   cards: ModelCard[],
-  { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
+  options: OpsDispatchOptions = {},
 ): OpsResolution {
-  const action = inferOpsAction(description);
-  return resolveOpsActionDispatch(cwd, action, cards, { env, host });
+  const { env, host } = options;
+  const supplied = suppliedClassification(options);
+  if (supplied.present || options.operation !== undefined) {
+    const classification = structuredClassification(supplied.value, options.operation);
+    return classification
+      ? resolveOpsClassificationDispatch(cwd, classification, cards, { env, host })
+      : {
+        kind: "blocked",
+        reason: "director classification is missing or malformed; no ticket may be created",
+      };
+  }
+  // A free-form request has no routing authority. The director must supply a
+  // structured class.
+  void description;
+  void cards;
+  if (classificationRequiredForHost(cwd, env, host)) {
+    return { kind: "blocked", reason: "director classification is required for the enabled host; no ticket may be created" };
+  }
+  return { kind: "not-ops" };
 }
 
 export function resolveOpsUnitDispatch(
@@ -62,51 +113,143 @@ export function resolveOpsUnitDispatch(
   requestDescription: unknown,
   unitDescription: unknown,
   cards: ModelCard[],
-  { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
+  options: OpsDispatchOptions = {},
 ): OpsResolution {
-  const action = inferOpsActionFromContext(requestDescription, unitDescription);
-  return resolveOpsActionDispatch(cwd, action, cards, { env, host });
+  const { env, host } = options;
+  const supplied = suppliedClassification(options);
+  const hasStructured = supplied.present || options.operation !== undefined || options.unitClassification !== undefined;
+  if (hasStructured) {
+    const request = supplied.present ? structuredClassification(supplied.value, options.operation) : null;
+    const unit = options.unitClassification === undefined
+      ? null
+      : structuredClassification(options.unitClassification, options.operation);
+    if (options.unitClassification !== undefined && !unit) {
+      return { kind: "blocked", reason: "unit classification is missing or malformed; no ticket may be created" };
+    }
+    if (request && unit && request.kind !== unit.kind) {
+      return { kind: "blocked", reason: `request/unit classification conflict: ${request.kind} != ${unit.kind}` };
+    }
+    const classification = unit || request;
+    return classification
+      ? resolveOpsClassificationDispatch(cwd, classification, cards, { env, host })
+      : { kind: "blocked", reason: "director classification is missing or malformed; no ticket may be created" };
+  }
+  // A free-form request has no routing authority. The director must supply a
+  // structured class.
+  void requestDescription;
+  void unitDescription;
+  void cards;
+  if (classificationRequiredForHost(cwd, env, host)) {
+    return { kind: "blocked", reason: "director classification is required for the enabled host; no ticket may be created" };
+  }
+  return { kind: "not-ops" };
 }
 
-function resolveOpsActionDispatch(
+function structuredClassification(value: unknown, operation: unknown): NormalizedAgentTaskClassification | null {
+  if (value === undefined || value === null) return null;
+  if (operation === undefined) return normalizeAgentTaskClassification(value);
+  if (typeof value === "string") return normalizeAgentTaskClassification({ kind: value, operation });
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return normalizeAgentTaskClassification({ ...(value as Record<string, unknown>), operation });
+  }
+  return null;
+}
+
+function safeApprovalPart(value: string): string {
+  return value.replaceAll(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 80) || "operation";
+}
+
+/** Route an agent-supplied class directly to its configured profile. */
+export function resolveOpsClassificationDispatch(
   cwd: string,
-  action: OpsAction | null,
+  classification: NormalizedAgentTaskClassification | unknown,
   cards: ModelCard[],
   { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
 ): OpsResolution {
-  if (!action) return { kind: "not-ops" };
-  if (action === "git-commit" && !hasStagedDiff(cwd)) return { kind: "empty-index", action };
+  const normalized = normalizeAgentTaskClassification(classification);
+  if (!normalized || normalized.kind === "general") return { kind: "not-ops" };
+  const operation = normalized.operation;
+  const commitOnly = isCommitOnlyClassification(normalized);
+  // Commit-only is a mechanical capability. Never let a contradictory
+  // long-context label move an audited Git commit onto the longctx route.
+  if (commitOnly && normalized.kind !== "mechanical") {
+    return {
+      kind: "blocked",
+      ...(operation !== null ? { operation } : {}),
+      classification: normalized.kind,
+      reason: "commit-only capability conflicts with a non-mechanical classification",
+    };
+  }
+  const profile = profileForClassification(normalized.kind);
+  if (!profile) return { kind: "not-ops" };
+  const routed = resolveOpsProfileDispatch(cwd, {
+    operation,
+    classification: normalized.kind,
+    commitOnly,
+  }, cards, { env, host });
+  // Resolve and validate the configured runner before the empty-index
+  // shortcut. A missing/unusable route must block even when there is no staged
+  // work to commit.
+  if (commitOnly && routed.kind === "dispatch" && !hasStagedDiff(cwd)) {
+    return {
+      kind: "empty-index",
+      ...(operation !== null ? { operation } : {}),
+      classification: normalized.kind,
+    };
+  }
+  return routed;
+}
+
+interface OpsProfileDispatchInput {
+  operation: string | null;
+  classification: AgentExecutionClass;
+  commitOnly: boolean;
+}
+
+function resolveOpsProfileDispatch(
+  cwd: string,
+  input: OpsProfileDispatchInput,
+  cards: ModelCard[],
+  { env, host }: { env?: NodeJS.ProcessEnv; host?: HostId } = {},
+): OpsResolution {
   const config = loadConfig(cwd, { env });
   const profile = cliProfileForHost(config, host);
-  const ops = {
-    ...config.ops,
-    runner: { ...config.ops.runner, route: profile.runner },
-    longctx: { ...config.ops.longctx, route: profile.longctx },
-  };
-  const configured = profile.enabled ? configuredRoute(ops, action) : null;
+  const configured = profile.enabled
+    ? (() => {
+      const route = profile[input.classification === "mechanical" ? "runner" : "longctx"].trim();
+      return route ? { profile: input.classification === "mechanical" ? "runner" as const : "longctx" as const, route } : null;
+    })()
+    : null;
   if (!configured) {
-    return { kind: "director", action, reason: "ops route is empty; director executes this mechanical unit" };
+    return {
+      kind: "blocked",
+      ...(input.operation !== null ? { operation: input.operation } : {}),
+      classification: input.classification,
+      reason: `ops ${input.classification === "long-context" ? "longctx" : "runner"} route is empty; classified work is not executable on the director`,
+    };
   }
   const choices = listOpsRouteChoices(cwd, configured.profile, cards, { env, host });
   if (!findOpsRouteChoice(choices, configured.route)) {
     return {
-      kind: "director",
-      action,
-      reason: `ops ${configured.profile} model is unset or unusable; director executes this mechanical unit`,
+      kind: "blocked",
+      ...(input.operation !== null ? { operation: input.operation } : {}),
+      classification: input.classification,
+      reason: `ops ${configured.profile} model is unset or unusable; classified work is not executable on the director`,
     };
   }
   const card = cardForRoute(cards, configured.route, cwd, host);
   if (!card?.route_id) {
     return {
-      kind: "director",
-      action,
-      reason: `ops ${configured.profile} model is unset or unusable; director executes this mechanical unit`,
+      kind: "blocked",
+      ...(input.operation !== null ? { operation: input.operation } : {}),
+      classification: input.classification,
+      reason: `ops ${configured.profile} model is unset or unusable; classified work is not executable on the director`,
     };
   }
   const approval: ModelSelectionApproval = {
     host,
     proposal_id: "ops-config",
-    approval_id: `ops-${configured.profile}-${action}`,
+    approval_id: `ops-${configured.profile}-${safeApprovalPart(input.operation || input.classification)}`,
     approved_at: new Date().toISOString(),
     confirmed_by: "ops-config",
     catalog_fingerprint: readRouteSnapshot(cwd, { host })?.fingerprint || "",
@@ -114,11 +257,13 @@ function resolveOpsActionDispatch(
     selected_model_id: card.id,
     changed_by_user: false,
     ops_profile: configured.profile,
-    ops_action: action,
+    ...(input.operation !== null ? { ops_operation: input.operation } : {}),
   };
   return {
     kind: "dispatch",
-    action,
+    ...(input.operation !== null ? { operation: input.operation } : {}),
+    ...(input.classification ? { classification: input.classification } : {}),
+    ...(input.commitOnly ? { commit_only: true } : {}),
     profile: configured.profile,
     route: configured.route,
     card,

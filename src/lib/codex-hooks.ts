@@ -8,6 +8,7 @@ import { findBinaryOnPath, isExecutableFile } from "./executables.js";
 export const BATON_CODEX_HOOK_COMMAND = "baton guard hook";
 export const BATON_CODEX_HOOK_DESCRIPTION = "Baton-owned host guard (PreToolUse and SubagentStart)";
 export const BATON_CODEX_HOOK_EVENTS = ["PreToolUse", "SubagentStart"] as const;
+export const BATON_CODEX_PRETOOLUSE_MATCHER = "^(Bash|apply_patch|Edit|Write|Agent|spawn_agent|(?:[A-Za-z0-9_]+\\.)+spawn_agent)$";
 
 export type CodexHookEvent = (typeof BATON_CODEX_HOOK_EVENTS)[number];
 
@@ -289,7 +290,7 @@ function matcherGroup(matcher: string, command: string): HookMatcherGroup {
 /** Canonical entries added to a user hook layer. All are synchronous. */
 export function batonCodexHookEntries(command = BATON_CODEX_HOOK_COMMAND): Record<CodexHookEvent, HookMatcherGroup[]> {
   return {
-    PreToolUse: [matcherGroup("^(Bash|apply_patch|Edit|Write|Agent)$", command)],
+    PreToolUse: [matcherGroup(BATON_CODEX_PRETOOLUSE_MATCHER, command)],
     SubagentStart: [matcherGroup(".*", command)],
   };
 }

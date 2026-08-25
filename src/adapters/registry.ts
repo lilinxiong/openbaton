@@ -1,20 +1,16 @@
 import type {
   CliAdapter,
   CliId,
-  CliModelCatalog,
-  CliModelDiscovery,
-  DiscoverCliModelsOptions,
 } from "./contract.js";
 import { codexAdapter } from "./codex.js";
 import { cursorAdapter } from "./cursor.js";
 import { grokAdapter } from "./grok.js";
 import { claudeAdapter } from "./claude.js";
-import { codedError } from "./shared.js";
 
 /** The only source of truth for supported CLI adapters in this release. */
 export const CLI_ADAPTERS = [codexAdapter, grokAdapter, cursorAdapter, claudeAdapter] as const;
 
-/** Public compatibility list, now derived from the registry. */
+/** Public list, derived from the registry. */
 export const CLI_IDS = CLI_ADAPTERS.map((adapter) => adapter.id) as readonly CliId[];
 
 export function listCliAdapters(): readonly CliAdapter[] {
@@ -38,14 +34,4 @@ export function getCliAdapter(value: CliId | string): CliAdapter {
   throw new Error(`invalid CLI: ${value || "<empty>"} (expected ${CLI_IDS.join("|")})`);
 }
 
-/** Discover through the registered adapter while retaining the old call shape. */
-export const discoverCliModels: CliModelDiscovery = async (
-  cli,
-  options?: DiscoverCliModelsOptions,
-): Promise<CliModelCatalog> => {
-  const adapter = CLI_ADAPTERS.find((candidate) => candidate.id === cli);
-  if (!adapter) throw codedError(`unsupported CLI: ${cli}`, "CLI_NOT_SUPPORTED");
-  return adapter.discoverModels(options);
-};
-
-export type { CliAdapter, CliId } from "./contract.js";
+export type { CliAdapter, CliAdapterProvider, CliId } from "./contract.js";

@@ -16,7 +16,7 @@ import type { WritableLike } from "../types.js";
 
 const USAGE = `usage:
   baton dispatch next --host HOST [--capacity N] [--limit N] --json
-  baton dispatch bind TICKET --agent-id ID --host HOST --json
+  baton dispatch bind TICKET [--agent-id HOST_AGENT_ID] [--task-name CODEX_TASK_NAME] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --host HOST --agent-id ID --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
@@ -120,9 +120,13 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
 
   if (sub === "bind") {
     const id = values[0];
-    if (!id || !flags["agent-id"]) throw new Error(USAGE.trim());
+    if (!id) throw new Error(USAGE.trim());
     const host = dispatchHost(flags, cwd, env);
-    const ticket = bindAgent(cwd, id, { agentId: stringFlag(flags, "agent-id")!, host });
+    const ticket = bindAgent(cwd, id, {
+      agentId: stringFlag(flags, "agent-id"),
+      taskName: stringFlag(flags, "task-name"),
+      host,
+    });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host), host }) }, json);
     return 0;
   }

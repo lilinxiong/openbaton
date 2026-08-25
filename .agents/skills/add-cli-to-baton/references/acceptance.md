@@ -13,13 +13,13 @@ Add or extend tests for all applicable items.
 - real target response shapes plus sanitized fixtures;
 - hidden models, pagination, duplicate ids, empty catalog, malformed data, timeout, command failure, authentication/prose rejection, and coded errors;
 - exact preservation of model ids and exposed effort/tier metadata without invented values;
-- the compatibility model-discovery facade routes to the target adapter.
+- the selected adapter's `discoverModels` method is the only model-discovery entry point.
 
 ### Config, init, and installation
 
 - default config contains no CLI placeholders; selecting the target creates exactly one independent target profile;
 - CLI-reported max_concurrent/max_depth override the director fallbacks independently, while missing or invalid values remain omitted;
-- serialization and migration preserve existing Codex/Grok profiles;
+- current-format serialization preserves selected host profiles without promising legacy migration;
 - target enable/disable is host-scoped and never falls back across hosts;
 - `baton init` interactive CLI selection includes the target and proceeds through its returned models;
 - `baton init --cli <target>` and `baton config --cli <target>` work in non-interactive flows;
@@ -32,6 +32,7 @@ Add or extend tests for all applicable items.
 - automatic matching never selects outside the enabled target allowlist;
 - stale model, unsupported effort/tier, missing profile, and disabled profile fail closed;
 - proposal, ticket, Receipt, reservation, binding, terminal outcome, and release retain the immutable target host;
+- target identity handling uses its CLI-specific adapter (never a universal `agent_id` assumption), and caller identity mismatches or missing authoritative hook identity fail closed where the host requires observation;
 - reserve/bind/complete/release under a different host returns a host-mismatch failure;
 - concurrency/backpressure defers the same target ticket without consuming an attempt or switching models;
 - recovery and status do not leak or relabel target tickets;
@@ -45,11 +46,11 @@ A new host is incomplete unless these gates pass. Keep the automated coverage ab
 
 ### Runtime skill completeness
 
-Inspect the installed target runtime Baton skill. It MUST name the shared director/worker table with the same three rows:
+Inspect the installed target runtime Baton skill. It MUST state the shared routing boundary:
 
-- Empty labels / undeclared / unclassified → director
-- Declared classified work → native subagents
-- OpenSpec only lightens orchestration
+- Discussion/read-only analysis stay on the director; enabled-host ordinary implementation, including tiny edits, delegates to native subagents.
+- Director-owned structured classification is authoritative; classified mechanical work never falls back to director execution when its route is empty or unusable.
+- OpenSpec only lightens orchestration; Baton persists tickets/Receipts, not a separate DAG.
 
 Omitting the table or substituting a host-specific exception is not `PASS`. Unit tests still must not merely regex-match documentation wording; this gate is an acceptance completeness check that the runtime skill contains the table, not a wording-regex unit test.
 
@@ -68,6 +69,30 @@ If the target exposes a PreToolUse-compatible hook that Baton installs, acceptan
 ### Hookless hosts
 
 Hosts without a compatible hook (Cursor today) still MUST ship the table and pass the shared reservation-bearing prompt unchanged plus the description unchanged when the native tool exposes one. Missing a hook is not a license to implement declared classified work in the parent. Do not pretend a missing hook enforces the table.
+
+### Automatic workflow contract
+
+Acceptance must also show that, after the selected profile is enabled and execution is authorized, the director passes a structured classification before dispatch. Baton persists tickets and Receipts, not a separate DAG. Discussion/read-only analysis stay director-local, while authorized implementation nodes use native children. Mechanical routing must use the structured class rather than matching a fixed operation-name list; operation labels remain audit metadata. Invalid/missing authorization, disabled host, or unresolved classification must fail closed. Commit/publish checks remain deterministic Receipt/Git capability gates.
+
+### Complete write-scope acceptance
+
+Acceptance must prove the write boundary before any write ticket is created or dispatched:
+
+- The director performs a read-only impact/dependency pass for each proposed write unit.
+- Each write unit records an exact, complete per-unit path set and allowed operations from `write`, `create`, `delete`, `rename`, and `chmod`; an implicit, wildcard, or partial scope is not complete.
+- Parallel dispatch is accepted only when all participating scopes are complete and pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Intersecting or incomplete scopes are sequenced or kept director-local.
+- Unknown impact, dependency, path, or operation leaves classification unresolved and creates no implementation ticket.
+- A worker that discovers an undeclared path or operation stops before mutation and returns a scope decision. It must not edit first or rely on terminal retry or audit to authorize the change.
+- Mechanical routing still follows the structured class, while operation labels remain opaque audit metadata and never select a route.
+
+Exercise the current write surfaces in the acceptance evidence, for example:
+
+```text
+baton spawn REQUEST --host HOST --classification implementation \
+  --write-path PATH --write-ops write,create,delete,rename,chmod
+baton apply CHANGE --host HOST --dispatch \
+  --unit ID --write-path PATH --unit ID --write-path PATH
+```
 
 ## Repository gates
 
@@ -91,7 +116,7 @@ Using an isolated home and the locally built package:
 2. Select the target and verify the next phase queries the target's real model source.
 3. Select runner, longctx, and subagent candidates from only that returned catalog, then enable the target.
 4. Verify the persisted `cli.<target>` profile without altering another host profile.
-5. Disable the target and prove an explicit target operation fails closed rather than using Codex, Grok, or the legacy active default.
+5. Disable the target and prove an explicit target operation fails closed rather than using another host or a global default.
 6. Exercise the equivalent non-interactive init/config path.
 
 Fixtures may test prompt behavior, but final acceptance requires the locally built CLI and the live target catalog.

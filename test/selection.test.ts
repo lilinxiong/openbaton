@@ -92,7 +92,6 @@ describe("automatic configured-model selection", () => {
     assert.equal(sol.service_tier, "priority");
     assert.deepEqual(sol.speed_signals, ["service-tier"]);
     assert.ok(unit.candidates.some((candidate) => candidate.model_id === "gpt-5.3-codex-spark@low"));
-    assert.deepEqual(unit.policy_exclusions, []);
   }));
 
   it("chooses one best-fit effort per model before comparing benchmark scores", () => withHome((home) => {
@@ -175,13 +174,22 @@ describe("automatic configured-model selection", () => {
     const proposal = createSelectionProposal(cwd, {
       source: "standalone",
       units: [unit],
-      sourceFingerprint: selectionSourceFingerprint({ description: text }),
-      payload: { description: text },
+      sourceFingerprint: selectionSourceFingerprint({
+        source_shape: "multi-unit-v1",
+        description: text,
+        units: [{ key: "one", description: text }],
+        write_paths: [],
+        write_operations: [],
+      }),
+      payload: {
+        source_shape: "multi-unit-v1",
+        description: text,
+        units: [{ key: "one", description: text }],
+      },
     });
     const stored = readSelectionProposal(cwd, proposal.id);
     assert.equal(stored.units[0].recommended_model_id, "gpt-5.4-mini@low");
     assert.ok(stored.units[0].candidates.some((candidate) => candidate.model_id === "gpt-5.3-codex-spark@low"));
-    assert.deepEqual(stored.policy_exclusions, []);
   }));
 
   it("spawn auto-approves and creates a ticket without model confirmation", async () => {
@@ -191,7 +199,7 @@ describe("automatic configured-model selection", () => {
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       setup(cwd, env);
       const out = capture();
-      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--json"], {
+      assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--classification", "implementation", "--json"], {
         cwd,
         env,
         stdout: out,
@@ -220,7 +228,7 @@ describe("automatic configured-model selection", () => {
       }
 
       const explicit = capture();
-      assert.equal(await run(["spawn", "implement a change", "--host", "codex", "--model", "gpt-5.3-codex-spark"], {
+      assert.equal(await run(["spawn", "implement a change", "--host", "codex", "--classification", "implementation", "--model", "gpt-5.3-codex-spark"], {
         cwd,
         env,
         stdout: explicit,

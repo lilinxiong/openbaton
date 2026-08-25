@@ -67,7 +67,7 @@ process.stdout.write(`${JSON.stringify({
 function load(workspaceArg, mode) {
   const workspace = fs.realpathSync(workspaceArg);
   const workspaceId = crypto.createHash("sha256").update(workspace).digest("hex");
-  const runtime = path.join(process.env.HOME || os.homedir(), ".baton", "workspaces", workspaceId);
+  const runtime = path.join(process.env.HOME || os.homedir(), ".baton", "workspaces", workspaceId, "v2");
   const proposals = readJsonDirectory(path.join(runtime, "selections")).filter((proposal) => proposal.source === mode);
   const tickets = readJsonDirectory(path.join(runtime, "spawns")).filter((ticket) => ticket.source === mode);
   assert(proposals.length === 1, `${mode} must have exactly one request-level proposal, got ${proposals.length}`);

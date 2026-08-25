@@ -5,7 +5,6 @@ import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
 import { directorMayRun } from "./hygiene.js";
 import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
-import { assertSubagentModelAllowed } from "./model-policy.js";
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import {
   buildWorkerPrompt,
@@ -150,7 +149,7 @@ interface BuildSpawnTicketOptions {
   serviceTier?: string | null;
   source?: string;
   openspec?: UnknownRecord | null;
-  taskKind?: WorkUnitKind | null;
+  taskKind: WorkUnitKind;
   deliverable?: string | null;
   doneWhen?: string | null;
   selection?: ModelSelectionApproval | null;
@@ -168,14 +167,13 @@ export function buildSpawnTicket({
   serviceTier = null,
   source = "standalone",
   openspec = null,
-  taskKind = null,
+  taskKind,
   deliverable = null,
   doneWhen = null,
   selection = null,
   targetHost = selection?.host || null,
   now = new Date(),
 }: BuildSpawnTicketOptions): SpawnTicket {
-  assertSubagentModelAllowed(routeId, modelId);
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
   const coordination = coordinationFor(workUnit);
@@ -224,7 +222,7 @@ interface PlanStandaloneOptions {
   explicitModel?: string | null;
   queue?: unknown;
   cwd: string;
-  taskKind?: WorkUnitKind | null;
+  taskKind: WorkUnitKind;
   deliverable?: string | null;
   doneWhen?: string | null;
   selectionApproval?: ModelSelectionApproval | null;

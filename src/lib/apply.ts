@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { matchModelCard } from "./cards.js";
-import { directorMayRun, sanitizeConclusion } from "./hygiene.js";
+import { sanitizeConclusion } from "./hygiene.js";
 import {
   OpenSpecChange,
   OpenSpecConclusion,
@@ -166,7 +166,9 @@ function openSpecWriteback(value: unknown): OpenSpecTicketBinding | null {
   const lineIndex = value.line_index;
   const number = value.number;
   if (typeof tasksPath !== "string") return null;
-  if (typeof number === "string" && number) return { tasks_path: tasksPath, number, line_index: typeof lineIndex === "number" ? lineIndex : undefined };
+  if (typeof number === "string" && number && !number.startsWith("line-")) {
+    return { tasks_path: tasksPath, number, line_index: typeof lineIndex === "number" ? lineIndex : undefined };
+  }
   if (typeof lineIndex !== "number" || !Number.isInteger(lineIndex)) return null;
   return { tasks_path: tasksPath, line_index: lineIndex };
 }
@@ -197,18 +199,6 @@ export function planApply({ tasks, cards, includeTask, selectCard, selectCards }
     if (task.status !== "pending") continue;
     if (includeTask && !includeTask(task)) continue;
     const prompt = formatTaskPrompt(task);
-    if (directorMayRun(task.description)) {
-      units.push({
-        id: task.number || `line-${task.line_index}`,
-        description: task.description,
-        prompt,
-        model_id: null,
-        director_local: true,
-        line_index: task.line_index,
-        section: task.section,
-      });
-      continue;
-    }
     try {
       const explicit = selectCard?.(task, cards);
       const matched = explicit
@@ -294,7 +284,9 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
         change_dir: changeDir,
         tasks_path: tasksPath,
         line_index: unit.line_index,
-        number: unit.id,
+        // Synthetic line-N ids identify unnumbered tasks for dispatch scopes,
+        // but are not OpenSpec task numbers for number-based writeback.
+        ...(unit.id.startsWith("line-") ? {} : { number: unit.id }),
         section: unit.section,
       },
       selection: selectionApprovals.get(unit.id) || null,

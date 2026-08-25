@@ -1,11 +1,13 @@
 import {
   CLI_IDS,
-  discoverCliModels,
-  type CliId,
-  type CliModel,
-  type CliModelCatalog,
-  type CliModelDiscovery,
-} from "../lib/cli-models.js";
+  getCliAdapter,
+} from "../adapters/registry.js";
+import type {
+  CliAdapterProvider,
+  CliId,
+  CliModel,
+  CliModelCatalog,
+} from "../adapters/contract.js";
 import {
   cliProfileForHost,
   effectiveMaxConcurrentForHost,
@@ -30,7 +32,7 @@ export interface ConfigCommandOptions {
   stdout: WritableLike;
   stdin?: NodeJS.ReadableStream;
   env?: NodeJS.ProcessEnv;
-  discover?: CliModelDiscovery;
+  adapterProvider?: CliAdapterProvider;
   prompt?: SelectPrompt;
   /** Skip the CLI picker and configure these CLIs in order. */
   clis?: CliId[];
@@ -112,7 +114,7 @@ function modelChoices(models: CliModel[]): PromptChoice<string>[] {
 
 function optionalModelChoices(models: CliModel[]): PromptChoice<string>[] {
   return [
-    { value: "", label: "(empty; director)" },
+    { value: "", label: "(missing route blocks classified work)" },
     ...modelChoices(models),
   ];
 }
@@ -179,7 +181,7 @@ async function configureCliProfile(
   let runner = single ? optionalModelFlag(args, "runner") : undefined;
   if (runner === undefined) {
     runner = await ask().select({
-      message: "Select runner (empty = director; this is a label, not a capability claim)",
+      message: "Select runner (missing route blocks classified mechanical work; label only)",
       choices: optionalModelChoices(catalog.models),
       initial: existing.runner,
     });
@@ -189,7 +191,7 @@ async function configureCliProfile(
   let longctx = single ? optionalModelFlag(args, "longctx") : undefined;
   if (longctx === undefined) {
     longctx = await ask().select({
-      message: "Select longctx (empty = director; no context-window support is assumed)",
+      message: "Select longctx (missing route blocks classified long-context work; label only)",
       choices: optionalModelChoices(catalog.models),
       initial: existing.longctx,
     });
@@ -259,8 +261,8 @@ async function configureCliProfile(
 
 function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
   stdout.write(`  cli: ${result.cli} (${result.enabled ? "enabled" : "disabled"})\n`);
-  stdout.write(`  runner: ${result.runner || "(empty; director)"}\n`);
-  stdout.write(`  longctx: ${result.longctx || "(empty; director)"}\n`);
+  stdout.write(`  runner: ${result.runner || "(missing route blocks classified work)"}\n`);
+  stdout.write(`  longctx: ${result.longctx || "(missing route blocks classified work)"}\n`);
   stdout.write(`  subagent models: ${result.subagent_models.length ? result.subagent_models.join(", ") : "(none)"}\n`);
   stdout.write(`  max_concurrent: ${result.max_concurrent} (${result.max_concurrent_source})\n`);
   stdout.write(`  max_depth: ${result.max_depth} (${result.max_depth_source})\n`);
@@ -271,7 +273,7 @@ export async function runConfig(args: string[], {
   stdout,
   stdin = process.stdin,
   env = process.env,
-  discover = discoverCliModels,
+  adapterProvider = getCliAdapter,
   prompt,
   clis: presetClis,
 }: ConfigCommandOptions): Promise<number> {
@@ -311,7 +313,7 @@ export async function runConfig(args: string[], {
   for (let index = 0; index < clis.length; index += 1) {
     const cli = clis[index];
     if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
-    const catalog = await discover(cli, { cwd, env });
+    const catalog = await adapterProvider(cli).discoverModels({ cwd, env });
     results.push(await configureCliProfile(cli, args, {
       cwd, stdout, env, current, catalog, ask, single,
     }));

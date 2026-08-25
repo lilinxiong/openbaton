@@ -12,8 +12,9 @@ import {
   readRouteSnapshot,
   routeSnapshotSchemaVersion,
 } from "../src/lib/routes.js";
-import { routeSnapshotPath } from "../src/lib/paths.js";
+import { hostRouteSnapshotPath } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
+import { adapterProviderFor } from "./configure.js";
 
 function workspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "baton-routes-"));
@@ -44,7 +45,7 @@ const MODELS = [
 ];
 
 describe("CLI model catalog snapshot", () => {
-  it("publishes schema 5 with CLI provenance and stable generations", () => withHome(() => {
+  it("publishes schema 5 with CLI provenance and stable generations", () => withHome((home) => {
     const cwd = workspace();
     const first = publishRouteSnapshot(cwd, { models: MODELS }, new Date("2026-08-22T00:00:00Z"), {
       cli: "codex",
@@ -70,7 +71,8 @@ describe("CLI model catalog snapshot", () => {
     });
     assert.equal(changed.snapshot.generation, 2);
     assert.equal(routeSnapshotSchemaVersion(cwd), 5);
-    assert.ok(routeSnapshotPath(cwd).endsWith(path.join("cache", "cli-models.json")));
+    assert.ok(hostRouteSnapshotPath(cwd, "codex").endsWith(path.join("cache", "cli-models-codex.json")));
+    assert.equal(fs.existsSync(path.join(home, ".baton", "cache", "cli-models.json")), false);
     assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
   }));
 
@@ -91,15 +93,12 @@ describe("CLI model catalog snapshot", () => {
       const cwd = workspace();
       const env = fakeEnv(home);
       saveConfig(cwd, emptyConfig(), { env });
-      const calls: string[] = [];
       const stdout = sink();
       const code = await runRoutes(["refresh", "--host", "codex"], {
         cwd,
         env,
         stdout,
-        discover: async (cli) => {
-          calls.push(cli);
-          return { cli: "codex", version: "codex-cli test", models: MODELS.map((model) => ({
+        adapterProvider: adapterProviderFor({ cli: "codex", version: "codex-cli test", models: MODELS.map((model) => ({
             id: model.id,
             model: model.id,
             display_name: model.display_name,
@@ -112,11 +111,9 @@ describe("CLI model catalog snapshot", () => {
             service_tiers: [],
             default_service_tier: null,
             is_default: false,
-          })) };
-        },
+          })) }),
       });
       assert.equal(code, 0);
-      assert.deepEqual(calls, ["codex"]);
       const output = JSON.parse(stdout.text());
       assert.equal(output.snapshot.cli, "codex");
       assert.deepEqual(output.snapshot.routes.map((route: { route_id: string }) => route.route_id), [
@@ -137,10 +134,10 @@ describe("CLI model catalog snapshot", () => {
     assert.ok(cards.every((card) => card.executable));
   }));
 
-  it("rejects malformed and legacy snapshots", () => withHome(() => {
+  it("rejects malformed and unkeyed snapshots", () => withHome((home) => {
     assert.throws(() => normalizeRouteCatalog({ nope: true }), /model catalog/);
     const cwd = workspace();
-    const file = routeSnapshotPath(cwd);
+    const file = path.join(home, ".baton", "cache", "cli-models.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ schema_version: 4, routes: [], provider_quotas: [] }));
     assert.equal(readRouteSnapshot(cwd), null);

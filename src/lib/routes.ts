@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { hostRouteSnapshotPath, routeSnapshotPath } from "./paths.js";
+import { hostRouteSnapshotPath } from "./paths.js";
 import type { ProviderQuotaDisclosure } from "./provider-quotas.js";
 import {
   listStoredRouteMappings,
@@ -140,7 +140,7 @@ export function normalizeRouteCatalog(value: unknown): ExecutableRoute[] {
 
 interface PublishRouteSnapshotOptions {
   cli?: string;
-  /** Explicit runtime host. When omitted, preserve the legacy unkeyed file. */
+  /** Runtime host used to key the current-format snapshot. */
   host?: string;
   env?: NodeJS.ProcessEnv;
   engineVersion?: string | null;
@@ -154,18 +154,29 @@ export function publishRouteSnapshot(
   now: Date = new Date(),
   { cli = "codex", host, env, engineVersion = null, providerQuotas, quotaRefreshError }: PublishRouteSnapshotOptions = {},
 ): { changed: boolean; snapshot: RouteSnapshot } {
-  if (host && String(cli).trim().toLowerCase() !== String(host).trim().toLowerCase()) {
-    throw new Error(`HOST_MISMATCH: route snapshot cli ${cli} does not match host ${host}`);
+  // The optional host follows the CLI for callers using the default Codex
+  // route; every snapshot is written under its normalized host key.
+  const snapshotHost = String(host || cli).trim().toLowerCase();
+  const snapshotCli = String(cli).trim().toLowerCase();
+  if (!snapshotHost) throw new Error("HOST_REQUIRED: route snapshots must name their runtime host");
+  if (snapshotCli !== snapshotHost) {
+    throw new Error(`HOST_MISMATCH: route snapshot cli ${cli} does not match host ${host || snapshotHost}`);
   }
   const routes = normalizeRouteCatalog(catalog);
   const fingerprint = crypto.createHash("sha256").update(stableRoutes(routes)).digest("hex");
-  const file = host ? hostRouteSnapshotPath(cwd, host, env) : routeSnapshotPath(cwd, env);
+  const file = hostRouteSnapshotPath(cwd, snapshotHost, env);
   let previous: Partial<RouteSnapshot> | null = null;
-  if (fs.existsSync(file)) previous = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+  if (fs.existsSync(file)) {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+    if (!validSnapshot(parsed) || parsed.cli !== snapshotHost) {
+      throw new Error(`ROUTE_SNAPSHOT_FORMAT_UNSUPPORTED: ${file}`);
+    }
+    previous = parsed;
+  }
   const normalizedEngineVersion = String(engineVersion || "").trim() || null;
   const sameCatalog = previous?.schema_version === 5
     && previous.fingerprint === fingerprint
-    && previous.cli === cli
+    && previous.cli === snapshotCli
     && previous.engine_version === normalizedEngineVersion;
   const quotaUpdate = providerQuotas !== undefined || quotaRefreshError !== undefined;
   if (sameCatalog && !quotaUpdate) {
@@ -177,7 +188,7 @@ export function publishRouteSnapshot(
     fingerprint,
     fetched_at: now.toISOString(),
     source: "cli",
-    cli,
+    cli: snapshotCli,
     engine_version: normalizedEngineVersion,
     routes,
     quota_refresh_error: quotaUpdate ? String(quotaRefreshError || "").trim() || null : previous?.quota_refresh_error || null,
@@ -185,14 +196,13 @@ export function publishRouteSnapshot(
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const content = `${JSON.stringify(snapshot, null, 2)}\n`;
-  const files = host ? [...new Set([file, routeSnapshotPath(cwd, env)])] : [file];
-  for (const target of files) {
-    const temp = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
-    try {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(temp, content, { encoding: "utf8", mode: 0o600 });
-      fs.renameSync(temp, target);
-    } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(temp, content, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
   }
   return { changed: !sameCatalog, snapshot };
 }
@@ -213,26 +223,18 @@ function validSnapshot(value: Partial<RouteSnapshot>): value is RouteSnapshot {
 export function readRouteSnapshot(cwd: string, options: RouteSnapshotReadOptions | string = {}): RouteSnapshot | null {
   const resolved = typeof options === "string" ? { host: options } : options;
   const { host, env } = resolved;
-  const keyed = host ? hostRouteSnapshotPath(cwd, host, env) : null;
-  // An explicit host may use the matching legacy snapshot for compatibility,
-  // but never a snapshot captured for another host. A malformed/mismatched
-  // keyed snapshot is a hard isolation failure and cannot fall through.
-  const candidates = keyed ? [keyed, routeSnapshotPath(cwd, env)] : [routeSnapshotPath(cwd, env)];
-  for (const file of candidates) {
-    if (!fs.existsSync(file)) continue;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
-      if (!validSnapshot(parsed)) continue;
-      if (host && parsed.cli !== host) {
-        if (file === keyed) return null;
-        continue;
-      }
-      return parsed;
-    } catch {
-      if (file === keyed) return null;
-    }
+  // An omitted host selects the current Codex host key.
+  const requestedHost = String(host || "codex").trim().toLowerCase();
+  if (!requestedHost) return null;
+  const file = hostRouteSnapshotPath(cwd, requestedHost, env);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+    if (!validSnapshot(parsed) || parsed.cli !== requestedHost) return null;
+    return parsed;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 export function routeSnapshotSchemaVersion(cwd: string, options: RouteSnapshotReadOptions | string = {}): number | null {

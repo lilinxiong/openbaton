@@ -1,13 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
 import {
   CLI_ADAPTERS,
   CLI_IDS,
   getCliAdapter,
   listCliAdapters,
 } from "../src/adapters/index.js";
-import { discoverCliModels, type CliModelCatalog } from "../src/lib/cli-models.js";
 import {
   cliProfileForHost,
   configuredSubagentModelsForHost,
@@ -64,7 +62,7 @@ describe("CLI adapter contract and registry", () => {
       subagent_models: [],
     });
 
-    const migrated = normalizeConfig({
+    const unselected = normalizeConfig({
       ops: {
         runner: { route: "legacy-runner" },
         longctx: { route: "legacy-longctx" },
@@ -74,14 +72,12 @@ describe("CLI adapter contract and registry", () => {
         grok: { enabled: true, runner: "grok-4.5", subagent_models: ["grok-4.5"] },
       },
     });
-    assert.equal(Object.hasOwn(migrated.cli, "active"), false);
-    assert.equal(migrated.cli.grok.enabled, true);
-    assert.equal(migrated.cli.grok.longctx, "");
-    assert.equal(migrated.cli.codex.runner, "legacy-runner");
-    assert.equal(migrated.cli.codex.longctx, "legacy-longctx");
-    // Only the legacy Codex profile migrates the old global ops table.
-    assert.equal(migrated.cli.claude, undefined);
-    assert.equal(cliProfileForHost(migrated, "claude").enabled, false);
+    assert.equal(Object.hasOwn(unselected.cli, "active"), false);
+    assert.equal(unselected.cli.grok.enabled, true);
+    assert.equal(unselected.cli.grok.longctx, "");
+    assert.equal(unselected.cli.codex, undefined);
+    assert.equal(unselected.cli.claude, undefined);
+    assert.equal(cliProfileForHost(unselected, "claude").enabled, false);
   });
 
   it("keeps a Claude profile independent of the Codex and Grok profiles", () => {
@@ -111,45 +107,5 @@ describe("CLI adapter contract and registry", () => {
     assert.deepEqual(configuredSubagentModelsForHost(enabled, "claude"), ["claude-sonnet-5", "claude-opus-5[1m]"]);
     // Enabling Claude must not alter another host's profile.
     assert.deepEqual(configuredSubagentModelsForHost(enabled, "codex"), ["gpt-5.4"]);
-  });
-
-  it("retains the legacy discovery call shape through the facade", async () => {
-    const expected: CliModelCatalog = { cli: "grok", version: null, models: [{
-      id: "grok-4.5",
-      model: "grok-4.5",
-      display_name: "grok-4.5",
-      description: "",
-      hidden: false,
-      reasoning_efforts: [],
-      default_reasoning_effort: null,
-      input_modalities: [],
-      additional_speed_tiers: [],
-      service_tiers: [],
-      default_service_tier: null,
-      is_default: false,
-    }] };
-    const catalog = await discoverCliModels("grok", {
-      command: "/bin/grok",
-      spawnImpl: ((_: string, args: string[]) => {
-        const events = new EventEmitter() as EventEmitter & {
-          stdout: EventEmitter;
-          stderr: EventEmitter;
-          stdin: { end(): void };
-          killed: boolean;
-          kill(): void;
-        };
-        events.stdout = new EventEmitter();
-        events.stderr = new EventEmitter();
-        events.stdin = { end() {} };
-        events.killed = false;
-        events.kill = () => { events.killed = true; };
-        queueMicrotask(() => {
-          if (args[0] === "models") events.stdout.emit("data", "Available models:\n  grok-4.5\n");
-          events.emit("exit", 0);
-        });
-        return events;
-      }) as typeof import("node:child_process").spawn,
-    });
-    assert.deepEqual(catalog, expected);
   });
 });

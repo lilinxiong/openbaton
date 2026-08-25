@@ -7,6 +7,7 @@ import path from "node:path";
 import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCodex } from "./configure.js";
 import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
@@ -30,6 +31,22 @@ function gitRepo(cwd: string): void {
   fs.writeFileSync(path.join(cwd, "README.md"), "demo\n");
   execFileSync("git", ["add", "."], { cwd });
   execFileSync("git", ["commit", "-m", "init"], { cwd });
+}
+
+function readTicket(cwd: string, id: string) {
+  return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
+}
+
+function observeCodexDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, hookAgentId: string): void {
+  const ticket = readTicket(cwd, id);
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: "codex",
+  }, {}, undefined, env);
+  recordNativeIdentity(cwd, pending, hookAgentId, "hook", {}, undefined, env);
 }
 
 describe("baton apply waves", () => {
@@ -285,8 +302,10 @@ describe("baton apply waves", () => {
       const body = JSON.parse(result.stdout);
       const ids = body.tickets.map((ticket: { id: string }) => ticket.id);
       assert.equal(ids.length, 2);
-      assert.equal((await command(["dispatch", "bind", ids[0], "--agent-id", "agent-a", "--host", "codex", "--json"], { cwd, env })).code, 0);
-      assert.equal((await command(["dispatch", "bind", ids[1], "--agent-id", "agent-b", "--host", "codex", "--json"], { cwd, env })).code, 0);
+      observeCodexDispatch(cwd, env, ids[0], "codex-hook-apply-a");
+      observeCodexDispatch(cwd, env, ids[1], "codex-hook-apply-b");
+      assert.equal((await command(["dispatch", "bind", ids[0], "--task-name", "codex-task-apply-a", "--host", "codex", "--json"], { cwd, env })).code, 0);
+      assert.equal((await command(["dispatch", "bind", ids[1], "--task-name", "codex-task-apply-b", "--host", "codex", "--json"], { cwd, env })).code, 0);
       fs.appendFileSync(path.join(cwd, "src", "lib", "config.ts"), "A\n");
       fs.appendFileSync(path.join(cwd, "src", "lib", "hosts.ts"), "B\n");
       const first = await command(["dispatch", "complete", ids[0], "--host", "codex", "--text", "unit one done", "--json"], { cwd, env });

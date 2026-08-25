@@ -14,6 +14,7 @@ from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILT_CLI = REPO_ROOT / "dist" / "bin" / "baton.js"
+GLOBAL_SKILL = Path.home() / ".baton" / "SKILL.md"
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +73,21 @@ def resolve_linked_baton() -> str:
     return baton
 
 
+def verify_active_skill() -> None:
+    """Ensure the global director skill is the one shipped by this checkout."""
+    source = REPO_ROOT / "SKILL.md"
+    if not GLOBAL_SKILL.is_file():
+        raise RuntimeError(
+            "baton update completed without writing the active global skill: "
+            f"{GLOBAL_SKILL}"
+        )
+    if GLOBAL_SKILL.read_bytes() != source.read_bytes():
+        raise RuntimeError(
+            "the active global Baton skill does not match this checkout after "
+            f"baton update:\n  installed: {GLOBAL_SKILL}\n  source:    {source}"
+        )
+
+
 def main() -> int:
     args = parse_args()
 
@@ -115,6 +131,8 @@ def main() -> int:
     baton = resolve_linked_baton()
     print(f"[{next_step}/{total}] refresh the installed Baton files", flush=True)
     run([baton, "update"], dry_run=False)
+    verify_active_skill()
+    print(f"  verified active global skill: {GLOBAL_SKILL}", flush=True)
     print(f"[{next_step + 1}/{total}] verify the linked CLI", flush=True)
     run([baton, "version"], dry_run=False)
 

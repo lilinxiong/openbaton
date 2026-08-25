@@ -9,6 +9,10 @@ import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { configureCodex } from "./configure.js";
+import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
+
+const CODEX_HOOK_AGENT_ID = "codex-hook-agent-write";
+const CODEX_TASK_NAME = "codex-task-write";
 
 function sink() { return { write() { return true; } }; }
 function capture() {
@@ -44,10 +48,6 @@ async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]
   const automaticArgs: string[] = [];
   let hasHost = false;
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === "--model") {
-      index += 1;
-      continue;
-    }
     if (args[index] === "--host") hasHost = true;
     automaticArgs.push(args[index]);
   }
@@ -60,18 +60,31 @@ async function approvedSpawn(cwd: string, env: NodeJS.ProcessEnv, args: string[]
   assert.equal(approval.approvals[0].confirmed_by, "baton-recommendation");
 }
 
+function observeCodexDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string): void {
+  const ticket = readTicket(cwd, id);
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: "codex",
+  }, {}, undefined, env);
+  recordNativeIdentity(cwd, pending, CODEX_HOOK_AGENT_ID, "hook", {}, undefined, env);
+}
+
 async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
   await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
   syncModel(cwd);
-  await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
+  await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--classification", "implementation", "--write-path", "allowed.txt", "--write-ops", "write"]);
   await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-  await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+  observeCodexDispatch(cwd, env, "spn-0001");
+  await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", CODEX_TASK_NAME, "--json"], { cwd, env, stdout: sink(), stderr: sink() });
 }
 
 async function reportMissingWriteAgent(cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
   const out = capture();
   const code = await run([
-    "dispatch", "probe", "spn-0001", "--agent-id", "agent-write", "--state", "not_found", "--json",
+    "dispatch", "probe", "spn-0001", "--agent-id", CODEX_HOOK_AGENT_ID, "--state", "not_found", "--json",
   ], { cwd, env, stdout: out, stderr: out });
   assert.equal(code, 0, out.text());
   return JSON.parse(out.text()).ticket.liveness.sequence;
@@ -84,9 +97,10 @@ describe("write dispatch safety integration", () => {
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       syncModel(cwd);
-      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
+      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--classification", "implementation", "--write-path", "allowed.txt", "--write-ops", "write"]);
       await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      observeCodexDispatch(cwd, env, "spn-0001");
+      await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", CODEX_TASK_NAME, "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       await run(["dispatch", "complete", "spn-0001", "--host", "codex", "--text", "write accepted", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       const ticket = readTicket(cwd, "spn-0001");
@@ -102,9 +116,10 @@ describe("write dispatch safety integration", () => {
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       syncModel(cwd);
-      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
+      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--classification", "implementation", "--write-path", "allowed.txt", "--write-ops", "write"]);
       await run(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      observeCodexDispatch(cwd, env, "spn-0001");
+      await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", CODEX_TASK_NAME, "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       fs.appendFileSync(path.join(cwd, "denied.txt"), "WORKER_OUT_OF_SCOPE\n");
       await run(["dispatch", "complete", "spn-0001", "--text", "must be rejected", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
@@ -122,16 +137,17 @@ describe("write dispatch safety integration", () => {
       const env = fakeEnv(home);
       await run(["init"], { cwd, env, stdout: sink(), stderr: sink() });
       syncModel(cwd);
-      await approvedSpawn(cwd, env, ["spawn", "survey the repository structure", "--model", "kimi/k3[1m]"]);
+      await approvedSpawn(cwd, env, ["spawn", "survey the repository structure", "--classification", "implementation"]);
       assert.ok(fs.existsSync(path.join(receiptsDir(cwd), "rcpt-spn-0001-a1.json")));
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
 
-      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--model", "kimi/k3[1m]", "--write-path", "allowed.txt", "--write-ops", "write"]);
+      await approvedSpawn(cwd, env, ["spawn", "implement allowed file", "--classification", "implementation", "--write-path", "allowed.txt", "--write-ops", "write"]);
       const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), "rcpt-spn-0002-a1.json"), "utf8"));
       assert.deepEqual(receipt.baseline.dirty_entries, []);
 
       await run(["dispatch", "next", "--host", "codex", "--capacity", "2", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
-      await run(["dispatch", "bind", "spn-0002", "--host", "codex", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      observeCodexDispatch(cwd, env, "spn-0002");
+      await run(["dispatch", "bind", "spn-0002", "--host", "codex", "--task-name", CODEX_TASK_NAME, "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
       await run(["dispatch", "complete", "spn-0002", "--text", "write accepted", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       assert.equal(readTicket(cwd, "spn-0002").status, "completed");
@@ -160,8 +176,8 @@ describe("write dispatch safety integration", () => {
       await run(["dispatch", "status", "--json"], { cwd, env, stdout: status, stderr: status });
       let snap = JSON.parse(status.text());
       assert.equal(snap.active, 1);
-      assert.deepEqual(snap.awaiting_release, [{ ticket_id: "spn-0001", agent_id: "agent-write", status: "errored" }]);
-      await run(["dispatch", "release", "spn-0001", "--agent-id", "agent-write", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      assert.deepEqual(snap.awaiting_release, [{ ticket_id: "spn-0001", agent_id: CODEX_HOOK_AGENT_ID, status: "errored" }]);
+      await run(["dispatch", "release", "spn-0001", "--agent-id", CODEX_HOOK_AGENT_ID, "--json"], { cwd, env, stdout: sink(), stderr: sink() });
       const released = capture();
       await run(["dispatch", "status", "--json"], { cwd, env, stdout: released, stderr: released });
       snap = JSON.parse(released.text());

@@ -34,7 +34,7 @@ if (fs.realpathSync(root) !== workspace) fail("workspace must be its own Git roo
 const home = userHome();
 const batonRoot = batonHome();
 const workspaceId = crypto.createHash("sha256").update(workspace).digest("hex");
-const batonWorkspace = path.join(batonRoot, "workspaces", workspaceId);
+const batonWorkspace = path.join(batonRoot, "workspaces", workspaceId, "v2");
 const tickets = readJsonDirectory(path.join(batonWorkspace, "spawns"))
   .filter(isProbeTicket)
   .sort((a, b) => String(a.openspec?.number || a.id).localeCompare(String(b.openspec?.number || b.id)));
@@ -111,10 +111,8 @@ function verifyAutomaticSelection(items, selections, expectedHost) {
 
 function verifyQueueRefill(items, runtimeRoot, expectedHost) {
   const dispatchState = path.join(runtimeRoot, "runs", `dispatch-${expectedHost}.json`);
-  const legacyState = path.join(runtimeRoot, "runs", "dispatch.json");
-  const file = fs.existsSync(dispatchState) ? dispatchState : legacyState;
-  if (!fs.existsSync(file)) return;
-  const capacity = Number(JSON.parse(fs.readFileSync(file, "utf8")).capacity);
+  if (!fs.existsSync(dispatchState)) return;
+  const capacity = Number(JSON.parse(fs.readFileSync(dispatchState, "utf8")).capacity);
   if (!Number.isInteger(capacity) || capacity >= items.length) return;
   const releases = items.map((ticket) => Date.parse(ticket.slot_released_at || "")).filter(Number.isFinite).sort((a, b) => a - b);
   const reservations = items.map((ticket) => Date.parse(ticket.history?.find((entry) => entry.event === "dispatch_reserved")?.at || "")).filter(Number.isFinite);

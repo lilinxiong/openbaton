@@ -4,7 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { inferWorkUnitKind } from "../src/lib/work-unit.js";
 import { openspecCliAvailable, parseTasks } from "../src/lib/openspec.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -66,12 +65,12 @@ describe("built-in Baton capability samples", () => {
     assert.deepEqual(validateRecords(incidents, policy), []);
   });
 
-  it("defines four concrete tasks and one checkpointed deliberative task", () => {
+  it("defines four evidence tasks and one analysis task", () => {
     const tasksText = fs.readFileSync(path.join(withOpenSpec, "openspec", "changes", "incident-audit", "tasks.md"), "utf8");
     const tasks = parseTasks(tasksText);
     assert.deepEqual(tasks.map((task) => task.number), ["1.1", "1.2", "1.3", "1.4", "2.1"]);
-    assert.deepEqual(tasks.map((task) => inferWorkUnitKind(task.description)), [
-      "concrete", "concrete", "concrete", "concrete", "deliberative",
+    assert.deepEqual(tasks.map((task) => task.section), [
+      "1. Concrete evidence", "1. Concrete evidence", "1. Concrete evidence", "1. Concrete evidence", "2. Deliberative analysis",
     ]);
     assert.match(tasksText, /MUST run in parallel/);
     assert.match(tasksText, /MUST start with the four evidence lanes/);
@@ -90,7 +89,6 @@ describe("built-in Baton capability samples", () => {
       "automatic_eligible",
       "requires_manual_choice",
       "baton-recommendation",
-      "configured-cli-subagent-allowlist-v1",
       "readRouteSnapshot",
       'snapshot.source === "cli"',
       "snapshot.cli === expectedHost",
@@ -107,6 +105,12 @@ describe("built-in Baton capability samples", () => {
     assert.match(instructions, /invoking CLI/i);
     assert.match(instructions, /runner.*longctx.*labels only/is);
     assert.doesNotMatch(instructions, /selection render|one Submit|manual selector/i);
+  });
+
+  it("keeps bundled verification on the versioned runtime namespace", () => {
+    const bundleVerifier = fs.readFileSync(path.join(samples, "verify-bundle.mjs"), "utf8");
+    assert.match(bundleVerifier, /workspaces\", workspaceId, \"v2\"\)/);
+    assert.doesNotMatch(bundleVerifier, /workspaces\", workspaceId\)/);
   });
 
   it("strict-validates the embedded OpenSpec change when OpenSpec is available", { skip: !openspecCliAvailable() }, () => {
@@ -128,8 +132,8 @@ describe("probe-e2e coding template", () => {
     const tasksText = fs.readFileSync(path.join(probeE2e, "openspec", "changes", "probe-e2e", "tasks.md"), "utf8");
     const tasks = parseTasks(tasksText);
     assert.deepEqual(tasks.map((task) => task.number), ["1.1", "1.2", "2.1"]);
-    assert.deepEqual(tasks.map((task) => inferWorkUnitKind(task.description)), [
-      "concrete", "concrete", "concrete",
+    assert.deepEqual(tasks.map((task) => task.section), [
+      "1. Utility modules", "1. Utility modules", "2. Integration",
     ]);
     assert.match(tasksText, /MUST be implemented in parallel/);
     assert.match(tasksText, /MUST run after both utility modules exist/);

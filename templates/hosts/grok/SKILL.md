@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use Baton automatically for approved multi-model execution, configured mechanical ops, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Skip ordinary discussion."
+description: "Use Baton automatically for approved multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Skip ordinary discussion."
 ---
 
 # baton
@@ -11,9 +11,26 @@ You are the Grok host director. Baton is the scheduling and policy layer; it is 
 
 Same table on every host. Do not invent a host-specific split.
 
-- **Empty labels / undeclared / unclassified → director.** Empty `runner`/`longctx` mechanical actions run on the director and must not block (no ticket). Work that is not `baton spawn`, not `baton apply`, and not an OpenSpec executable task stays on the director. When Baton cannot classify a unit or cannot recommend a model, keep it director-local or skip it; never guess a subagent model or borrow another host.
-- **Declared classified work → native subagents.** Non-empty mechanical labels, `baton spawn` with candidates, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
+- **Director-owned classification is authoritative.** Discussion and read-only analysis stay on the director. When `cli.grok.enabled` is true, every ordinary implementation request—including tiny edits—must be delegated through a Grok native subagent; do not apply a tiny-edit shortcut. A missing/disabled profile or unresolved classification fails closed. Classified mechanical work never falls back to director execution when its configured route is empty or unusable.
+- **Declared classified work → native subagents.** Classified mechanical/long-context units, authorized implementation requests, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
 - **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+
+## Automatic workflow contract
+
+This host's Baton workflow becomes executable only when `cli.grok.enabled` is true and the user has authorized execution. Before any native ticket, the director classifies every executable request and passes that structured classification to Baton. Baton persists the resulting tickets and Receipts; it does not invent or own a separate task DAG. Operation labels are audit metadata, never a fixed action-name routing table.
+
+- Discussion and read-only analysis stay with the director.
+- Authorized implementation nodes use native `spawn_subagent`; mechanical nodes use the configured `runner` route while preserving their operation label for audit. Commit/publish authority remains the deterministic Receipt/Git capability gate.
+- A node is ready only when all dependencies are terminal. Independent ready nodes with disjoint write sets may run in parallel within the selected CLI `max_concurrent` and `max_depth`; later nodes remain queued until prerequisites finish.
+- Missing authorization, a disabled profile, invalid director/OpenSpec ordering data, or unresolved classification fails closed to the director. Never infer dependencies, borrow another host, or dispatch implementation from prose alone.
+
+### Write-scope readiness
+
+Before creating or dispatching any write ticket, the director MUST perform a read-only impact/dependency pass for that unit. The pass must resolve the unit's affected dependencies and record a complete, exact per-unit write-path set together with its allowed operations. Every path is explicit; allowed operations are one or more of `write`, `create`, `delete`, `rename`, and `chmod`. An unknown impact, dependency, path, or operation keeps the classification unresolved, so no implementation ticket is created or dispatched.
+
+Parallel dispatch is permitted only when every participating unit has a complete scope and the write sets are pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Otherwise the director sequences the units or keeps them director-local. If a worker discovers an undeclared path or operation, it MUST stop before mutation and return a scope decision to the director. It must never edit first and rely on a terminal retry or audit to authorize the change. Mechanical routing still uses the structured execution class; operation labels remain opaque audit metadata and never choose the route.
+
+Grok identity is host-specific: correlate the lifecycle `subagentId`/session carrier with the reserved description before binding. Do not assume the Codex `agent_id` field or infer identity from a ticket prefix.
 
 ## Mandatory host-guard preflight
 
@@ -38,10 +55,11 @@ Same table on every host. Do not invent a host-specific split.
 ## Execution contract
 
 - Create queued tickets and immutable Receipts before native dispatch. Baton CLI never calls host tools itself and never executes work via `grok -p` or any other grok print/headless process.
-- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host grok --json` only for already-queued work. For each reserved ticket, call native `spawn_subagent` with the returned `prompt` and `description` unchanged, exact `model`, `background=true`, and no `resume_from`, then bind immediately. Mechanical prompts are one-shot: run the inferred command; do not explore. Do not start a new grok process with `-m`/`--model`/`--effort`/`-p`.
+- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host grok --json` only for already-queued work. For each reserved ticket, call native `spawn_subagent` with the returned `prompt` and `description` unchanged, exact `model`, `background=true`, and no `resume_from`, then bind immediately. Mechanical prompts are one-shot: run the director-supplied operation; do not explore. Do not start a new grok process with `-m`/`--model`/`--effort`/`-p`.
 - Always pass `model`. Omitting it inherits the parent model, which Baton forbids. If the installed `spawn_subagent` schema has no `model` field, or the ticket has reasoning_effort/service_tier that spawn_subagent cannot express, report that execution option as unavailable rather than silently claiming it.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
-- Configured mechanical ops follow the labels. Empty `runner`/`longctx`: director executes them and must not block (including `git commit`). Non-empty: compact dispatch above; director may only `git add` / stage for commit-only. Mechanical workers execute only: run the inferred command, short conclusion, no exploration. `git-commit` (runner) may read the staged diff, write one message, and commit once. `git-summarize` dumps git status/log/diff only. Commit-only workers must not amend, rebase, merge, cherry-pick, revert, tag, stash, clean, or push.
+- Classified mechanical work follows the director-supplied class. Empty/unusable `runner`/`longctx` routes fail closed; they do not execute on the director. Mechanical workers execute only the supplied operation and return a short conclusion. Commit-only also requires an explicit capability; workers must not amend, rebase, merge, cherry-pick, revert, tag, stash, clean, or push.
+- Standalone work always uses the canonical multi-unit proposal shape; a request without `--unit` is the `standalone` unit. Pass only exact structured classification fields; never infer a class or operation from request prose or accept compatibility aliases.
 - Queue beyond current host capacity. AgentLimitReached defers the same ticket without consuming an attempt or changing models.
 - Native completion is the activity signal. Probe only while running or to record exact `not_found`. Polling timeout is not ticket timeout. Finish with `complete`/`fail`/`timeout`/`close` plus `--release` before refilling FIFO.
 - OpenSpec is optional and remains workflow owner when present. Do not rewrite `tasks.md` structure. Baton state stays under ~/.baton, never in the project.
@@ -54,7 +72,11 @@ Same table on every host. Do not invent a host-specific split.
                  [--subagent-model MODEL|all] [--enable|--disable]
     baton models refresh|status|candidates --host grok
     baton match <text> --host grok
-    baton spawn <request> --host grok [--unit KEY=BUSINESS_TASK ...] [--dispatch]
+    baton spawn <request> --host grok [--unit KEY=BUSINESS_TASK ...]
+                 [--classification CLASS] [--operation LABEL]
+                 [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...] [--dispatch]
+    baton spawn REQUEST --host grok --classification implementation
+                 --write-path PATH --write-ops write,create,delete,rename,chmod
     baton apply [change] --host grok
     baton apply [change] --host grok --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host grok --capacity N --json
@@ -70,4 +92,4 @@ Same table on every host. Do not invent a host-specific split.
 - Never add hard-coded family bans or infer unsupported status from tool documentation.
 - Never expose human model selection, select outside the enabled CLI allowlist, invent effort/speed flags, or silently substitute.
 - Never bypass Receipt/write/Git safety, convert polling cadence into failure, reimplement OpenSpec, or dump worker logs into the front conversation.
-- Never `git commit` from this director session while the matching runner/longctx label is a non-empty model. If both labels are empty, the director executes mechanical ops itself and must not stall. When the label is set, stage, then `baton spawn --dispatch` and native `spawn_subagent`.
+- Never `git commit` from this director session for a classified unit. Commit-only requires an explicit commit capability and the staged Receipt/Git gate; an operation label alone is not authority. A classified mechanical unit with an empty or unusable route fails closed.

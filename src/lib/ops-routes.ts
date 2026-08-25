@@ -1,4 +1,3 @@
-import { isSubagentModelAllowed } from "./model-policy.js";
 import { taskCapabilityExclusion } from "./task-suitability.js";
 import { quotaForProvider } from "./provider-quotas.js";
 import { quotaPoolForCandidate } from "./quota-pools.js";
@@ -66,7 +65,6 @@ function commonEligible(
     executable: true,
   };
   if (card.executable === false) return false;
-  if (!isSubagentModelAllowed(card)) return false;
   if (taskCapabilityExclusion(card)) return false;
   return !remainingFor(cwd, cards, route, host).exhausted;
 }

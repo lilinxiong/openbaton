@@ -6,13 +6,6 @@ import { quotaForProvider, type ProviderQuotaDisclosure } from "./provider-quota
 import { selectionsDir } from "./paths.js";
 import { readRouteSnapshot, type RouteSnapshot } from "./routes.js";
 import {
-  SUBAGENT_MODEL_POLICY_ID,
-  assertSubagentModelAllowed,
-  isSubagentModelAllowed,
-  summarizeSubagentModelPolicyExclusions,
-  type SubagentModelPolicyExclusion,
-} from "./model-policy.js";
-import {
   buildSelectionQuotaPools,
   quotaPoolForCandidate,
   type QuotaPoolStatus,
@@ -80,7 +73,6 @@ export interface SelectionUnit {
   requires_manual_choice: boolean;
   candidates: SelectionCandidate[];
   task_exclusions: TaskCapabilityExclusion[];
-  policy_exclusions: SubagentModelPolicyExclusion[];
   metadata: UnknownRecord;
 }
 
@@ -94,11 +86,9 @@ export interface SelectionProposal {
   approved_at: string | null;
   catalog_fingerprint: string;
   source_fingerprint: string;
-  model_policy_id: string;
   units: SelectionUnit[];
   quota_pools: SelectionQuotaPool[];
   task_exclusions: TaskCapabilityExclusion[];
-  policy_exclusions: SubagentModelPolicyExclusion[];
   payload: UnknownRecord;
   confirmation?: {
     confirmation_id: string;
@@ -430,19 +420,17 @@ export function buildSelectionUnit({
       complexity_reason: complexityEstimate.reason,
       estimated_context_tokens: contextEstimate.tokens,
       context_estimate_reason: contextEstimate.reason,
-      requires_manual_choice: false, candidates: [], task_exclusions: [], policy_exclusions: [], metadata,
+      requires_manual_choice: false, candidates: [], task_exclusions: [], metadata,
     };
   }
-  const policyExclusions = summarizeSubagentModelPolicyExclusions(cards);
   const snapshot = readRouteSnapshot(cwd, { host });
   if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
-  const policyEligibleCards = cards.filter(isSubagentModelAllowed);
-  const taskExclusions = policyEligibleCards
+  const taskExclusions = cards
     .map(taskCapabilityExclusion)
     .filter((item): item is TaskCapabilityExclusion => item !== null);
   const excludedIds = new Set(taskExclusions.map((item) => item.model_id));
-  const eligibleCards = policyEligibleCards.filter((card) => !excludedIds.has(card.id));
-  const automaticIds = new Set((automaticCards || cards).filter(isSubagentModelAllowed).map((card) => card.id));
+  const eligibleCards = cards.filter((card) => !excludedIds.has(card.id));
+  const automaticIds = new Set((automaticCards || cards).map((card) => card.id));
   const candidates = eligibleCards
     .map((card) => candidateFor(prompt, card, snapshot, automaticIds))
     .filter((item): item is SelectionCandidate => item !== null);
@@ -467,7 +455,6 @@ export function buildSelectionUnit({
   else reason = "UNIQUE_HIGHEST_TASK_SCORE";
 
   if (requestedModelId) {
-    assertSubagentModelAllowed(requestedModelId, requestedModelId);
     const requested = candidates.find((item) => item.model_id === requestedModelId);
     if (!requested) throw new Error(`requested model is not an exact route/profile id in this proposal: ${requestedModelId}`);
     if (!requested.selectable) throw new Error(`${requestedModelId}: ${requested.selection_code}: ${requested.selection_reason}`);
@@ -490,25 +477,8 @@ export function buildSelectionUnit({
     requires_manual_choice: defaultModel == null,
     candidates,
     task_exclusions: taskExclusions,
-    policy_exclusions: policyExclusions,
     metadata,
   };
-}
-
-function policyExclusionSummary(units: SelectionUnit[]): SubagentModelPolicyExclusion[] {
-  const groups = new Map<string, SubagentModelPolicyExclusion>();
-  for (const unit of units) {
-    for (const exclusion of unit.policy_exclusions || []) {
-      const current = groups.get(exclusion.family);
-      if (!current) {
-        groups.set(exclusion.family, structuredClone(exclusion));
-        continue;
-      }
-      current.card_count = Math.max(current.card_count, exclusion.card_count);
-      current.routes = [...new Set([...current.routes, ...exclusion.routes])].sort();
-    }
-  }
-  return [...groups.values()].sort((a, b) => a.family.localeCompare(b.family));
 }
 
 function taskExclusionSummary(units: SelectionUnit[]): TaskCapabilityExclusion[] {
@@ -555,6 +525,9 @@ export function createSelectionProposal(cwd: string, {
   payload?: UnknownRecord;
   now?: Date | string | number;
 }): SelectionProposal {
+  if (source === "standalone" && (payload.source_shape !== "multi-unit-v1" || !Array.isArray(payload.units))) {
+    throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: standalone proposals must use the multi-unit shape");
+  }
   const scopedHost = host || units.find((unit) => unit.host)?.host;
   const snapshot = readRouteSnapshot(cwd, { host: scopedHost });
   if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
@@ -569,11 +542,9 @@ export function createSelectionProposal(cwd: string, {
     approved_at: null,
     catalog_fingerprint: snapshot.fingerprint,
     source_fingerprint: scopedSourceFingerprint(scopedHost, sourceFingerprint),
-    model_policy_id: SUBAGENT_MODEL_POLICY_ID,
     units,
     quota_pools: proposalQuotaPools(units),
     task_exclusions: taskExclusionSummary(units),
-    policy_exclusions: policyExclusionSummary(units),
     payload,
     confirmation: null,
     approvals: [],
@@ -608,57 +579,12 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   if (value.schema_version !== 2) {
     throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates CLI-owned model selection; create a new proposal`);
   }
-  const snapshot = readRouteSnapshot(cwd, { host: value.host });
-  for (const unit of value.units || []) {
-    const contextEstimate = estimateTaskContext(unit.prompt || unit.description);
-    const complexityEstimate = estimateTaskComplexity(unit.prompt || unit.description);
-    if (!unit.target_reasoning_effort) unit.target_reasoning_effort = complexityEstimate.effort;
-    if (!unit.complexity_reason) unit.complexity_reason = complexityEstimate.reason;
-    if (!Number.isFinite(unit.estimated_context_tokens)) unit.estimated_context_tokens = contextEstimate.tokens;
-    if (!unit.context_estimate_reason) unit.context_estimate_reason = contextEstimate.reason;
-    if (!Array.isArray(unit.task_exclusions)) unit.task_exclusions = [];
-    for (const candidate of unit.candidates || []) {
-      if (candidate.context_window === undefined) {
-        candidate.context_window = snapshot?.routes.find((route) => route.route_id === candidate.route_id)?.context_window ?? null;
-      }
-      const route = snapshot?.routes.find((item) => item.route_id === candidate.route_id);
-      if (candidate.reasoning_effort_configurable === undefined) {
-        candidate.reasoning_effort_configurable = Boolean(route?.reasoning_efforts.length);
-      }
-      if (candidate.effective_reasoning_effort === undefined) {
-        candidate.effective_reasoning_effort = candidate.reasoning_effort || route?.default_reasoning_effort || candidate.reference_profile || null;
-      }
-      if (candidate.service_tier === undefined) candidate.service_tier = null;
-      if (!Array.isArray(candidate.speed_signals)) {
-        candidate.speed_signals = [];
-        if (/(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(candidate.route_id)) candidate.speed_signals.push("route-name");
-        if (/\b(?:fast|ultra-fast|low[- ]latency|high[- ]throughput)\b/i.test(route?.description || "")) candidate.speed_signals.push("catalog-description");
-        if (candidate.service_tier) candidate.speed_signals.push("service-tier");
-      }
-      candidate.speed_optimized = candidate.speed_signals.length > 0;
-      const pool = quotaPoolForCandidate(candidate);
-      candidate.quota_pool_id ||= pool.id;
-      candidate.quota_pool_label ||= pool.label;
-      candidate.quota_pool_status ||= pool.status;
-      if (candidate.quota_pool_remaining_percent === undefined) candidate.quota_pool_remaining_percent = pool.remaining_percent;
-      if (!candidate.selection_code) {
-        candidate.selection_code = pool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE";
-      }
-      if (!candidate.selection_reason) {
-        candidate.selection_reason = pool.status === "exhausted"
-          ? `${pool.label} quota is exhausted`
-          : "model/reasoning effort was returned by the active CLI";
-      }
-      if (pool.status === "exhausted") {
-        candidate.selectable = false;
-        candidate.automatic_eligible = false;
-      }
-    }
-    inferEffectiveReasoningEfforts(unit.candidates || []);
+  if (value.source === "standalone" && (value.payload?.source_shape !== "multi-unit-v1" || !Array.isArray(value.payload?.units))) {
+    throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: standalone proposals must use the multi-unit shape");
   }
-  if (!Array.isArray(value.quota_pools)) value.quota_pools = proposalQuotaPools(value.units || []);
-  if (!Array.isArray(value.task_exclusions)) value.task_exclusions = taskExclusionSummary(value.units || []);
-  if (value.confirmation === undefined) value.confirmation = null;
+  if (!Array.isArray(value.units) || !Array.isArray(value.quota_pools) || !Array.isArray(value.task_exclusions)) {
+    throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: proposal fields are incomplete");
+  }
   return value;
 }
 

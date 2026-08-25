@@ -41,6 +41,8 @@ CLI-reported configuration.
 
     baton spawn/apply
       -> resolve the invoking host and load only its enabled profile
+      -> run the read-only director impact/dependency pass for write units
+      -> require complete per-unit write paths and allowed operations before ticket creation
       -> intersect configured ids with saved CLI catalog
       -> create model@effort cards from CLI-supported efforts
       -> score task/model/effort/speed automatically
@@ -50,11 +52,28 @@ CLI-reported configuration.
 
 There is no runtime human model selector. Explicit model or route flags and the former model-selection toggle are rejected.
 
+Standalone syntax carries one director classification/operation for the request
+or per-unit overrides when decomposing a request:
+
+    baton spawn REQUEST [--classification CLASS] [--operation LABEL]
+      [--unit KEY=TEXT ...]
+      [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
+      [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
+
+Every standalone request is persisted in the same multi-unit proposal shape;
+without `--unit`, the request becomes the single `standalone` unit. Classification
+values are exact structured values. No operation or request prose is inferred.
+
+An enabled host rejects missing or conflicting classifications before creating
+a ticket. `mechanical` always selects `runner`; `long-context` selects
+`longctx`; operation labels are audit metadata. Empty or unusable class routes
+fail closed, including when a write path is present.
+
 ## Visibility versus execution
 
 A model returned by the selected CLI is picker-visible and therefore configurable. For Codex this includes gpt-5.4-mini and gpt-5.3-codex-spark whenever they occur in model/list.
 
-Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. Codex spawn_agent can pass model, effort, and tier. Grok spawn_subagent takes an exact `model` and independent context; if a ticket has effort or tier that the installed Grok tool cannot express, that option is unavailable rather than silently claimed. Omitting Grok `model` inherits the parent model and is forbidden. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not silently rewritten to another model.
+Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. Codex `spawn_agent` and its namespaced collaboration variants can pass model, effort, and tier, but the returned `task_name` remains metadata only: the authoritative bound worker id comes from `SubagentStart`. Grok `spawn_subagent` takes an exact `model` and independent context; if a ticket has effort or tier that the installed Grok tool cannot express, that option is unavailable rather than silently claimed. Omitting Grok `model` inherits the parent model and is forbidden. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not silently rewritten to another model.
 
 ## Automatic policy
 
@@ -68,6 +87,20 @@ Selection is deterministic within the configured allowlist:
 
 Unranked capability evidence is allowed. Missing third-party benchmark data does not override the selected CLI's model surface or the user's configured allowlist.
 
+## Automatic workflow contract
+
+An enabled selected CLI profile and an explicit user execution authorization are prerequisites for native implementation work. The director classifies every executable request and passes that structured classification to Baton before dispatch. Baton persists the resulting tickets and Receipts; it does not invent or own a separate task DAG.
+
+Discussion and read-only analysis remain on the director. Authorized implementation nodes are dispatched through the selected host's native child-agent tool. Mechanical classification chooses `runner` (and `long-context` chooses `longctx`); its operation label is retained for audit only and is not a fixed action-name routing key. Empty or unusable classified routes fail closed rather than executing on the director. Commit/publish remain deterministic Receipt/Git capabilities. Missing authorization, a disabled host profile, or unresolved classification fail closed.
+
+The decomposition and ordering graph belongs to the director workflow or OpenSpec; it is not a new Baton-persisted DAG runtime. When OpenSpec is present, its task/status graph remains authoritative. Baton persists only the resulting host-scoped tickets and Receipts and applies write-set/capacity checks without rewriting `tasks.md`.
+
+## Write-scope readiness
+
+Before creating or dispatching any write ticket, the director performs a read-only impact/dependency pass for the unit. The pass must produce a complete, exact per-unit write-path set and the allowed operations for those paths. Paths are explicit; allowed operations are `write`, `create`, `delete`, `rename`, and `chmod`. Unknown impact, dependency, path, or operation keeps classification unresolved and creates no implementation ticket.
+
+Parallel dispatch is permitted only for units with complete, pairwise disjoint write sets, including rename source/destination paths and path-prefix overlaps. Incomplete or intersecting scopes are sequenced or remain director-local. A worker that discovers an undeclared path or operation stops before mutation and returns a scope decision to the director. It never edits first and relies on terminal retry or audit for authorization. Mechanical routing remains class-based, and operation labels are opaque audit metadata rather than route selectors.
+
 ## Safety and lifecycle invariants
 
 - No parent-model inheritance, cross-model fallback, or invented effort or speed fields.
@@ -75,5 +108,5 @@ Unranked capability evidence is allowed. Missing third-party benchmark data does
 - Depth is one; physical concurrency is host-bounded and logical work queues FIFO.
 - AgentLimitReached defers the same ticket without changing its model.
 - Polling timeout is not worker timeout; exact not_found evidence is required.
-- Writes are allowlisted and parent-audited. Only an exclusive parent-staged commit-only Receipt can authorize one Git commit.
+- Writes are allowlisted and parent-audited. Each write Receipt carries exact paths and allowed operations; only an exclusive parent-staged commit-only Receipt can authorize one Git commit.
 - Baton state is user-global under ~/.baton; OpenSpec remains optional and is not reimplemented.

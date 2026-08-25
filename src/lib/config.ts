@@ -4,11 +4,6 @@ import type { CodedError, UnknownRecord } from "../types.js";
 import { parseToml, stringifyToml } from "./toml.js";
 import { configPath } from "./paths.js";
 import {
-  emptyOpsConfig,
-  normalizeOpsConfig,
-  type OpsConfig,
-} from "./ops-config.js";
-import {
   CLI_IDS,
   getCliAdapter,
   listCliAdapters,
@@ -19,7 +14,7 @@ export const DEFAULT_MAX_CONCURRENT = 4;
 export const GROK_HOST_MAX_CONCURRENT = getCliAdapter("grok").host.defaultMaxConcurrent;
 export const DEFAULT_MAX_DEPTH = 1;
 
-/** Adapter-declared host fact retained for diagnostics and compatibility. */
+/** Adapter-declared host fact retained for diagnostics. */
 export function hostMaxConcurrent(cli: CliId, env: NodeJS.ProcessEnv = process.env): number {
   const adapter = listCliAdapters().find((candidate) => candidate.id === cli);
   return adapter ? adapter.host.maxConcurrent(env) : DEFAULT_MAX_CONCURRENT;
@@ -28,7 +23,6 @@ export function hostMaxConcurrent(cli: CliId, env: NodeJS.ProcessEnv = process.e
 export interface DirectorSettings {
   max_concurrent: number;
   max_depth: number;
-  runner?: string;
 }
 
 export interface CliProfileSettings {
@@ -48,7 +42,6 @@ export type CliSettings = CliProfiles;
 export interface Config {
   director: DirectorSettings;
   cli: CliSettings;
-  ops: OpsConfig;
 }
 
 export interface ConfigEnvOptions {
@@ -66,7 +59,6 @@ export function emptyConfig(): Config {
       max_depth: DEFAULT_MAX_DEPTH,
     },
     cli: {},
-    ops: emptyOpsConfig(),
   };
 }
 
@@ -79,12 +71,6 @@ export function emptyCliProfile(): CliProfileSettings {
   };
 }
 
-function optionalTrimmedString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
-
 function normalizeDirector(raw: unknown): DirectorSettings {
   const director = isUnknownRecord(raw) ? raw : {};
   const max = Number(director.max_concurrent);
@@ -93,8 +79,6 @@ function normalizeDirector(raw: unknown): DirectorSettings {
     max_concurrent: Number.isFinite(max) && max > 0 ? Math.floor(max) : DEFAULT_MAX_CONCURRENT,
     max_depth: Number.isFinite(depth) && depth >= 1 ? Math.floor(depth) : DEFAULT_MAX_DEPTH,
   };
-  const runner = optionalTrimmedString(director.runner);
-  if (runner) settings.runner = runner;
   return settings;
 }
 
@@ -111,47 +95,30 @@ function positiveInteger(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
-function normalizeCliProfile(value: unknown, legacyOps: OpsConfig): CliProfileSettings {
-  const hasProfile = isUnknownRecord(value);
-  const profile = hasProfile ? value : {};
-  // Legacy Baton configurations stored the runner/longctx labels under the
-  // global ops table.  Migrate that table only when the host profile itself
-  // is absent.  An explicitly present profile (including an empty disabled
-  // profile) must never inherit another host's routes.
-  const fallback = hasProfile ? emptyOpsConfig() : legacyOps;
+function normalizeCliProfile(value: unknown): CliProfileSettings {
+  const profile = isUnknownRecord(value) ? value : {};
   const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
   const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
-  const runner = rawRunner || fallback.runner.route;
-  const longctx = rawLongctx || fallback.longctx.route;
-  const configured = stringList(profile.subagent_models ?? profile.subagentModels);
-  const migrated = [runner, longctx].filter(Boolean);
-  const subagentModels = configured.length ? configured : [...new Set(migrated)];
-  const hasEnabled = Object.hasOwn(profile, "enabled");
-  const maxConcurrent = positiveInteger(profile.max_concurrent ?? profile.maxConcurrent);
-  const maxDepth = positiveInteger(profile.max_depth ?? profile.maxDepth);
+  const subagentModels = stringList(profile.subagent_models);
+  const maxConcurrent = positiveInteger(profile.max_concurrent);
+  const maxDepth = positiveInteger(profile.max_depth);
   return {
-    enabled: hasEnabled ? profile.enabled === true : configured.length === 0 && migrated.length > 0,
-    runner,
-    longctx,
+    enabled: profile.enabled === true,
+    runner: rawRunner,
+    longctx: rawLongctx,
     subagent_models: subagentModels,
     ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
 }
 
-function normalizeCli(value: unknown, legacyOps: OpsConfig): CliSettings {
+function normalizeCli(value: unknown): CliSettings {
   const cli = isUnknownRecord(value) ? value : {};
-  // Legacy `active` keys are ignored; there is no configured default CLI.
   const profiles = {} as CliProfiles;
   for (const adapter of listCliAdapters()) {
     const rawProfile = cli[adapter.id];
-    const legacyProfile = adapter.legacyOpsProfile
-      && (legacyOps.runner.route || legacyOps.longctx.route);
-    if (!isUnknownRecord(rawProfile) && !legacyProfile) continue;
-    profiles[adapter.id] = normalizeCliProfile(
-      rawProfile,
-      adapter.legacyOpsProfile ? legacyOps : emptyOpsConfig(),
-    );
+    if (!isUnknownRecord(rawProfile)) continue;
+    profiles[adapter.id] = normalizeCliProfile(rawProfile);
   }
   return profiles;
 }
@@ -196,28 +163,16 @@ function serializeConfig(cfg: Config): UnknownRecord {
     director: {
       max_concurrent: cfg.director.max_concurrent,
       max_depth: cfg.director.max_depth,
-      ...(cfg.director.runner ? { runner: cfg.director.runner } : {}),
     },
     cli: profiles,
-    ops: {
-      runner: {
-        actions: cfg.ops.runner.actions,
-      },
-      longctx: {
-        actions: cfg.ops.longctx.actions,
-      },
-    },
   };
 }
 
 export function normalizeConfig(raw: unknown): Config {
   const source = isUnknownRecord(raw) ? raw : {};
-  const ops = normalizeOpsConfig(source.ops);
-  const cli = normalizeCli(source.cli, ops);
   return {
     director: normalizeDirector(source.director),
-    cli,
-    ops,
+    cli: normalizeCli(source.cli),
   };
 }
 
@@ -242,8 +197,7 @@ export function effectiveMaxConcurrent(cfg: Config): number {
   return cfg.director.max_concurrent;
 }
 
-/** Use a CLI-reported override when present, otherwise the director fallback.
- * The env argument remains only for source compatibility with older callers. */
+/** Use a CLI-reported override when present, otherwise the director fallback. */
 export function effectiveMaxConcurrentForHost(
   cfg: Config,
   host?: CliId,

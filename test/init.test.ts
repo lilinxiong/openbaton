@@ -10,10 +10,11 @@ import { loadConfig } from "../src/lib/config.js";
 import { HOST_SKILL_REL } from "../src/lib/hosts.js";
 import { parseToml } from "../src/lib/toml.js";
 import { withHome, fakeEnv } from "./home.js";
+import { adapterProviderFor } from "./configure.js";
 
 /** Shared director/worker table markers every host skill must name. */
 const DIRECTOR_WORKER_TABLE_ROWS = [
-  "Empty labels / undeclared / unclassified → director",
+  "Director-owned classification is authoritative",
   "Declared classified work → native subagents",
   "OpenSpec only lightens orchestration",
 ] as const;
@@ -79,6 +80,9 @@ describe("Codex init and update", () => {
       const env = fakeEnv(home);
       const result = await initProject(cwd, { env });
       assert.deepEqual(result.tools, ["codex", "grok", "cursor", "claude"]);
+      const initialConfig = fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8");
+      assert.doesNotMatch(initialConfig, /^\[ops\./m);
+      assert.doesNotMatch(initialConfig, /^actions\s*=/m);
 
       const directorSkill = fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8");
       const hostSkill = fs.readFileSync(path.join(home, HOST_SKILL_REL.codex), "utf8");
@@ -97,8 +101,8 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /--host grok/);
       assert.match(grokSkill, /grok -p/);
       assert.doesNotMatch(grokSkill, /models --json/);
-      assert.match(grokSkill, /Empty `runner`\/`longctx`: director executes them and must not block/);
-      assert.match(grokSkill, /Never `git commit` from this director session while the matching runner\/longctx label/);
+      assert.match(grokSkill, /Director-owned classification is authoritative/);
+      assert.match(grokSkill, /Never `git commit` from this director session for a classified unit/);
       assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
       assert.match(grokSkill, /order-ready frontier/);
@@ -118,8 +122,8 @@ describe("Codex init and update", () => {
       assert.match(cursorSkill, /native `Task`/);
       assert.match(cursorSkill, /--host cursor/);
       assert.match(cursorSkill, /cursor-agent -p/);
-      assert.match(cursorSkill, /Empty `runner`\/`longctx`: director executes them and must not block/);
-      assert.match(directorSkill, /An empty label keeps that action on the director and must not block the flow/);
+      assert.match(cursorSkill, /Director-owned classification is authoritative/);
+      assert.match(directorSkill, /classified mechanical unit/i);
       assert.match(directorSkill, /Compact dispatch applies to every reserved ticket/);
       assert.match(directorSkill, /\[--dispatch\]/);
       assert.match(directorSkill, /\[--release\]/);
@@ -143,7 +147,7 @@ describe("Codex init and update", () => {
       assert.equal(raw.cli, undefined);
       assert.doesNotMatch(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"), /^\[cli\./m);
       assert.equal((raw.director as Record<string, unknown>).model_selection, undefined);
-      assert.equal(((raw.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
+      assert.equal(raw.ops, undefined);
       assert.ok(!fs.existsSync(path.join(cwd, ".baton")));
     });
   });
@@ -167,7 +171,7 @@ describe("Codex init and update", () => {
         env,
         stdout,
         stderr: stdout,
-        discover: async () => ({ cli: "grok", version: "test", models: grokModels }),
+        adapterProvider: adapterProviderFor({ cli: "grok", version: "test", models: grokModels }),
         prompt: {
           async select() {
             const value = selects.shift();
@@ -217,7 +221,7 @@ describe("Codex init and update", () => {
       assert.match(skill, /~\/\.claude\/skills\/baton\/SKILL\.md/);
       // Shared contract clauses every host skill must carry.
       assert.match(skill, /Never expose human model selection/);
-      assert.match(skill, /Empty `runner`\/`longctx`: director executes them and must not block/);
+      assert.match(skill, /Director-owned classification is authoritative/);
       assert.match(skill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
       assert.match(skill, /--dispatch --json/);
       assert.match(skill, /When `cli.claude.enabled` is true and the user applies an OpenSpec change/);
@@ -389,7 +393,7 @@ describe("Codex init and update", () => {
     });
   });
 
-  it("migrates legacy ops routes into the Codex profile and removes old fields", async () => {
+  it("drops legacy ops fields without migrating them into a selected profile", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-update-"));
       const env = fakeEnv(home);
@@ -403,29 +407,21 @@ describe("Codex init and update", () => {
         "",
         "[ops.runner]",
         "route = \"gpt-5.4-mini\"",
-        "actions = [\"test\", \"build\", \"lint\", \"typecheck\"]",
         "",
         "[ops.longctx]",
         "route = \"gpt-5.5\"",
         "min_context_tokens = 1048576",
-        "actions = [\"search\", \"digest\", \"git-summarize\", \"git-commit\"]",
       ].join("\n"));
 
       const result = updateProject(cwd, { env });
-      assert.ok(result.actions.some((action) => /director\/CLI\/ops defaults/.test(action)));
+      assert.ok(result.actions.some((action) => /director\/CLI defaults/.test(action)));
       const config = loadConfig(cwd, { env });
       assert.equal(config.director.max_concurrent, 2);
-      assert.deepEqual(config.ops.runner.actions, ["test", "build", "lint", "typecheck", "git-commit"]);
-      assert.deepEqual(config.ops.longctx.actions, ["search", "digest", "git-summarize"]);
-      assert.deepEqual(config.cli.codex, {
-        enabled: true,
-        runner: "gpt-5.4-mini",
-        longctx: "gpt-5.5",
-        subagent_models: ["gpt-5.4-mini", "gpt-5.5"],
-      });
+      assert.deepEqual(config.cli, {});
       const text = fs.readFileSync(file, "utf8");
       assert.doesNotMatch(text, /model_selection|min_context_tokens|route\s*=/);
-      assert.match(text, /subagent_models/);
+      assert.doesNotMatch(text, /^\[ops\./m);
+      assert.doesNotMatch(text, /^\[cli\./m);
     });
   });
 });

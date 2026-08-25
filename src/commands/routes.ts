@@ -1,5 +1,6 @@
 import { artificialAnalysisDbPath } from "../lib/paths.js";
-import { discoverCliModels, type CliModelDiscovery } from "../lib/cli-models.js";
+import { getCliAdapter } from "../adapters/registry.js";
+import type { CliAdapterProvider } from "../adapters/contract.js";
 import { parseHostId, resolveRuntimeHost, type HostId } from "../lib/hosts.js";
 import {
   buildRouteCandidates,
@@ -12,14 +13,14 @@ export interface RouteCommandOptions {
   cwd: string;
   stdout: WritableLike;
   env?: NodeJS.ProcessEnv;
-  discover?: CliModelDiscovery;
+  adapterProvider?: CliAdapterProvider;
   host?: HostId;
 }
 
 export async function refreshRouteSnapshot(options: RouteCommandOptions) {
-  const { cwd, env = process.env, discover = discoverCliModels } = options;
+  const { cwd, env = process.env, adapterProvider = getCliAdapter } = options;
   const cli = options.host ?? resolveRuntimeHost({ cwd, env });
-  const catalog = await discover(cli, { cwd, env });
+  const catalog = await adapterProvider(cli).discoverModels({ cwd, env });
   return publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), {
     cli,
     host: cli,
@@ -40,7 +41,7 @@ export async function runRoutes(args: string[], {
   cwd,
   stdout,
   env = process.env,
-  discover,
+  adapterProvider,
   host: configuredHost,
 }: RouteCommandOptions): Promise<number> {
   const flagIndex = args.indexOf("--host");
@@ -50,7 +51,7 @@ export async function runRoutes(args: string[], {
     : (configuredHost ?? resolveRuntimeHost({ cwd, env }));
   const sub = args[0] || "status";
   if (sub === "refresh") {
-    stdout.write(`${JSON.stringify(await refreshRouteSnapshot({ cwd, stdout, env, discover, host }), null, 2)}\n`);
+    stdout.write(`${JSON.stringify(await refreshRouteSnapshot({ cwd, stdout, env, adapterProvider, host }), null, 2)}\n`);
     return 0;
   }
   if (sub === "status") {

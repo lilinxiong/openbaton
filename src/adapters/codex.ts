@@ -206,7 +206,6 @@ export async function discoverCodexModels({
 export const codexAdapter: CliAdapter = {
   id: "codex",
   host: CODEX_HOST_METADATA,
-  legacyOpsProfile: true,
   resolveCommand: resolveCodexCommand,
   discoverModels: discoverCodexModels,
 };

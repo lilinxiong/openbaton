@@ -1,21 +1,27 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { runConfig } from "../src/commands/config.js";
 import { cliProfileForHost, loadConfig } from "../src/lib/config.js";
-import type { CliModel, CliModelCatalog } from "../src/lib/cli-models.js";
-import { inferOpsAction, inferOpsActionFromContext } from "../src/lib/ops-task.js";
+import type { CliModel, CliModelCatalog } from "../src/adapters/contract.js";
+import {
+  isCommitOnlyClassification,
+  normalizeAgentTaskClassification,
+} from "../src/lib/ops-task.js";
 import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
 import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
-import { configuredRoute, normalizeOpsConfig } from "../src/lib/ops-config.js";
+import { configuredRouteForClassification, normalizeOpsConfig } from "../src/lib/ops-config.js";
+import { readReceipt } from "../src/lib/receipt.js";
 import { readRouteSnapshot } from "../src/lib/routes.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import type { ModelCard } from "../src/types.js";
 import { parseToml } from "../src/lib/toml.js";
 import { withHome, fakeEnv } from "./home.js";
+import { adapterProviderFor } from "./configure.js";
 
 function spawnTicketFiles(cwd: string): string[] {
   const dir = spawnsDir(cwd);
@@ -26,6 +32,13 @@ function spawnTicketFiles(cwd: string): string[] {
 function capture() {
   const chunks: string[] = [];
   return { write(value: unknown) { chunks.push(String(value)); }, text() { return chunks.join(""); } };
+}
+
+function initializeGitFixture(cwd: string): void {
+  execFileSync("git", ["init", "-q", "--initial-branch=main"], { cwd });
+  execFileSync("git", ["config", "user.email", "validation@example.invalid"], { cwd });
+  execFileSync("git", ["config", "user.name", "Validation"], { cwd });
+  execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "baseline"], { cwd });
 }
 
 function model(id: string, displayName: string, description: string, efforts = ["low", "medium", "high"]): CliModel {
@@ -73,28 +86,27 @@ function cards(cwd: string): ModelCard[] {
 }
 
 describe("per-CLI configuration and ops labels", () => {
-  it("classifies mechanical units without treating mixed implementation as ops", () => {
-    assert.equal(inferOpsAction("bun test"), "test");
-    assert.equal(inferOpsAction("bun run build"), "build");
-    assert.equal(inferOpsAction("write a commit message from staged files"), "git-summarize");
-    assert.equal(inferOpsAction("git commit staged changes"), "git-commit");
-    assert.equal(inferOpsAction("implement the parser and run its tests"), null);
-    assert.equal(inferOpsActionFromContext("run the tests", "Android target"), "test");
-    assert.equal(inferOpsActionFromContext("run the tests", "bun run build"), null);
+  it("keeps only route labels and resolves them from structured class", () => {
+    const config = normalizeOpsConfig({
+      runner: { route: "" },
+      longctx: { route: "" },
+    });
+    assert.deepEqual(config, { runner: { route: "" }, longctx: { route: "" } });
+    const configured = normalizeOpsConfig({
+      runner: { route: "gpt-5.4-mini" },
+      longctx: { route: "gpt-5.5" },
+    });
+    assert.deepEqual(configuredRouteForClassification(configured, "mechanical"), { profile: "runner", route: "gpt-5.4-mini" });
+    assert.deepEqual(configuredRouteForClassification(configured, "long-context"), { profile: "longctx", route: "gpt-5.5" });
+    assert.equal(configuredRouteForClassification(configured, "git-commit"), null);
   });
 
-  it("routes git-commit through runner and migrates legacy longctx lists", () => {
-    const migrated = normalizeOpsConfig({
-      runner: { actions: ["test", "build", "lint", "typecheck"] },
-      longctx: { actions: ["search", "digest", "git-summarize", "git-commit"] },
-    });
-    assert.deepEqual(migrated.runner.actions, ["test", "build", "lint", "typecheck", "git-commit"]);
-    assert.deepEqual(migrated.longctx.actions, ["search", "digest", "git-summarize"]);
-    migrated.runner.route = "gpt-5.4-mini";
-    migrated.longctx.route = "gpt-5.5";
-    assert.deepEqual(configuredRoute(migrated, "git-commit"), { profile: "runner", route: "gpt-5.4-mini" });
-    assert.deepEqual(configuredRoute(migrated, "search"), { profile: "longctx", route: "gpt-5.5" });
-    assert.deepEqual(configuredRoute(migrated, "test"), { profile: "runner", route: "gpt-5.4-mini" });
+  it("requires an explicit capability for commit-only authority", () => {
+    const operationOnly = normalizeAgentTaskClassification({ kind: "mechanical", operation: "git-commit" });
+    assert.equal(isCommitOnlyClassification(operationOnly), false);
+    assert.equal(isCommitOnlyClassification({ kind: "mechanical", operation: "git-commit", capabilities: ["commit"] }), true);
+    assert.equal(isCommitOnlyClassification({ kind: "mechanical", operation: "git-commit", capabilities: { commit_only: true } }), false);
+    assert.equal(isCommitOnlyClassification({ kind: "mechanical", operation: "git-commit", mode: "commit-only" }), false);
   });
 
   it("configures Codex from its returned picker surface, including Mini and Spark", async () => {
@@ -116,7 +128,7 @@ describe("per-CLI configuration and ops labels", () => {
         cwd,
         env,
         stdout: out,
-        discover: async () => structuredClone(CATALOG),
+        adapterProvider: adapterProviderFor(CATALOG),
         prompt: {
           async select() {
             const value = selects.shift();
@@ -148,7 +160,7 @@ describe("per-CLI configuration and ops labels", () => {
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
       assert.equal((parsed.director as Record<string, unknown>).model_selection, undefined);
-      assert.equal(((parsed.ops as { longctx: Record<string, unknown> }).longctx).min_context_tokens, undefined);
+      assert.equal(parsed.ops, undefined);
       assert.equal(readRouteSnapshot(cwd, { host: "codex" })?.routes.length, 7);
     });
   });
@@ -181,7 +193,7 @@ describe("per-CLI configuration and ops labels", () => {
         cwd,
         env,
         stdout: out,
-        discover: async (cli) => structuredClone(cli === "grok" ? grokCatalog : CATALOG),
+        adapterProvider: adapterProviderFor((cli) => cli === "grok" ? grokCatalog : CATALOG),
         prompt: {
           async select() {
             const value = selects.shift();
@@ -232,7 +244,7 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       const out = capture();
       assert.equal(await run(["config"], {
-        cwd, env, stdout: out, stderr: out, discover: async () => structuredClone(CATALOG),
+        cwd, env, stdout: out, stderr: out, adapterProvider: adapterProviderFor(CATALOG),
       }), 1);
       assert.match(out.text(), /interactive config requires a TTY/);
     });
@@ -250,7 +262,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--longctx", "-",
         "--subagent-model", "gpt-5.3-codex-spark",
         "--enable",
-      ], { cwd, env, stdout: out, discover: async () => structuredClone(CATALOG) }), 0);
+      ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(CATALOG) }), 0);
       assert.deepEqual(loadConfig(cwd, { env }).cli.codex.subagent_models, [
         "gpt-5.3-codex-spark",
         "gpt-5.4-mini",
@@ -279,7 +291,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--longctx", "-",
         "--subagent-model", "grok-4.5",
         "--enable",
-      ], { cwd, env, stdout: out, discover: async () => structuredClone(grokCatalog) }), 0);
+      ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(grokCatalog) }), 0);
       assert.match(out.text(), /cli: grok \(enabled\)/);
       assert.doesNotMatch(out.text(), /\bactive:/);
       const config = loadConfig(cwd, { env });
@@ -290,7 +302,7 @@ describe("per-CLI configuration and ops labels", () => {
     });
   });
 
-  it("treats runner and longctx as labels over the same allowlist", async () => {
+  it("treats runner and longctx as labels over the same candidates", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-labels-"));
       const env = fakeEnv(home);
@@ -301,7 +313,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--longctx", "gpt-5.3-codex-spark",
         "--subagent-model", "gpt-5.6-luna",
         "--enable",
-      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CATALOG) }), 0);
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       const available = cards(cwd);
       const runner = listOpsRouteChoices(cwd, "runner", available, { env, host: "codex" }).map((choice) => choice.route_id).sort();
       const longctx = listOpsRouteChoices(cwd, "longctx", available, { env, host: "codex" }).map((choice) => choice.route_id).sort();
@@ -309,16 +321,124 @@ describe("per-CLI configuration and ops labels", () => {
       assert.deepEqual(longctx, runner);
       assert.ok(listOpsRouteChoices(cwd, "longctx", available, { env, host: "codex" }).every((choice) => choice.context_window === null));
 
-      const testRoute = resolveOpsDispatch(cwd, "bun test", available, { env, host: "codex" });
-      const searchRoute = resolveOpsDispatch(cwd, "rg parser", available, { env, host: "codex" });
+      const testRoute = resolveOpsDispatch(cwd, "bun test", available, {
+        env,
+        host: "codex",
+        classification: { kind: "mechanical", operation: "test" },
+      });
+      const searchRoute = resolveOpsDispatch(cwd, "rg parser", available, {
+        env,
+        host: "codex",
+        classification: { kind: "long-context", operation: "search" },
+      });
       assert.equal(testRoute.kind, "dispatch");
       assert.equal(testRoute.kind === "dispatch" ? testRoute.route : null, "gpt-5.4-mini");
       assert.equal(searchRoute.kind, "dispatch");
       assert.equal(searchRoute.kind === "dispatch" ? searchRoute.route : null, "gpt-5.3-codex-spark");
+
+      // Without a director classification, the active resolver never
+      // converts request prose into a mechanical route.
+      assert.equal(resolveOpsDispatch(cwd, "bun test", available, { env, host: "codex" }).kind, "blocked");
     });
   });
 
-  it("keeps empty runner and longctx labels on the director without blocking", async () => {
+  it("routes the director's structured class directly and keeps operation labels as audit data", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-structured-classification-"));
+      initializeGitFixture(cwd);
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await runConfig([
+        "--cli", "codex",
+        "--runner", "gpt-5.4-mini",
+        "--longctx", "gpt-5.3-codex-spark",
+        "--subagent-model", "all",
+        "--enable",
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
+      const available = cards(cwd);
+
+      const mechanical = resolveOpsDispatch(cwd, "search this repository", available, {
+        env,
+        host: "codex",
+        classification: { kind: "mechanical", operation: "custom-audit-label" },
+      });
+      assert.equal(mechanical.kind, "dispatch");
+      assert.equal(mechanical.kind === "dispatch" ? mechanical.profile : null, "runner");
+      assert.equal(mechanical.kind === "dispatch" ? mechanical.route : null, "gpt-5.4-mini");
+      assert.equal(mechanical.kind === "dispatch" ? mechanical.approval.ops_operation : null, "custom-audit-label");
+
+      const longContext = resolveOpsDispatch(cwd, "run tests", available, {
+        env,
+        host: "codex",
+        classification: { kind: "long-context", operation: "custom-long-audit" },
+      });
+      assert.equal(longContext.kind, "dispatch");
+      assert.equal(longContext.kind === "dispatch" ? longContext.profile : null, "longctx");
+      assert.equal(longContext.kind === "dispatch" ? longContext.route : null, "gpt-5.3-codex-spark");
+
+      const cliOut = capture();
+      assert.equal(await run([
+        "spawn", "rename note", "--host", "codex",
+        "--classification", "mechanical", "--operation", "custom-cli-label",
+        "--json",
+      ], { cwd, env, stdout: cliOut, stderr: cliOut }), 0, cliOut.text());
+      const cliBody = JSON.parse(cliOut.text());
+      assert.equal(cliBody.dispatched[0].operation, "custom-cli-label");
+      assert.equal(cliBody.dispatched[0].profile, "runner");
+
+      const operationOnlyOut = capture();
+      assert.equal(await run([
+        "spawn", "git commit staged changes", "--host", "codex",
+        "--classification", "mechanical", "--operation", "git-commit",
+        "--json",
+      ], { cwd, env, stdout: operationOnlyOut, stderr: operationOnlyOut }), 0, operationOnlyOut.text());
+      const operationOnlyBody = JSON.parse(operationOnlyOut.text());
+      assert.notEqual(operationOnlyBody.dispatched[0].ticket.mode, "commit-only");
+
+      // A non-ops structured class stays outside mechanical dispatch even
+      // when its opaque operation label resembles a commit operation.
+      assert.equal(resolveOpsDispatch(cwd, "bun test", available, {
+        env,
+        host: "codex",
+        classification: { kind: "general", operation: "git-commit" },
+      }).kind, "not-ops");
+    });
+  });
+
+  it("materializes an explicit standalone write scope for direct mechanical dispatch", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-structured-write-scope-"));
+      initializeGitFixture(cwd);
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      assert.equal(await runConfig([
+        "--cli", "codex",
+        "--runner", "gpt-5.4-mini",
+        "--longctx", "gpt-5.3-codex-spark",
+        "--subagent-model", "all",
+        "--enable",
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
+
+      const out = capture();
+      assert.equal(await run([
+        "spawn", "refresh dist artifacts", "--host", "codex",
+        "--classification", "mechanical", "--operation", "git-commit",
+        "--write-path", "dist/**", "--write-ops", "write,create,delete",
+        "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      const body = JSON.parse(out.text());
+      const ticketId = String(body.dispatched[0].ticket.id);
+      const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${ticketId}.json`), "utf8"));
+      assert.equal(ticket.mode, "write");
+      assert.equal(ticket.read_only, false);
+      const receipt = readReceipt(cwd, String(ticket.receipt_id));
+      assert.equal(receipt.execution.mode, "write");
+      assert.deepEqual(receipt.scope.write_allowlist, ["dist/**"]);
+      assert.deepEqual(receipt.scope.allowed_operations, ["write", "create", "delete"]);
+    });
+  });
+
+  it("blocks classified work when runner and longctx labels are empty", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-empty-labels-"));
       const env = fakeEnv(home);
@@ -327,14 +447,22 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(config.cli.codex, undefined);
       assert.equal(cliProfileForHost(config, "codex").runner, "");
       assert.equal(cliProfileForHost(config, "codex").longctx, "");
-      const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), { env, host: "codex" });
-      assert.equal(testOps.kind, "director");
-      const commitOps = resolveOpsDispatch(cwd, "git commit staged changes", cards(cwd), { env, host: "codex" });
-      assert.ok(commitOps.kind === "director" || commitOps.kind === "empty-index");
-      const summarizeOps = resolveOpsDispatch(cwd, "write a commit message from staged files", cards(cwd), { env, host: "codex" });
-      assert.equal(summarizeOps.kind, "director");
-      const searchOps = resolveOpsDispatch(cwd, "rg parser", cards(cwd), { env, host: "codex" });
-      assert.equal(searchOps.kind, "director");
+      const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), {
+        env, host: "codex", classification: { kind: "mechanical", operation: "test" },
+      });
+      assert.equal(testOps.kind, "blocked");
+      const commitOps = resolveOpsDispatch(cwd, "git commit staged changes", cards(cwd), {
+        env, host: "codex", classification: { kind: "mechanical", operation: "git-commit" },
+      });
+      assert.equal(commitOps.kind, "blocked");
+      const summarizeOps = resolveOpsDispatch(cwd, "write a commit message from staged files", cards(cwd), {
+        env, host: "codex", classification: { kind: "long-context", operation: "git-summarize" },
+      });
+      assert.equal(summarizeOps.kind, "blocked");
+      const searchOps = resolveOpsDispatch(cwd, "rg parser", cards(cwd), {
+        env, host: "codex", classification: { kind: "long-context", operation: "search" },
+      });
+      assert.equal(searchOps.kind, "blocked");
 
       for (const text of [
         "bun test",
@@ -365,7 +493,7 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(await runConfig([
         "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
         "--subagent-model", "all", "--disable",
-      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CATALOG) }), 0);
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       assert.equal(loadConfig(cwd, { env }).cli.codex.enabled, false);
 
       const out = capture();
@@ -391,9 +519,11 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(await runConfig([
         "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
         "--subagent-model", "all", "--disable",
-      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CATALOG) }), 0);
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       assert.deepEqual(listOpsRouteChoices(cwd, "runner", cards(cwd), { env, host: "codex" }), []);
-      assert.equal(resolveOpsDispatch(cwd, "bun test", cards(cwd), { env, host: "codex" }).kind, "director");
+      assert.equal(resolveOpsDispatch(cwd, "bun test", cards(cwd), {
+        env, host: "codex", classification: { kind: "mechanical", operation: "test" },
+      }).kind, "blocked");
     });
   });
 });

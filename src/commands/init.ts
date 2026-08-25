@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
 import { installHostSkills, type HostId } from "../lib/hosts.js";
-import type { CliId } from "../lib/cli-models.js";
-import { cliProfileForHost, loadConfig, saveConfig } from "../lib/config.js";
+import type { CliId } from "../adapters/contract.js";
+import { loadConfig, saveConfig } from "../lib/config.js";
 import { installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
 import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
 import { installGrokHooks, type GrokHooksInstallResult } from "../lib/grok-hooks.js";
@@ -19,7 +19,7 @@ export interface InitProjectResult {
   created: string[];
   skipped: string[];
   tools: HostId[];
-  /** Codex guard, retained under its original name for compatibility. */
+  /** Codex guard result. */
   guard: CodexHooksInstallResult;
   /** Every guard-capable host that Baton installed a hook layer for. */
   guards: Array<
@@ -73,9 +73,18 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
 
   if (cli) {
     const cfg = loadConfig(cwd, { env });
-    // Initializing a named host opts that profile in without touching any
-    // other profile. Its model/route allowlist remains user-owned.
-    cfg.cli[cli] = { ...cliProfileForHost(cfg, cli), enabled: true };
+    // Initializing a named host creates exactly that selected profile. Keep
+    // any previously selected labels/limits, but never synthesize profiles
+    // for the other registered CLIs or fill limits from host defaults.
+    const existing = cfg.cli[cli];
+    cfg.cli[cli] = {
+      enabled: true,
+      runner: existing?.runner || "",
+      longctx: existing?.longctx || "",
+      subagent_models: existing?.subagent_models ? [...existing.subagent_models] : [],
+      ...(existing?.max_concurrent !== undefined ? { max_concurrent: existing.max_concurrent } : {}),
+      ...(existing?.max_depth !== undefined ? { max_depth: existing.max_depth } : {}),
+    };
     saveConfig(cwd, cfg, { env });
   }
 

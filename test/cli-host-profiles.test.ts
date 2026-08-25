@@ -16,8 +16,9 @@ import {
 import { resolveRuntimeHost } from "../src/lib/hosts.js";
 import { configPath } from "../src/lib/paths.js";
 import { parseToml } from "../src/lib/toml.js";
-import type { CliModel, CliModelCatalog } from "../src/lib/cli-models.js";
+import type { CliModel, CliModelCatalog } from "../src/adapters/contract.js";
 import { withHome, fakeEnv } from "./home.js";
+import { adapterProviderFor } from "./configure.js";
 
 function capture() {
   const chunks: string[] = [];
@@ -156,14 +157,14 @@ describe("cli host profiles without active", () => {
         "--longctx", "gpt-5.5",
         "--subagent-model", "gpt-5.6-luna",
         "--enable",
-      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CODEX_CATALOG) }), 0);
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CODEX_CATALOG) }), 0);
       assert.equal(await runConfig([
         "--cli", "grok",
         "--runner", "grok-4.5",
         "--longctx", "-",
         "--subagent-model", "grok-4.5",
         "--enable",
-      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(GROK_CATALOG) }), 0);
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(GROK_CATALOG) }), 0);
 
       const config = loadConfig(cwd, { env });
       config.cli.codex.enabled = false;
@@ -184,8 +185,8 @@ describe("cli host profiles without active", () => {
       const out = capture();
       assert.equal(await run(["spawn", "implement the Codex unit", "--host", "codex", "--json"], {
         cwd, env, stdout: out, stderr: out,
-      }), 1, out.text());
-      assert.match(out.text(), /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i);
+      }), 0, out.text());
+      assert.match(out.text(), /director-local|Baton host profile is disabled/i);
       assert.doesNotMatch(out.text(), /grok-4\.5/);
     });
   });
@@ -201,7 +202,7 @@ describe("cli host profiles without active", () => {
         "--longctx", "gpt-5.5",
         "--subagent-model", "gpt-5.6-luna",
         "--enable",
-      ], { cwd, env, stdout: capture(), discover: async () => structuredClone(CODEX_CATALOG) }), 0);
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CODEX_CATALOG) }), 0);
 
       const before = loadConfig(cwd, { env });
       assert.equal(before.director.max_concurrent, 4);
@@ -223,7 +224,7 @@ describe("cli host profiles without active", () => {
         cwd,
         env,
         stdout: out,
-        discover: async () => ({
+        adapterProvider: adapterProviderFor({
           ...structuredClone(GROK_CATALOG),
           max_concurrent: 8,
           max_depth: 2,
@@ -273,7 +274,7 @@ describe("cli host profiles without active", () => {
         cwd,
         env,
         stdout: capture(),
-        discover: async () => ({
+        adapterProvider: adapterProviderFor({
           ...structuredClone(GROK_CATALOG),
           capabilities: { max_concurrent: 9, max_depth: 3 },
         }),
@@ -284,7 +285,7 @@ describe("cli host profiles without active", () => {
         cwd,
         env,
         stdout: capture(),
-        discover: async () => ({
+        adapterProvider: adapterProviderFor({
           ...structuredClone(GROK_CATALOG),
           capabilities: { max_concurrent: 0, max_depth: -1 },
         }),

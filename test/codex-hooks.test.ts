@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   BATON_CODEX_HOOK_COMMAND,
+  BATON_CODEX_PRETOOLUSE_MATCHER,
   codexHooksPath,
   codexHooksStatus,
   installCodexHooks,
@@ -43,6 +44,7 @@ describe("Codex Baton hook manifest", () => {
       assert.equal(merged.hooks.PreToolUse[0].hooks[0].command, "custom-mcp");
       assert.equal(merged.hooks.PreToolUse[0].hooks[1].command, "echo baton guard hook");
       assert.equal(merged.hooks.PreToolUse.at(-1).hooks[0].command, BATON_CODEX_HOOK_COMMAND);
+      assert.equal(merged.hooks.PreToolUse.at(-1).matcher, BATON_CODEX_PRETOOLUSE_MATCHER);
 
       const second = installCodexHooks({ cwd, env, command: BATON_CODEX_HOOK_COMMAND });
       assert.equal(second.changed, false);
@@ -71,6 +73,12 @@ describe("Codex Baton hook manifest", () => {
     const preToolUse = result.hooks!.PreToolUse as Array<{ hooks: Array<{ command: string }> }>;
     assert.equal(preToolUse[0].hooks[0].command, "keep-in-same-group");
     assert.equal(preToolUse[2].hooks[0].command, BATON_CODEX_HOOK_COMMAND);
+  });
+
+  it("matches Codex spawn_agent aliases including namespaced collaboration variants", () => {
+    assert.match("spawn_agent", new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
+    assert.match("functions.collaboration.spawn_agent", new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
+    assert.match("commentary.collaboration.spawn_agent", new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
   });
 
   it("fails closed instead of overwriting malformed user hook JSON", async () => {

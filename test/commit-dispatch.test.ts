@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 
 import { run } from "../src/cli.js";
 import { spawnsDir } from "../src/lib/paths.js";
+import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { configureCodex } from "./configure.js";
 import { fakeEnv, withHome } from "./home.js";
@@ -39,6 +40,12 @@ function readTicket(cwd: string, id = "spn-0001") {
   return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
 }
 
+const COMMIT_CLASSIFICATION = JSON.stringify({
+  kind: "mechanical",
+  operation: "git-commit",
+  capabilities: ["commit"],
+});
+
 async function createCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
   assert.equal(await run(["init"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
   publishRouteSnapshot(cwd, { models: [
@@ -50,7 +57,7 @@ async function createCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<
     longctx: "kimi/k3[1m]",
   });
   const out = capture();
-  assert.equal(await run(["spawn", "git commit staged changes", "--host", "codex", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+  assert.equal(await run(["spawn", "git commit staged changes", "--host", "codex", "--classification", COMMIT_CLASSIFICATION, "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
   assert.equal(readTicket(cwd).mode, "commit-only");
 }
 
@@ -59,7 +66,16 @@ async function bindCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   const reserved = capture();
   assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "4", "--json"], { cwd, env, stdout: reserved, stderr: reserved }), 0, reserved.text());
   assert.equal(JSON.parse(reserved.text()).reserved.length, 1);
-  assert.equal(await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--agent-id", "agent-commit", "--json"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
+  const ticket = readTicket(cwd);
+  const pending = recordPendingReservation(cwd, {
+    schema: 1,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: "codex",
+  }, {}, undefined, env);
+  recordNativeIdentity(cwd, pending, "codex-hook-uuid", "hook", {}, undefined, env);
+  assert.equal(await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", "codex-task-name", "--json"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
 }
 
 function parseJson(text: string) {
@@ -81,13 +97,13 @@ describe("commit-only dispatch integration", () => {
         longctx: "kimi/k3[1m]",
       });
       const out = capture();
-      assert.equal(await run(["spawn", "git commit staged changes", "--host", "codex", "--dispatch", "--json"], {
+      assert.equal(await run(["spawn", "git commit staged changes", "--host", "codex", "--classification", COMMIT_CLASSIFICATION, "--dispatch", "--json"], {
         cwd, env, stdout: out, stderr: out,
       }), 0, out.text());
       const payload = parseJson(out.text());
-      assert.equal(payload.ticket.mode, "commit-only");
+      assert.equal(payload.dispatched[0].ticket.mode, "commit-only");
       assert.equal(payload.reserved.length, 1);
-      assert.equal(payload.reserved[0].ticket_id, payload.ticket.id);
+      assert.equal(payload.reserved[0].ticket_id, payload.dispatched[0].ticket.id);
       assert.equal(payload.reserved[0].mode, "commit-only");
       assert.match(payload.reserved[0].prompt, /commit-only authorization/);
       assert.equal(readTicket(cwd).status, "dispatching");
@@ -204,7 +220,7 @@ describe("commit-only dispatch integration", () => {
       const cwd = fixture();
       const env = fakeEnv(home);
       await createCommitTicket(cwd, env);
-      assert.equal(await run(["spawn", "bun test", "--host", "codex"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
+      assert.equal(await run(["spawn", "bun test", "--host", "codex", "--classification", "mechanical", "--operation", "test"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
 
       const out = capture();
       assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "4", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());

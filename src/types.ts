@@ -39,7 +39,8 @@ export interface ModelSelectionApproval {
   selected_provider_ids?: string[];
   global_provider_ids?: string[];
   ops_profile?: "runner" | "longctx";
-  ops_action?: string;
+  /** Opaque operation label retained for audit; never used for routing. */
+  ops_operation?: string;
 }
 
 export interface CardCapabilityEvidence {

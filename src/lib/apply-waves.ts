@@ -1,4 +1,3 @@
-import { directorMayRun } from "./hygiene.js";
 import type { OpenSpecTask } from "./openspec.js";
 
 const PATH_EXT = /\.(?:ts|tsx|js|mjs|cjs|json|toml|md|yaml|yml|txt)$/i;
@@ -8,9 +7,7 @@ export interface ApplyWaveTask {
   id: string;
   section: string;
   description: string;
-  director_local: boolean;
   paths: string[];
-  path_hints: string[];
 }
 
 export interface ApplyWave {
@@ -69,9 +66,7 @@ function toWaveTask(task: OpenSpecTask): ApplyWaveTask {
     id: applyTaskId(task),
     section: task.section,
     description: task.description,
-    director_local: directorMayRun(task.description),
     paths,
-    path_hints: paths,
   };
 }
 
@@ -96,7 +91,7 @@ function splitPathClusters(sectionTasks: OpenSpecTask[]): OpenSpecTask[][] {
   };
   for (const task of sectionTasks) {
     const mapped = toWaveTask(task);
-    if (mapped.director_local || mapped.paths.length === 0) {
+    if (mapped.paths.length === 0) {
       flush();
       segments.push([task]);
       continue;

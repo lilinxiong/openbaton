@@ -23,14 +23,16 @@ import {
 import { CardMatchError } from "./lib/cards.js";
 import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
 import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
-import { listSpawns, persistStandalonePlan, planStandaloneSpawn } from "./lib/spawn.js";
-import { concludeSpawn, formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
+import { listSpawns, persistStandalonePlan, planStandaloneSpawn, type StandalonePlan } from "./lib/spawn.js";
+import { formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId, planApplyWaves } from "./lib/apply-waves.js";
 import { parseApplyUnitScopes, scopeRecord } from "./lib/apply-scope.js";
 import { APPLY_WRITE_CONFLICT, findBatchWriteConflicts, findInFlightWriteConflicts } from "./lib/apply-batch.js";
 import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
+import { normalizeAgentTaskClassification } from "./lib/ops-task.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
-import { readReceipt } from "./lib/receipt.js";
+import { buildWriteReceipt, readReceipt } from "./lib/receipt.js";
+import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
@@ -42,8 +44,8 @@ import {
   type SelectionProposal,
 } from "./lib/selection.js";
 import { directorMayRun } from "./lib/hygiene.js";
-import { SUBAGENT_MODEL_POLICY_ID } from "./lib/model-policy.js";
-import { CLI_IDS, parseCliId, type CliId, type CliModelDiscovery } from "./lib/cli-models.js";
+import { CLI_IDS, parseCliId } from "./adapters/registry.js";
+import type { CliAdapterProvider, CliId } from "./adapters/contract.js";
 import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/prompt.js";
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
@@ -56,7 +58,7 @@ interface RunOptions {
   stderr?: WritableLike;
   stdin?: NodeJS.ReadableStream | string;
   env?: NodeJS.ProcessEnv;
-  discover?: CliModelDiscovery;
+  adapterProvider?: CliAdapterProvider;
   fetchImpl?: typeof fetch;
   prompt?: SelectPrompt;
 }
@@ -82,6 +84,48 @@ function runtimeHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): Retur
   return resolveRuntimeHost({ cwd, env, explicitHost: stringFlag(flags, "host") });
 }
 
+function batonProfileEnabled(cwd: string, env: NodeJS.ProcessEnv, host: ReturnType<typeof parseHostId>): boolean {
+  try {
+    return cliProfileForHost(loadConfig(cwd, { env }), host).enabled;
+  } catch {
+    return false;
+  }
+}
+
+function directorOnlyClassification(classification: ReturnType<typeof normalizeAgentTaskClassification>): boolean {
+  return classification?.kind === "discussion" || classification?.kind === "analysis";
+}
+
+function validateClassificationContract(
+  hostEnabled: boolean,
+  classification: ReturnType<typeof normalizeAgentTaskClassification>,
+  unitDefinitions: Array<{ key: string; description: string }>,
+  unitClassifications: Map<string, ReturnType<typeof normalizeAgentTaskClassification>>,
+  unitOperations: Map<string, string>,
+): void {
+  const knownUnits = new Set(unitDefinitions.map((item) => item.key));
+  for (const key of [...unitClassifications.keys(), ...unitOperations.keys()]) {
+    if (!knownUnits.has(key)) throw new Error(`CLASSIFICATION_UNIT_UNKNOWN: ${key} is not a declared --unit`);
+  }
+  if (!hostEnabled) return;
+  if (!unitDefinitions.length) {
+    if (!classification) throw new Error("CLASSIFICATION_REQUIRED: enabled Baton host requires a director classification before ticket creation");
+    return;
+  }
+  for (const unit of unitDefinitions) {
+    const unitClassification = unitClassifications.get(unit.key) || null;
+    if (!classification && !unitClassification) {
+      throw new Error(`CLASSIFICATION_REQUIRED: enabled Baton host requires a classification for unit ${unit.key} before ticket creation`);
+    }
+    if (classification && unitClassification && classification.kind !== unitClassification.kind) {
+      throw new Error(`CLASSIFICATION_CONFLICT: request=${classification.kind} unit=${unit.key}:${unitClassification.kind}`);
+    }
+    if (unitOperations.has(unit.key) && !classification && !unitClassification) {
+      throw new Error(`CLASSIFICATION_REQUIRED: operation for unit ${unit.key} has no classification`);
+    }
+  }
+}
+
 /** Host list shown in usage text, derived from the adapter registry. */
 const HOSTS = CLI_IDS.join("|");
 
@@ -105,16 +149,17 @@ Usage:
   baton config [--cli ${HOSTS}] [--runner MODEL|-] [--longctx MODEL|-]
                [--subagent-model MODEL|all] [--enable|--disable]
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
-  baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--dispatch]  automatically choose from configured candidates; --dispatch also reserves
+  baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--classification mechanical|long-context|implementation|analysis|discussion|general] [--operation LABEL]
+               [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...] [--dispatch]
+               director classification is authoritative; operation is free-form audit metadata
   baton apply [change] [--host ${HOSTS}]  plan the ready OpenSpec wave (no tickets)
   baton apply [change] [--host ${HOSTS}] --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
                director-scoped dispatch of the order-ready subset; --dispatch without --unit is rejected
-  baton conclude <id> --text "..."  legacy schema-v1 conclusion only
   baton capabilities refresh --provider aa --key-file PATH
   baton capabilities status
   baton capabilities show ROUTE [--profile PROFILE]
   baton dispatch next --host HOST --capacity N --json
-  baton dispatch bind TICKET --agent-id ID --host HOST --json
+  baton dispatch bind TICKET [--agent-id ID] [--task-name CODEX_TASK_NAME] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --host HOST --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" --json
@@ -135,7 +180,7 @@ export async function run(argv: string[], {
   stderr = process.stderr,
   stdin = process.stdin,
   env = process.env,
-  discover,
+  adapterProvider,
   fetchImpl,
   prompt,
 }: RunOptions = {}): Promise<number> {
@@ -157,7 +202,7 @@ export async function run(argv: string[], {
         stdout.write(`baton ${VERSION}\n`);
         return 0;
       case "init":
-        return await cmdInit(args, cwd, stdout, env, streamStdin, prompt, discover);
+        return await cmdInit(args, cwd, stdout, env, streamStdin, prompt, adapterProvider);
       case "update":
         return cmdUpdate(cwd, stdout, env);
       case "guard":
@@ -167,7 +212,7 @@ export async function run(argv: string[], {
       case "match":
         return cmdMatch(args, cwd, stdout, env);
       case "config":
-        return await runConfig(args, { cwd, stdout, stdin: streamStdin, env, discover, prompt });
+        return await runConfig(args, { cwd, stdout, stdin: streamStdin, env, adapterProvider, prompt });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
@@ -175,14 +220,14 @@ export async function run(argv: string[], {
       case "selection":
         return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env, runtimeHost(parseFlags(args), cwd, env)), env, host: runtimeHost(parseFlags(args), cwd, env) });
       case "conclude":
-        return cmdConclude(args, cwd, stdout);
+        throw new Error("LEGACY_CLI_SURFACE_REMOVED: use the host dispatch lifecycle to complete tickets");
       case "capabilities":
         return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
       case "dispatch":
         return runDispatch(args, { cwd, stdout, env });
       case "routes":
       case "models":
-        return await runRoutes(args, { cwd, stdout, env, discover, host: runtimeHost(parseFlags(args), cwd, env) });
+        return await runRoutes(args, { cwd, stdout, env, adapterProvider, host: runtimeHost(parseFlags(args), cwd, env) });
       case "host":
         return runHost(args, { cwd, stdout, env });
       case "conversation":
@@ -207,7 +252,7 @@ async function cmdInit(
   env: NodeJS.ProcessEnv,
   stdin: NodeJS.ReadableStream,
   prompt?: SelectPrompt,
-  discover?: CliModelDiscovery,
+  adapterProvider?: CliAdapterProvider,
 ): Promise<number> {
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
@@ -247,7 +292,7 @@ async function cmdInit(
   stdout.write("  Grok global hooks apply without a trust prompt; review them with `/hooks`.\n");
   if (clis?.length && !cliFlag) {
     stdout.write("\n");
-    return runConfig([], { cwd, stdout, stdin, env, discover, prompt, clis });
+    return runConfig([], { cwd, stdout, stdin, env, adapterProvider, prompt, clis });
   }
   stdout.write("\nNext: run `baton config`; choose CLIs, their runner/longctx labels, and the subagent candidate models.\n");
   stdout.write("Model visibility comes from the selected CLI. Later routing is automatic.\n");
@@ -311,9 +356,6 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
         stdout.write(`  candidate ${candidate.model_id}: ${candidate.strengths}\n`);
         stdout.write(`    task score ${candidate.task_score ?? "unranked"}; AA intelligence=${aa.intelligence ?? "unknown"}, coding=${aa.coding ?? "unknown"}, agentic=${aa.agentic ?? "unknown"}; quota ${quota}; callable=yes\n`);
       }
-      for (const exclusion of unit.policy_exclusions) {
-        stdout.write(`  policy excluded ${exclusion.family}: ${exclusion.code} (${exclusion.card_count} cards/profiles)\n`);
-      }
     }
     return 0;
   } catch (err) {
@@ -331,34 +373,76 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]");
   const allCards = resolvedCards(cwd, env, host);
-  const kindFlag = stringFlag(flags, "task-kind");
-  if (kindFlag && kindFlag !== "concrete" && kindFlag !== "deliberative") {
-    throw new Error("--task-kind must be concrete or deliberative");
+  const hostEnabled = batonProfileEnabled(cwd, env, host);
+  const removedSpawnFlags = ["task-kind", "deliverable", "done-when"];
+  const removedSpawnFlag = removedSpawnFlags.find((key) => Object.hasOwn(flags, key));
+  if (removedSpawnFlag) throw new Error(`LEGACY_CLI_SURFACE_REMOVED: --${removedSpawnFlag} is not part of the structured spawn contract`);
+  const removedClassificationFlags = [
+    "execution", "execution-class", "kind", "class", "category", "task-class",
+    "mechanical", "long-context", "longctx", "operation-label", "action", "op",
+  ];
+  const removedClassificationFlag = removedClassificationFlags.find((key) => Object.hasOwn(flags, key));
+  if (removedClassificationFlag) throw new Error(`LEGACY_CLI_SURFACE_REMOVED: --${removedClassificationFlag} is not part of the structured classification contract`);
+  const classificationFlag = parseClassificationFlags(flags);
+  const unitClassifications = parseClassificationAssignments(multiFlag(flags, "unit-classification"), "--unit-classification");
+  const unitOperations = parseOperationAssignments(multiFlag(flags, "unit-operation"), "--unit-operation");
+  const declaredUnitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
+  // A single request is the one-unit form of the canonical multi-unit proposal.
+  const unitDefinitions = declaredUnitDefinitions.length
+    ? declaredUnitDefinitions
+    : [{ key: "standalone", description: text }];
+  const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
+  const allowedWriteOperations = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
+  const writeOpsFlags = multiFlag(flags, "write-ops");
+  const writeOperationsEarly = (writeOpsFlags.length ? writeOpsFlags : ["write,create"])
+    .flatMap((item) => item.split(","))
+    .map((item) => item.trim())
+    .filter(Boolean) as SafetyOperation[];
+  if (writePathsEarly.length && (!writeOperationsEarly.length || writeOperationsEarly.some((item) => !allowedWriteOperations.has(item)))) {
+    throw new Error("--write-ops must contain write,create,delete,rename,chmod");
   }
-  const unitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
+  validateClassificationContract(hostEnabled, classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
   if (stringFlag(flags, "model")) {
     throw new Error("MODEL_SELECTION_REMOVED: --model is not supported; configure cli.<id>.subagent_models and let Baton route automatically");
   }
   const explicitModel = null;
-  const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
   if (unitDefinitions.length) {
-    if (writePathsEarly.length) throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
+    if (writePathsEarly.length && unitDefinitions.length > 1) {
+      throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
+    }
     const source = {
       source_shape: "multi-unit-v1",
       description: text,
       units: unitDefinitions,
+      classification: classificationFlag.value?.kind || null,
+      operation: classificationFlag.value?.operation || null,
+      unit_classifications: Object.fromEntries([...unitClassifications.entries()].map(([key, value]) => [key, value?.kind || null])),
+      unit_operations: Object.fromEntries(unitOperations.entries()),
+      write_paths: writePathsEarly,
+      write_operations: writePathsEarly.length ? writeOperationsEarly : [],
     };
     const resolved = unitDefinitions.map((item, index) => ({
       item,
       index,
       ops: explicitModel
         ? { kind: "not-ops" } as OpsResolution
-        : resolveOpsUnitDispatch(cwd, text, item.description, allCards, { env, host }),
+        : resolveOpsUnitDispatch(cwd, text, item.description, allCards, {
+          env,
+          host,
+          ...(classificationFlag.present ? { classification: classificationFlag.value } : {}),
+          ...(unitClassifications.has(item.key) ? { unitClassification: unitClassifications.get(item.key) } : {}),
+          ...(unitOperations.has(item.key) ? { operation: unitOperations.get(item.key) } : {}),
+        }),
     }));
-    const commitUnits = resolved.filter(({ ops }) => ops.kind !== "not-ops" && ops.action === "git-commit");
+    const commitUnits = resolved.filter(({ ops }) => ops.kind === "dispatch" && ops.commit_only === true);
     if (commitUnits.length > 1) {
       throw new Error(`MULTIPLE_COMMIT_UNITS: one request may contain only one commit-only unit (${commitUnits.map(({ item }) => item.key).join(", ")})`);
     }
+    const blockedReasons: string[] = [];
+    for (const { item, ops } of resolved) {
+      if (ops.kind === "blocked") blockedReasons.push(`${item.key}: ${ops.reason}`);
+    }
+    if (blockedReasons.length) throw new Error(`OPS_ROUTE_UNAVAILABLE: ${blockedReasons.join("; ")}`);
 
     const units = [];
     const dispatched = [];
@@ -366,33 +450,37 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     const skipped = [];
     for (const { item, index, ops } of resolved) {
       if (ops.kind === "director") {
-        local.push({ key: item.key, action: ops.action, reason: ops.reason });
+        local.push({ key: item.key, operation: ops.operation || null, reason: ops.reason });
         continue;
       }
       if (ops.kind === "empty-index") {
-        skipped.push({ key: item.key, action: ops.action, reason: "empty index, nothing to commit" });
+        skipped.push({ key: item.key, operation: ops.operation || null, reason: "empty index, nothing to commit" });
         continue;
       }
       if (ops.kind === "dispatch") {
         let planned = planStandaloneSpawn({
           description: item.description,
-          prompt: `${text}\n\nWork unit ${item.key}: ${item.description}`,
+          prompt: `${text}\n\nWork unit ${item.key}: ${item.description}\n\n[Baton structured execution]\nclassification: ${ops.classification || "mechanical"}\noperation: ${ops.operation || "(unspecified)"}`,
           cards: allCards,
           explicitModel: ops.card.id,
           cwd,
-          taskKind: ops.action === "git-commit" ? "concrete" : kindFlag === "deliberative" ? "deliberative" : "concrete",
+          taskKind: "concrete",
           selectionApproval: ops.approval,
           host,
           forceDelegate: true,
         });
-        if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
+        if (!writePathsEarly.length && ops.commit_only === true) planned = authorizeCommitOpsPlan(cwd, planned);
+        planned = materializeStandaloneWriteScope(cwd, planned, writePathsEarly, writeOperationsEarly);
         const ticket = persistStandalonePlan(cwd, planned);
-        dispatched.push({ key: item.key, action: ops.action, profile: ops.profile, ticket });
+        dispatched.push({ key: item.key, operation: ops.operation || null, profile: ops.profile, ticket });
         continue;
       }
-      const directorLocal = directorMayRun(item.description);
+      const unitClassification = unitClassifications.get(item.key) || (classificationFlag.present ? classificationFlag.value : null);
+      const directorLocal = directorOnlyClassification(unitClassification)
+        || (!hostEnabled && !classificationFlag.present)
+        || (!hostEnabled && directorMayRun(item.description));
       if (directorLocal) {
-        local.push({ key: item.key, action: "director-local", reason: "tiny unit; no subagent model selection is needed" });
+        local.push({ key: item.key, kind: "director-local", operation: null, reason: "tiny unit; no subagent model selection is needed" });
         continue;
       }
       units.push(buildSelectionUnit({
@@ -405,7 +493,11 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description, host),
         requestedModelId: explicitModel,
         directorLocal: false,
-        metadata: { request_index: index },
+        metadata: {
+          request_index: index,
+          classification: unitClassification?.kind || classificationFlag.value?.kind || null,
+          operation: unitOperations.get(item.key) || classificationFlag.value?.operation || null,
+        },
       }));
     }
     assertRecommendedSelectionAvailable(units);
@@ -425,103 +517,23 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         ? { selection_mode: "baton-recommendation", ...approval! }
         : {
           ...(approval ? { selection_mode: "baton-recommendation", recommendation: approval } : { proposal }),
-          dispatched: dispatched.map((item) => ({ key: item.key, action: item.action, profile: item.profile, ticket: item.ticket })),
+          dispatched: dispatched.map((item) => ({ key: item.key, operation: item.operation, profile: item.profile, ticket: item.ticket })),
           director_local: local,
           skipped,
         };
       stdout.write(`${JSON.stringify(withReservation(payload, reservation), null, 2)}\n`);
     } else {
       for (const item of dispatched) {
-        stdout.write(`ops-dispatch ${item.key}: ${item.profile} ${item.action}${item.action === "git-commit" ? " (commit-only)" : ""} → ${item.ticket.model_id} (${item.ticket.id})\n`);
+        stdout.write(`ops-dispatch ${item.key}: ${item.profile}${item.operation ? `/${item.operation}` : ""}${item.ticket.mode === "commit-only" ? " (commit-only)" : ""} → ${item.ticket.model_id} (${item.ticket.id})\n`);
       }
-      for (const item of local) stdout.write(`director-local ${item.key}: ${item.action}; ${item.reason}\n`);
-      for (const item of skipped) stdout.write(`ops-skip ${item.key}: ${item.action}; ${item.reason}\n`);
+      for (const item of local) stdout.write(`director-local ${item.key}${item.operation ? `: ${item.operation}` : ""}; ${item.reason}\n`);
+      for (const item of skipped) stdout.write(`ops-skip ${item.key}${item.operation ? `: ${item.operation}` : ""}; ${item.reason}\n`);
       if (proposal && approval) printAutomaticRecommendation(stdout, proposal, approval);
       printReservation(stdout, reservation);
       printDispatchIgnored(stdout, flags, createdTickets);
     }
     return 0;
   }
-  if (directorMayRun(text)) {
-    stdout.write("director-local: tiny unit; no subagent model selection is needed\n");
-    stdout.write(`unit: ${text}\n`);
-    printDispatchIgnored(stdout, flags, false);
-    return 0;
-  }
-  if (!explicitModel && !writePathsEarly.length) {
-    const ops = resolveOpsDispatch(cwd, text, allCards, { env, host });
-    if (ops.kind === "director") {
-      stdout.write(`director-local: ${ops.reason}\n`);
-      stdout.write(`unit: ${text}\n`);
-      printDispatchIgnored(stdout, flags, false);
-      return 0;
-    }
-    if (ops.kind === "empty-index") {
-      stdout.write("ops: git-commit skipped; empty index, nothing to commit\n");
-      stdout.write(`unit: ${text}\n`);
-      printDispatchIgnored(stdout, flags, false);
-      return 0;
-    }
-    if (ops.kind === "dispatch") {
-      let planned = planStandaloneSpawn({
-        description: text,
-        cards: allCards,
-        explicitModel: ops.card.id,
-        cwd,
-        taskKind: ops.action === "git-commit" ? "concrete" : kindFlag === "deliberative" ? "deliberative" : "concrete",
-        deliverable: stringFlag(flags, "deliverable") || null,
-        doneWhen: stringFlag(flags, "done-when") || null,
-        selectionApproval: ops.approval,
-        host,
-      });
-      if (ops.action === "git-commit") planned = authorizeCommitOpsPlan(cwd, planned);
-      const ticket = persistStandalonePlan(cwd, planned);
-      const reservation = maybeReserveQueuedSpawn(cwd, env, flags, true);
-      stdout.write(`ops-dispatch: ${ops.profile} ${ops.action}${ops.action === "git-commit" ? " (commit-only)" : ""} → ${ops.card.id}\n`);
-      stdout.write(`  ticket ${ticket.id}  wait for the worker conclusion (success or failure)\n`);
-      printReservation(stdout, reservation);
-      if (flags.json) {
-        stdout.write(`${JSON.stringify(reservation ? withReservation({ ticket }, reservation) : ticket, null, 2)}\n`);
-      }
-      return 0;
-    }
-  }
-  const writePaths = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
-  const allowed = new Set(["write", "create", "delete", "rename", "chmod"]);
-  const opsFlags = multiFlag(flags, "write-ops");
-  const operations = (opsFlags.length ? opsFlags : ["write,create"]).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
-  if (writePaths.length) {
-    if (!operations.length || operations.some((item) => !allowed.has(item))) throw new Error("--write-ops must contain write,create,delete,rename,chmod");
-  }
-  const payload = {
-    description: text,
-    task_kind: kindFlag || null,
-    deliverable: stringFlag(flags, "deliverable") || null,
-    done_when: stringFlag(flags, "done-when") || null,
-    write_paths: writePaths,
-    write_operations: writePaths.length ? operations : [],
-  };
-  const unit = buildSelectionUnit({
-    cwd, host, key: "standalone", description: text, prompt: text, cards: allCards,
-        automaticCards: cardsForAutomaticSelection(cwd, allCards, text, host),
-    requestedModelId: explicitModel,
-  });
-  assertRecommendedSelectionAvailable([unit]);
-  const proposal = createSelectionProposal(cwd, {
-    source: "standalone",
-    host,
-    units: [unit],
-    sourceFingerprint: selectionSourceFingerprint(payload),
-    payload,
-  });
-  const approval = approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
-  const reservation = maybeReserveQueuedSpawn(cwd, env, flags, approval.tickets.length > 0);
-  if (flags.json) stdout.write(`${JSON.stringify(withReservation({ selection_mode: "baton-recommendation", ...approval }, reservation), null, 2)}\n`);
-  else {
-    printAutomaticRecommendation(stdout, proposal, approval);
-    printReservation(stdout, reservation);
-  }
-  return 0;
 }
 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
@@ -597,7 +609,10 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     err.code = APPLY_WRITE_CONFLICT;
     throw err;
   }
-  const tasks = pending.filter((task) => orderReadyIds.has(applyTaskId(task)) && scopes.has(task.number));
+  // Scope keys use the stable synthetic `line-N` id for unnumbered tasks.
+  // Matching against task.number (the empty string in that case) silently
+  // dropped otherwise validated pending tasks before ticket creation.
+  const tasks = pending.filter((task) => orderReadyIds.has(applyTaskId(task)) && scopes.has(applyTaskId(task)));
   const units = [];
   for (const task of tasks) {
     const prompt = formatTaskPrompt(task);
@@ -610,8 +625,10 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
       cards,
       automaticCards: cardsForAutomaticSelection(cwd, cards, prompt, host),
       requestedModelId: null,
-      directorLocal: directorMayRun(task.description),
-      metadata: { line_index: task.line_index, section: task.section },
+      // An explicitly scoped OpenSpec unit is an executable implementation
+      // request.  Its prose must never reclassify it as a tiny director edit.
+      directorLocal: false,
+      metadata: { line_index: task.line_index, section: task.section, classification: "implementation" },
     }));
   }
   const taskSource = pending.map((task) => ({ number: task.number, description: task.description, section: task.section }));
@@ -641,20 +658,6 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   return 0;
 }
 
-function cmdConclude(args: string[], cwd: string, stdout: WritableLike): number {
-  const flags = parseFlags(args);
-  const conclusion = stringFlag(flags, "text");
-  const id = args.find((a) => !a.startsWith("-") && a !== conclusion);
-  if (!id || !conclusion) throw new Error("usage: baton conclude <id> --text \"...\"");
-  const result = concludeSpawn(cwd, id, conclusion);
-  stdout.write(`concluded ${result.ticket.id}\n`);
-  stdout.write(`  ${result.ticket.conclusion}\n`);
-  if (result.openspecWritten) {
-    stdout.write("  wrote conclusion back into OpenSpec tasks.md\n");
-  }
-  return 0;
-}
-
 function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   const flags = parseFlags(args);
   let cfg = null;
@@ -674,7 +677,6 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
   const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
   stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
-  stdout.write(`  model policy: ${SUBAGENT_MODEL_POLICY_ID}\n`);
   stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
   const cliProfile = cliProfileForHost(cfg, host);
   stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
@@ -719,6 +721,25 @@ function printAutomaticRecommendation(stdout: WritableLike, proposal: SelectionP
   for (const ticket of output.tickets) stdout.write(`  ticket ${ticket.id} queued; dispatch remains host-owned\n`);
 }
 
+function materializeStandaloneWriteScope(
+  cwd: string,
+  planned: StandalonePlan,
+  writePaths: string[],
+  writeOperations: SafetyOperation[],
+): StandalonePlan {
+  if (planned.director_local === true || !writePaths.length) return planned;
+  planned.receipt = buildWriteReceipt({
+    base: planned.receipt,
+    baseline: captureBaseline(cwd),
+    writeAllowlist: writePaths,
+    allowedOperations: writeOperations,
+  });
+  planned.ticket.mode = "write";
+  planned.ticket.read_only = false;
+  planned.ticket.receipt_id = planned.receipt.receipt_id;
+  return planned;
+}
+
 function parseFlags(args: string[]): FlagMap {
   const flags: FlagMap = {};
   for (let i = 0; i < args.length; i += 1) {
@@ -734,6 +755,63 @@ function parseFlags(args: string[]): FlagMap {
     }
   }
   return flags;
+}
+
+interface ClassificationFlags {
+  present: boolean;
+  value: ReturnType<typeof normalizeAgentTaskClassification>;
+}
+
+/** Parse the director-owned structured execution contract from CLI flags. */
+function parseClassificationFlags(flags: FlagMap): ClassificationFlags {
+  const rawFlag = stringFlag(flags, "classification");
+  const operation = stringFlag(flags, "operation");
+  const present = rawFlag !== undefined || operation !== undefined;
+  if (!present) return { present: false, value: null };
+  if (rawFlag === undefined) throw new Error("--operation requires --classification mechanical|long-context|implementation|analysis|discussion|general");
+  let raw: unknown = rawFlag;
+  const trimmed = rawFlag.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      throw new Error("--classification must be a class name or JSON object with kind");
+    }
+  }
+  const normalized = normalizeAgentTaskClassification(raw);
+  if (!normalized) throw new Error("--classification must be mechanical, long-context, implementation, analysis, discussion, or general");
+  return {
+    present: true,
+    value: operation === undefined ? normalized : { ...normalized, operation: operation.trim() || null },
+  };
+}
+
+function parseClassificationAssignments(values: string[], flagName: string): Map<string, ReturnType<typeof normalizeAgentTaskClassification>> {
+  const result = new Map<string, ReturnType<typeof normalizeAgentTaskClassification>>();
+  for (const value of values) {
+    const index = value.indexOf("=");
+    const key = index > 0 ? value.slice(0, index).trim() : "";
+    const classification = index > 0 ? value.slice(index + 1).trim() : "";
+    if (!key || !classification) throw new Error(`${flagName} must use KEY=mechanical|long-context|implementation|analysis|discussion|general`);
+    if (result.has(key)) throw new Error(`duplicate ${flagName} assignment: ${key}`);
+    const parsed = normalizeAgentTaskClassification(classification);
+    if (!parsed) throw new Error(`${flagName} must use KEY=mechanical|long-context|implementation|analysis|discussion|general`);
+    result.set(key, parsed);
+  }
+  return result;
+}
+
+function parseOperationAssignments(values: string[], flagName: string): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const value of values) {
+    const index = value.indexOf("=");
+    const key = index > 0 ? value.slice(0, index).trim() : "";
+    const operation = index > 0 ? value.slice(index + 1).trim() : "";
+    if (!key || !operation) throw new Error(`${flagName} must use KEY=LABEL`);
+    if (result.has(key)) throw new Error(`duplicate ${flagName} assignment: ${key}`);
+    result.set(key, operation);
+  }
+  return result;
 }
 
 function stringFlag(flags: FlagMap, key: string): string | undefined {

@@ -10,6 +10,23 @@ import { HOST_SKILL_REL } from "../src/lib/hosts.js";
 import { fakeEnv, withHome } from "./home.js";
 
 describe("Baton update host guard integration", () => {
+  it("refreshes the active global director skill from this checkout", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-update-skill-"));
+      const env = fakeEnv(home);
+      await initProject(cwd, { env });
+      const installed = path.join(home, ".baton", "SKILL.md");
+      fs.writeFileSync(installed, "stale skill\n", "utf8");
+
+      const result = updateProject(cwd, { env });
+      assert.ok(result.actions.some((item) => item.includes("updated ~/.baton/SKILL.md")));
+      assert.equal(
+        fs.readFileSync(installed, "utf8"),
+        fs.readFileSync(path.join(process.cwd(), "SKILL.md"), "utf8"),
+      );
+    });
+  });
+
   it("refreshes the Baton hook and preserves unrelated Codex hooks", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-update-guard-"));

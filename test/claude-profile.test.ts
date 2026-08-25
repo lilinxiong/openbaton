@@ -7,8 +7,9 @@ import { run } from "../src/cli.js";
 import { cliPromptChoices } from "../src/commands/config.js";
 import { loadConfig } from "../src/lib/config.js";
 import { readRouteSnapshot } from "../src/lib/routes.js";
-import type { CliModelCatalog } from "../src/lib/cli-models.js";
+import type { CliModelCatalog } from "../src/adapters/contract.js";
 import { withHome, fakeEnv } from "./home.js";
+import { adapterProviderFor } from "./configure.js";
 
 function capture() {
   const chunks: string[] = [];
@@ -75,11 +76,11 @@ describe("Claude Code appears in the shared init/config flow", () => {
         env,
         stdout,
         stderr: stdout,
-        discover: async (cli) => {
+        adapterProvider: adapterProviderFor((cli) => {
           discovered.push(cli);
           assert.equal(cli, "claude");
           return structuredClone(CLAUDE_CATALOG);
-        },
+        }),
         prompt: {
           async select(options: { choices: Array<{ value: unknown }> }) {
             offered.push(options.choices.map((choice) => String(choice.value)));
@@ -154,7 +155,7 @@ describe("Claude Code appears in the shared init/config flow", () => {
         "--enable", "--json",
       ], {
         cwd, env, stdout: out, stderr: out,
-        discover: async () => structuredClone(CLAUDE_CATALOG),
+        adapterProvider: adapterProviderFor(CLAUDE_CATALOG),
       }), 0, out.text());
       const payload = JSON.parse(out.text());
       assert.equal(payload.cli, "claude");
@@ -184,7 +185,7 @@ describe("Claude Code appears in the shared init/config flow", () => {
         "config", "--cli", "claude", "--runner", "grok-4.5", "--enable",
       ], {
         cwd, env, stdout: out, stderr: out,
-        discover: async () => structuredClone(CLAUDE_CATALOG),
+        adapterProvider: adapterProviderFor(CLAUDE_CATALOG),
       }), 1, out.text());
       assert.match(out.text(), /runner model grok-4\.5 is not in the 3-model CLI response/);
     });
@@ -200,13 +201,13 @@ describe("Claude Code appears in the shared init/config flow", () => {
       assert.equal(await run([
         "config", "--cli", "grok", "--runner", "grok-4.5", "--longctx", "-",
         "--subagent-model", "grok-4.5", "--enable",
-      ], { cwd, env, stdout: grok, stderr: grok, discover: async () => structuredClone(GROK_CATALOG) }), 0, grok.text());
+      ], { cwd, env, stdout: grok, stderr: grok, adapterProvider: adapterProviderFor(GROK_CATALOG) }), 0, grok.text());
 
       const claude = capture();
       assert.equal(await run([
         "config", "--cli", "claude", "--runner", "claude-sonnet-5", "--longctx", "-",
         "--subagent-model", "claude-sonnet-5", "--disable",
-      ], { cwd, env, stdout: claude, stderr: claude, discover: async () => structuredClone(CLAUDE_CATALOG) }), 0, claude.text());
+      ], { cwd, env, stdout: claude, stderr: claude, adapterProvider: adapterProviderFor(CLAUDE_CATALOG) }), 0, claude.text());
 
       const config = loadConfig(cwd, { env });
       // Configuring Claude must not disturb the Grok profile.

@@ -15,14 +15,14 @@ export interface UpdateProjectOptions {
 
 export interface UpdateProjectResult {
   actions: string[];
-  /** Codex guard, retained under its original name for compatibility. */
+  /** Codex guard result. */
   guard: CodexHooksInstallResult;
   claudeGuard: ClaudeHooksInstallResult;
   grokGuard: GrokHooksInstallResult;
 }
 
 /**
- * Refresh Baton-owned host files and user-global director/ops settings.
+ * Refresh Baton-owned host files and user-global director/CLI settings.
  * Refreshes installed host SKILL copies. Does not install new hosts.
  * Configuration lives in ~/.baton. Never creates project-local Baton config or runtime state.
  */
@@ -51,13 +51,9 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
     const merged = normalizeConfig({
       director: { ...defaults.director, ...current.director },
       cli: current.cli,
-      ops: {
-        runner: { ...defaults.ops.runner, ...current.ops.runner },
-        longctx: { ...defaults.ops.longctx, ...current.ops.longctx },
-      },
     });
     saveConfig(cwd, merged, { env });
-    actions.push(`merged global director/CLI/ops defaults into ${displayHomePath(destConfig, { cwd, env })} (models come from the selected CLI)`);
+    actions.push(`merged global director/CLI defaults into ${displayHomePath(destConfig, { cwd, env })} (models come from the selected CLI)`);
   }
 
   const hosts = refreshInstalledHostSkills(cwd, { env });

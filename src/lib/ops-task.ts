@@ -1,60 +1,89 @@
-import type { OpsAction } from "./ops-config.js";
+/**
+ * The only routing authority for an executable request is the director's
+ * structured classification. Operation is audit metadata; it never selects
+ * a profile.
+ */
+export type AgentExecutionClass =
+  | "mechanical"
+  | "long-context"
+  | "general"
+  | "implementation"
+  | "analysis"
+  | "discussion";
 
-const CODING_OR_DESIGN = /\b(implement|implementation|fix|bug|refactor|migrate|rewrite|debug|design|architecture|plan|scheme|why|investigate|explore)\b|(?:实现|修复|补测试|写测试|改配置|方案|设计|架构|为什么|排查|探索)/i;
-const TEST = /(?:^|\b)((?:bun|npm|pnpm|yarn|cargo|go|make)\s+test|bun test|pytest|run (?:the )?(?:unit |all )?tests?|跑(?:一下)?测试|运行测试|跑单测|跑单元测试)(?:\b|$)/i;
-const BUILD = /(?:^|[\s[(])(?:[$/])?build-(?:app|bazel|cmake)\b|(?:^|\b)((?:bun|npm|pnpm|yarn)\s+run\s+build|make(?:\s+all)?|构建(?:项目|一下)?|编译)(?:\b|$)/i;
-const LINT = /(?:^|\b)(lint|eslint|prettier\s+--check|跑(?:一下)?lint)(?:\b|$)/i;
-const TYPECHECK = /(?:^|\b)(typecheck|tsc(?:\s+--noEmit)?|bun\s+run\s+check|类型检查)(?:\b|$)/i;
-const SEARCH = /(?:^|\b)(rg\b|ripgrep|\bgrep\b|仓库检索|检索|find references|搜(?:索)?)/i;
-const DIGEST = /(?:消化|(?:summarize|digest).*(?:log|output|coverage|artifact)|看(?:一下)?(?:这份)?(?:日志|产物|coverage))/i;
-const GIT_SUMMARIZE = /(?:^|\b)(git\s+(?:status|log|diff)|git\s*摘要|暂存区摘要|commit message|写(?:一个)?\s*commit(?: message)?|提交说明|根据\s*staged.*(?:message|说明)|已暂存.*(?:message|说明))/i;
-const GIT_COMMIT = /(?:^|\b)git\s+commit(?:\s|$)|\bcommit\s+(?:the\s+)?staged(?:\s+changes?)?\b|(?:^|[，,。.!！?？\s])(?:请)?提交(?:吧|已暂存(?:的)?(?:改动|修改|文件)?|这些改动)(?:$|[，,。.!！?？\s])|把已暂存.*提交/i;
-const NO_COMMIT = /(?:不要|不允许|禁止)提交|(?:do not|don't|never)\s+commit/i;
+export interface AgentTaskClassification {
+  kind: AgentExecutionClass;
+  operation?: string | null;
+  capabilities?: string[];
+  /** Internal normalized marker; raw callers must use `capabilities`. */
+  commit_only?: boolean;
+}
 
-const MAX_OPS_CHARS = 160;
+export interface NormalizedAgentTaskClassification extends AgentTaskClassification {
+  operation: string | null;
+  source: "structured";
+}
 
-function firstIndex(text: string, pattern: RegExp): number {
-  const match = pattern.exec(text);
-  return match ? match.index : -1;
+const CLASSES = new Set<AgentExecutionClass>([
+  "mechanical",
+  "long-context",
+  "general",
+  "implementation",
+  "analysis",
+  "discussion",
+]);
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text || null;
+}
+
+function capabilities(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const result = value.map((item) => stringValue(item)).filter((item): item is string => item !== null);
+  return result.length === value.length ? result : null;
 }
 
 /**
- * Fail-closed: mixed coding/design, long/ambiguous text, or multiple ops
- * actions stay off the mechanical path.
+ * Parse the current structured contract only. Unknown keys and legacy aliases
+ * are rejected so callers cannot silently fall back to prose or an older
+ * wire shape.
  */
-export function inferOpsAction(description: unknown): OpsAction | null {
-  const text = String(description || "").trim();
-  if (!text || text.length > MAX_OPS_CHARS) return null;
-  if (CODING_OR_DESIGN.test(text)) return null;
-  if (NO_COMMIT.test(text)) return null;
-  const hits = ([
-    ["test", TEST],
-    ["build", BUILD],
-    ["lint", LINT],
-    ["typecheck", TYPECHECK],
-    ["search", SEARCH],
-    ["digest", DIGEST],
-    ["git-summarize", GIT_SUMMARIZE],
-    ["git-commit", GIT_COMMIT],
-  ] as const).map(([action, pattern]) => ({ action, index: firstIndex(text, pattern) }))
-    .filter((item) => item.index >= 0);
-  if (hits.length !== 1) return null;
-  return hits[0].action;
+export function normalizeAgentTaskClassification(value: unknown): NormalizedAgentTaskClassification | null {
+  if (typeof value === "string") {
+    if (!CLASSES.has(value as AgentExecutionClass)) return null;
+    return { kind: value as AgentExecutionClass, operation: null, source: "structured" };
+  }
+  if (!record(value)) return null;
+  const allowed = new Set(["kind", "operation", "capabilities", "commit_only", "source"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) return null;
+  if (value.source !== undefined && value.source !== "structured") return null;
+  if (value.commit_only !== undefined && value.source !== "structured") return null;
+  if (typeof value.kind !== "string" || !CLASSES.has(value.kind as AgentExecutionClass)) return null;
+  const operation = stringValue(value.operation);
+  if (value.operation !== undefined && value.operation !== null && operation === null) return null;
+  const rawCapabilities = capabilities(value.capabilities);
+  if (rawCapabilities === null) return null;
+  const explicitCommitCapability = rawCapabilities.some((item) => item === "commit");
+  const normalizedCommitCapability = value.source === "structured" && value.commit_only === true;
+  if (value.commit_only !== undefined && value.commit_only !== true && value.commit_only !== false) return null;
+  return {
+    kind: value.kind as AgentExecutionClass,
+    operation,
+    ...(rawCapabilities.length ? { capabilities: rawCapabilities } : {}),
+    ...(explicitCommitCapability || normalizedCommitCapability ? { commit_only: true } : {}),
+    source: "structured",
+  };
 }
 
-/**
- * Resolve one structured unit without making the CLI input shape part of the
- * routing policy. A unit-specific action is used when present, while one
- * request-level action supplies context for concise units such as "Android"
- * or "iOS". Conflicts and explicit no-commit constraints stay fail-closed.
- */
-export function inferOpsActionFromContext(requestDescription: unknown, unitDescription: unknown): OpsAction | null {
-  const requestText = String(requestDescription || "").trim();
-  const unitText = String(unitDescription || "").trim();
-  const requestAction = inferOpsAction(requestText);
-  const unitAction = inferOpsAction(unitText);
-  if (requestAction && unitAction && requestAction !== unitAction) return null;
-  const action = unitAction || requestAction;
-  if (action === "git-commit" && (NO_COMMIT.test(requestText) || NO_COMMIT.test(unitText))) return null;
-  return action;
+/** Whether the structured class explicitly grants the commit-only capability. */
+export function isCommitOnlyClassification(value: unknown): boolean {
+  return normalizeAgentTaskClassification(value)?.commit_only === true;
 }

@@ -5,6 +5,7 @@ import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
 import { planStandaloneSpawn, writeSpawn, type SpawnTicket } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
+import { applyTaskId } from "../lib/apply-waves.js";
 import { scopesFromRecord } from "../lib/apply-scope.js";
 import { buildWriteReceipt, writeReceipt } from "../lib/receipt.js";
 import { captureBaseline, type SafetyOperation } from "../lib/safety.js";
@@ -18,7 +19,6 @@ import {
 } from "../lib/selection.js";
 import type { SelectionQuotaPool } from "../lib/quota-pools.js";
 import type { ModelCard, ModelSelectionApproval, WritableLike } from "../types.js";
-import { SUBAGENT_MODEL_POLICY_ID } from "../lib/model-policy.js";
 
 interface ApprovalContext {
   confirmation_id: string;
@@ -73,21 +73,20 @@ function approvalFor(
 
 function currentSourceFingerprint(proposal: SelectionProposal): string {
   if (proposal.source === "standalone") {
-    if (proposal.payload.source_shape === "multi-unit-v1") return scopedSelectionSourceFingerprint(proposal, {
-        source_shape: "multi-unit-v1",
-        description: String(proposal.payload.description || ""),
-        units: Array.isArray(proposal.payload.units)
-          ? proposal.payload.units.map((item) => {
-            const unit = item && typeof item === "object" ? item as Record<string, unknown> : {};
-            return { key: String(unit.key || ""), description: String(unit.description || "") };
-          })
-          : [],
-      });
+    if (proposal.payload.source_shape !== "multi-unit-v1" || !Array.isArray(proposal.payload.units)) {
+      throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: standalone proposals must use the multi-unit shape");
+    }
     return scopedSelectionSourceFingerprint(proposal, {
-      description: proposal.payload.description,
-      task_kind: proposal.payload.task_kind || null,
-      deliverable: proposal.payload.deliverable || null,
-      done_when: proposal.payload.done_when || null,
+      source_shape: "multi-unit-v1",
+      description: String(proposal.payload.description || ""),
+      units: proposal.payload.units.map((item) => {
+        const unit = item && typeof item === "object" ? item as Record<string, unknown> : {};
+        return { key: String(unit.key || ""), description: String(unit.description || "") };
+      }),
+      ...(Object.hasOwn(proposal.payload, "classification") ? { classification: proposal.payload.classification } : {}),
+      ...(Object.hasOwn(proposal.payload, "operation") ? { operation: proposal.payload.operation } : {}),
+      ...(Object.hasOwn(proposal.payload, "unit_classifications") ? { unit_classifications: proposal.payload.unit_classifications } : {}),
+      ...(Object.hasOwn(proposal.payload, "unit_operations") ? { unit_operations: proposal.payload.unit_operations } : {}),
       write_paths: proposal.payload.write_paths || [],
       write_operations: proposal.payload.write_operations || [],
     });
@@ -118,9 +117,6 @@ function recommendedCandidate(proposal: SelectionProposal, key: string): Selecti
 
 function validateProposal(cwd: string, proposal: SelectionProposal): void {
   if (proposal.status !== "pending_confirmation") throw new Error(`selection proposal ${proposal.id} is already ${proposal.status}`);
-  if (proposal.model_policy_id !== SUBAGENT_MODEL_POLICY_ID) {
-    throw new Error("MODEL_POLICY_CHANGED: this proposal predates the configured CLI allowlist policy; create a new proposal");
-  }
   const snapshot = readRouteSnapshot(cwd, { host: proposal.host });
   if (!snapshot || snapshot.fingerprint !== proposal.catalog_fingerprint) {
     throw new Error("ROUTE_SNAPSHOT_STALE: refresh the active CLI model catalog and create a new proposal");
@@ -142,17 +138,18 @@ function approveStandalone(cwd: string, proposal: SelectionProposal, cards: Mode
   for (const { unit, candidate } of choices) {
     requireCardId(candidate.model_id, cards);
     const approval = approvalFor(proposal, unit.key, candidate, unit.recommended_model_id, context);
-    const legacySingle = proposal.payload.source_shape !== "multi-unit-v1";
     const planned = planStandaloneSpawn({
       description: unit.description,
       cards,
       explicitModel: candidate.model_id,
       cwd,
       queue: null,
-      taskKind: legacySingle ? proposal.payload.task_kind as "concrete" | "deliberative" | null : null,
-      deliverable: legacySingle && typeof proposal.payload.deliverable === "string" ? proposal.payload.deliverable : null,
-      doneWhen: legacySingle && typeof proposal.payload.done_when === "string" ? proposal.payload.done_when : null,
+      taskKind: "concrete",
       selectionApproval: approval,
+      // A unit that reached automatic selection is already classified as
+      // delegable. Do not let the tiny-edit hygiene shortcut pull it
+      // back onto the director during ticket materialization.
+      forceDelegate: true,
     });
     if (planned.director_local === true) throw new Error(`selection source no longer requires delegation: ${unit.key}`);
     if (writePaths.length) {
@@ -198,8 +195,8 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     change: String(proposal.payload.change),
     cfg: loadConfig(cwd, { env }),
     cards,
-    includeTask: (task) => includedTasks.has(task.number),
-    selectCard: (task) => selected.get(task.number),
+    includeTask: (task) => includedTasks.has(applyTaskId(task)),
+    selectCard: (task) => selected.get(applyTaskId(task)),
     selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt, selectionHost),
     selectionApprovals: approvals,
     unitScopes: scopesFromRecord(proposal.payload.unit_scopes),
@@ -383,7 +380,6 @@ function printCandidateTable(stdout: WritableLike, proposal: SelectionProposal, 
 export function printSelectionProposal(stdout: WritableLike, proposal: SelectionProposal): void {
   stdout.write(`automatic routing proposal ${proposal.id} [${proposal.status}]\n`);
   stdout.write(`  CLI model catalog: ${proposal.catalog_fingerprint}\n`);
-  stdout.write(`  model policy: ${proposal.model_policy_id || "legacy/stale"}\n`);
   for (const unit of proposal.units) {
     stdout.write(`\n${unit.key}: ${unit.description}\n`);
     if (unit.director_local) {

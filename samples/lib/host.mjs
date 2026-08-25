@@ -23,22 +23,14 @@ export function hostRouteSnapshotPath(home, host) {
 
 export function readRouteSnapshot(home, host) {
   const keyed = hostRouteSnapshotPath(home, host);
-  const legacy = path.join(batonHome({ HOME: home }), "cache", "cli-models.json");
-  for (const file of [keyed, legacy]) {
-    if (!fs.existsSync(file)) continue;
-    try {
-      const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (snapshot.schema_version !== 5 || snapshot.source !== "cli" || typeof snapshot.cli !== "string") continue;
-      if (snapshot.cli !== host) {
-        if (file === keyed) return null;
-        continue;
-      }
-      return snapshot;
-    } catch {
-      if (file === keyed) return null;
-    }
+  if (!fs.existsSync(keyed)) return null;
+  try {
+    const snapshot = JSON.parse(fs.readFileSync(keyed, "utf8"));
+    if (snapshot.schema_version !== 5 || snapshot.source !== "cli" || typeof snapshot.cli !== "string") return null;
+    return snapshot.cli === host ? snapshot : null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function detectInvokingHostFromEnv(env) {
