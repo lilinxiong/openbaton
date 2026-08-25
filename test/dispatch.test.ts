@@ -23,6 +23,7 @@ import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
 import { readRouteHealth } from "../src/lib/route-health.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { isolatedHome } from "./home.js";
+import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
 
 const TEST_HOME = isolatedHome("baton-dispatch-home-");
 
@@ -155,6 +156,7 @@ describe("reserveNext", () => {
       ["t-0001", "t-0002", "t-0003", "t-0004", "t-0005", "t-0006"],
     );
     assert.deepEqual(result.blocked, []);
+    assert.equal(new Set(result.reserved.map((item) => item.reservation.reservation_id)).size, 6);
 
     const snap = dispatchSnapshot(cwd, { capacity: 6 });
     assert.equal(snap.counts.dispatching, 6);
@@ -167,10 +169,16 @@ describe("reserveNext", () => {
       assert.equal(reserved.read_only, true);
       assert.equal(reserved.fork_context, false);
       assert.equal(reserved.route_id, "codex/default");
+      assert.deepEqual(parseDispatchReservationEnvelope(reserved.prompt), reserved.reservation);
+      assert.deepEqual(parseDispatchReservationEnvelope(reserved.description), reserved.reservation);
+      assert.equal(reserved.reservation.ticket_id, reserved.ticket_id);
+      assert.equal(reserved.reservation.host, "codex");
+      assert.equal(reserved.reservation.attempt, 1);
       const ticket = readTicket(cwd, reserved.ticket_id);
       assert.equal(ticket.status, "dispatching");
       assert.equal(ticket.dispatch_host, "codex");
       assert.equal(ticket.attempt, 1);
+      assert.equal(ticket.reservation_id, reserved.reservation.reservation_id);
     }
   });
 
@@ -684,6 +692,20 @@ describe("host backpressure and progress", () => {
     assert.equal(deferred.error, null);
     assert.equal(persistedCapacity(cwd), 1);
     assert.deepEqual(dispatchSnapshot(cwd, { now: at(21) }).queued, ["t-0001"]);
+  });
+
+  it("invalidates the old reservation identity when a deferred ticket is reserved again", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1, { max_attempts: 1 });
+    const [first] = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) }).reserved;
+
+    const deferred = deferDispatch(cwd, "t-0001", { observedCapacity: 1, now: at(20) });
+    assert.equal(deferred.status, "queued");
+    assert.equal(deferred.reservation_id, undefined);
+
+    const [retried] = reserveNext(cwd, { capacity: 1, host: "codex", now: at(30) }).reserved;
+    assert.equal(retried.reservation.attempt, first.reservation.attempt);
+    assert.notEqual(retried.reservation.reservation_id, first.reservation.reservation_id);
   });
 
   it("persists concise deliberative checkpoints and marks overdue progress", () => {

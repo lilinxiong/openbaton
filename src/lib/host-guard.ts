@@ -5,6 +5,11 @@ import { configPath, receiptsDir, runsDir } from "./paths.js";
 import { currentBatonHookTargets } from "./codex-hooks.js";
 import { findBinaryOnPath, isExecutableFile } from "./executables.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
+import {
+  parseDispatchReservationEnvelope,
+  parseDispatchReservationIdentity,
+  type DispatchReservationIdentity,
+} from "./dispatch-reservation.js";
 
 /** Stable machine-readable reasons emitted by the Codex hook. */
 export const HOST_GUARD_REASONS = {
@@ -18,6 +23,8 @@ export const HOST_GUARD_REASONS = {
   agent_identity_mismatch: "BATON_GUARD_AGENT_IDENTITY_MISMATCH",
   no_reserved_ticket: "BATON_GUARD_NO_RESERVED_TICKET",
   ambiguous_reserved_ticket: "BATON_GUARD_AMBIGUOUS_RESERVED_TICKET",
+  reservation_identity_required: "BATON_GUARD_RESERVATION_IDENTITY_REQUIRED",
+  reservation_identity_mismatch: "BATON_GUARD_RESERVATION_IDENTITY_MISMATCH",
   nested_agent: "BATON_GUARD_NESTED_AGENT_DISALLOWED",
   ticket_not_active: "BATON_GUARD_TICKET_NOT_ACTIVE",
   write_receipt_required: "BATON_GUARD_WRITE_RECEIPT_REQUIRED",
@@ -48,6 +55,8 @@ export interface HookInput {
 
 export interface GuardTicket {
   id: string;
+  reservation_id: string | null;
+  attempt: number;
   status: string;
   mode: string;
   read_only: boolean;
@@ -130,6 +139,8 @@ function normalizeTicket(ticket: SpawnTicket): GuardTicket {
   const receipt = ticket.receipt_id ? readReceiptShape(ticket, ticket.receipt_id) : null;
   return {
     id: String(ticket.id || ""),
+    reservation_id: stringValue(ticket.reservation_id),
+    attempt: Number(ticket.attempt || 0),
     status: String(ticket.status || ""),
     mode: String(ticket.mode || (ticket.read_only ? "read-only" : "write")),
     read_only: ticket.read_only !== false,
@@ -170,6 +181,8 @@ function normalizeTickets(cwd: string, tickets: SpawnTicket[]): GuardTicket[] {
 function normalizeProvidedTicket(ticket: GuardTicket): GuardTicket {
   return {
     id: String(ticket?.id || ""),
+    reservation_id: stringValue(ticket?.reservation_id),
+    attempt: Number(ticket?.attempt || 0),
     status: String(ticket?.status || ""),
     mode: String(ticket?.mode || (ticket?.read_only ? "read-only" : "write")),
     read_only: ticket?.read_only !== false,
@@ -410,14 +423,59 @@ export function hookAgentIdentity(input: HookInput): string | null {
   return null;
 }
 
-function ticketIdFromInput(input: HookInput): string | null {
-  const direct = stringValue(input.ticket_id) || stringValue(input.ticketId);
-  if (direct) return direct;
+interface RequestedReservation {
+  identity: DispatchReservationIdentity | null;
+  conflict: boolean;
+  invalid: boolean;
+}
+
+function reservationEnvelopeIntent(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const firstLine = value.split(/\r?\n/, 1)[0].trim();
+  if (!firstLine.startsWith("{")) return false;
+  try {
+    const parsed = JSON.parse(firstLine) as unknown;
+    return record(parsed) && Object.hasOwn(parsed, "baton_dispatch");
+  } catch {
+    return /"baton_dispatch"\s*:/.test(firstLine);
+  }
+}
+
+/** Read only an explicit machine envelope. Business prompt text and ticket prefixes are irrelevant. */
+function reservationFromInput(input: HookInput): RequestedReservation {
   const nested = toolInput(input);
-  const nestedId = stringValue(nested.ticket_id) || stringValue(nested.ticketId);
-  if (nestedId) return nestedId;
-  const text = [nested.prompt, nested.description, nested.task, nested.input].map(stringValue).filter(Boolean).join(" ");
-  return text.match(/\bspn-[0-9]{4,}\b/)?.[0] || null;
+  const candidates: DispatchReservationIdentity[] = [];
+  let invalid = false;
+  for (const value of [input.baton_dispatch, nested.baton_dispatch]) {
+    if (value !== undefined) {
+      const parsed = parseDispatchReservationIdentity({ baton_dispatch: value });
+      if (parsed) candidates.push(parsed);
+      else invalid = true;
+    }
+  }
+  for (const value of [
+    input.prompt,
+    input.message,
+    input.description,
+    input.task,
+    input.input,
+    nested.prompt,
+    nested.message,
+    nested.description,
+    nested.task,
+    nested.input,
+  ]) {
+    const parsed = parseDispatchReservationEnvelope(value);
+    if (parsed) candidates.push(parsed);
+    else if (reservationEnvelopeIntent(value)) invalid = true;
+  }
+  if (!candidates.length) return { identity: null, conflict: false, invalid };
+  const encoded = candidates.map((item) => JSON.stringify(item));
+  return {
+    identity: candidates[0],
+    conflict: encoded.some((item) => item !== encoded[0]),
+    invalid,
+  };
 }
 
 function sessionId(input: HookInput): string | null {
@@ -555,9 +613,10 @@ function grokRunningTickets(state: HostGuardState, host: string): GuardTicket[] 
 }
 
 /**
- * Grok PreToolUse inside a child has `subagentType` and a child `sessionId`,
- * not Codex `agent_id`. Match the bound ticket by recorded session, or by the
- * unique running Grok ticket when only one worker is live.
+ * Grok PreToolUse inside an already-bound child has `subagentType` and a child
+ * `sessionId`, not Codex `agent_id`. Only the exact session recorded from an
+ * envelope-bearing SubagentStart may identify the ticket; never guess from the
+ * number of running workers.
  */
 function grokBoundWorker(state: HostGuardState, input: HookInput, host: string): GuardTicket | null {
   if (host !== "grok" || !grokSubagentPayload(input)) return null;
@@ -566,15 +625,14 @@ function grokBoundWorker(state: HostGuardState, input: HookInput, host: string):
     const ticket = state.tickets.find((item) => item.id === bySession.ticket_id && isGuardTicket(item, host));
     if (ticket?.status === "running" && ticket.agent_id) return ticket;
   }
-  const running = grokRunningTickets(state, host);
-  return running.length === 1 ? running[0] : null;
+  return null;
 }
 
-function findReserved(state: HostGuardState, input: HookInput, host: string): GuardTicket | null {
-  const reserved = reservedTickets(state, host);
-  const requestedId = ticketIdFromInput(input);
-  if (requestedId) return reserved.find((ticket) => ticket.id === requestedId) || null;
-  return reserved.length === 1 ? reserved[0] : null;
+function findReserved(state: HostGuardState, identity: DispatchReservationIdentity, host: string): GuardTicket | null {
+  return reservedTickets(state, host).find((ticket) => ticket.reservation_id === identity.reservation_id
+    && ticket.id === identity.ticket_id
+    && ticket.attempt === identity.attempt
+    && identity.host === host) || null;
 }
 
 function exclusiveGitTickets(state: HostGuardState, host: string): GuardTicket[] {
@@ -846,12 +904,11 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
     const reserved = reservedTickets(state, host);
     // No reserved work for this host: undeclared native-child spawn is allowed.
     if (!reserved.length) return allow();
-    const matched = findReserved(state, input, host);
-    if (!matched) {
-      return deny(reserved.length > 1
-        ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
-        : HOST_GUARD_REASONS.no_reserved_ticket);
-    }
+    const requested = reservationFromInput(input);
+    if (requested.invalid || requested.conflict) return deny(HOST_GUARD_REASONS.reservation_identity_mismatch);
+    if (!requested.identity) return deny(HOST_GUARD_REASONS.reservation_identity_required);
+    const matched = findReserved(state, requested.identity, host);
+    if (!matched) return deny(HOST_GUARD_REASONS.reservation_identity_mismatch);
     return allow(matched.id, null);
   }
 
@@ -1008,12 +1065,21 @@ export function evaluateSubagentStart(raw: HookInput, options: HostGuardOptions 
     }
     return allow(bound.id, agentId, "BATON_GUARD_SUBAGENT_BOUND");
   }
-  const reserved = findReserved(state, input, host);
-  if (!reserved) {
-    return deny(reservedTickets(state, host).length > 1
-      ? HOST_GUARD_REASONS.ambiguous_reserved_ticket
-      : HOST_GUARD_REASONS.no_reserved_ticket, null, agentId);
+  const hostReservations = reservedTickets(state, host);
+  if (!hostReservations.length) return allow(null, agentId);
+  const requested = reservationFromInput(input);
+  if (requested.invalid || requested.conflict) {
+    return deny(HOST_GUARD_REASONS.reservation_identity_mismatch, null, agentId);
   }
+  if (!requested.identity) {
+    // Codex and Claude lifecycle payloads identify the child but do not repeat
+    // the native tool input. PreToolUse already enforced the reservation; the
+    // explicit dispatch bind is the first safe ticket-to-agent association.
+    if (host !== "grok") return allow(null, agentId, "BATON_GUARD_SUBAGENT_AWAITING_BIND");
+    return deny(HOST_GUARD_REASONS.reservation_identity_required, null, agentId);
+  }
+  const reserved = findReserved(state, requested.identity, host);
+  if (!reserved) return deny(HOST_GUARD_REASONS.reservation_identity_mismatch, null, agentId);
   recordPendingBinding(cwd, input, state, reserved, options, "pending", agentId);
   return allow(reserved.id, agentId, "BATON_GUARD_SUBAGENT_PENDING_BIND");
 }

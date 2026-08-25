@@ -21,6 +21,11 @@ import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "./work-unit
 import { readRouteSnapshot } from "./routes.js";
 import { cliProfileForHost, loadConfig } from "./config.js";
 import { parseHostId, type HostId } from "./hosts.js";
+import {
+  BATON_DISPATCH_RESERVATION_SCHEMA,
+  withDispatchReservationEnvelope,
+  type DispatchReservationIdentity,
+} from "./dispatch-reservation.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
@@ -36,7 +41,7 @@ function normalizeTicketContract(ticket: SpawnTicket): SpawnTicket {
   if (ticket.liveness === undefined) ticket.liveness = null;
   if (ticket.selection === undefined) ticket.selection = null;
   if (ticket.service_tier === undefined) ticket.service_tier = ticket.selection?.service_tier || null;
-  if (Number(ticket.schema_version || 1) < 6) ticket.schema_version = 6;
+  if (Number(ticket.schema_version || 1) < 7) ticket.schema_version = 7;
   return ticket;
 }
 
@@ -223,6 +228,7 @@ export function rememberDispatchCapacity(cwd: string, capacity: number, host?: H
 
 export interface DispatchSpec {
   ticket_id: string;
+  reservation: DispatchReservationIdentity;
   target_host: string;
   route_id: string;
   model: string;
@@ -239,6 +245,7 @@ export interface DispatchSpec {
     expected_tree: string;
     staged_paths: string[];
   } | null;
+  description: string;
   prompt: string;
   work_unit: SpawnTicket["work_unit"];
   coordination: SpawnTicket["coordination"];
@@ -247,9 +254,17 @@ export interface DispatchSpec {
   selection: NonNullable<SpawnTicket["selection"]>;
 }
 
-function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id: string }, receipt: DelegationReceipt): DispatchSpec {
+function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id: string; reservation_id: string }, receipt: DelegationReceipt): DispatchSpec {
+  const reservation: DispatchReservationIdentity = {
+    schema: BATON_DISPATCH_RESERVATION_SCHEMA,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: ticketTargetHost(ticket),
+  };
   return {
     ticket_id: ticket.id,
+    reservation,
     target_host: ticketTargetHost(ticket),
     route_id: ticket.route_id,
     model: ticket.route_id,
@@ -266,7 +281,8 @@ function publicDispatchSpec(ticket: SpawnTicket & { route_id: string; receipt_id
       expected_tree: receipt.commit_baseline.staged_tree,
       staged_paths: receipt.commit_baseline.staged_paths,
     } : null,
-    prompt: ticket.prompt,
+    description: withDispatchReservationEnvelope(ticket.description, reservation),
+    prompt: withDispatchReservationEnvelope(ticket.prompt, reservation),
     work_unit: ticket.work_unit,
     coordination: ticket.coordination,
     attempt: ticket.attempt,
@@ -494,14 +510,19 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
         blocked.push(rejected);
         continue;
       }
-      transition(ticket, "queued", "dispatching", { at, event: "dispatch_reserved", detail: { host: targetHost } });
       ticket.dispatch_host = targetHost;
       ticket.dispatch_requested_at = at;
       ticket.attempt = Number(ticket.attempt || 0) + 1;
+      ticket.reservation_id = crypto.randomUUID();
+      transition(ticket, "queued", "dispatching", {
+        at,
+        event: "dispatch_reserved",
+        detail: { host: targetHost, reservation_id: ticket.reservation_id, attempt: ticket.attempt },
+      });
       ticket.error = null;
       writeSpawn(cwd, ticket);
       const receipt = readReceipt(cwd, ticket.receipt_id!);
-      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string }, receipt));
+      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string; reservation_id: string }, receipt));
       if (ticket.mode === "commit-only") {
         available = 0;
         break;
@@ -589,6 +610,7 @@ export function deferDispatch(cwd: string, id: string, {
     });
     ticket.attempt = Math.max(0, Number(ticket.attempt || 0) - 1);
     ticket.error = null;
+    delete ticket.reservation_id;
     delete ticket.dispatch_host;
     delete ticket.dispatch_requested_at;
     writeSpawn(cwd, ticket);

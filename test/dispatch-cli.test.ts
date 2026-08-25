@@ -8,6 +8,7 @@ import { dispatchStatePath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCodex } from "./configure.js";
+import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
 
 function capture() {
   const chunks = [];
@@ -59,6 +60,9 @@ describe("dispatch CLI", () => {
       assert.equal(reserved.reserved[0].model, "kimi/k3[1m]");
       assert.equal(reserved.reserved[0].reasoning_effort, null);
       assert.equal(reserved.reserved[0].fork_context, false);
+      assert.deepEqual(parseDispatchReservationEnvelope(reserved.reserved[0].prompt), reserved.reserved[0].reservation);
+      assert.deepEqual(parseDispatchReservationEnvelope(reserved.reserved[0].description), reserved.reserved[0].reservation);
+      assert.equal(reserved.reserved[0].reservation.ticket_id, "spn-0001");
       assert.deepEqual(reserved.snapshot.queued, ["spn-0002"]);
 
       const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-real-1", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
@@ -94,6 +98,7 @@ describe("dispatch CLI", () => {
       assert.equal(payload.reserved[0].ticket_id, "spn-0001");
       assert.equal(payload.reserved[0].model, "kimi/k3[1m]");
       assert.match(payload.reserved[0].prompt, /Baton work unit/);
+      assert.deepEqual(parseDispatchReservationEnvelope(payload.reserved[0].prompt), payload.reserved[0].reservation);
       assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8")).status, "dispatching");
 
       const bound = await command(["dispatch", "bind", "spn-0001", "--agent-id", "agent-compact", "--host", "codex", "--json"], { cwd, env });

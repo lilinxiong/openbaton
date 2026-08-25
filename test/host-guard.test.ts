@@ -13,6 +13,11 @@ import {
   type HostGuardState,
 } from "../src/lib/host-guard.js";
 import { currentBatonHookTargets } from "../src/lib/codex-hooks.js";
+import {
+  BATON_DISPATCH_RESERVATION_SCHEMA,
+  withDispatchReservationEnvelope,
+  type DispatchReservationIdentity,
+} from "../src/lib/dispatch-reservation.js";
 
 function state(tickets: HostGuardState["tickets"] = []): HostGuardState {
   return { active: true, initialized: true, tickets, bindings: [], state_error: null };
@@ -22,8 +27,32 @@ function event(tool_name: string, tool_input: Record<string, unknown> = {}, extr
   return { hook_event_name: "PreToolUse", tool_name, tool_input, cwd: "/workspace", ...extra };
 }
 
+function reservedTicket(
+  ticket: HostGuardState["tickets"][number],
+  reservationId: string,
+): HostGuardState["tickets"][number] {
+  return { ...ticket, status: "dispatching", agent_id: null, reservation_id: reservationId, attempt: 1 };
+}
+
+function reservationFor(ticket: HostGuardState["tickets"][number]): DispatchReservationIdentity {
+  assert.ok(ticket.reservation_id);
+  return {
+    schema: BATON_DISPATCH_RESERVATION_SCHEMA,
+    reservation_id: ticket.reservation_id,
+    ticket_id: ticket.id,
+    attempt: ticket.attempt,
+    host: ticket.dispatch_host || ticket.host || "codex",
+  };
+}
+
+function reservedText(ticket: HostGuardState["tickets"][number], text: string): string {
+  return withDispatchReservationEnvelope(text, reservationFor(ticket));
+}
+
 const readTicket = {
   id: "spn-0001",
+  reservation_id: null,
+  attempt: 1,
   status: "running",
   mode: "read-only",
   read_only: true,
@@ -37,6 +66,8 @@ const readTicket = {
 
 const writeTicket = {
   id: "spn-0002",
+  reservation_id: null,
+  attempt: 1,
   status: "running",
   mode: "write",
   read_only: false,
@@ -143,12 +174,9 @@ describe("Baton Codex host guard", () => {
   });
 
   it("permits a reserved Agent call but denies the spawn-to-bind race", () => {
-    const reserved = state([{
-      ...readTicket,
-      status: "dispatching",
-      agent_id: null,
-    }]);
-    const spawn = evaluatePreToolUse(event("Agent", { prompt: "work for spn-0001" }), { state: reserved });
+    const ticket = reservedTicket(readTicket, "codex-reservation-one");
+    const reserved = state([ticket]);
+    const spawn = evaluatePreToolUse(event("Agent", { prompt: reservedText(ticket, "work on the unit") }), { state: reserved });
     assert.equal(spawn.allowed, true);
     assert.equal(spawn.ticket_id, "spn-0001");
 
@@ -158,6 +186,7 @@ describe("Baton Codex host guard", () => {
       agent_id: "native-1",
       agent_type: "worker",
       session_id: "parent-session",
+      description: reservedText(ticket, "work on the unit"),
     }, { state: reserved });
     assert.equal(start.allowed, true);
     assert.match(String(start.output.hookSpecificOutput && (start.output.hookSpecificOutput as Record<string, unknown>).additionalContext), /PENDING_BIND/);
@@ -168,7 +197,8 @@ describe("Baton Codex host guard", () => {
   });
 
   it("persists a SubagentStart turn association and maps release-shaped PreToolUse after bind", () => {
-    const reserved = state([{ ...readTicket, status: "dispatching", agent_id: null }]);
+    const ticket = reservedTicket(readTicket, "codex-reservation-two");
+    const reserved = state([ticket]);
     const start = evaluateSubagentStart({
       hook_event_name: "SubagentStart",
       cwd: "/workspace",
@@ -176,6 +206,7 @@ describe("Baton Codex host guard", () => {
       agent_id: "native-1",
       agent_type: "worker",
       session_id: "root-turn",
+      description: reservedText(ticket, "work on the unit"),
     }, { state: reserved });
     assert.equal(start.allowed, true);
     assert.deepEqual(reserved.bindings, [{
@@ -243,20 +274,63 @@ describe("Baton Codex host guard", () => {
     assert.equal(rootBorrow.reason, HOST_GUARD_REASONS.agent_identity_mismatch);
   });
 
-  it("requires the reserved ticket in Agent task text when reservations are ambiguous", () => {
-    const first = { ...readTicket, id: "spn-0001", status: "dispatching", agent_id: null };
-    const second = { ...writeTicket, id: "spn-0002", status: "dispatching", agent_id: null };
-    const ambiguous = evaluatePreToolUse(event("Agent", { prompt: "implement the change" }), {
+  it("requires an exact reservation envelope and treats ticket ids as opaque data", () => {
+    const first = reservedTicket({ ...readTicket, id: "os-0001" }, "opaque-reservation-one");
+    const second = reservedTicket({ ...writeTicket, id: "zly-unit" }, "opaque-reservation-two");
+    const missing = evaluatePreToolUse(event("Agent", { prompt: "implement zly-unit and mention os-0001" }), {
       state: state([first, second]),
     });
-    assert.equal(ambiguous.allowed, false);
-    assert.equal(ambiguous.reason, HOST_GUARD_REASONS.ambiguous_reserved_ticket);
+    assert.equal(missing.allowed, false);
+    assert.equal(missing.reason, HOST_GUARD_REASONS.reservation_identity_required);
 
-    const explicit = evaluatePreToolUse(event("Agent", { prompt: "implement spn-0002 change" }), {
+    const explicit = evaluatePreToolUse(event("Agent", { prompt: reservedText(second, "implement the change") }), {
       state: state([first, second]),
     });
     assert.equal(explicit.allowed, true);
-    assert.equal(explicit.ticket_id, "spn-0002");
+    assert.equal(explicit.ticket_id, "zly-unit");
+
+    const staleIdentity = { ...reservationFor(second), reservation_id: "stale-reservation" };
+    const stale = evaluatePreToolUse(event("Agent", {
+      prompt: withDispatchReservationEnvelope("implement the change", staleIdentity),
+    }), { state: state([first, second]) });
+    assert.equal(stale.allowed, false);
+    assert.equal(stale.reason, HOST_GUARD_REASONS.reservation_identity_mismatch);
+
+    const conflicting = evaluatePreToolUse(event("Agent", {
+      prompt: reservedText(first, "implement the change"),
+      description: reservedText(second, "implement the change"),
+    }), { state: state([first, second]) });
+    assert.equal(conflicting.allowed, false);
+    assert.equal(conflicting.reason, HOST_GUARD_REASONS.reservation_identity_mismatch);
+
+    const malformed = evaluatePreToolUse(event("Agent", {
+      prompt: '{"baton_dispatch":{"schema":1',
+      description: reservedText(second, "implement the change"),
+    }), { state: state([first, second]) });
+    assert.equal(malformed.allowed, false);
+    assert.equal(malformed.reason, HOST_GUARD_REASONS.reservation_identity_mismatch);
+  });
+
+  it("does not guess a reservation from carrier-free Codex or Claude SubagentStart events", () => {
+    for (const host of ["codex", "claude"] as const) {
+      const ticket = reservedTicket({
+        ...readTicket,
+        id: `zly-${host}`,
+        host,
+        dispatch_host: host,
+      }, `${host}-carrier-free`);
+      const reserved = state([ticket]);
+      const start = evaluateSubagentStart({
+        hook_event_name: "SubagentStart",
+        cwd: "/workspace",
+        agent_id: `${host}-agent`,
+        agent_type: "worker",
+      }, { state: reserved, host });
+      assert.equal(start.allowed, true);
+      assert.equal(start.ticket_id, null);
+      assert.equal(start.output.hookSpecificOutput?.additionalContext, "BATON_GUARD_SUBAGENT_AWAITING_BIND");
+      assert.deepEqual(reserved.bindings, []);
+    }
   });
 
   it("fails closed on malformed guard state", () => {
@@ -308,7 +382,7 @@ describe("Baton Codex host guard", () => {
 
 describe("host guard host scoping", () => {
   const claudeTicket = { ...readTicket, id: "spn-0100", agent_id: "a1c6c56", host: "claude", dispatch_host: "claude" };
-  const claudeReserved = { ...claudeTicket, id: "spn-0101", status: "dispatching", agent_id: null };
+  const claudeReserved = reservedTicket({ ...claudeTicket, id: "spn-0101" }, "claude-reservation");
 
   it("serves only the requesting host's running ticket", () => {
     const both = state([readTicket, claudeTicket]);
@@ -326,7 +400,7 @@ describe("host guard host scoping", () => {
 
   it("gates child agents against reservations from the same host only", () => {
     const claudeOnly = state([claudeReserved]);
-    const allowed = evaluatePreToolUse(event("Agent", { prompt: "run the ticket" }), { state: claudeOnly, host: "claude" });
+    const allowed = evaluatePreToolUse(event("Agent", { prompt: reservedText(claudeReserved, "run the ticket") }), { state: claudeOnly, host: "claude" });
     assert.equal(allowed.allowed, true);
     assert.equal(allowed.ticket_id, "spn-0101");
     // Codex with no Codex reserved ticket allows unmatched Agent (undeclared native-child spawn).
@@ -341,6 +415,7 @@ describe("host guard host scoping", () => {
       cwd: "/workspace",
       agent_id: "a2a931ffa6c987fbd",
       agent_type: "baton-probe",
+      description: reservedText(claudeReserved, "run the ticket"),
     }, { state: claudeOnly, host: "claude" });
     assert.equal(start.allowed, true);
     assert.equal(start.ticket_id, "spn-0101");
@@ -354,8 +429,8 @@ describe("host guard host scoping", () => {
       agent_id: "a2a931ffa6c987fbd",
       agent_type: "baton-probe",
     }, { state: state([claudeReserved]), host: "codex" });
-    assert.equal(wrongHost.allowed, false);
-    assert.equal(wrongHost.reason, HOST_GUARD_REASONS.no_reserved_ticket);
+    assert.equal(wrongHost.allowed, true);
+    assert.equal(wrongHost.ticket_id, null);
   });
 
   it("keeps the legacy unqualified hook install scoped to Codex", () => {
@@ -516,70 +591,74 @@ describe("Grok host guard", () => {
     assert.equal(allowed.allowed, true);
   });
 
-  it("still requires a reserved Grok ticket when Baton has one dispatching", () => {
-    const reserved = state([{
+  it("requires the exact Grok reservation even when only one ticket is dispatching", () => {
+    const ticket = reservedTicket({
       ...readTicket,
       id: "spn-0200",
-      status: "dispatching",
-      agent_id: null,
       host: "grok",
       dispatch_host: "grok",
-    }]);
-    // Unique reservation matches spawn_subagent even without the ticket id in the prompt.
-    const allowed = evaluatePreToolUse({
+    }, "grok-reservation-one");
+    const reserved = state([ticket]);
+    const missing = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "spawn_subagent",
       toolInput: { prompt: "implement the reserved unit", model: "grok-4.5" },
+      cwd: "/workspace",
+    }, { state: reserved, host: "grok" });
+    assert.equal(missing.allowed, false);
+    assert.equal(missing.reason, HOST_GUARD_REASONS.reservation_identity_required);
+
+    const allowed = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "spawn_subagent",
+      toolInput: {
+        prompt: reservedText(ticket, "implement the reserved unit"),
+        description: reservedText(ticket, "reserved unit"),
+        model: "grok-4.5",
+      },
       cwd: "/workspace",
     }, { state: reserved, host: "grok" });
     assert.equal(allowed.allowed, true);
     assert.equal(allowed.ticket_id, "spn-0200");
   });
 
-  it("denies unmatched Grok spawn_subagent while a ticket is dispatching", () => {
-    const reserved = state([{
+  it("allows parallel Grok reservations by exact identity and never by ticket-like prose", () => {
+    const first = reservedTicket({
       ...readTicket,
-      id: "spn-0200",
-      status: "dispatching",
-      agent_id: null,
+      id: "os-0200",
       host: "grok",
       dispatch_host: "grok",
-    }]);
+    }, "grok-reservation-two");
+    const second = reservedTicket({
+      ...readTicket,
+      id: "zly-anything",
+      host: "grok",
+      dispatch_host: "grok",
+    }, "grok-reservation-three");
+    const two = state([first, second]);
     const nonMatching = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "spawn_subagent",
-      toolInput: { prompt: "work for spn-9999", model: "grok-4.5" },
-      cwd: "/workspace",
-    }, { state: reserved, host: "grok" });
-    assert.equal(nonMatching.allowed, false);
-    assert.equal(nonMatching.reason, HOST_GUARD_REASONS.no_reserved_ticket);
-
-    const two = state([
-      {
-        ...readTicket,
-        id: "spn-0200",
-        status: "dispatching",
-        agent_id: null,
-        host: "grok",
-        dispatch_host: "grok",
-      },
-      {
-        ...readTicket,
-        id: "spn-0201",
-        status: "dispatching",
-        agent_id: null,
-        host: "grok",
-        dispatch_host: "grok",
-      },
-    ]);
-    const ambiguous = evaluatePreToolUse({
-      hookEventName: "pre_tool_use",
-      toolName: "spawn_subagent",
-      toolInput: { prompt: "implement the task", model: "grok-4.5" },
+      toolInput: { prompt: "work for os-0200 and zly-anything", model: "grok-4.5" },
       cwd: "/workspace",
     }, { state: two, host: "grok" });
-    assert.equal(ambiguous.allowed, false);
-    assert.equal(ambiguous.reason, HOST_GUARD_REASONS.ambiguous_reserved_ticket);
+    assert.equal(nonMatching.allowed, false);
+    assert.equal(nonMatching.reason, HOST_GUARD_REASONS.reservation_identity_required);
+
+    for (const ticket of [first, second]) {
+      const matched = evaluatePreToolUse({
+        hookEventName: "pre_tool_use",
+        toolName: "spawn_subagent",
+        toolInput: {
+          prompt: reservedText(ticket, "implement the task"),
+          description: reservedText(ticket, "reserved unit"),
+          model: "grok-4.5",
+        },
+        cwd: "/workspace",
+      }, { state: two, host: "grok" });
+      assert.equal(matched.allowed, true);
+      assert.equal(matched.ticket_id, ticket.id);
+    }
   });
 
   const grokWorker = {
@@ -590,8 +669,22 @@ describe("Grok host guard", () => {
     dispatch_host: "grok",
   };
 
+  function grokBoundState(ticket: HostGuardState["tickets"][number] = grokWorker): HostGuardState {
+    const bound = state([ticket]);
+    bound.bindings = [{
+      ticket_id: ticket.id,
+      agent_id: ticket.agent_id!,
+      turn_id: null,
+      session_id: "child-session",
+      agent_type: "general-purpose",
+      state: "bound",
+      observed_at: "2026-08-25T00:00:00.000Z",
+    }];
+    return bound;
+  }
+
   it("allows a bound Grok worker shell when PreToolUse has subagentType but no agent_id", () => {
-    const bound = state([grokWorker]);
+    const bound = grokBoundState();
     const allowed = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "run_terminal_command",
@@ -654,7 +747,7 @@ describe("Grok host guard", () => {
   });
 
   it("keeps bound Grok workers inside the Receipt for search_replace", () => {
-    const readBound = state([grokWorker]);
+    const readBound = grokBoundState();
     const readDenied = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "search_replace",
@@ -667,13 +760,13 @@ describe("Grok host guard", () => {
     assert.equal(readDenied.reason, HOST_GUARD_REASONS.write_receipt_required);
     assert.equal(readDenied.ticket_id, "spn-0200");
 
-    const writeBound = state([{
+    const writeBound = grokBoundState({
       ...grokWorker,
       mode: "write",
       read_only: false,
       allowed_operations: ["write", "create"],
       write_allowlist: ["src/index.ts"],
-    }]);
+    });
     const writeAllowed = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "search_replace",
@@ -687,12 +780,15 @@ describe("Grok host guard", () => {
   });
 
   it("denies Grok worker writes before bind once SubagentStart recorded the session", () => {
-    const reserved = state([{ ...grokWorker, status: "dispatching", agent_id: null }]);
+    const ticket = reservedTicket(grokWorker, "grok-reservation-four");
+    const reserved = state([ticket]);
     evaluateSubagentStart({
       hookEventName: "subagent_start",
       cwd: "/workspace",
       sessionId: "child-session",
+      subagentId: grokWorker.agent_id,
       subagentType: "general-purpose",
+      description: reservedText(ticket, "reserved unit"),
     }, { state: reserved, host: "grok" });
     const inspect = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
@@ -715,14 +811,14 @@ describe("Grok host guard", () => {
     assert.equal(denied.reason, HOST_GUARD_REASONS.spawn_bind_pending);
   });
 
-  it("authorizes a unique bound Grok commit-only git commit without agent_id", () => {
-    const commit = state([{
+  it("authorizes a session-bound Grok commit-only git commit without agent_id", () => {
+    const commit = grokBoundState({
       ...grokWorker,
       mode: "commit-only",
       read_only: false,
       allowed_operations: ["commit"],
       write_allowlist: ["src/lib/host-guard.ts"],
-    }]);
+    });
     const allowed = evaluatePreToolUse({
       hookEventName: "pre_tool_use",
       toolName: "run_terminal_command",
@@ -735,18 +831,47 @@ describe("Grok host guard", () => {
     assert.equal(allowed.ticket_id, "spn-0200");
   });
 
-  it("matches a Grok worker by child sessionId when bind id differs from SubagentStart", () => {
-    const reserved = state([{ ...grokWorker, status: "dispatching", agent_id: null }]);
+  it("never assigns an unmapped Grok child to the sole running ticket", () => {
+    const unmapped = state([grokWorker]);
+    const inspect = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "run_terminal_command",
+      toolInput: { command: "git status" },
+      cwd: "/workspace",
+      sessionId: "unmapped-child",
+      subagentType: "general-purpose",
+    }, { state: unmapped, host: "grok" });
+    assert.equal(inspect.allowed, true);
+    assert.equal(inspect.ticket_id, null);
+
+    const edit = evaluatePreToolUse({
+      hookEventName: "pre_tool_use",
+      toolName: "search_replace",
+      toolInput: { file_path: "src/index.ts", old_string: "a", new_string: "b" },
+      cwd: "/workspace",
+      sessionId: "unmapped-child",
+      subagentType: "general-purpose",
+    }, { state: unmapped, host: "grok" });
+    assert.equal(edit.allowed, false);
+    assert.equal(edit.ticket_id, null);
+    assert.equal(edit.reason, HOST_GUARD_REASONS.director_code_write);
+  });
+
+  it("maps a Grok worker session from the exact SubagentStart reservation", () => {
+    const ticket = reservedTicket(grokWorker, "grok-reservation-five");
+    const reserved = state([ticket]);
     const start = evaluateSubagentStart({
       hookEventName: "subagent_start",
       cwd: "/workspace",
       sessionId: "child-session",
+      subagentId: grokWorker.agent_id,
       subagentType: "general-purpose",
+      description: reservedText(ticket, "reserved unit"),
     }, { state: reserved, host: "grok" });
     assert.equal(start.allowed, true);
     assert.equal(start.output.hookSpecificOutput?.additionalContext, "BATON_GUARD_SUBAGENT_PENDING_BIND");
     assert.equal(reserved.bindings[0]?.session_id, "child-session");
-    assert.equal(reserved.bindings[0]?.agent_id, "child-session");
+    assert.equal(reserved.bindings[0]?.agent_id, grokWorker.agent_id);
 
     reserved.tickets[0] = { ...reserved.tickets[0], status: "running", agent_id: grokWorker.agent_id };
     const afterBind = evaluatePreToolUse({

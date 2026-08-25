@@ -9,6 +9,7 @@ import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCodex } from "./configure.js";
+import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
 
 function capture() {
   const chunks: string[] = [];
@@ -80,6 +81,11 @@ describe("baton apply waves", () => {
       const ticketFiles = fs.readdirSync(spawnsDir(cwd)).filter((name) => name.endsWith(".json"));
       assert.equal(ticketFiles.length, 2);
       assert.equal(body.reserved.length, 2);
+      assert.deepEqual(body.reserved.map((item: { ticket_id: string }) => item.ticket_id), ["os-0001", "os-0002"]);
+      for (const reserved of body.reserved) {
+        assert.deepEqual(parseDispatchReservationEnvelope(reserved.prompt), reserved.reservation);
+        assert.deepEqual(parseDispatchReservationEnvelope(reserved.description), reserved.reservation);
+      }
       assert.equal(fs.readFileSync(tasksPath, "utf8"), original);
       for (const name of ticketFiles) {
         const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), name), "utf8"));

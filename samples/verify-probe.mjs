@@ -67,6 +67,7 @@ assert.deepEqual(
 
 verifyAutomaticSelection(tickets, proposals, host);
 verifyQueueRefill(tickets, batonWorkspace, host);
+verifyWaveConcurrency(tickets);
 verifyWorkspace();
 verifyLocal();
 
@@ -118,6 +119,22 @@ function verifyQueueRefill(items, runtimeRoot, expectedHost) {
   const releases = items.map((ticket) => Date.parse(ticket.slot_released_at || "")).filter(Number.isFinite).sort((a, b) => a - b);
   const reservations = items.map((ticket) => Date.parse(ticket.history?.find((entry) => entry.event === "dispatch_reserved")?.at || "")).filter(Number.isFinite);
   assert(releases.length > 0 && reservations.some((at) => at >= releases[0]), "queued work must refill only after a slot release");
+}
+
+function verifyWaveConcurrency(items) {
+  const byTask = new Map(items.map((ticket) => [ticket.openspec?.number, ticket]));
+  const firstWave = [byTask.get("1.1"), byTask.get("1.2")];
+  const later = byTask.get("2.1");
+  assert(firstWave.every(Boolean) && later, "probe tickets must include both first-wave tasks and the later task");
+
+  const starts = firstWave.map((ticket) => Date.parse(ticket.started_at || ""));
+  const finishes = firstWave.map((ticket) => Date.parse(ticket.finished_at || ""));
+  assert(starts.every(Number.isFinite) && finishes.every(Number.isFinite), "first-wave tickets need start and finish timestamps");
+  assert(Math.max(...starts) < Math.min(...finishes), "OpenSpec tasks 1.1 and 1.2 must overlap in worker time");
+
+  const laterReservation = Date.parse(later.history?.find((entry) => entry.event === "dispatch_reserved")?.at || "");
+  assert(Number.isFinite(laterReservation), "later task needs a dispatch reservation timestamp");
+  assert(laterReservation >= Math.max(...finishes), "task 2.1 must not dispatch before the first wave finishes");
 }
 
 function verifyWorkspace() {

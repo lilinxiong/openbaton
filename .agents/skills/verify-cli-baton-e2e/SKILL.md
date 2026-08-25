@@ -29,7 +29,8 @@ When the user applies the probe in a fresh chat, the target runtime Baton skill 
 - `baton apply probe-e2e --host <target> --json`
 - filter the ready frontier (`--write-path` / `--read-only`)
 - one scoped `baton apply ... --dispatch --json --unit ... --write-path ...`
-- native-spawn every reserved ticket in the same turn, bind, wait, release, refill
+- native-spawn every reserved ticket in the same turn with its returned reservation-bearing prompt unchanged and, when supported, description unchanged; bind, wait, release, refill
+- prove the two first-wave workers overlap in wall-clock execution and the later section does not dispatch before both finish
 
 Do not rewrite OpenSpec apply skills.
 

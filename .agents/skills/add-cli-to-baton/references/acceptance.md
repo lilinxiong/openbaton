@@ -58,13 +58,15 @@ If the target exposes a PreToolUse-compatible hook that Baton installs, acceptan
 
 - no reserved ticket → director mutating tools allowed
 - reserved/dispatching/running worker tickets → director implementation writes denied; standalone baton control-plane commands still allowed
+- every reserved native spawn requires the exact returned reservation envelope, including with one reservation; ticket-like prose and unknown/stale/conflicting identities are denied
+- two simultaneous reservations with different opaque ticket-id formats can each spawn and bind without a unique-ticket fallback
 - bound workers stay inside the Receipt
 
 `fail-closed-always` and `allow-always` are both incomplete.
 
 ### Hookless hosts
 
-Hosts without a compatible hook (Cursor today) still MUST ship the table in the runtime skill. Missing a hook is not a license to implement declared classified work in the parent. Do not pretend a missing hook enforces the table.
+Hosts without a compatible hook (Cursor today) still MUST ship the table and pass the shared reservation-bearing prompt unchanged plus the description unchanged when the native tool exposes one. Missing a hook is not a license to implement declared classified work in the parent. Do not pretend a missing hook enforces the table.
 
 ## Repository gates
 

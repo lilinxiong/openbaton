@@ -142,11 +142,11 @@ Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没
 
 ## 执行生命周期
 
-Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex 或 Grok）调用原生 subagent 工具。
+Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex、Grok、Cursor 或 Claude Code）调用原生 subagent 工具。
 
 1. baton spawn 或 baton apply 创建已自动路由的 ticket 和不可变 Receipt。
 2. host 用 baton dispatch next 预留任务。
-3. host 调用原生 subagent 工具（Codex `spawn_agent`，Grok `spawn_subagent`），传精确模型；仅在 host 工具能表达时才传 reasoning effort 和 service tier；fork_context=false。Grok 必须传 `spawn_subagent.model`，省略会继承 parent 模型。若 host 无法表达某个已选项，必须报告该执行选项不可用，不能静默声称已启用。
+3. host 调用原生 subagent 工具（Codex `spawn_agent`、Grok `spawn_subagent`、Cursor `Task` 或 Claude Code `Agent`），原样传回 dispatch 返回的 `prompt`，工具支持时也原样传 `description`，并传精确模型；仅在 host 工具能表达时才传 reasoning effort 和 service tier。首行 JSON envelope 携带每次 dispatch 随机生成的 opaque reservation identity；`spn-*`、`os-*` 或未来任何 ticket id 都不会再按前缀分类。Grok 必须传 `spawn_subagent.model`，省略会继承 parent 模型。若 host 无法表达某个已选项，必须报告该执行选项不可用，不能静默声称已启用。
 4. host 绑定 agent id，记录活动和进度，并只写一个终态。
 5. host 关闭原生 agent，执行 dispatch release 后再从 FIFO 补位。
 

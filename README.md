@@ -142,11 +142,11 @@ Empty `runner`/`longctx` labels, undeclared work, and units Baton cannot classif
 
 ## Execution lifecycle
 
-The Baton CLI creates tickets and lifecycle state; only the selected host (Codex or Grok) calls native subagent tools.
+The Baton CLI creates tickets and lifecycle state; only the selected host (Codex, Grok, Cursor, or Claude Code) calls native subagent tools.
 
 1. baton spawn or baton apply creates automatically routed tickets and immutable Receipts.
 2. The host reserves work with baton dispatch next.
-3. The host calls its native subagent tool (Codex `spawn_agent`, Grok `spawn_subagent`) with the exact model, plus supported reasoning effort and selected service tier only when the host tool can express them, and fork_context=false. A host that cannot express a selected option reports it instead of silently claiming it. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
+3. The host calls its native subagent tool (Codex `spawn_agent`, Grok `spawn_subagent`, Cursor `Task`, or Claude Code `Agent`) with the returned `prompt` and, when supported, `description` unchanged, plus the exact model and only the effort/service-tier options the tool can express. The first-line JSON envelope carries an opaque per-attempt reservation identity; ticket ids such as `spn-*`, `os-*`, or any future form are never classified by prefix. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
 4. The host binds the returned agent id, persists activity and progress, and records exactly one terminal result.
 5. The host closes the native agent and runs dispatch release before refilling FIFO.
 

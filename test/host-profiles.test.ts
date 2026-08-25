@@ -10,6 +10,8 @@ import { dispatchStatePath, spawnsDir } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { buildSpawnTicket, writeSpawn } from "../src/lib/spawn.js";
+import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
+import { HOST_IDS, type HostId } from "../src/lib/hosts.js";
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-profiles-home-"));
 process.env.HOME = HOME;
@@ -21,6 +23,7 @@ function project(): string {
     cli: {
       codex: { enabled: true, runner: "codex-model", longctx: "", subagent_models: ["codex-model"] },
       grok: { enabled: true, runner: "grok-model", longctx: "", subagent_models: ["grok-model"] },
+      cursor: { enabled: true, runner: "cursor-model", longctx: "", subagent_models: ["cursor-model"] },
       claude: { enabled: true, runner: "claude-model", longctx: "", subagent_models: ["claude-model"] },
     },
     ops: {},
@@ -28,7 +31,7 @@ function project(): string {
   return cwd;
 }
 
-function ticket(cwd: string, host: "codex" | "grok" | "claude", id = `spn-${host}`) {
+function ticket(cwd: string, host: HostId, id = `spn-${host}`) {
   const route = `${host}/model`;
   const snapshot = readRouteSnapshot(cwd, { host })!;
   const selection = {
@@ -65,6 +68,27 @@ function ticket(cwd: string, host: "codex" | "grok" | "claude", id = `spn-${host
 }
 
 describe("host-scoped profiles", () => {
+  it("emits the same opaque reservation envelope for every registered CLI", () => {
+    const cwd = project();
+    for (const host of HOST_IDS) {
+      const route = `${host}/model`;
+      publishRouteSnapshot(cwd, { models: [{ id: route, namespaced: route }] }, new Date(), { cli: host, host });
+      const config = loadConfig(cwd);
+      config.cli[host].enabled = true;
+      config.cli[host].subagent_models = [route];
+      saveConfig(cwd, config);
+      const planned = ticket(cwd, host, `zly-${host}`);
+
+      const result = reserveNext(cwd, { capacity: 1, host });
+      assert.equal(result.reserved.length, 1);
+      const [reserved] = result.reserved;
+      assert.equal(reserved.ticket_id, planned.id);
+      assert.equal(reserved.reservation.host, host);
+      assert.deepEqual(parseDispatchReservationEnvelope(reserved.prompt), reserved.reservation);
+      assert.deepEqual(parseDispatchReservationEnvelope(reserved.description), reserved.reservation);
+    }
+  });
+
   it("keeps enabled Codex and Grok profiles independent without a global default CLI", () => {
     const cwd = project();
     const config = loadConfig(cwd);

@@ -74,6 +74,8 @@ export interface SpawnTicket extends UnknownRecord {
   status: TicketStatus;
   attempt: number;
   max_attempts: number;
+  /** Opaque identity for one dispatch attempt. It is unrelated to the ticket id format. */
+  reservation_id?: string;
   agent_id: string | null;
   host: string | null;
   /** Requested runtime host captured before dispatch; unlike `host`, this is
@@ -178,7 +180,7 @@ export function buildSpawnTicket({
   const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
   const coordination = coordinationFor(workUnit);
   return {
-    schema_version: 6,
+    schema_version: 7,
     id,
     description,
     prompt: buildWorkerPrompt(prompt, workUnit, coordination),
