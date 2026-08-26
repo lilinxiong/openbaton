@@ -23,6 +23,8 @@ import {
   type PendingNativeReservation,
 } from "./host-identity.js";
 import { activeGuardClaimForTurn, claimGuardTurn, type GuardClaimRecord } from "./guard-claims.js";
+import { resolveEffectiveHookPosture } from "./activation.js";
+import { parseCliId } from "../adapters/registry.js";
 
 /** Stable machine-readable reasons emitted by the Codex hook. */
 export const HOST_GUARD_REASONS = {
@@ -43,6 +45,7 @@ export const HOST_GUARD_REASONS = {
   write_receipt_required: "BATON_GUARD_WRITE_RECEIPT_REQUIRED",
   commit_only_command: "BATON_GUARD_COMMIT_ONLY_COMMAND",
   worker_git_topology: "BATON_GUARD_WORKER_GIT_TOPOLOGY_FORBIDDEN",
+  worker_control_plane: "BATON_GUARD_WORKER_CONTROL_PLANE_FORBIDDEN",
   claim_required: "BATON_GUARD_CLAIM_REQUIRED",
   claim_invalid: "BATON_GUARD_CLAIM_INVALID",
   claim_expired: "BATON_GUARD_CLAIM_EXPIRED",
@@ -151,12 +154,29 @@ function guardMode(options: HostGuardOptions, host = guardHost(options)): "enfor
 
 export interface GuardDecision {
   allowed: boolean;
+  /** `bypass` is an abstention: the hook emits no permission decision. */
+  disposition?: "enforce" | "bypass";
   event: string;
   tool_name?: string;
   reason: string | null;
   ticket_id: string | null;
   agent_id: string | null;
   output: Record<string, unknown>;
+}
+
+function bypassed(event: string, input: HookInput, host = DEFAULT_GUARD_HOST, reason: string | null = null): GuardDecision {
+  return {
+    allowed: true,
+    disposition: "bypass",
+    event,
+    ...(toolName(input) ? { tool_name: toolName(input)! } : {}),
+    reason,
+    ticket_id: null,
+    agent_id: null,
+    // An empty object is intentional. It abstains from deciding, allowing
+    // Codex and unrelated matching hooks to retain their normal policy.
+    output: host === "codex" ? {} : { decision: "allow" },
+  };
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -1238,6 +1258,8 @@ export interface BatonControlPlaneOptions {
   executablePath?: string;
 }
 
+export type BatonActivationClassification = "none" | "exact" | "invalid-intent";
+
 function standaloneCommandTokens(command: string): string[] | null {
   if (!command || /[\r\n;|&<>]/.test(command) || command.includes(String.fromCharCode(96)) || command.includes("$(")) return null;
   const matches = command.match(/(?:\"[^\"]*\"|'[^']*'|\S+)/g);
@@ -1273,6 +1295,19 @@ function trustedAbsoluteBatonCommand(tokens: string[], options: BatonControlPlan
   return targets.some((target) => sameExecutable(first, target.executable));
 }
 
+function trustedBatonExecutable(tokens: string[], options: BatonControlPlaneOptions): boolean {
+  const executable = tokens[0];
+  if (!executable) return false;
+  if (!executable.includes("/")) {
+    const base = path.basename(executable);
+    if (base !== "baton" && base !== "baton.js") return false;
+    const resolved = findBinaryOnPath(executable, options.env || process.env);
+    return Boolean(resolved && isExecutableFile(resolved)
+      && currentBatonHookTargets(options).some((target) => sameExecutable(target.executable, resolved)));
+  }
+  return trustedAbsoluteBatonCommand(tokens, options);
+}
+
 const GUARDED_CONTROL_PLANE_COMMANDS = new Map<string, ReadonlySet<string>>([
   ["guard", new Set(["status", "install", "hook", "claim", "continuation"])],
   ["dispatch", new Set(["next", "bind", "release", "complete", "fail", "timeout", "close", "recover", "status", "progress", "probe", "defer"])],
@@ -1294,19 +1329,53 @@ function allowedControlPlaneSubcommand(tokens: string[]): boolean {
   return tokens.slice(index + 1).some((token) => [...allowed].some((item) => token === item || token.startsWith(`${item}=`)));
 }
 
+/**
+ * Activation changes are control-plane operations, but unlike inspection and
+ * dispatch commands they are director-only. Keep the accepted shape narrow so
+ * a worker cannot smuggle an activation through the generic Bash allow path.
+ */
+export function classifyBatonActivationCommand(command: unknown, options: BatonControlPlaneOptions = {}): BatonActivationClassification {
+  const text = String(command || "").trim();
+  const tokens = standaloneCommandTokens(text);
+  const prefix = text.split(/\s+/).filter(Boolean).filter((token) => !/[;|&<>`]/.test(token));
+  if (prefix[0]?.toLowerCase() === "env") prefix.shift();
+  while (prefix[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix[0])) prefix.shift();
+  const trustTokens = tokens || prefix.slice(0, 3);
+  if (!trustTokens) return "none";
+  const commandToken = trustTokens.length >= 2 && trustTokens[1].includes("/") ? 2 : 1;
+  const intentLike = trustTokens[commandToken] === "enable" || trustTokens[commandToken] === "disable"
+    ? trustTokens[commandToken] : undefined;
+  if (!trustedBatonExecutable(trustTokens, options)) {
+    const firstBase = path.basename(trustTokens[0] || "");
+    return (firstBase === "baton" || firstBase === "baton.js") && intentLike ? "invalid-intent" : "none";
+  }
+  if (/^env\s+/i.test(text)) return intentLike ? "invalid-intent" : "none";
+  const intent = trustTokens[commandToken];
+  if (intent !== "enable" && intent !== "disable") return "none";
+  if (!tokens) return "invalid-intent";
+  const args = tokens.slice(commandToken);
+  if (args.length < 4 || !["all", "curproject"].includes(args[1])) return "invalid-intent";
+  let host: string | null = null;
+  for (let index = 2; index < args.length; index += 1) {
+    if (args[index] === "--json" && !args.slice(2, index).includes("--json")) continue;
+    if (args[index] === "--host" && host === null && args[index + 1]) {
+      host = args[++index];
+      continue;
+    }
+    return "invalid-intent";
+  }
+  if (!host) return "invalid-intent";
+  try { parseCliId(host); return "exact"; } catch { return "invalid-intent"; }
+}
+
+export function isBatonActivationCommand(command: unknown, options: BatonControlPlaneOptions = {}): boolean {
+  return classifyBatonActivationCommand(command, options) === "exact";
+}
+
 export function isBatonControlPlaneCommand(command: unknown, options: BatonControlPlaneOptions = {}): boolean {
   const tokens = standaloneCommandTokens(String(command || "").trim());
   if (!tokens) return false;
-  const executable = tokens[0];
-  const base = path.basename(executable);
-  if (!executable.includes("/")) {
-    if (base !== "baton" && base !== "baton.js") return false;
-    const resolved = findBinaryOnPath(executable, options.env || process.env);
-    if (!resolved || !isExecutableFile(resolved)) return false;
-    if (!currentBatonHookTargets(options).some((target) => sameExecutable(target.executable, resolved))) return false;
-    return allowedControlPlaneSubcommand(tokens);
-  }
-  return trustedAbsoluteBatonCommand(tokens, options) && allowedControlPlaneSubcommand(tokens);
+  return trustedBatonExecutable(tokens, options) && allowedControlPlaneSubcommand(tokens);
 }
 
 function hasWriteAuthorization(ticket: GuardTicket): boolean {
@@ -1361,6 +1430,10 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   const mode = guardMode(options, host);
   const name = toolName(input);
   const command = stringValue(toolInput(input).command) || "";
+  const activationClass = name === "Bash" ? classifyBatonActivationCommand(command, {
+    env: options.env, runtimePath: options.runtimePath, entryPath: options.entryPath, executablePath: options.executablePath,
+  }) : "none" as BatonActivationClassification;
+  let activationBypassReason: string | null = null;
   const deny = (
     reason: HostGuardReason,
     ticketId: string | null = null,
@@ -1369,13 +1442,45 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   ) => denied(event, reason, input, ticketId, agentId, host, message);
   const allow = (ticketId: string | null = null, agentId: string | null = null, extra?: string) =>
     allowed(event, input, ticketId, agentId, extra, host);
+  // Activation is workspace-scoped and must be resolved before any hook
+  // branch that could authorize a mutation. Injected state is retained for
+  // deterministic callers/tests; the installed hook always resolves live
+  // activation and dispatch state from disk.
+  if (host === "codex" && !options.state && fs.existsSync(configPath(cwd, { env: options.env }))) {
+    if (mode === "off") activationBypassReason = "GUARD_OFF";
+    try {
+      const posture = resolveEffectiveHookPosture(cwd, {
+        env: options.env,
+        host,
+        guard_mode: mode,
+      });
+      if (posture.posture === "invalid") return deny(HOST_GUARD_REASONS.state_unavailable);
+      if (posture.posture === "bypass") activationBypassReason = posture.reason;
+      // `draining` deliberately falls through to the existing enforcement
+      // logic, preserving claims, write scope, and director conflict checks.
+    } catch {
+      return deny(HOST_GUARD_REASONS.state_unavailable);
+    }
+  }
   // A malformed or unreadable state must never become an enforce-mode
   // allow merely because its active marker is unavailable. Guard-off is the
   // only posture that intentionally degrades to audit-only behavior.
+  if (!name) return deny(HOST_GUARD_REASONS.invalid_input);
+  if (activationClass === "invalid-intent") return deny(HOST_GUARD_REASONS.invalid_input);
+  if (activationClass === "exact") {
+    const requestedHost = command.match(/(?:^|\s)--host\s+([^\s]+)/i)?.[1]?.toLowerCase();
+    if (requestedHost !== host) return deny(HOST_GUARD_REASONS.invalid_input);
+    const explicitDirector = isRootIdentity(input, host);
+    if (!(explicitDirector || (hostWorkerTickets(state, host).length === 0 && isDirectorCaller(input, host, state)))) {
+      return deny(HOST_GUARD_REASONS.worker_control_plane);
+    }
+    if (activationBypassReason) return bypassed(event, input, host, activationBypassReason);
+    return allow();
+  }
+  if (activationBypassReason) return bypassed(event, input, host, activationBypassReason);
   if (!state.active && mode === "off") return allow();
   if (!state.active && state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
   if (!state.active) return allow();
-  if (!name) return deny(HOST_GUARD_REASONS.invalid_input);
   // Codex native child creation is not a guarded hook surface. The native
   // task_name returned by the tool is attached by dispatch independently.
   if (host === "codex" && name === "Agent") return allow();
@@ -1387,6 +1492,9 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
     executablePath: options.executablePath,
   });
   const requestedClaimToken = claimToken(input);
+  // Activation is the one control-plane family that is explicitly
+  // director-only. Check it before the live-ticket conflict branch so the
+  // director can drain/restore a host while another worker is running.
   // A claim command is itself a Baton control-plane command, but its token
   // must be consumed by this synchronous hook before the generic allow path.
   // The payload turn_id is authoritative; a direct CLI acknowledgement cannot

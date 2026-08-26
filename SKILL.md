@@ -43,8 +43,17 @@ Ordinary discussion and diagnosis that need neither delegation nor a configured 
 
 Use `baton disable all|curproject --host HOST` and the matching `enable` commands
 to control only the invoking CLI host. `all` is user-global; `curproject` is
-workspace/host scoped. Explicitly disabled activation bypasses Baton and lets the
-host's ordinary native flow continue; invalid state fails closed. OpenSpec apply
+workspace/host scoped. In `guard_mode=enforce`, valid disabled activation bypasses
+Baton only for an idle current canonical workspace: the hook abstains with empty
+successful output, without a permission decision or model-visible policy, so Codex
+and unrelated hooks continue normally. Current `reserved`, `dispatching`, or
+`running` tickets make that workspace `draining` and retain claim/write/Git/director
+boundaries until terminal release; queued-only tickets do not block bypass. Invalid
+activation or unreadable lifecycle state is `invalid` and fails closed.
+`guard_mode=off` remains configured zero-hook, audit-only behavior, not dynamic
+bypass. Only the trusted director may use the exact standalone
+`baton enable|disable all|curproject --host HOST` command; worker calls, wrappers,
+substitutions, and shell composition are rejected. OpenSpec apply
 is intercepted by Baton to create tickets and dispatch native subagents. Hooks
 only provide an optional scoped mutation guard and audit observation; they do not
 classify or dispatch tasks.

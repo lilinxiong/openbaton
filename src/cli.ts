@@ -44,7 +44,7 @@ import { codexHooksStatus } from "./lib/codex-hooks.js";
 import { claudeHooksStatus } from "./lib/claude-hooks.js";
 import { grokHooksStatus } from "./lib/grok-hooks.js";
 import { latestHookObservation } from "./lib/hook-observation.js";
-import { resolveActivation, listDrainingTickets, withActivationLock } from "./lib/activation.js";
+import { resolveActivation, resolveEffectiveHookPosture, withActivationLock } from "./lib/activation.js";
 import {
   buildSelectionUnit,
   createSelectionProposal,
@@ -845,9 +845,17 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   const queued = spawns.filter((s) => s.status === "queued").length;
   const dispatching = spawns.filter((s) => s.status === "dispatching").length;
   const terminal = spawns.filter((s) => ["completed", "errored", "timed_out", "closed", "done"].includes(s.status)).length;
-  const activation = resolveActivation(cwd, { env, host });
-  const drainingScope = activation.valid && activation.global_enabled === false ? "all" : "curproject";
-  const draining = activation.valid ? listDrainingTickets(cwd, host, { scope: drainingScope, env }) : [];
+  const effectiveHook = resolveEffectiveHookPosture(cwd, {
+    env,
+    host,
+    guard_mode: cliProfile.guard_mode,
+  });
+  const activation = effectiveHook.activation;
+  // Status follows the hook resolver's current-workspace view. Global
+  // disablement must not make an idle project report another workspace's
+  // draining tickets.
+  const drainingScope = "curproject" as const;
+  const draining = effectiveHook.draining_tickets;
   const configuredDispatchRoutes = [...new Set([...
     cliProfile.coding_models,
     cliProfile.runner,
@@ -900,6 +908,10 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   const codingDispatchReady = codingAvailability.some((route) => route.eligible);
   const codingDispatchReason = codingDispatchReady ? "READY" : "CODING_MODELS_EXHAUSTED";
   const hook = hookPostureForStatus(host, cwd, env, cliProfile.guard_mode, coreDispatchReady);
+  const effectiveHookPosture = effectiveHook.posture;
+  const effectiveHookReason = effectiveHook.reason;
+  const neutralBypass = effectiveHookPosture === "bypass";
+  const auditOnly = effectiveHookPosture === "audit-only";
   const spawnOutput = spawns.map((s) => ({
     id: s.id,
     status: s.status,
@@ -915,6 +927,10 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
       draining_count: draining.length,
       draining_scope: drainingScope,
       guard_mode: cliProfile.guard_mode,
+      effective_hook_posture: effectiveHookPosture,
+      effective_hook_reason: effectiveHookReason,
+      neutral_bypass: neutralBypass,
+      audit_only: auditOnly,
       core_dispatch_ready: coreDispatchReady,
       core_dispatch_reason: coreDispatchReason,
       hook_posture: hook,
@@ -938,8 +954,10 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   stdout.write("baton status\n");
   stdout.write(`  activation: global=${activation.global_enabled ?? "invalid"} project=${activation.project_enabled ?? "invalid"} effective=${activation.effective_enabled ? "enabled" : "disabled"} provenance=${activation.provenance}${activation.reason ? ` reason=${activation.reason}` : ""}\n`);
   stdout.write(`  draining: scope=${drainingScope} ${draining.length}${draining.length ? ` (${draining.map((ticket) => ticket.ticket_id).join(", ")})` : ""}\n`);
+  stdout.write(`  effective hook: posture=${effectiveHookPosture} reason=${effectiveHookReason} neutral_bypass=${neutralBypass ? "yes" : "no"} audit_only=${auditOnly ? "yes" : "no"}\n`);
   stdout.write(`  core dispatch: ${coreDispatchReady ? "ready" : "not-ready"} (${coreDispatchReason})\n`);
-  stdout.write(`  guard: mode=${cliProfile.guard_mode} configured=${hook.hook_configured ? "yes" : "no"} hook=${hook.coverage}/${hook.operational ? "operational" : "not-operational"} core_dispatch=${hook.core_dispatch_ready ? "ready" : "not-ready"} audit_only=${hook.audit_only ? "yes" : "no"} recent_observation=${hook.recent_hook_observation} last_observed_at=${hook.last_observed_at || "none"}\n`);
+  stdout.write(`  configured guard: mode=${cliProfile.guard_mode}\n`);
+  stdout.write(`  hook facts: configured=${hook.hook_configured ? "yes" : "no"} hook=${hook.coverage}/${hook.operational ? "operational" : "not-operational"} core_dispatch=${hook.core_dispatch_ready ? "ready" : "not-ready"} audit_only=${hook.audit_only ? "yes" : "no"} recent_observation=${hook.recent_hook_observation} last_observed_at=${hook.last_observed_at || "none"}\n`);
   stdout.write(`  Coding priority: ${cliProfile.coding_models.length ? cliProfile.coding_models.join(" > ") : "(none)"} (${codingDispatchReason})\n`);
   for (const route of codingAvailability) stdout.write(`    ${route.route_id}: ${route.status}; ${route.eligibility_code} (${route.eligibility_reason})${route.next_probe_at ? `; probe ${route.next_probe_at}` : ""}\n`);
   stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${rankedCards} ranked, ${unrankedCards} unranked)\n`);

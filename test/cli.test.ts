@@ -6,10 +6,11 @@ import path from "node:path";
 import { spawn as spawnProcess } from "node:child_process";
 import { run } from "../src/cli.js";
 import type { CliModelCatalog } from "../src/adapters/contract.js";
-import { receiptsDir, selectionsDir, spawnsDir } from "../src/lib/paths.js";
+import { projectSettingsPath, receiptsDir, selectionsDir, spawnsDir } from "../src/lib/paths.js";
 import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { markRouteExhausted } from "../src/lib/model-availability.js";
+import { loadConfig, saveConfig } from "../src/lib/config.js";
 import { withHome, fakeEnv } from "./home.js";
 import { adapterProviderFor, configureCli } from "./configure.js";
 
@@ -130,6 +131,19 @@ function observeGrokDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, ag
   recordNativeIdentity(cwd, pending, agentId, "lifecycle", { session_id: sessionId }, undefined, env);
 }
 
+function setCodexGuardMode(cwd: string, env: NodeJS.ProcessEnv, guardMode: "enforce" | "off"): void {
+  const config = loadConfig(cwd, { env });
+  assert.ok(config.cli.codex);
+  config.cli.codex.guard_mode = guardMode;
+  saveConfig(cwd, config, { env });
+}
+
+function writeCodexTicket(cwd: string, env: NodeJS.ProcessEnv, id: string, status: "reserved" | "dispatching" | "running"): void {
+  const directory = spawnsDir(cwd, env);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, `${id}.json`), JSON.stringify({ id, status, host: "codex" }), "utf8");
+}
+
 describe("CLI automatic model routing", () => {
   it("uses process.exitCode in the entrypoint so disclosures can flush", () => {
     const entry = fs.readFileSync(path.join(process.cwd(), "bin", "baton.ts"), "utf8");
@@ -218,6 +232,122 @@ describe("CLI automatic model routing", () => {
       assert.equal(status.coding_models[0].eligible, false);
       assert.equal(status.coding_models[1].eligible, true);
       assert.match(status.coding_models[0].eligibility_reason, /MODEL_QUOTA_EXHAUSTED/);
+    });
+  });
+
+  it("reports configured guard-off as audit-only while preserving status compatibility fields", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-guard-off-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+
+      const output = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
+      const status = JSON.parse(output.text());
+      assert.equal(status.guard_mode, "off");
+      assert.equal(status.effective_hook_posture, "audit-only");
+      assert.equal(status.effective_hook_reason, "GUARD_OFF");
+      assert.equal(status.neutral_bypass, false);
+      assert.equal(status.audit_only, true);
+      assert.equal(status.draining_scope, "curproject");
+      assert.equal(status.hook_posture.audit_only, true);
+      assert.equal(status.core_dispatch_ready, true);
+      assert.equal(status.hook_posture.core_dispatch_ready, true);
+    });
+  });
+
+  it("reports an idle project-disabled workspace as a neutral bypass", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-project-bypass-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      setCodexGuardMode(cwd, env, "enforce");
+      const disabled = capture();
+      assert.equal(await run(["disable", "curproject", "--host", "codex", "--json"], { cwd, env, stdout: disabled, stderr: disabled }), 0, disabled.text());
+
+      const output = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
+      const status = JSON.parse(output.text());
+      assert.equal(status.guard_mode, "enforce");
+      assert.equal(status.effective_hook_posture, "bypass");
+      assert.equal(status.effective_hook_reason, "PROJECT_DISABLED");
+      assert.equal(status.neutral_bypass, true);
+      assert.equal(status.audit_only, false);
+      assert.equal(status.activation.project_enabled, false);
+      assert.equal(status.draining_scope, "curproject");
+      assert.equal(status.draining_count, 0);
+      assert.deepEqual(status.draining_tickets, []);
+      assert.equal(status.hook_posture.audit_only, false);
+      assert.equal(status.core_dispatch_ready, false);
+      assert.equal(status.hook_posture.core_dispatch_ready, false);
+    });
+  });
+
+  it("reports disabled active work as draining in the current canonical workspace", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-draining-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      setCodexGuardMode(cwd, env, "enforce");
+      writeCodexTicket(cwd, env, "spn-active", "running");
+      const disabled = capture();
+      assert.equal(await run(["disable", "curproject", "--host", "codex", "--json"], { cwd, env, stdout: disabled, stderr: disabled }), 0, disabled.text());
+
+      const output = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
+      const status = JSON.parse(output.text());
+      assert.equal(status.effective_hook_posture, "draining");
+      assert.equal(status.effective_hook_reason, "ACTIVE_TICKETS");
+      assert.equal(status.neutral_bypass, false);
+      assert.equal(status.audit_only, false);
+      assert.equal(status.draining_scope, "curproject");
+      assert.equal(status.draining_count, 1);
+      assert.deepEqual(status.draining_tickets.map((ticket: { ticket_id: string }) => ticket.ticket_id), ["spn-active"]);
+      assert.equal(status.core_dispatch_ready, false);
+    });
+  });
+
+  it("reports malformed activation as invalid instead of bypass or audit-only", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-invalid-activation-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      setCodexGuardMode(cwd, env, "enforce");
+      const settings = projectSettingsPath(cwd, env);
+      fs.mkdirSync(path.dirname(settings), { recursive: true });
+      fs.writeFileSync(settings, "[cli.codex]\nenabled = \"yes\"\n", "utf8");
+
+      const output = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
+      const status = JSON.parse(output.text());
+      assert.equal(status.effective_hook_posture, "invalid");
+      assert.equal(status.effective_hook_reason, "ACTIVATION_INVALID");
+      assert.equal(status.neutral_bypass, false);
+      assert.equal(status.audit_only, false);
+      assert.equal(status.activation.valid, false);
+      assert.equal(status.draining_scope, "curproject");
+      assert.equal(status.core_dispatch_ready, false);
+      assert.equal(status.hook_posture.core_dispatch_ready, false);
+    });
+  });
+
+  it("separates effective hook posture from configured guard and hook facts in text status", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-text-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      setCodexGuardMode(cwd, env, "enforce");
+      const disabled = capture();
+      assert.equal(await run(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: disabled, stderr: disabled }), 0, disabled.text());
+
+      const output = capture();
+      assert.equal(await run(["status", "--host", "codex"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
+      const text = output.text();
+      assert.match(text, /configured guard: mode=enforce/);
+      assert.match(text, /effective hook: posture=bypass reason=PROJECT_DISABLED neutral_bypass=yes audit_only=no/);
+      assert.match(text, /draining: scope=curproject 0/);
+      assert.match(text, /hook facts: .*audit_only=no/);
+      assert.doesNotMatch(text, /configured guard:.*audit-only/);
     });
   });
 

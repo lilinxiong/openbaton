@@ -45,6 +45,7 @@ export const CODEX_GUARD_GUIDANCE = [
   "Codex hooks are non-managed until trusted.",
   "Open Codex `/hooks`, review the single scoped Baton-owned PreToolUse entry, and trust it when guard mode is enforce.",
   "Native task attachment does not depend on SubagentStart or Agent/spawn_agent interception.",
+  "When activation is validly disabled and the workspace is idle, the enforce hook bypasses neutrally with no permission decision; this is distinct from guard mode off, which is configured audit-only.",
   "When guard mode is off, no Baton-owned Codex hooks are required; Receipt and terminal audit remain the safety evidence.",
 ].join(" ");
 
@@ -245,6 +246,9 @@ export function runGuard(args: string[], options: GuardCommandOptions): number {
       }
     }
     const decision = jsonInput(raw, { cwd: options.cwd, env, host, guard_mode: configuredMode });
+    // A Codex bypass is an abstention: emit no hook payload at all so Codex
+    // retains its normal permission handling and model-visible context.
+    if (host === "codex" && decision.disposition === "bypass") return 0;
     options.stdout.write(`${JSON.stringify(decision.output)}\n`);
     return decision.allowed ? 0 : 0;
   }

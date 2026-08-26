@@ -9,6 +9,8 @@ import {
   evaluatePreToolUse,
   evaluateSubagentStart,
   HOST_GUARD_REASONS,
+  isBatonActivationCommand,
+  classifyBatonActivationCommand,
   isBatonControlPlaneCommand,
   isDirectorStageCommand,
   isGitTopologyMutation,
@@ -26,6 +28,8 @@ import {
 import { recordPendingReservation } from "../src/lib/host-identity.js";
 import { issueGuardClaim } from "../src/lib/guard-claims.js";
 import { configPath, runsDir, spawnsDir } from "../src/lib/paths.js";
+import { emptyConfig, saveConfig } from "../src/lib/config.js";
+import { runActivation } from "../src/lib/activation.js";
 
 function state(tickets: HostGuardState["tickets"] = []): HostGuardState {
   return { active: true, initialized: true, tickets, bindings: [], state_error: null };
@@ -202,6 +206,61 @@ describe("Baton Codex host guard", () => {
     assert.equal(isBatonControlPlaneCommand("baton dispatch next; rm -rf src"), false);
     assert.equal(isBatonControlPlaneCommand("baton guard status\nrm -rf src"), false);
     assert.equal(isBatonControlPlaneCommand("echo baton dispatch next"), false);
+    assert.equal(isBatonActivationCommand("baton enable all --host codex", { env: { PATH: bareDir }, executablePath: bare }), true);
+    assert.equal(isBatonActivationCommand("baton disable curproject --host codex --json", { env: { PATH: bareDir }, executablePath: bare }), true);
+    assert.equal(classifyBatonActivationCommand("env baton disable all --host codex", { env: { PATH: bareDir }, executablePath: bare }), "invalid-intent");
+    for (const wrapped of [
+      "env A=1 B=2 baton disable all --host codex",
+      "env A=1 B=2 baton disable all --host codex; rm -rf src",
+    ]) {
+      assert.equal(classifyBatonActivationCommand(wrapped, { env: { PATH: bareDir }, executablePath: bare }), "invalid-intent", wrapped);
+    }
+    assert.equal(classifyBatonActivationCommand("baton enable all --host codex", { env: { PATH: bareDir } }), "invalid-intent");
+    assert.equal(classifyBatonActivationCommand("/tmp/baton.js disable all --host codex"), "invalid-intent");
+    assert.equal(classifyBatonActivationCommand("baton enable all --host codex; rm -rf src", { env: { PATH: bareDir }, executablePath: bare }), "invalid-intent");
+    for (const unsupported of [
+      "baton enable all --host codex; rm -rf src",
+      "baton enable all --host codex --yes",
+      "baton enable all --host unsupported",
+      "baton enable --host codex all",
+    ]) {
+      assert.equal(isBatonActivationCommand(unsupported, { env: { PATH: bareDir }, executablePath: bare }), false, unsupported);
+    }
+    const liveDirector = evaluatePreToolUse(event("Bash", { command: "baton disable all --host codex" }, { agent_type: "root" }), { state: state([readTicket]), env: { PATH: bareDir }, executablePath: bare });
+    assert.equal(liveDirector.allowed, true);
+    const worker = evaluatePreToolUse(event("Bash", { command: "baton disable all --host codex" }, { agent_type: "worker", agent_id: "native-1" }), { state: state([readTicket]), env: { PATH: bareDir }, executablePath: bare });
+    assert.equal(worker.allowed, false);
+    assert.equal(worker.reason, HOST_GUARD_REASONS.worker_control_plane);
+    for (const command of ["baton disable all --host codex; rm -rf src", "baton disable all --host codex --yes", "baton disable all --host grok"]) {
+      const denied = evaluatePreToolUse(event("Bash", { command }, { agent_type: "root" }), { state: state([readTicket]), env: { PATH: bareDir }, executablePath: bare });
+      assert.equal(denied.allowed, false, command);
+      assert.equal(denied.reason, HOST_GUARD_REASONS.invalid_input, command);
+    }
+    const untyped = evaluatePreToolUse(event("Bash", { command: "baton disable all --host codex" }), { state: state([readTicket]), env: { PATH: bareDir }, executablePath: bare });
+    assert.equal(untyped.allowed, false);
+    assert.equal(untyped.reason, HOST_GUARD_REASONS.worker_control_plane);
+    const runtime = path.join(bareDir, "runtime");
+    const entry = path.join(bareDir, "entry.js");
+    fs.writeFileSync(runtime, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(runtime, 0o755);
+    fs.writeFileSync(entry, "export {}\n");
+    const runtimeExact = evaluatePreToolUse(event("Bash", { command: `${runtime} ${entry} enable all --host codex` }, { agent_type: "root" }), { state: state([readTicket]), runtimePath: runtime, entryPath: entry });
+    assert.equal(runtimeExact.allowed, true);
+    const runtimeComposed = evaluatePreToolUse(event("Bash", { command: `${runtime} ${entry} enable all --host codex; rm -rf src` }, { agent_type: "root" }), { state: state([readTicket]), runtimePath: runtime, entryPath: entry });
+    assert.equal(runtimeComposed.allowed, false);
+    assert.equal(classifyBatonActivationCommand(`${runtime} ${entry} enable all --host codex; rm -rf src`, { runtimePath: runtime, entryPath: entry }), "invalid-intent");
+    const disk = makeDiskGuardProject();
+    saveConfig(disk.cwd, { ...emptyConfig(), cli: { ...emptyConfig().cli, codex: { ...emptyConfig().cli.codex, enabled: true, guard_mode: "enforce" } } }, { env: disk.env });
+    runActivation(["disable", "curproject", "--host", "codex"], { cwd: disk.cwd, env: disk.env, stdout: { write: () => undefined } });
+    const diskCommand = `${current.executable} disable all --host codex`;
+    const diskWorker = evaluatePreToolUse(event("Bash", { command: diskCommand }, { agent_type: "worker", agent_id: "native-1", cwd: disk.cwd }), { env: disk.env });
+    assert.equal(diskWorker.allowed, false);
+    const diskRoot = evaluatePreToolUse(event("Bash", { command: diskCommand }, { agent_type: "root", cwd: disk.cwd }), { env: disk.env });
+    assert.equal(diskRoot.disposition, "bypass");
+    assert.deepEqual(diskRoot.output, {});
+    const diskOrdinary = evaluatePreToolUse(event("Bash", { command: "printf ok" }, { cwd: disk.cwd }), { env: disk.env });
+    assert.equal(diskOrdinary.disposition, "bypass");
+    assert.deepEqual(diskOrdinary.output, {});
     const allowed = evaluatePreToolUse(event("Bash", { command: current.executable + " guard status" }), { state: state() });
     assert.equal(allowed.allowed, true);
   });

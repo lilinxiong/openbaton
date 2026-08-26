@@ -9,6 +9,9 @@ import { CLI_ADAPTERS } from "../src/adapters/index.js";
 import { codexHooksPath } from "../src/lib/codex-hooks.js";
 import { issueGuardClaim } from "../src/lib/guard-claims.js";
 import { claudeSettingsPath } from "../src/lib/claude-hooks.js";
+import { emptyConfig, saveConfig } from "../src/lib/config.js";
+import { runActivation } from "../src/lib/activation.js";
+import { projectSettingsPath } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 
 function capture() {
@@ -17,6 +20,18 @@ function capture() {
 }
 
 describe("Codex guard CLI", () => {
+  function configureEnforce(cwd: string, env: NodeJS.ProcessEnv): void {
+    const config = emptyConfig();
+    config.cli.codex = {
+      enabled: true,
+      runner: "test-runner",
+      longctx: "test-runner",
+      coding_models: [],
+      guard_mode: "enforce",
+    };
+    saveConfig(cwd, config, { env });
+  }
+
   it("reports the required trust step and installs without replacing user hooks", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-guard-cli-"));
@@ -51,6 +66,66 @@ describe("Codex guard CLI", () => {
       const result = JSON.parse(out.text());
       assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
       assert.equal(result.hookSpecificOutput.permissionDecisionReason, "BATON_GUARD_NOT_INITIALIZED");
+    });
+  });
+
+  it("keeps enforce allow and deny responses as JSON", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-guard-hook-contract-"));
+      const env = fakeEnv(home);
+      configureEnforce(cwd, env);
+
+      const allowed = capture();
+      const allowInput = JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "git status" },
+        cwd,
+      });
+      assert.equal(await run(["guard", "hook"], { cwd, env, stdin: allowInput, stdout: allowed, stderr: allowed }), 0);
+      const allowResult = JSON.parse(allowed.text());
+      assert.equal(allowResult.hookSpecificOutput.permissionDecision, "allow");
+
+      const denied = capture();
+      const denyInput = JSON.stringify({ hook_event_name: "PreToolUse", cwd });
+      assert.equal(await run(["guard", "hook"], { cwd, env, stdin: denyInput, stdout: denied, stderr: denied }), 0);
+      const denyResult = JSON.parse(denied.text());
+      assert.equal(denyResult.hookSpecificOutput.permissionDecision, "deny");
+    });
+  });
+
+  it("emits strict empty stdout for idle activation bypass and guard-off stale hooks", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-guard-hook-bypass-"));
+      const env = fakeEnv(home);
+      configureEnforce(cwd, env);
+      runActivation(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: capture() });
+      const input = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "rm -rf src" }, cwd });
+      const bypass = capture();
+      assert.equal(await run(["guard", "hook"], { cwd, env, stdin: input, stdout: bypass, stderr: bypass }), 0);
+      assert.equal(bypass.text(), "");
+
+      const offConfig = emptyConfig();
+      offConfig.cli.codex = { ...offConfig.cli.codex, enabled: true, guard_mode: "off" };
+      saveConfig(cwd, offConfig, { env });
+      const stale = capture();
+      assert.equal(await run(["guard", "hook"], { cwd, env, stdin: input, stdout: stale, stderr: stale }), 0);
+      assert.equal(stale.text(), "");
+    });
+  });
+
+  it("fails closed with deny JSON when activation is invalid", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-guard-hook-invalid-"));
+      const env = fakeEnv(home);
+      configureEnforce(cwd, env);
+      fs.mkdirSync(path.dirname(projectSettingsPath(cwd, env)), { recursive: true });
+      fs.writeFileSync(projectSettingsPath(cwd, env), "[cli.codex]\nenabled = \"yes\"\n", "utf8");
+      const out = capture();
+      const input = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git status" }, cwd });
+      assert.equal(await run(["guard", "hook"], { cwd, env, stdin: input, stdout: out, stderr: out }), 0);
+      const result = JSON.parse(out.text());
+      assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
     });
   });
 

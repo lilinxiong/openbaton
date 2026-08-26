@@ -97,6 +97,23 @@ bun samples/verify-bundle.mjs <standalone-workspace> <openspec-workspace>
 
 Business answers are listed in [EXPECTED.md](EXPECTED.md). Read them after the run, not before asking Codex to perform the audit.
 
+## Codex activation smoke (no verifier changes)
+
+This optional smoke example exercises the host contract in an existing workspace;
+it does not change either sample verifier. Run the exact standalone commands from
+the trusted director, then restore activation:
+
+```bash
+baton disable curproject --host codex
+baton status --host codex --json # idle: bypass, neutral_bypass=true
+baton enable curproject --host codex
+baton status --host codex --json # enforce resumes without hook rewrite/retrust
+```
+
+If a `reserved`, `dispatching`, or `running` ticket exists, status must show
+`draining` until terminal release. Invalid activation/lifecycle state must fail
+closed; `guard_mode=off` is zero-hook audit-only and is not this bypass path.
+
 ## Probe E2E path (post-adapter coding)
 
 Use after `/add-cli-to-baton` to verify parallel implement tasks, serial integration, and OpenSpec apply in an isolated git worktree.

@@ -283,9 +283,28 @@ Baton 不创建项目内运行时目录：
 
 `all` 只修改当前 CLI host 的全局开关；`curproject` 只修改当前 canonical
 workspace 与该 host。明确 disabled 时绕过 Baton，恢复该 host 普通 native
-行为；配置缺失、损坏或不可读时 fail closed。status 会显示开关来源、Coding
-有序可用性、hook posture、draining tickets 以及 `kind:value` 形式的
-execution handle。
+行为。`guard_mode=enforce` 下，只有 activation 有效且当前 workspace 没有
+`reserved`、`dispatching` 或 `running` ticket 时，disabled 才会产生中性的
+`bypass`：hook 成功返回空输出，不做 permission decision，也不向 Codex 暴露
+policy context。存在这些 active ticket 时为 `draining`，继续保留 claim、
+write-scope、Git 以及 director/worker 边界，直到 terminal release；只有 queued
+ticket 不阻止 bypass。activation 或 lifecycle 缺失、损坏、不可读时为 `invalid`
+并 fail closed。`guard_mode=off` 是独立的零 Baton hook、audit-only 配置，不是
+动态 bypass。status 会显示 `guard_mode`、`effective_hook_posture`、
+`effective_hook_reason`、`neutral_bypass`、`audit_only`、当前 scope 的
+`draining_count`/`draining_tickets` 与 `hook_posture`，以及兼容字段和
+`kind:value` execution handle。activation 不会重写或重新信任已安装 hook。只有
+受信任 director 能执行精确 standalone `baton enable|disable all|curproject
+--host HOST`；worker、wrapper、替换或 shell composition 一律拒绝。
+
+可恢复的 project activation smoke check（在目标 workspace 执行）：
+
+```bash
+baton disable curproject --host codex
+baton status --host codex --json # idle 时 effective_hook_posture=bypass
+baton enable curproject --host codex
+baton status --host codex --json # 恢复 enforce，hook definition 未改变
+```
 
 显式 quota/remaining=0 会跨项目和窗口持久记忆；普通 429、网络错误和 timeout
 只进入临时 route health。已知 reset 时间用于 probe，未知 reset 使用有界退避，

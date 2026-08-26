@@ -284,9 +284,30 @@ Baton never creates project-local runtime state:
 
 `all` changes only the selected CLI host globally; `curproject` changes only the
 current canonical workspace and host. An explicit disabled state bypasses Baton
-and returns the host's ordinary native behavior. Invalid or unreadable state is
-fail-closed. `baton status` reports activation provenance, ordered Coding route
-availability, hook posture, and native execution handles as `kind:value`.
+and returns the host's ordinary native behavior only when that workspace is idle.
+In `guard_mode=enforce`, the Codex hook reports this as a neutral `bypass` (empty
+successful output, no permission decision or model-visible context). A current
+`reserved`, `dispatching`, or `running` ticket changes the effective posture to
+`draining` and keeps claim, write-scope, Git, and director/worker enforcement until
+terminal release; queued-only tickets do not block bypass. Invalid or unreadable
+activation/lifecycle state is `invalid` and fail-closed. `guard_mode=off` is a
+separate configured zero-Baton-hook, audit-only posture, not dynamic bypass.
+`baton status` reports `guard_mode`, `effective_hook_posture`,
+`effective_hook_reason`, `neutral_bypass`, `audit_only`, current-scope
+`draining_count`/`draining_tickets`, and `hook_posture` alongside compatibility
+facts and native execution handles as `kind:value`. Activation changes do not
+rewrite or retrust the installed hook. Only the trusted director may use the exact
+standalone activation command; worker calls, wrappers, substitutions, and shell
+composition are rejected.
+
+Recoverable project activation smoke check (run from the target workspace):
+
+```bash
+baton disable curproject --host codex
+baton status --host codex --json # effective_hook_posture=bypass when idle
+baton enable curproject --host codex
+baton status --host codex --json # enforce resumes; hook definition is unchanged
+```
 
 Model availability remembers explicit quota exhaustion (including remaining=0)
 across projects and sessions. Generic 429/network/timeout failures remain

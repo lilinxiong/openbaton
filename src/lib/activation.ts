@@ -14,6 +14,7 @@ import {
   CURRENT_RUNTIME_NAMESPACE,
 } from "./paths.js";
 import type { CodedError, UnknownRecord, WritableLike } from "../types.js";
+import type { GuardMode } from "./config.js";
 
 export type ActivationScope = "all" | "curproject";
 export type ActivationProvenance = "global" | "project" | "global-and-project" | "invalid";
@@ -36,6 +37,29 @@ export interface DrainingTicket {
   ticket_id: string;
   status: string;
   host: string;
+}
+
+/** Effective posture of an installed host hook for one canonical workspace. */
+export type EffectiveHookPosture = "enforce" | "draining" | "bypass" | "audit-only" | "invalid";
+
+/** Stable reasons used by hook evaluation and status reporting. */
+export type EffectiveHookPostureReason =
+  | "GUARD_OFF"
+  | "ENABLED"
+  | "GLOBAL_DISABLED"
+  | "PROJECT_DISABLED"
+  | "ACTIVE_TICKETS"
+  | "ACTIVATION_INVALID"
+  | "DISPATCH_STATE_INVALID";
+
+export interface EffectiveHookPostureState {
+  guard_mode: GuardMode;
+  posture: EffectiveHookPosture;
+  reason: EffectiveHookPostureReason;
+  /** Activation resolution is retained for status and diagnostics. */
+  activation: ActivationState;
+  /** Active tickets in the current canonical workspace and host only. */
+  draining_tickets: DrainingTicket[];
 }
 
 interface ActivationOptions {
@@ -172,6 +196,9 @@ function writeGlobalEnabled(cwd: string, host: CliId, enabled: boolean, env?: No
 }
 
 const ACTIVE_STATUSES = new Set(["reserved", "dispatching", "running"]);
+const VALID_TICKET_STATUSES = new Set([
+  "queued", "reserved", "dispatching", "running", "completed", "errored", "timed_out", "closed", "done",
+]);
 
 function ticketHost(value: UnknownRecord): string | null {
   const selection = record(value.selection);
@@ -198,7 +225,7 @@ function scanSpawnDirectory(directory: string, workspaceId: string, host: CliId)
     const status = String(value.status || "").trim().toLowerCase();
     const ticketId = String(value.id || path.basename(name, ".json")).trim();
     const actualHost = ticketHost(value);
-    if (!status || !ticketId || !actualHost) {
+    if (!status || !VALID_TICKET_STATUSES.has(status) || !ticketId || !actualHost) {
       throw invalid(`dispatch ticket is malformed: ${file}`);
     }
     if (actualHost === host && ACTIVE_STATUSES.has(status)) {
@@ -238,6 +265,64 @@ export function listDrainingTickets(
     draining.push(...scanSpawnDirectory(path.join(runtime, "spawns"), name, selectedHost));
   }
   return draining;
+}
+
+export interface EffectiveHookPostureOptions {
+  env?: NodeJS.ProcessEnv;
+  host?: string;
+  guard_mode?: GuardMode;
+}
+
+/**
+ * Resolve the hook posture on demand. Deliberate activation disablement only
+ * bypasses an idle workspace; active tickets keep the existing enforcement
+ * boundary until they reach a terminal state and release.
+ */
+export function resolveEffectiveHookPosture(
+  cwd: string,
+  { env = process.env, host, guard_mode = "enforce" }: EffectiveHookPostureOptions = {},
+): EffectiveHookPostureState {
+  const selectedHost = host || "codex";
+  // Guard-off is a configured zero-hook/audit-only posture. The posture does
+  // not depend on activation or dispatch state; activation is still resolved
+  // below for diagnostics and status reporting.
+  if (guard_mode === "off") {
+    return {
+      guard_mode,
+      posture: "audit-only",
+      reason: "GUARD_OFF",
+      activation: resolveActivation(cwd, { env, host: selectedHost }),
+      draining_tickets: [],
+    };
+  }
+
+  const activation = resolveActivation(cwd, { env, host: selectedHost });
+  if (!activation.valid) {
+    return { guard_mode, posture: "invalid", reason: "ACTIVATION_INVALID", activation, draining_tickets: [] };
+  }
+
+  let draining_tickets: DrainingTicket[];
+  try {
+    // Always scan the current workspace. Global disablement is intentionally
+    // not a reason to enforce unrelated idle projects.
+    draining_tickets = listDrainingTickets(cwd, activation.host, { scope: "curproject", env });
+  } catch {
+    return { guard_mode, posture: "invalid", reason: "DISPATCH_STATE_INVALID", activation, draining_tickets: [] };
+  }
+
+  if (activation.effective_enabled) {
+    return { guard_mode, posture: "enforce", reason: "ENABLED", activation, draining_tickets };
+  }
+  if (draining_tickets.length > 0) {
+    return { guard_mode, posture: "draining", reason: "ACTIVE_TICKETS", activation, draining_tickets };
+  }
+  return {
+    guard_mode,
+    posture: "bypass",
+    reason: activation.reason === "GLOBAL_DISABLED" ? "GLOBAL_DISABLED" : "PROJECT_DISABLED",
+    activation,
+    draining_tickets,
+  };
 }
 
 export interface ActivationLockOptions {

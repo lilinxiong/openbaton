@@ -47,7 +47,7 @@ optional mutation guard and audit surface; it does not classify or dispatch.
   Agent matcher. Enforce only synchronously denies unclaimed mutations and
   records the turn claim; off has zero Baton hooks and is audit-only.
 - Reservation authorization happens at the scoped `PreToolUse` mutation gate. Native `task_name` is the execution handle; no `SubagentStart` identity chain is required for bind, attach, liveness, or release.
-- `$baton disable all|curproject --host codex` and `$baton enable all|curproject --host codex` are the explicit global/project activation controls; they do not alter another CLI host.
+- `$baton disable all|curproject --host codex` and `$baton enable all|curproject --host codex` are the explicit global/project activation controls; they do not alter another CLI host. In `guard_mode=enforce`, a valid disabled idle canonical workspace is a neutral `bypass`: the Baton hook exits successfully with empty output and leaves Codex permissions and unrelated hooks to decide. Existing `reserved`, `dispatching`, or `running` tickets make the workspace `draining`, so claim, write-scope, Git, and director/worker protections remain enforced until terminal release; queued-only work does not prevent bypass. Invalid activation or unreadable lifecycle state is `invalid` and fails closed. `guard_mode=off` is configured zero-hook, audit-only behavior, not dynamic bypass. Only the trusted director may issue the exact standalone activation command; worker calls, wrappers, substitutions, and shell composition are denied.
 
 ## Model contract
 

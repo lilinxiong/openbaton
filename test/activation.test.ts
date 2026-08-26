@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import path from "node:path";
 import { emptyConfig, loadConfig, saveConfig } from "../src/lib/config.js";
 import {
   listDrainingTickets,
+  resolveEffectiveHookPosture,
   resolveActivation,
   runActivation,
   withActivationLock,
@@ -48,6 +50,117 @@ function sink(): { output: () => string; write: (chunk: string) => void } {
 }
 
 describe("activation settings", () => {
+  function posture(cwd: string, env: NodeJS.ProcessEnv) {
+    return resolveEffectiveHookPosture(cwd, { env, host: "codex", guard_mode: "enforce" });
+  }
+
+  function writeTicket(cwd: string, env: NodeJS.ProcessEnv, status: string, id = "ticket-1"): string {
+    const directory = spawnsDir(cwd, env);
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, `${id}.json`);
+    fs.writeFileSync(file, JSON.stringify({ id, status, host: "codex" }), "utf8");
+    return file;
+  }
+
+  it("resolves enabled and guard-off postures", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    assert.deepEqual([posture(cwd, env).posture, posture(cwd, env).reason], ["enforce", "ENABLED"]);
+    assert.equal(resolveEffectiveHookPosture(cwd, { env, host: "codex", guard_mode: "off" }).posture, "audit-only");
+  });
+
+  it("bypasses an idle globally disabled workspace", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    runActivation(["disable", "all", "--host", "codex"], { cwd, env, stdout: sink() });
+    assert.deepEqual([posture(cwd, env).posture, posture(cwd, env).reason], ["bypass", "GLOBAL_DISABLED"]);
+  });
+
+  it("bypasses an idle project-disabled workspace", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    runActivation(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: sink() });
+    assert.deepEqual([posture(cwd, env).posture, posture(cwd, env).reason], ["bypass", "PROJECT_DISABLED"]);
+  });
+
+  it("ignores queued-only tickets for draining posture", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    writeTicket(cwd, env, "queued");
+    runActivation(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: sink() });
+    assert.equal(posture(cwd, env).posture, "bypass");
+    assert.deepEqual(posture(cwd, env).draining_tickets, []);
+  });
+
+  it("keeps disabled reserved, dispatching, and running tickets in draining posture", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    for (const status of ["reserved", "dispatching", "running"]) {
+      const ticketId = `ticket-${status}`;
+      writeTicket(cwd, env, status, ticketId);
+      runActivation(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: sink() });
+      const result = posture(cwd, env);
+      assert.equal(result.posture, "draining");
+      assert.equal(result.reason, "ACTIVE_TICKETS");
+      assert.deepEqual(result.draining_tickets.map((ticket) => ticket.ticket_id), [ticketId]);
+      fs.rmSync(spawnsDir(cwd, env), { recursive: true, force: true });
+      configure(cwd, env);
+    }
+  });
+
+  it("releases posture after an active ticket reaches terminal state", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    const ticket = writeTicket(cwd, env, "running");
+    runActivation(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: sink() });
+    fs.writeFileSync(ticket, JSON.stringify({ id: "ticket-1", status: "completed", host: "codex" }), "utf8");
+    assert.equal(posture(cwd, env).posture, "bypass");
+  });
+
+  it("fails closed for invalid lifecycle state", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    const directory = spawnsDir(cwd, env);
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, "broken.json"), JSON.stringify({ id: "broken", status: "not-a-state", host: "codex" }), "utf8");
+    assert.deepEqual([posture(cwd, env).posture, posture(cwd, env).reason], ["invalid", "DISPATCH_STATE_INVALID"]);
+  });
+
+  it("is stable from a Git subdirectory", () => {
+    const cwd = project();
+    const env = environment();
+    configure(cwd, env);
+    execFileSync("git", ["init", "-q"], { cwd });
+    const nested = path.join(cwd, "nested");
+    fs.mkdirSync(nested);
+    assert.equal(projectSettingsPath(cwd, env), projectSettingsPath(nested, env));
+    assert.equal(posture(nested, env).posture, "enforce");
+  });
+
+  it("isolates separate Git worktrees", () => {
+    const cwd = project();
+    const sibling = `${cwd}-sibling`;
+    const env = environment();
+    configure(cwd, env);
+    execFileSync("git", ["init", "-q"], { cwd });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+    execFileSync("git", ["config", "user.name", "Baton Test"], { cwd });
+    fs.writeFileSync(path.join(cwd, ".keep"), "keep\n");
+    execFileSync("git", ["add", ".keep"], { cwd });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", sibling, "HEAD"], { cwd });
+    assert.notEqual(projectSettingsPath(cwd, env), projectSettingsPath(sibling, env));
+    runActivation(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: sink() });
+    assert.equal(posture(cwd, env).posture, "bypass");
+    assert.equal(posture(sibling, env).posture, "enforce");
+  });
   it("defaults project activation to true and isolates hosts", () => {
     const cwd = project();
     const env = environment();
