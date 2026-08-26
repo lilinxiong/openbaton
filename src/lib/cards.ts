@@ -95,7 +95,7 @@ export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: s
   const eligible = ranked.map((item) => item.card);
   if (eligible.length === 0) {
     throw new CardMatchError(
-      "no enabled CLI subagent models are configured. Run `baton config`.",
+      "no enabled CLI Coding models are configured. Run `baton config`.",
       { code: "NO_CARDS" },
     );
   }

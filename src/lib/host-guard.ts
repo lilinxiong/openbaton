@@ -22,6 +22,7 @@ import {
   type NativeIdentityObservation,
   type PendingNativeReservation,
 } from "./host-identity.js";
+import { activeGuardClaimForTurn, claimGuardTurn, type GuardClaimRecord } from "./guard-claims.js";
 
 /** Stable machine-readable reasons emitted by the Codex hook. */
 export const HOST_GUARD_REASONS = {
@@ -42,6 +43,11 @@ export const HOST_GUARD_REASONS = {
   write_receipt_required: "BATON_GUARD_WRITE_RECEIPT_REQUIRED",
   commit_only_command: "BATON_GUARD_COMMIT_ONLY_COMMAND",
   worker_git_topology: "BATON_GUARD_WORKER_GIT_TOPOLOGY_FORBIDDEN",
+  claim_required: "BATON_GUARD_CLAIM_REQUIRED",
+  claim_invalid: "BATON_GUARD_CLAIM_INVALID",
+  claim_expired: "BATON_GUARD_CLAIM_EXPIRED",
+  claim_replay: "BATON_GUARD_CLAIM_REPLAY",
+  claim_conflict: "BATON_GUARD_CLAIM_CONFLICT",
 } as const;
 
 export type HostGuardReason = (typeof HOST_GUARD_REASONS)[keyof typeof HOST_GUARD_REASONS];
@@ -61,6 +67,8 @@ export interface HookInput {
   subagent_id?: unknown;
   subagentId?: unknown;
   agent_type?: unknown;
+  baton_claim?: unknown;
+  batonClaim?: unknown;
   ticket_id?: unknown;
   ticketId?: unknown;
   [key: string]: unknown;
@@ -106,6 +114,7 @@ export interface HostGuardState {
   pending_reservations?: GuardReservation[];
   identity_observations?: NativeIdentityObservation[];
   state_error?: string | null;
+  guard_mode?: "enforce" | "off";
 }
 
 export interface HostGuardOptions {
@@ -123,6 +132,8 @@ export interface HostGuardOptions {
    * satisfied here. Defaults to Codex for the current host guard install.
    */
   host?: string;
+  /** Explicit host guard posture; config integration supplies this value. */
+  guard_mode?: "enforce" | "off";
 }
 
 /** Guard-capable hosts share one policy; the serving host scopes every ticket lookup. */
@@ -130,6 +141,12 @@ export const DEFAULT_GUARD_HOST = "codex";
 
 function guardHost(options: HostGuardOptions): string {
   return String(options.host || "").trim().toLowerCase() || DEFAULT_GUARD_HOST;
+}
+
+function guardMode(options: HostGuardOptions, host = guardHost(options)): "enforce" | "off" {
+  if (host !== "codex") return "enforce";
+  const explicit = options.guard_mode || String((options.env || process.env).BATON_GUARD_MODE || "").trim().toLowerCase();
+  return explicit === "off" ? "off" : "enforce";
 }
 
 export interface GuardDecision {
@@ -436,9 +453,10 @@ export function loadHostGuardState(cwd: string, options: HostGuardOptions = {}):
       initialized: options.state.initialized !== false,
       tickets: tickets.filter((item): item is GuardTicket => item !== null),
       bindings: bindings.filter((item): item is GuardBinding => item !== null),
-    pending_reservations: identity.state.pending,
-    identity_observations: identity.state.observed,
-    state_error: options.state.state_error
+      pending_reservations: identity.state.pending,
+      identity_observations: identity.state.observed,
+      guard_mode: guardMode(options),
+      state_error: options.state.state_error
         || (malformedTickets ? "host guard tickets are malformed" : null)
         || (malformedBindings ? "host guard bindings are malformed" : null)
         || identity.error,
@@ -466,6 +484,7 @@ export function loadHostGuardState(cwd: string, options: HostGuardOptions = {}):
     bindings: bindingResult.bindings,
     pending_reservations: identityResult.state.pending,
     identity_observations: identityResult.state.observed,
+    guard_mode: guardMode(options),
     state_error: stateError,
   };
 }
@@ -1038,6 +1057,34 @@ function isDirectorMutatingTool(name: string, command: string): boolean {
     || (name === "Bash" && (isShellWriteCommand(command) || isDirectorStageCommand(command)));
 }
 
+function claimToken(input: HookInput): string | null {
+  const nested = toolInput(input);
+  for (const value of [input.baton_claim, input.batonClaim, nested.baton_claim, nested.batonClaim]) {
+    const token = stringValue(value);
+    if (token) return token;
+  }
+  const command = stringValue(nested.command) || "";
+  const match = command.match(/(?:^|\s)--baton-claim(?:=|\s+)([^\s]+)/);
+  return match ? stringValue(match[1]) : null;
+}
+
+function claimReason(code: "MISSING" | "INVALID" | "EXPIRED" | "REPLAY" | "CONFLICT"): HostGuardReason {
+  if (code === "INVALID") return HOST_GUARD_REASONS.claim_invalid;
+  if (code === "EXPIRED") return HOST_GUARD_REASONS.claim_expired;
+  if (code === "REPLAY") return HOST_GUARD_REASONS.claim_replay;
+  if (code === "CONFLICT") return HOST_GUARD_REASONS.claim_conflict;
+  return HOST_GUARD_REASONS.claim_required;
+}
+
+function ticketForClaim(state: HostGuardState, claim: GuardClaimRecord, host: string, allowDispatching = false): GuardTicket | null {
+  const ticket = state.tickets.find((item) => item.id === claim.ticket_id
+    && (item.status === "running" || (allowDispatching && item.status === "dispatching"))
+    && item.attempt === claim.attempt
+    && (item.reservation_id || null) === claim.reservation_id
+    && isGuardTicket(item, host));
+  return ticket || null;
+}
+
 /** Director-only caller: not a Grok child session and not a bound native agent_id. */
 function isDirectorCaller(input: HookInput, host = DEFAULT_GUARD_HOST, state?: HostGuardState): boolean {
   if (host === "grok" && grokSubagentPayload(input)) return false;
@@ -1226,6 +1273,27 @@ function trustedAbsoluteBatonCommand(tokens: string[], options: BatonControlPlan
   return targets.some((target) => sameExecutable(first, target.executable));
 }
 
+const GUARDED_CONTROL_PLANE_COMMANDS = new Map<string, ReadonlySet<string>>([
+  ["guard", new Set(["status", "install", "hook", "claim", "continuation"])],
+  ["dispatch", new Set(["next", "bind", "release", "complete", "fail", "timeout", "close", "recover", "status", "progress", "probe", "defer"])],
+  ["apply", new Set(["--dispatch"])],
+  ["spawn", new Set(["--dispatch"])],
+  ["status", new Set()],
+  ["match", new Set()],
+  ["models", new Set(["refresh", "status", "candidates"])],
+  ["cards", new Set()],
+]);
+
+function allowedControlPlaneSubcommand(tokens: string[]): boolean {
+  const index = tokens.length >= 2 && tokens[1].includes("/") ? 2 : 1;
+  const command = tokens[index];
+  if (!command) return false;
+  const allowed = GUARDED_CONTROL_PLANE_COMMANDS.get(command);
+  if (!allowed) return false;
+  if (!allowed.size) return true;
+  return tokens.slice(index + 1).some((token) => [...allowed].some((item) => token === item || token.startsWith(`${item}=`)));
+}
+
 export function isBatonControlPlaneCommand(command: unknown, options: BatonControlPlaneOptions = {}): boolean {
   const tokens = standaloneCommandTokens(String(command || "").trim());
   if (!tokens) return false;
@@ -1234,9 +1302,11 @@ export function isBatonControlPlaneCommand(command: unknown, options: BatonContr
   if (!executable.includes("/")) {
     if (base !== "baton" && base !== "baton.js") return false;
     const resolved = findBinaryOnPath(executable, options.env || process.env);
-    return Boolean(resolved && isExecutableFile(resolved));
+    if (!resolved || !isExecutableFile(resolved)) return false;
+    if (!currentBatonHookTargets(options).some((target) => sameExecutable(target.executable, resolved))) return false;
+    return allowedControlPlaneSubcommand(tokens);
   }
-  return trustedAbsoluteBatonCommand(tokens, options);
+  return trustedAbsoluteBatonCommand(tokens, options) && allowedControlPlaneSubcommand(tokens);
 }
 
 function hasWriteAuthorization(ticket: GuardTicket): boolean {
@@ -1288,6 +1358,7 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   const event = eventName(input);
   const cwd = stringValue(input.cwd) || options.cwd || process.cwd();
   const state = loadHostGuardState(cwd, options);
+  const mode = guardMode(options, host);
   const name = toolName(input);
   const command = stringValue(toolInput(input).command) || "";
   const deny = (
@@ -1298,14 +1369,52 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
   ) => denied(event, reason, input, ticketId, agentId, host, message);
   const allow = (ticketId: string | null = null, agentId: string | null = null, extra?: string) =>
     allowed(event, input, ticketId, agentId, extra, host);
+  // A malformed or unreadable state must never become an enforce-mode
+  // allow merely because its active marker is unavailable. Guard-off is the
+  // only posture that intentionally degrades to audit-only behavior.
+  if (!state.active && mode === "off") return allow();
+  if (!state.active && state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
   if (!state.active) return allow();
   if (!name) return deny(HOST_GUARD_REASONS.invalid_input);
-  if (name === "Bash" && isBatonControlPlaneCommand(command, {
+  // Codex native child creation is not a guarded hook surface. The native
+  // task_name returned by the tool is attached by dispatch independently.
+  if (host === "codex" && name === "Agent") return allow();
+  if (host === "codex" && mode === "off") return allow();
+  const batonControlPlane = name === "Bash" && isBatonControlPlaneCommand(command, {
     env: options.env,
     runtimePath: options.runtimePath,
     entryPath: options.entryPath,
     executablePath: options.executablePath,
-  })) return allow();
+  });
+  const requestedClaimToken = claimToken(input);
+  // A claim command is itself a Baton control-plane command, but its token
+  // must be consumed by this synchronous hook before the generic allow path.
+  // The payload turn_id is authoritative; a direct CLI acknowledgement cannot
+  // create a binding.
+  if (host === "codex" && mode === "enforce" && batonControlPlane && requestedClaimToken) {
+    if (state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
+    const turnId = hookTurnIdentity(input, host);
+    if (!turnId) return deny(HOST_GUARD_REASONS.claim_required);
+    try {
+      const result = claimGuardTurn(cwd, {
+        token: requestedClaimToken,
+        host,
+        turn_id: turnId,
+        now: options.now,
+        env: options.env,
+      });
+      if (!result.ok && "code" in result) return deny(claimReason(result.code), result.record?.ticket_id || null);
+      // The claim acknowledgement is allowed during the spawn/bind race so
+      // the one-time token cannot be lost. It grants no mutation authority
+      // until the ticket transitions to running below.
+      const claimTicket = ticketForClaim(state, result.record, host, true);
+      if (!claimTicket) return deny(HOST_GUARD_REASONS.claim_required, result.record.ticket_id);
+      return allow(claimTicket.id, null);
+    } catch {
+      return deny(HOST_GUARD_REASONS.state_unavailable);
+    }
+  }
+  if (batonControlPlane) return allow();
   if (state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
   if (name === "Bash" && isDirectorCaller(input, host, state) && isReadOnlyGitCommand(command)) return allow();
   if (name === "Bash" && isDirectorCaller(input, host, state) && isDirectorStageCommand(command)) {
@@ -1353,10 +1462,51 @@ export function evaluatePreToolUse(raw: HookInput, options: HostGuardOptions = {
     if (host === "grok") return allow();
     return deny(HOST_GUARD_REASONS.not_initialized);
   }
+  let claimTicket: GuardTicket | null = null;
+  const mutating = isDirectorMutatingTool(name, command);
+  // Codex worker classification is explicit (worker agent_type or a claim
+  // token), never inferred from a legacy binding or agent_id guess.
+  const codexWorkerTurn = host === "codex"
+    && !isRootIdentity(input, host)
+    && hostWorkerTickets(state, host).length > 0;
+  const likelyWorker = host === "codex" ? codexWorkerTurn : !isDirectorCaller(input, host, state)
+    || Boolean(requestedClaimToken)
+    || Boolean(bindingForTurn(state, hookTurnIdentity(input, host)));
+  if (host === "codex" && mode === "enforce" && mutating && likelyWorker) {
+    const turnId = hookTurnIdentity(input, host);
+    const token = requestedClaimToken;
+    if (!turnId) return deny(HOST_GUARD_REASONS.claim_required);
+    try {
+      if (token) {
+        const result = claimGuardTurn(cwd, {
+          token,
+          host,
+          turn_id: turnId,
+          now: options.now,
+          env: options.env,
+        });
+        if (result.ok === true) {
+          claimTicket = ticketForClaim(state, result.record, host);
+        } else {
+          return deny(claimReason(result.code), result.record?.ticket_id || null);
+        }
+      } else {
+        const claim = activeGuardClaimForTurn(cwd, {
+          host,
+          turn_id: turnId,
+          now: options.now,
+          env: options.env,
+        });
+        if (claim) claimTicket = ticketForClaim(state, claim, host);
+      }
+    } catch {
+      return deny(HOST_GUARD_REASONS.state_unavailable);
+    }
+    if (!claimTicket) return deny(HOST_GUARD_REASONS.claim_required);
+  }
   const identity = identityFor(state, input, host);
+  if (claimTicket) identity.ticket = claimTicket;
   if (!identity.ticket) {
-    const mutating = isDirectorMutatingTool(name, command);
-
     // Root must not borrow a child turn binding.
     if (isRootIdentity(input, host) && identity.binding) {
       return deny(HOST_GUARD_REASONS.agent_identity_mismatch, null, identity.id);
@@ -1628,6 +1778,10 @@ export function evaluateSubagentStart(raw: HookInput, options: HostGuardOptions 
     denied(event, reason, input, ticketId, agentId, host);
   const allow = (ticketId: string | null = null, agentId: string | null = null, extra?: string) =>
     allowed(event, input, ticketId, agentId, extra, host);
+  // Codex no longer installs or requires a lifecycle hook. Keep the function
+  // available for Claude/Grok's declared lifecycle contracts, but never let a
+  // direct Codex SubagentStart-shaped payload authorize attachment.
+  if (host === "codex") return deny(HOST_GUARD_REASONS.invalid_input);
   if (!state.active) return allow();
   if (state.state_error) return deny(HOST_GUARD_REASONS.state_unavailable);
   if (!state.initialized) return deny(HOST_GUARD_REASONS.not_initialized);

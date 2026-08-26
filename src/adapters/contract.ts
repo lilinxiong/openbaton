@@ -40,6 +40,13 @@ export interface CliRuntimeCapabilities {
   max_depth?: number;
 }
 
+/**
+ * The opaque handle returned by a host's native child-spawn API.  This is
+ * deliberately separate from hook/lifecycle identity: some hosts return a
+ * usable task handle while never exposing a child agent id to hooks.
+ */
+export type NativeExecutionHandleKind = "task_name" | "agent_id" | "session_id" | "task_id" | "opaque";
+
 export interface CliModelCatalog {
   cli: CliId;
   version: string | null;
@@ -75,6 +82,8 @@ export interface CliHostMetadata {
   isInvoking?: (env?: NodeJS.ProcessEnv) => boolean;
   /** True when this host exposes a hook surface Baton can install and enforce. */
   guard: boolean;
+  /** Kind of handle returned by this host's native child execution API. */
+  executionHandleKind: NativeExecutionHandleKind;
 }
 
 /**

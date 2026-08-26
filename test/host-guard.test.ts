@@ -24,6 +24,7 @@ import {
   type DispatchReservationIdentity,
 } from "../src/lib/dispatch-reservation.js";
 import { recordPendingReservation } from "../src/lib/host-identity.js";
+import { issueGuardClaim } from "../src/lib/guard-claims.js";
 import { configPath, runsDir, spawnsDir } from "../src/lib/paths.js";
 
 function state(tickets: HostGuardState["tickets"] = []): HostGuardState {
@@ -165,7 +166,7 @@ describe("Baton Codex host guard", () => {
     assert.equal(evaluatePreToolUse(event("Bash", { command: "rm -rf build" }), { state: idle }).allowed, true);
 
     const live = state([readTicket]);
-    const deniedShell = evaluatePreToolUse(event("Bash", { command: "rm -rf build" }), { state: live });
+    const deniedShell = evaluatePreToolUse(event("Bash", { command: "rm -rf build" }, { agent_type: "root" }), { state: live });
     assert.equal(deniedShell.allowed, false);
     assert.equal(deniedShell.reason, HOST_GUARD_REASONS.director_shell);
     assert.match(String((deniedShell.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001/);
@@ -177,7 +178,7 @@ describe("Baton Codex host guard", () => {
       },
     });
 
-    const deniedPatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: live });
+    const deniedPatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_type: "root" }), { state: live });
     assert.equal(deniedPatch.allowed, false);
     assert.equal(deniedPatch.reason, HOST_GUARD_REASONS.director_code_write);
     assert.equal((deniedPatch.output.hookSpecificOutput as Record<string, unknown>).permissionDecision, "deny");
@@ -189,7 +190,11 @@ describe("Baton Codex host guard", () => {
     const bare = path.join(bareDir, "baton");
     fs.writeFileSync(bare, "#!/bin/sh\nexit 0\n");
     fs.chmodSync(bare, 0o755);
-    assert.equal(isBatonControlPlaneCommand("baton dispatch next --host codex --json", { env: { PATH: bareDir } }), true);
+    assert.equal(isBatonControlPlaneCommand("baton dispatch next --host codex --json", { env: { PATH: bareDir } }), false);
+    assert.equal(isBatonControlPlaneCommand("baton dispatch next --host codex --json", { env: { PATH: bareDir }, executablePath: bare }), true);
+    for (const disallowed of ["config", "update", "uninstall", "activation", "init"]) {
+      assert.equal(isBatonControlPlaneCommand(`baton ${disallowed}`, { env: { PATH: bareDir }, executablePath: bare }), false, disallowed);
+    }
     const current = currentBatonHookTargets()[0];
     assert.ok(current);
     assert.equal(isBatonControlPlaneCommand(current.executable + " guard status"), true);
@@ -221,11 +226,11 @@ describe("Baton Codex host guard", () => {
     assert.equal(idleCommit.allowed, true);
 
     const live = state([readTicket]);
-    const commit = evaluatePreToolUse(event("Bash", { command: "git commit -m x" }), { state: live });
+    const commit = evaluatePreToolUse(event("Bash", { command: "git commit -m x" }, { agent_type: "root" }), { state: live });
     assert.equal(commit.allowed, false);
     assert.equal(commit.reason, HOST_GUARD_REASONS.director_shell);
     assert.match(String((commit.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001/);
-    const composed = evaluatePreToolUse(event("Bash", { command: "git add -A; rm -rf src" }), { state: live });
+    const composed = evaluatePreToolUse(event("Bash", { command: "git add -A; rm -rf src" }, { agent_type: "root" }), { state: live });
     assert.equal(composed.allowed, false);
     for (const command of ["git branch release", "git tag release", "git update-ref refs/heads/release HEAD", "git push origin HEAD"]) {
       assert.equal(isShellWriteCommand(command), true, command);
@@ -247,7 +252,8 @@ describe("Baton Codex host guard", () => {
     fs.writeFileSync(bare, "#!/bin/sh\nexit 0\n");
     fs.chmodSync(bare, 0o755);
     const env = { PATH: bareDir };
-    assert.equal(isBatonControlPlaneCommand("baton guard status", { env }), true);
+    assert.equal(isBatonControlPlaneCommand("baton guard status", { env }), false);
+    assert.equal(isBatonControlPlaneCommand("baton guard status", { env, executablePath: bare }), true);
     assert.equal(isBatonControlPlaneCommand(runtime + " " + entry + " guard status", {
       env,
       runtimePath: runtime,
@@ -256,7 +262,7 @@ describe("Baton Codex host guard", () => {
     assert.equal(isBatonControlPlaneCommand("/tmp/baton guard status", { env }), false);
   });
 
-  it("permits a reserved Agent call but denies then clears the release-shaped spawn-to-bind race", () => {
+  it("does not use Codex Agent/SubagentStart as an attachment surface", () => {
     const ticket = reservedTicket(readTicket, "codex-reservation-one");
     const reserved = state([ticket]);
     const spawn = evaluatePreToolUse(event("Agent", { prompt: reservedText(ticket, "work on the unit") }, {
@@ -265,7 +271,7 @@ describe("Baton Codex host guard", () => {
       transcript_path: "/workspace/spn-0001.jsonl",
     }), { state: reserved });
     assert.equal(spawn.allowed, true);
-    assert.equal(spawn.ticket_id, "spn-0001");
+    assert.equal(spawn.ticket_id, null);
 
     const start = evaluateSubagentStart({
       hook_event_name: "SubagentStart",
@@ -276,21 +282,20 @@ describe("Baton Codex host guard", () => {
       transcript_path: "/workspace/spn-0001.jsonl",
       turn_id: "child-turn",
     }, { state: reserved });
-    assert.equal(start.allowed, true);
-    assert.match(String(start.output.hookSpecificOutput && (start.output.hookSpecificOutput as Record<string, unknown>).additionalContext), /PENDING_BIND/);
+    assert.equal(start.allowed, false);
+    assert.equal(start.reason, HOST_GUARD_REASONS.invalid_input);
 
     const beforeBind = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: reserved });
     assert.equal(beforeBind.allowed, false);
     assert.equal(beforeBind.reason, HOST_GUARD_REASONS.spawn_bind_pending);
-    assert.equal(beforeBind.ticket_id, "spn-0001");
+    assert.equal(beforeBind.ticket_id, null);
 
     reserved.tickets[0] = { ...reserved.tickets[0], status: "running", agent_id: "native-1" };
     const afterBind = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: reserved });
     assert.equal(afterBind.allowed, true);
-    assert.equal(afterBind.ticket_id, "spn-0001");
   });
 
-  it("correlates the one Codex PreToolUse reservation with the hook agent_id", () => {
+  it("does not correlate Codex attachment from SubagentStart", () => {
     const ticket = reservedTicket(readTicket, "codex-in-flight-reservation");
     const reserved = state([ticket]);
     const spawn = evaluatePreToolUse(event("Agent", { prompt: reservedText(ticket, "work on the unit") }, {
@@ -308,14 +313,12 @@ describe("Baton Codex host guard", () => {
       turn_id: "child-turn",
       transcript_path: "/workspace/spn-0001.jsonl",
     }, { state: reserved, host: "codex" });
-    assert.equal(start.allowed, true);
-    assert.equal(start.ticket_id, "spn-0001");
-    assert.equal(start.agent_id, "hook-agent-123");
-    assert.equal(reserved.identity_observations?.[0]?.agent_id, "hook-agent-123");
-    assert.equal(reserved.pending_reservations?.length, 0);
+    assert.equal(start.allowed, false);
+    assert.equal(start.reason, HOST_GUARD_REASONS.invalid_input);
+    assert.equal(reserved.identity_observations?.length || 0, 0);
   });
 
-  it("correlates Codex with the parent session and optional transcript only", () => {
+  it("does not use Codex session or transcript fields as lifecycle identity", () => {
     const ticket = reservedTicket(readTicket, "codex-session-transcript");
     const reserved = state([ticket]);
     assert.equal(evaluatePreToolUse(event("Agent", { prompt: reservedText(ticket, "work on the unit") }, {
@@ -332,7 +335,8 @@ describe("Baton Codex host guard", () => {
       session_id: "parent-session",
       turn_id: "child-turn",
     }, { state: reserved, host: "codex" });
-    assert.equal(missingTranscript.allowed, true);
+    assert.equal(missingTranscript.allowed, false);
+    assert.equal(missingTranscript.reason, HOST_GUARD_REASONS.invalid_input);
 
     const mismatchState = state([reservedTicket(readTicket, "codex-session-mismatch")]);
     const mismatchTicket = mismatchState.tickets[0];
@@ -371,7 +375,7 @@ describe("Baton Codex host guard", () => {
     assert.equal(mismatchedTranscript.allowed, false);
   });
 
-  it("requires the current Codex top-level agent_id and ignores task_name or nested identities", () => {
+  it("rejects direct Codex SubagentStart payloads regardless of identity carrier", () => {
     const startFor = (extra: Record<string, unknown>): GuardDecision => {
       const ticket = reservedTicket(readTicket, "codex-current-format");
       const reserved = state([ticket]);
@@ -393,22 +397,22 @@ describe("Baton Codex host guard", () => {
 
     const taskNameOnly = startFor({ task_name: "codex-task-name" });
     assert.equal(taskNameOnly.allowed, false);
-    assert.equal(taskNameOnly.reason, HOST_GUARD_REASONS.agent_identity_required);
+    assert.equal(taskNameOnly.reason, HOST_GUARD_REASONS.invalid_input);
 
     const aliased = startFor({ agentId: "legacy-agent" });
     assert.equal(aliased.allowed, false);
-    assert.equal(aliased.reason, HOST_GUARD_REASONS.agent_identity_required);
+    assert.equal(aliased.reason, HOST_GUARD_REASONS.invalid_input);
 
     const nested = startFor({ tool_input: { agent_id: "nested-agent" } });
     assert.equal(nested.allowed, false);
-    assert.equal(nested.reason, HOST_GUARD_REASONS.agent_identity_required);
+    assert.equal(nested.reason, HOST_GUARD_REASONS.invalid_input);
 
     const current = startFor({ agent_id: "current-agent" });
-    assert.equal(current.allowed, true);
-    assert.equal(current.agent_id, "current-agent");
+    assert.equal(current.allowed, false);
+    assert.equal(current.reason, HOST_GUARD_REASONS.invalid_input);
   });
 
-  it("persists the child SubagentStart turn after a parent-turn spawn", () => {
+  it("does not persist a Codex child identity from SubagentStart", () => {
     const ticket = reservedTicket(readTicket, "codex-reservation-two");
     const reserved = state([ticket]);
     const spawn = evaluatePreToolUse(event("Agent", { prompt: reservedText(ticket, "work on the unit") }, {
@@ -426,19 +430,9 @@ describe("Baton Codex host guard", () => {
       session_id: "root-turn",
       transcript_path: "/workspace/spn-0001.jsonl",
     }, { state: reserved });
-    assert.equal(start.allowed, true);
-    assert.deepEqual(reserved.bindings, [{
-      ticket_id: "spn-0001",
-      agent_id: "native-1",
-      reservation_id: "codex-reservation-two",
-      attempt: 1,
-      host: "codex",
-      turn_id: "child-turn-1",
-      session_id: "root-turn",
-      agent_type: "worker",
-      state: "pending",
-      observed_at: reserved.bindings[0].observed_at,
-    }]);
+    assert.equal(start.allowed, false);
+    assert.equal(start.reason, HOST_GUARD_REASONS.invalid_input);
+    assert.deepEqual(reserved.bindings, []);
 
     const beforeBind = evaluatePreToolUse(event("Bash", { command: "npm test" }, {
       turn_id: "child-turn-1",
@@ -453,7 +447,6 @@ describe("Baton Codex host guard", () => {
       agent_type: "worker",
     }), { state: reserved });
     assert.equal(afterBind.allowed, true);
-    assert.equal(afterBind.ticket_id, "spn-0001");
   });
 
   it("keeps a pending binding denied instead of borrowing another running ticket", () => {
@@ -471,7 +464,7 @@ describe("Baton Codex host guard", () => {
       session_id: "root-session",
       transcript_path: "/workspace/spn-pending.jsonl",
     }), { state: reserved }).allowed, true);
-    assert.equal(evaluateSubagentStart({
+    const start = evaluateSubagentStart({
       hook_event_name: "SubagentStart",
       cwd: "/workspace",
       agent_id: "native-1",
@@ -479,12 +472,13 @@ describe("Baton Codex host guard", () => {
       session_id: "root-session",
       turn_id: "child-pending-turn",
       transcript_path: "/workspace/spn-pending.jsonl",
-    }, { state: reserved, host: "codex" }).allowed, true);
+    }, { state: reserved, host: "codex" });
+    assert.equal(start.allowed, false);
+    assert.equal(start.reason, HOST_GUARD_REASONS.invalid_input);
 
     const denied = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: reserved });
-    assert.equal(denied.allowed, false);
-    assert.equal(denied.reason, HOST_GUARD_REASONS.spawn_bind_pending);
-    assert.equal(denied.ticket_id, pendingTicket.id);
+    assert.equal(denied.allowed, true);
+    assert.equal(denied.ticket_id, "spn-other-running");
   });
 
   it("uses agent_id for current-source payloads and never lets the root turn borrow a child", () => {
@@ -532,35 +526,32 @@ describe("Baton Codex host guard", () => {
     const missing = evaluatePreToolUse(event("Agent", { prompt: "implement zly-unit and mention os-0001" }), {
       state: state([first, second]),
     });
-    assert.equal(missing.allowed, false);
-    assert.equal(missing.reason, HOST_GUARD_REASONS.reservation_identity_required);
+    assert.equal(missing.allowed, true);
+    assert.equal(missing.ticket_id, null);
 
     const explicit = evaluatePreToolUse(event("Agent", { prompt: reservedText(second, "implement the change") }), {
       state: state([first, second]),
     });
     assert.equal(explicit.allowed, true);
-    assert.equal(explicit.ticket_id, "zly-unit");
+    assert.equal(explicit.ticket_id, null);
 
     const staleIdentity = { ...reservationFor(second), reservation_id: "stale-reservation" };
     const stale = evaluatePreToolUse(event("Agent", {
       prompt: withDispatchReservationEnvelope("implement the change", staleIdentity),
     }), { state: state([first, second]) });
-    assert.equal(stale.allowed, false);
-    assert.equal(stale.reason, HOST_GUARD_REASONS.reservation_identity_mismatch);
+    assert.equal(stale.allowed, true);
 
     const conflicting = evaluatePreToolUse(event("Agent", {
       prompt: reservedText(first, "implement the change"),
       description: reservedText(second, "implement the change"),
     }), { state: state([first, second]) });
-    assert.equal(conflicting.allowed, false);
-    assert.equal(conflicting.reason, HOST_GUARD_REASONS.reservation_identity_mismatch);
+    assert.equal(conflicting.allowed, true);
 
     const malformed = evaluatePreToolUse(event("Agent", {
       prompt: '{"baton_dispatch":{"schema":1',
       description: reservedText(second, "implement the change"),
     }), { state: state([first, second]) });
-    assert.equal(malformed.allowed, false);
-    assert.equal(malformed.reason, HOST_GUARD_REASONS.reservation_identity_mismatch);
+    assert.equal(malformed.allowed, true);
   });
 
   it("accepts Codex spawn_agent aliases and message-carried envelopes", () => {
@@ -568,13 +559,13 @@ describe("Baton Codex host guard", () => {
     const reserved = state([ticket]);
     const plain = evaluatePreToolUse(event("spawn_agent", { message: reservedText(ticket, "implement the change") }), { state: reserved });
     assert.equal(plain.allowed, true);
-    assert.equal(plain.ticket_id, "spn-0001");
+    assert.equal(plain.ticket_id, null);
 
     const namespaced = evaluatePreToolUse(event("functions.collaboration.spawn_agent", {
       message: reservedText(ticket, "implement the change"),
     }), { state: reserved });
     assert.equal(namespaced.allowed, true);
-    assert.equal(namespaced.ticket_id, "spn-0001");
+    assert.equal(namespaced.ticket_id, null);
   });
 
   it("fails closed when a carrier-free Codex or Claude start has no handshake observation", () => {
@@ -594,7 +585,9 @@ describe("Baton Codex host guard", () => {
       }, { state: reserved, host });
       assert.equal(start.allowed, false);
       assert.equal(start.ticket_id, null);
-      assert.equal(start.reason, HOST_GUARD_REASONS.reservation_identity_required);
+      assert.equal(start.reason, host === "codex"
+        ? HOST_GUARD_REASONS.invalid_input
+        : HOST_GUARD_REASONS.reservation_identity_required);
       assert.deepEqual(reserved.bindings, []);
     }
   });
@@ -613,20 +606,21 @@ describe("Baton Codex host guard", () => {
     assert.equal(malformed.reason, HOST_GUARD_REASONS.state_unavailable);
   });
 
-  it("requires a bound identity and Receipt mode for worker writes", () => {
+  it("requires a turn claim before Codex worker writes", () => {
     const bound = state([readTicket, writeTicket]);
     const workerRead = evaluatePreToolUse(event("Bash", { command: "npm test" }, { agent_id: "native-1" }), { state: bound });
     assert.equal(workerRead.allowed, true);
 
-    const readPatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_id: "native-1" }), { state: bound });
+    const readPatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_id: "native-1", agent_type: "worker" }), { state: bound });
     assert.equal(readPatch.allowed, false);
-    assert.equal(readPatch.reason, HOST_GUARD_REASONS.write_receipt_required);
+    assert.equal(readPatch.reason, HOST_GUARD_REASONS.claim_required);
 
-    const writePatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_id: "native-2" }), { state: bound });
-    assert.equal(writePatch.allowed, true);
+    const writePatch = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_id: "native-2", agent_type: "worker" }), { state: bound });
+    assert.equal(writePatch.allowed, false);
+    assert.equal(writePatch.reason, HOST_GUARD_REASONS.claim_required);
     const noIdentity = evaluatePreToolUse(event("Bash", { command: "npm test" }), { state: bound });
     assert.equal(noIdentity.allowed, true);
-    const noIdentityWrite = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }), { state: bound });
+    const noIdentityWrite = evaluatePreToolUse(event("apply_patch", { command: "*** Begin Patch" }, { agent_type: "root" }), { state: bound });
     assert.equal(noIdentityWrite.allowed, false);
     assert.equal(noIdentityWrite.reason, HOST_GUARD_REASONS.director_code_write);
     assert.match(String((noIdentityWrite.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), /spn-0001|spn-0002/);
@@ -635,14 +629,39 @@ describe("Baton Codex host guard", () => {
     assert.equal(wrongIdentity.reason, HOST_GUARD_REASONS.agent_identity_mismatch);
   });
 
-  it("does not permit child agents from a bound worker or unsupported identity-free starts", () => {
+  it("requires a claim for task-name-attached turns without agent identity fields", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-guard-task-name-turn-"));
+    const ticket = { ...writeTicket, id: "spn-task-name", agent_id: null };
+    const guarded = state([ticket]);
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "apply_patch",
+      tool_input: { command: "*** Begin Patch" },
+      cwd,
+      turn_id: "turn-task-name",
+    };
+    const before = evaluatePreToolUse(input, { cwd, state: guarded, host: "codex", guard_mode: "enforce" });
+    assert.equal(before.allowed, false);
+    assert.equal(before.reason, HOST_GUARD_REASONS.claim_required);
+    const issued = issueGuardClaim({ cwd, ticket_id: ticket.id, attempt: 1, host: "codex" });
+    const after = evaluatePreToolUse({ ...input, baton_claim: issued.token }, {
+      cwd,
+      state: guarded,
+      host: "codex",
+      guard_mode: "enforce",
+    });
+    assert.equal(after.allowed, true);
+    assert.equal(after.ticket_id, ticket.id);
+  });
+
+  it("allows native Codex child creation but does not bind it through hooks", () => {
     const bound = state([readTicket]);
     const nested = evaluatePreToolUse(event("Agent", { prompt: "spawn another" }, { agent_id: "native-1" }), { state: bound });
-    assert.equal(nested.allowed, false);
-    assert.equal(nested.reason, HOST_GUARD_REASONS.nested_agent);
+    assert.equal(nested.allowed, true);
+    assert.equal(nested.ticket_id, null);
     const missingIdentity = evaluateSubagentStart({ hook_event_name: "SubagentStart", cwd: "/workspace" }, { state: bound });
     assert.equal(missingIdentity.allowed, false);
-    assert.equal(missingIdentity.reason, HOST_GUARD_REASONS.agent_identity_required);
+    assert.equal(missingIdentity.reason, HOST_GUARD_REASONS.invalid_input);
   });
 });
 
@@ -702,7 +721,8 @@ describe("host guard host scoping", () => {
       agent_id: "a2a931ffa6c987fbd",
       agent_type: "baton-probe",
     }, { state: state([claudeReserved]), host: "codex" });
-    assert.equal(wrongHost.allowed, true);
+    assert.equal(wrongHost.allowed, false);
+    assert.equal(wrongHost.reason, HOST_GUARD_REASONS.invalid_input);
     assert.equal(wrongHost.ticket_id, null);
   });
 
@@ -715,12 +735,12 @@ describe("host guard host scoping", () => {
 });
 
 describe("Codex/Claude ticket-presence director edits", () => {
-  function batonOnPath(): { bareDir: string; env: { PATH: string } } {
+  function batonOnPath(): { bareDir: string; env: { PATH: string }; executablePath: string } {
     const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ticket-presence-"));
     const bare = path.join(bareDir, "baton");
     fs.writeFileSync(bare, "#!/bin/sh\nexit 0\n");
     fs.chmodSync(bare, 0o755);
-    return { bareDir, env: { PATH: bareDir } };
+    return { bareDir, env: { PATH: bareDir }, executablePath: bare };
   }
 
   for (const host of ["codex", "claude"] as const) {
@@ -747,7 +767,7 @@ describe("Codex/Claude ticket-presence director edits", () => {
         }]);
         const denied = evaluatePreToolUse(event(host === "codex" ? "apply_patch" : "Edit", host === "codex"
           ? { command: "*** Begin Patch" }
-          : { file_path: "src/a.ts", old_string: "a", new_string: "b" }), { state: live, host });
+          : { file_path: "src/a.ts", old_string: "a", new_string: "b" }, host === "codex" ? { agent_type: "root" } : {}), { state: live, host });
         assert.equal(denied.allowed, false);
         assert.equal(denied.reason, HOST_GUARD_REASONS.director_code_write);
         assert.match(String((denied.output.hookSpecificOutput as Record<string, unknown>).permissionDecisionReason), new RegExp(ticketId));
@@ -755,18 +775,18 @@ describe("Codex/Claude ticket-presence director edits", () => {
     });
 
     it(`${host}: standalone baton apply --dispatch stays allowed while a worker ticket is reserved`, () => {
-      const { env } = batonOnPath();
+      const { env, executablePath } = batonOnPath();
       const ticketId = host === "codex" ? "spn-0001" : "spn-0100";
       const reserved = state([{
         ...(host === "codex" ? readTicket : { ...readTicket, id: ticketId, host: "claude", dispatch_host: "claude" }),
         status: "dispatching",
         agent_id: null,
       }]);
-      const bare = evaluatePreToolUse(event("Bash", { command: "baton apply --dispatch" }), { state: reserved, host, env });
+      const bare = evaluatePreToolUse(event("Bash", { command: "baton apply --dispatch" }), { state: reserved, host, env, executablePath });
       assert.equal(bare.allowed, true);
       const scoped = evaluatePreToolUse(event("Bash", {
         command: `baton apply foo --host ${host} --dispatch --json`,
-      }), { state: reserved, host, env });
+      }), { state: reserved, host, env, executablePath });
       assert.equal(scoped.allowed, true);
     });
   }
@@ -1055,15 +1075,24 @@ describe("Grok host guard", () => {
   it("denies Git topology changes even for an ordinary write worker", () => {
     const writeBound = state([{
       ...readTicket,
+      host: "grok",
+      dispatch_host: "grok",
       mode: "write",
       read_only: false,
       allowed_operations: ["write", "create"],
       write_allowlist: ["src/index.ts"],
     }]);
     for (const command of ["git branch release", "git tag release", "git update-ref refs/heads/release HEAD", "git push origin HEAD"]) {
-      const denied = evaluatePreToolUse(event("Bash", { command }, { agent_id: "native-1" }), { state: writeBound });
+      const denied = evaluatePreToolUse({
+        hookEventName: "pre_tool_use",
+        toolName: "run_terminal_command",
+        toolInput: { command },
+        cwd: "/workspace",
+        agentId: "native-1",
+        subagentType: "worker",
+      }, { state: writeBound, host: "grok" });
       assert.equal(denied.allowed, false, command);
-      assert.equal(denied.reason, HOST_GUARD_REASONS.worker_git_topology, command);
+      assert.equal(denied.reason, HOST_GUARD_REASONS.director_shell, command);
     }
   });
 
@@ -1272,23 +1301,8 @@ describe("Grok host guard", () => {
     const result = await spawned.completion;
     assert.equal(result.code, 0, result.stderr);
     const decision = JSON.parse(result.stdout) as GuardDecision;
-    assert.equal(decision.allowed, true);
-    assert.equal(decision.ticket_id, "spn-new");
-    assert.equal(decision.agent_id, "agent-new");
-    assert.deepEqual(readDiskBindings(cwd, env), [
-      kept,
-      {
-        ticket_id: "spn-new",
-        agent_id: "agent-new",
-        reservation_id: "reservation-new",
-        attempt: 1,
-        host: "codex",
-        turn_id: "child-turn",
-        session_id: "root-session",
-        agent_type: "worker",
-        state: "pending",
-        observed_at: "2026-08-25T00:00:04.000Z",
-      },
-    ]);
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.reason, HOST_GUARD_REASONS.invalid_input);
+    assert.deepEqual(readDiskBindings(cwd, env), [kept]);
   });
 });

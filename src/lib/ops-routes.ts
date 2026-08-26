@@ -32,8 +32,9 @@ function remainingFor(
   cards: ModelCard[],
   route: ExecutableRoute,
   host?: string,
+  env?: NodeJS.ProcessEnv,
 ): { remaining_percent: number | null; quota_label: string | null; exhausted: boolean } {
-  const snapshot = readRouteSnapshot(cwd, { host });
+  const snapshot = readRouteSnapshot(cwd, { host, env });
   if (!snapshot) return { remaining_percent: null, quota_label: null, exhausted: false };
   const card = cardForRoute(cards, route.route_id);
   const quota = quotaForProvider(snapshot, route.provider || card?.provider);
@@ -55,6 +56,7 @@ function commonEligible(
   cards: ModelCard[],
   route: ExecutableRoute,
   host?: string,
+  env?: NodeJS.ProcessEnv,
 ): boolean {
   if (route.disabled) return false;
   const card = cardForRoute(cards, route.route_id) || {
@@ -66,7 +68,7 @@ function commonEligible(
   };
   if (card.executable === false) return false;
   if (taskCapabilityExclusion(card)) return false;
-  return !remainingFor(cwd, cards, route, host).exhausted;
+  return !remainingFor(cwd, cards, route, host, env).exhausted;
 }
 
 export function listOpsRouteChoices(
@@ -81,19 +83,24 @@ export function listOpsRouteChoices(
   try {
     const config = loadConfig(cwd, { env });
     const cli = cliProfileForHost(config, host);
-    if (cli.enabled && snapshot?.cli === host) allowed = new Set(cli.subagent_models);
+    if (cli.enabled && snapshot?.cli === host) {
+      // runner/longctx are execution-class labels, not Coding priority
+      // entries. They are included here only so mechanical/long-context
+      // dispatch can resolve their configured route independently.
+      allowed = new Set([...(cli.coding_models || []), cli.runner, cli.longctx].filter(Boolean));
+    }
   } catch (error) {
     if ((error as { code?: string }).code === "BATON_NOT_INITIALIZED") return [];
     throw error;
   }
-  const routes = (snapshot?.routes || []).filter((route) => allowed.has(route.route_id) && commonEligible(cwd, cards, route, host));
+  const routes = (snapshot?.routes || []).filter((route) => allowed.has(route.route_id) && commonEligible(cwd, cards, route, host, env));
   // runner and longctx are user labels. They do not assert or filter model
   // capabilities such as context-window size.
   const filtered = routes;
 
   const unique = new Map<string, OpsRouteChoice>();
   for (const route of filtered) {
-    const quota = remainingFor(cwd, cards, route, host);
+    const quota = remainingFor(cwd, cards, route, host, env);
     unique.set(route.route_id, {
       route_id: route.route_id,
       provider: route.provider,

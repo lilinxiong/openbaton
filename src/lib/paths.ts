@@ -14,6 +14,7 @@ export const SELECTIONS_DIR = "selections";
 export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
 export const CACHE_DIR = "cache";
+export const STATE_DIR = "state";
 export const WORKSPACES_DIR = "workspaces";
 /**
  * Current workspace runtime-state format.
@@ -27,6 +28,8 @@ export const CAPABILITIES_DIR = "capabilities";
 export const AA_DB_NAME = "artificial-analysis.sqlite3";
 export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
+export const MODEL_AVAILABILITY_NAME = "model-availability.json";
+export const PROJECT_SETTINGS_NAME = "project-settings.toml";
 
 /** Host-keyed state names used by the current runtime. */
 export function hostRouteSnapshotName(host: string): string {
@@ -117,6 +120,11 @@ export function routeHealthPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonHomeDir(env), CACHE_DIR, ROUTE_HEALTH_NAME);
 }
 
+/** Global durable model availability, shared by projects and sessions. */
+export function modelAvailabilityPath(_cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(batonHomeDir(env), STATE_DIR, MODEL_AVAILABILITY_NAME);
+}
+
 /** Dispatcher runtime state (remembered capacity) for one workspace. */
 export function hostDispatchStatePath(cwd: string, host: string, env?: NodeJS.ProcessEnv): string {
   return path.join(runsDir(cwd, env), hostDispatchStateName(host));
@@ -124,6 +132,25 @@ export function hostDispatchStatePath(cwd: string, host: string, env?: NodeJS.Pr
 
 export function dispatchLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), TMP_DIR, "dispatch.lock");
+}
+
+/** Project-scoped host activation settings in the canonical v2 workspace. */
+export function projectSettingsPath(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(batonDir(cwd, env), PROJECT_SETTINGS_NAME);
+}
+
+/** Shared activation/reservation boundary for one canonical workspace. */
+export function activationLockPath(cwd: string, env?: NodeJS.ProcessEnv, host?: string): string {
+  const suffix = host ? `activation-${String(host).trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "-") || "unknown"}.lock` : "activation.lock";
+  return path.join(batonDir(cwd, env), TMP_DIR, suffix);
+}
+
+/** Host-scoped global activation lock. Reservation and global/project changes
+ * acquire this before the workspace lock, so cross-project operations share a
+ * single ordering boundary per invoking CLI. */
+export function globalActivationLockPath(host: string, env?: NodeJS.ProcessEnv): string {
+  const normalized = String(host || "").trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "-") || "unknown";
+  return path.join(batonHomeDir(env), STATE_DIR, `activation-${normalized}.lock`);
 }
 
 export function packageRoot(): string {

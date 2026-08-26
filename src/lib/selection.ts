@@ -12,6 +12,7 @@ import {
   type SelectionQuotaPool,
 } from "./quota-pools.js";
 import { taskCapabilityExclusion, type TaskCapabilityExclusion } from "./task-suitability.js";
+import { availabilityForRoute } from "./model-availability.js";
 import type { CardCapabilityEvidence, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 
 export type SelectionProposalStatus = "pending_confirmation" | "approved";
@@ -28,7 +29,7 @@ export interface SelectionCandidate {
   speed_signals: Array<"route-name" | "catalog-description" | "service-tier">;
   provider: string | null;
   selectable: boolean;
-  selection_code: "AVAILABLE" | "QUOTA_POOL_EXHAUSTED";
+  selection_code: "AVAILABLE" | "QUOTA_POOL_EXHAUSTED" | "DURABLE_QUOTA_EXHAUSTED" | "CONTEXT_WINDOW_INSUFFICIENT" | "REASONING_EFFORT_UNSUPPORTED";
   selection_reason: string;
   automatic_eligible: boolean;
   ranked: boolean;
@@ -54,6 +55,10 @@ export interface SelectionCandidate {
   quota_pool_label: string;
   quota_pool_status: QuotaPoolStatus;
   quota_pool_remaining_percent: number | null;
+  availability_status: "available" | "exhausted" | "probe_due";
+  availability_reason: string | null;
+  /** A due route may be claimed only by the eventual reservation owner. */
+  probe_available: boolean;
 }
 
 export interface SelectionUnit {
@@ -65,7 +70,7 @@ export interface SelectionUnit {
   recommended_model_id: string | null;
   requested_model_id: string | null;
   default_model_id: string | null;
-  recommendation_reason: "UNIQUE_HIGHEST_TASK_SCORE" | "DETERMINISTIC_TOP_SCORE_TIEBREAK" | "GENERAL_CAPABILITY_FALLBACK" | "AMBIGUOUS_TOP_SCORE" | "NO_POSITIVE_TASK_SCORE" | "NO_SELECTABLE_RANKED_CANDIDATE" | "DIRECTOR_LOCAL";
+  recommendation_reason: "UNIQUE_HIGHEST_TASK_SCORE" | "DETERMINISTIC_TOP_SCORE_TIEBREAK" | "GENERAL_CAPABILITY_FALLBACK" | "AMBIGUOUS_TOP_SCORE" | "NO_POSITIVE_TASK_SCORE" | "NO_SELECTABLE_RANKED_CANDIDATE" | "CODING_PRIORITY" | "CODING_MODELS_EXHAUSTED" | "DIRECTOR_LOCAL";
   target_reasoning_effort: "low" | "medium" | "high" | "xhigh" | "max";
   complexity_reason: "simple" | "standard" | "complex" | "very-complex";
   estimated_context_tokens: number;
@@ -131,10 +136,15 @@ function evidenceScores(capability?: CardCapabilityEvidence) {
 }
 
 function candidateFor(
+  cwd: string,
   prompt: string,
   card: ModelCard,
   snapshot: RouteSnapshot,
   automaticIds: Set<string>,
+  host: string,
+  estimatedContextTokens: number,
+  probeRouteIds: Set<string>,
+  env?: NodeJS.ProcessEnv,
 ): SelectionCandidate | null {
   if (!card.route_id || card.executable === false) return null;
   const route = snapshot.routes.find((item) => !item.disabled && item.route_id === card.route_id);
@@ -147,7 +157,18 @@ function candidateFor(
     provider: card.provider || null,
     quota,
   });
-  const selectable = quotaPool.selectable;
+  const availability = availabilityForRoute(cwd, { host, routeId: card.route_id }, new Date(), env);
+  const contextInsufficient = route.context_window !== null
+    && route.context_window < estimatedContextTokens;
+  // A due route still needs an explicit dispatch-side probe lease. Selection
+  // never silently turns every concurrent selector into a probe attempt.
+  const probeClaimed = availability.status === "probe_due" && probeRouteIds.has(card.route_id);
+  const probeAvailable = availability.status === "probe_due" && availability.probe_available;
+  // A due route is observable here but remains ineligible until the dispatch
+  // reservation atomically claims it. Match/plan therefore never mutate or
+  // pre-authorize a probe lease.
+  const durableExhausted = availability.status !== "available" && !probeClaimed;
+  const selectable = quotaPool.selectable && !contextInsufficient && !durableExhausted;
   const ranked = card.capability?.ranked === true;
   const referenceOnly = card.capability?.reference_only === true;
   const referenceReasons = card.capability?.reference_reasons || [];
@@ -182,10 +203,22 @@ function candidateFor(
     speed_signals: speedSignals,
     provider: card.provider || null,
     selectable,
-    selection_code: quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
-    selection_reason: quotaPool.status === "exhausted"
-      ? `${quotaPool.label} quota is exhausted`
-      : "model/reasoning effort was returned by the active CLI",
+    selection_code: durableExhausted
+      ? "DURABLE_QUOTA_EXHAUSTED"
+      : contextInsufficient
+        ? "CONTEXT_WINDOW_INSUFFICIENT"
+        : quotaPool.status === "exhausted" ? "QUOTA_POOL_EXHAUSTED" : "AVAILABLE",
+    selection_reason: durableExhausted
+      ? `${availability.reason || "quota exhausted"}${availability.next_probe_at ? `; probe ${availability.next_probe_at}` : ""}`
+      : contextInsufficient
+        ? `context window ${route.context_window} is smaller than estimated ${estimatedContextTokens}`
+        : quotaPool.status === "exhausted"
+          ? `${quotaPool.label} quota is exhausted`
+      : probeClaimed
+        ? "bounded due-route probe lease claimed by this dispatcher"
+        : probeAvailable
+          ? "due-route probe is available for the eventual reservation"
+        : "model/reasoning effort was returned by the active CLI",
     automatic_eligible: selectable && automaticIds.has(card.id),
     ranked,
     reference_only: referenceOnly,
@@ -203,6 +236,9 @@ function candidateFor(
     quota_pool_label: quotaPool.label,
     quota_pool_status: quotaPool.status,
     quota_pool_remaining_percent: quotaPool.remaining_percent,
+    availability_status: availability.status,
+    availability_reason: availability.reason,
+    probe_available: probeAvailable,
   };
 }
 
@@ -220,7 +256,7 @@ export function estimateTaskComplexity(text: unknown): TaskComplexityEstimate {
   const value = String(text || "").toLowerCase();
   const dimensions = classifyTask(value);
   if ((dimensions.speed > 0 && dimensions.agentic === 0 && dimensions.intelligence === 0)
-    || (/\b(?:tiny|small|typo|rename-only|routine)\b|小改|简单任务|拼写|仅重命名|常规/.test(value)
+    || (/\b(?:simple|tiny|small|typo|rename-only|routine)\b|小改|简单任务|拼写|仅重命名|常规/.test(value)
     && dimensions.agentic === 0 && dimensions.intelligence === 0)) {
     return { effort: "low", reason: "simple" };
   }
@@ -336,14 +372,25 @@ function restrictAutomaticEffortCandidates(
   }
   for (const values of byRoute.values()) {
     if (!values.some((candidate) => candidate.reasoning_effort_configurable)) continue;
+    const targetRank = EFFORT_RANK[target];
     const eligibleProfiles = values
-      .filter((candidate) => candidate.automatic_eligible && candidate.reasoning_effort)
+      .filter((candidate) => candidate.automatic_eligible
+        && candidate.reasoning_effort
+        && EFFORT_RANK[normalizedEffort(candidate.effective_reasoning_effort) || "none"] >= targetRank)
       .sort((left, right) => compareEffortFit(
         left.effective_reasoning_effort,
         right.effective_reasoning_effort,
         target,
       ) || left.model_id.localeCompare(right.model_id));
-    for (const candidate of values) candidate.automatic_eligible = false;
+    for (const candidate of values) {
+      candidate.automatic_eligible = false;
+      const rank = EFFORT_RANK[normalizedEffort(candidate.effective_reasoning_effort) || "none"];
+      if (candidate.reasoning_effort && rank < targetRank && candidate.selection_code === "AVAILABLE") {
+        candidate.selectable = false;
+        candidate.selection_code = "REASONING_EFFORT_UNSUPPORTED";
+        candidate.selection_reason = `reasoning effort ${candidate.effective_reasoning_effort || candidate.reasoning_effort} is below required ${target}`;
+      }
+    }
     if (eligibleProfiles[0]) eligibleProfiles[0].automatic_eligible = true;
   }
 }
@@ -396,6 +443,9 @@ export function buildSelectionUnit({
   automaticCards,
   requestedModelId = null,
   directorLocal = false,
+  codingModels,
+  probeRouteIds = [],
+  env,
   metadata = {},
 }: {
   cwd: string;
@@ -407,6 +457,11 @@ export function buildSelectionUnit({
   automaticCards?: ModelCard[];
   requestedModelId?: string | null;
   directorLocal?: boolean;
+  /** Ordered base route ids from cli.<host>.coding_models. */
+  codingModels?: string[];
+  /** At most one due route may be enabled by a real spawn/apply probe lease. */
+  probeRouteIds?: string[];
+  env?: NodeJS.ProcessEnv;
   metadata?: UnknownRecord;
 }): SelectionUnit {
   const contextEstimate = estimateTaskContext(prompt);
@@ -423,33 +478,55 @@ export function buildSelectionUnit({
       requires_manual_choice: false, candidates: [], task_exclusions: [], metadata,
     };
   }
-  const snapshot = readRouteSnapshot(cwd, { host });
+  const snapshot = readRouteSnapshot(cwd, { host, env });
   if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
   const taskExclusions = cards
     .map(taskCapabilityExclusion)
     .filter((item): item is TaskCapabilityExclusion => item !== null);
   const excludedIds = new Set(taskExclusions.map((item) => item.model_id));
-  const eligibleCards = cards.filter((card) => !excludedIds.has(card.id));
+  // An explicitly supplied empty array is an intentional zero-candidate
+  // Coding configuration; only an omitted argument means general selection.
+  const configured = codingModels !== undefined ? new Set(codingModels) : null;
+  const eligibleCards = cards.filter((card) => !excludedIds.has(card.id)
+    && (!configured || configured.has(card.route_id || card.id) || configured.has(card.id)));
   const automaticIds = new Set((automaticCards || cards).map((card) => card.id));
+  const selectedHost = String(host || snapshot.cli || "codex");
+  const claimedProbeRoutes = new Set(probeRouteIds);
   const candidates = eligibleCards
-    .map((card) => candidateFor(prompt, card, snapshot, automaticIds))
+    .map((card) => candidateFor(cwd, prompt, card, snapshot, automaticIds, selectedHost, contextEstimate.tokens, claimedProbeRoutes, env))
     .filter((item): item is SelectionCandidate => item !== null);
+  const priority = codingModels !== undefined
+    ? new Map(codingModels.map((routeId, index) => [routeId, index]))
+    : null;
   inferEffectiveReasoningEfforts(candidates);
   restrictAutomaticEffortCandidates(candidates, complexityEstimate.effort);
-  candidates.sort((a, b) => Number(b.selectable) - Number(a.selectable)
+  candidates.sort((a, b) => {
+    if (priority) {
+      return (priority.get(a.route_id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(b.route_id) ?? Number.MAX_SAFE_INTEGER)
+        || Number(b.selectable) - Number(a.selectable)
+        || recommendationTieBreak(a, b, complexityEstimate.effort, contextEstimate.tokens);
+    }
+    return Number(b.selectable) - Number(a.selectable)
       || Number(b.automatic_eligible) - Number(a.automatic_eligible)
       || (b.task_score ?? -1) - (a.task_score ?? -1)
-      || recommendationTieBreak(a, b, complexityEstimate.effort, contextEstimate.tokens));
+      || recommendationTieBreak(a, b, complexityEstimate.effort, contextEstimate.tokens);
+  });
   const automatic = candidates.filter((item) => item.automatic_eligible);
+  const priorityOrdered = priority
+    ? automatic.slice().sort((left, right) =>
+      (priority.get(left.route_id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(right.route_id) ?? Number.MAX_SAFE_INTEGER)
+      || recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens))
+    : null;
   const ranked = automatic.filter((item) => (item.task_score || 0) > 0);
   const topScore = ranked[0]?.task_score ?? null;
   const top = topScore == null ? [] : ranked
     .filter((item) => item.task_score === topScore)
     .sort((left, right) => recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
   const fallback = automatic.slice().sort((left, right) => recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
-  const recommended = top[0]?.model_id || fallback[0]?.model_id || null;
+  const recommended = priorityOrdered?.[0]?.model_id || top[0]?.model_id || fallback[0]?.model_id || null;
   let reason: SelectionUnit["recommendation_reason"];
-  if (!automatic.length) reason = "NO_SELECTABLE_RANKED_CANDIDATE";
+  if (!automatic.length) reason = codingModels !== undefined ? "CODING_MODELS_EXHAUSTED" : "NO_SELECTABLE_RANKED_CANDIDATE";
+  else if (priority) reason = "CODING_PRIORITY";
   else if (!ranked.length) reason = "GENERAL_CAPABILITY_FALLBACK";
   else if (top.length > 1) reason = "DETERMINISTIC_TOP_SCORE_TIEBREAK";
   else reason = "UNIQUE_HIGHEST_TASK_SCORE";
@@ -499,8 +576,8 @@ function proposalQuotaPools(units: SelectionUnit[]): SelectionQuotaPool[] {
   return buildSelectionQuotaPools([...candidates.values()]);
 }
 
-function nextProposalId(cwd: string): string {
-  const dir = selectionsDir(cwd);
+function nextProposalId(cwd: string, env?: NodeJS.ProcessEnv): string {
+  const dir = selectionsDir(cwd, env);
   if (!fs.existsSync(dir)) return "sel-0001";
   let max = 0;
   for (const name of fs.readdirSync(dir)) {
@@ -517,6 +594,7 @@ export function createSelectionProposal(cwd: string, {
   sourceFingerprint,
   payload = {},
   now = new Date(),
+  env,
 }: {
   host?: string;
   source: SelectionProposal["source"];
@@ -524,18 +602,19 @@ export function createSelectionProposal(cwd: string, {
   sourceFingerprint: string;
   payload?: UnknownRecord;
   now?: Date | string | number;
+  env?: NodeJS.ProcessEnv;
 }): SelectionProposal {
   if (source === "standalone" && (payload.source_shape !== "multi-unit-v1" || !Array.isArray(payload.units))) {
     throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: standalone proposals must use the multi-unit shape");
   }
   const scopedHost = host || units.find((unit) => unit.host)?.host;
-  const snapshot = readRouteSnapshot(cwd, { host: scopedHost });
+  const snapshot = readRouteSnapshot(cwd, { host: scopedHost, env });
   if (!snapshot) throw new Error("ROUTE_SNAPSHOT_REQUIRED: run baton config before model selection");
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const proposal: SelectionProposal = {
     schema_version: 2,
     ...(scopedHost ? { host: scopedHost } : {}),
-    id: nextProposalId(cwd),
+    id: nextProposalId(cwd, env),
     status: "pending_confirmation",
     source,
     created_at: createdAt,
@@ -550,7 +629,7 @@ export function createSelectionProposal(cwd: string, {
     approvals: [],
     history: [{ event: "pending_confirmation", at: createdAt }],
   };
-  writeSelectionProposal(cwd, proposal);
+  writeSelectionProposal(cwd, proposal, env);
   return proposal;
 }
 
@@ -558,8 +637,8 @@ export function selectionSourceFingerprint(value: unknown): string {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function writeSelectionProposal(cwd: string, proposal: SelectionProposal): SelectionProposal {
-  const dir = selectionsDir(cwd);
+export function writeSelectionProposal(cwd: string, proposal: SelectionProposal, env?: NodeJS.ProcessEnv): SelectionProposal {
+  const dir = selectionsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${proposal.id}.json`);
   const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
@@ -572,8 +651,8 @@ export function writeSelectionProposal(cwd: string, proposal: SelectionProposal)
   return proposal;
 }
 
-export function readSelectionProposal(cwd: string, id: string): SelectionProposal {
-  const file = path.join(selectionsDir(cwd), `${id}.json`);
+export function readSelectionProposal(cwd: string, id: string, env?: NodeJS.ProcessEnv): SelectionProposal {
+  const file = path.join(selectionsDir(cwd, env), `${id}.json`);
   if (!fs.existsSync(file)) throw new Error(`selection proposal not found: ${id}`);
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as SelectionProposal;
   if (value.schema_version !== 2) {
@@ -588,11 +667,11 @@ export function readSelectionProposal(cwd: string, id: string): SelectionProposa
   return value;
 }
 
-export function listSelectionProposals(cwd: string): SelectionProposal[] {
-  const dir = selectionsDir(cwd);
+export function listSelectionProposals(cwd: string, env?: NodeJS.ProcessEnv): SelectionProposal[] {
+  const dir = selectionsDir(cwd, env);
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
     .filter((name) => /^sel-\d+\.json$/.test(name))
-    .map((name) => readSelectionProposal(cwd, name.slice(0, -5)))
+    .map((name) => readSelectionProposal(cwd, name.slice(0, -5), env))
     .sort((a, b) => a.id.localeCompare(b.id));
 }

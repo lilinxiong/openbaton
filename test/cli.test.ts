@@ -3,17 +3,62 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn as spawnProcess } from "node:child_process";
 import { run } from "../src/cli.js";
 import type { CliModelCatalog } from "../src/adapters/contract.js";
 import { receiptsDir, selectionsDir, spawnsDir } from "../src/lib/paths.js";
 import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { markRouteExhausted } from "../src/lib/model-availability.js";
 import { withHome, fakeEnv } from "./home.js";
 import { adapterProviderFor, configureCli } from "./configure.js";
 
 function capture() {
   const chunks: string[] = [];
   return { write(value: unknown) { chunks.push(String(value)); }, text() { return chunks.join(""); } };
+}
+
+async function runInFreshProcess(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number; output: string }> {
+  const moduleUrl = new URL("../src/cli.ts", import.meta.url).href;
+  const source = `
+    (async () => {
+      const { run } = await import(process.env.BATON_TEST_CLI_URL);
+      const chunks = [];
+      const sink = { write(value) { chunks.push(String(value)); } };
+      const code = await run(JSON.parse(process.env.BATON_TEST_ARGS), {
+        cwd: process.env.BATON_TEST_CWD,
+        env: process.env,
+        stdout: sink,
+        stderr: sink,
+      });
+      process.stdout.write(JSON.stringify({ code, output: chunks.join("") }));
+    })().catch((error) => { console.error(error); process.exitCode = 1; });
+  `;
+  return await new Promise((resolve, reject) => {
+    const child = spawnProcess(process.execPath, ["-e", source], {
+      cwd: process.cwd(),
+      env: {
+        ...env,
+        BATON_TEST_CLI_URL: moduleUrl,
+        BATON_TEST_ARGS: JSON.stringify(args),
+        BATON_TEST_CWD: cwd,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const output: string[] = [];
+    const errors: string[] = [];
+    child.stdout.on("data", (chunk) => output.push(String(chunk)));
+    child.stderr.on("data", (chunk) => errors.push(String(chunk)));
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code !== 0) reject(new Error(errors.join("") || `child exited ${code}`));
+      else resolve(JSON.parse(output.join("")) as { code: number; output: string });
+    });
+  });
 }
 
 const CATALOG: CliModelCatalog = {
@@ -49,7 +94,7 @@ async function initAndConfigure(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   const out = capture();
   assert.equal(await run([
     "config", "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
-    "--subagent-model", "all", "--enable",
+    "--coding-model", "gpt-5.3-codex-spark", "--coding-model", "gpt-5.4-mini", "--enable",
   ], { cwd, env, stdout: out, stderr: out, adapterProvider: adapterProviderFor(CATALOG) }), 0, out.text());
 }
 
@@ -99,7 +144,7 @@ describe("CLI automatic model routing", () => {
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       const out = capture();
       assert.equal(await run(["match", "implement a migration", "--host", "codex"], { cwd, env, stdout: out, stderr: out }), 1);
-      assert.match(out.text(), /no automatic configured candidate|no enabled CLI subagent models|run baton config/i);
+      assert.match(out.text(), /no automatic configured candidate|no enabled Coding models|run baton config/i);
     });
   });
 
@@ -114,7 +159,7 @@ describe("CLI automatic model routing", () => {
         cwd, env, stdout: match, stderr: match,
       }), 0, match.text());
       const preview = JSON.parse(match.text());
-      assert.equal(preview.recommended_model_id, "gpt-5.4-mini@low");
+      assert.equal(preview.recommended_model_id, "gpt-5.3-codex-spark@low");
       assert.ok(preview.candidates.some((candidate: { model_id: string }) => candidate.model_id === "gpt-5.3-codex-spark@low"));
 
       const spawn = capture();
@@ -123,9 +168,9 @@ describe("CLI automatic model routing", () => {
       }), 0, spawn.text());
       const approved = JSON.parse(spawn.text());
       assert.equal(approved.status, "approved");
-      assert.equal(approved.approvals[0].selected_model_id, "gpt-5.4-mini@low");
+      assert.equal(approved.approvals[0].selected_model_id, "gpt-5.3-codex-spark@low");
       assert.equal(approved.approvals[0].confirmed_by, "baton-recommendation");
-      assert.equal(approved.approvals[0].service_tier, "fast");
+      assert.equal(approved.approvals[0].service_tier, null);
       assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")));
 
       const dispatch = capture();
@@ -133,10 +178,118 @@ describe("CLI automatic model routing", () => {
         cwd, env, stdout: dispatch, stderr: dispatch,
       }), 0, dispatch.text());
       const reserved = JSON.parse(dispatch.text()).reserved[0];
-      assert.equal(reserved.model, "gpt-5.4-mini");
+      assert.equal(reserved.model, "gpt-5.3-codex-spark");
       assert.equal(reserved.reasoning_effort, "low");
-      assert.equal(reserved.service_tier, "fast");
+      assert.equal(reserved.service_tier, null);
       assert.equal(reserved.fork_context, false);
+    });
+  });
+
+  it("reports Coding routes in configured order with explicit eligibility and recovery reasons", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-coding-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      markRouteExhausted(cwd, { host: "codex", routeId: "gpt-5.3-codex-spark" }, {
+        reason: "MODEL_QUOTA_EXHAUSTED",
+        resetAt: "2099-01-01T00:00:00.000Z",
+        env,
+      });
+
+      const output = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], {
+        cwd, env, stdout: output, stderr: output,
+      }), 0, output.text());
+      const status = JSON.parse(output.text());
+      assert.equal(status.coding_dispatch_ready, true);
+      assert.equal(status.coding_dispatch_reason, "READY");
+      assert.equal(status.core_dispatch_ready, true);
+      assert.equal(status.hook_posture.hook_configured, false);
+      assert.equal(status.hook_posture.audit_only, true);
+      assert.equal(status.hook_posture.core_dispatch_ready, true);
+      assert.deepEqual(status.coding_models.map((route: { route_id: string }) => route.route_id), [
+        "gpt-5.3-codex-spark",
+        "gpt-5.4-mini",
+      ]);
+      assert.deepEqual(status.coding_models.map((route: { eligibility_code: string }) => route.eligibility_code), [
+        "DURABLE_QUOTA_EXHAUSTED",
+        "AVAILABLE",
+      ]);
+      assert.equal(status.coding_models[0].eligible, false);
+      assert.equal(status.coding_models[1].eligible, true);
+      assert.match(status.coding_models[0].eligibility_reason, /MODEL_QUOTA_EXHAUSTED/);
+    });
+  });
+
+  it("returns CODING_MODELS_EXHAUSTED with ordered route reasons when no Coding route remains", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-all-exhausted-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(cwd, env);
+      for (const routeId of ["gpt-5.3-codex-spark", "gpt-5.4-mini"]) {
+        markRouteExhausted(cwd, { host: "codex", routeId }, {
+          reason: "MODEL_QUOTA_EXHAUSTED",
+          resetAt: "2099-01-01T00:00:00.000Z",
+          env,
+        });
+      }
+
+      for (const args of [
+        ["match", "implement a quick small coding fix", "--host", "codex", "--json"],
+        ["spawn", "implement a quick small coding fix", "--host", "codex", "--classification", "implementation", "--json"],
+      ]) {
+        const output = capture();
+        assert.equal(await run(args, { cwd, env, stdout: output, stderr: output }), 1);
+        assert.match(output.text(), /CODING_MODELS_EXHAUSTED/);
+        assert.ok(output.text().indexOf("gpt-5.3-codex-spark") < output.text().indexOf("gpt-5.4-mini"));
+      }
+      const statusOutput = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], {
+        cwd, env, stdout: statusOutput, stderr: statusOutput,
+      }), 0, statusOutput.text());
+      const status = JSON.parse(statusOutput.text());
+      assert.equal(status.coding_dispatch_ready, false);
+      assert.equal(status.coding_dispatch_reason, "CODING_MODELS_EXHAUSTED");
+      assert.deepEqual(fs.existsSync(spawnsDir(cwd, env)) ? fs.readdirSync(spawnsDir(cwd, env)) : [], []);
+    });
+  });
+
+  it("persists explicit quota across a fresh process/project and restores priority after reset", async () => {
+    await withHome(async (home) => {
+      const projectA = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-quota-project-a-"));
+      const projectB = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-quota-project-b-"));
+      const env = fakeEnv(home);
+      await initAndConfigure(projectA, env);
+
+      const spawnOutput = capture();
+      assert.equal(await run([
+        "spawn", "implement a quick small coding fix", "--host", "codex",
+        "--classification", "implementation", "--dispatch", "--capacity", "1", "--json",
+      ], { cwd: projectA, env, stdout: spawnOutput, stderr: spawnOutput }), 0, spawnOutput.text());
+      assert.equal(JSON.parse(spawnOutput.text()).reserved[0].model, "gpt-5.3-codex-spark");
+
+      const failed = await runInFreshProcess([
+        "dispatch", "fail", "spn-0001", "--host", "codex",
+        "--code", "MODEL_QUOTA_EXHAUSTED", "--remaining-percent", "0",
+        "--message", "model quota exhausted", "--json",
+      ], projectA, env);
+      assert.equal(failed.code, 0, failed.output);
+
+      const fallback = await runInFreshProcess([
+        "match", "implement a quick small coding fix", "--host", "codex", "--json",
+      ], projectB, env);
+      assert.equal(fallback.code, 0, fallback.output);
+      assert.equal(JSON.parse(fallback.output).recommended_model_id, "gpt-5.4-mini@low");
+
+      const reset = await runInFreshProcess([
+        "models", "reset", "gpt-5.3-codex-spark", "--host", "codex", "--json",
+      ], projectB, env);
+      assert.equal(reset.code, 0, reset.output);
+      const restored = await runInFreshProcess([
+        "match", "implement a quick small coding fix", "--host", "codex", "--json",
+      ], projectB, env);
+      assert.equal(restored.code, 0, restored.output);
+      assert.match(JSON.parse(restored.output).recommended_model_id, /^gpt-5\.3-codex-spark@/);
     });
   });
 
@@ -157,6 +310,11 @@ describe("CLI automatic model routing", () => {
         cwd, env, stdout: bind, stderr: bind,
       }), 0, bind.text());
       assert.equal(JSON.parse(bind.text()).ticket.agent_id, "codex-hook-uuid");
+      const status = capture();
+      assert.equal(await run(["status", "--host", "codex", "--json"], {
+        cwd, env, stdout: status, stderr: status,
+      }), 0, status.text());
+      assert.equal(JSON.parse(status.text()).spawns.tickets[0].execution_handle, "task_name:codex-task-name");
     });
   });
 
@@ -260,7 +418,7 @@ describe("CLI automatic model routing", () => {
       configureCli(disabledCodex, disabledEnv, "grok", ["grok/model"]);
       const disabledOut = capture();
       assert.equal(await run(["spawn", "implement the disabled Codex unit", "--host", "codex", "--json"], { cwd: disabledCodex, env: disabledEnv, stdout: disabledOut, stderr: disabledOut }), 0);
-      assert.match(disabledOut.text(), /director-local|Baton host profile is disabled/i);
+      assert.match(disabledOut.text(), /bypassed|ACTIVATION_DISABLED|tickets=\[\]/i);
       assert.equal(fs.existsSync(path.join(spawnsDir(disabledCodex), "spn-0001.json")), false);
 
       const explicitGrok = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-e2e-grok-"));

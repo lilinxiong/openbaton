@@ -3,12 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { hostHome, packageRoot, displayHomePath } from "./paths.js";
 import { findBinaryOnPath, isExecutableFile } from "./executables.js";
+import { latestHookObservation } from "./hook-observation.js";
 
 /** The command is deliberately stable so Baton can merge only its own hooks. */
 export const BATON_CODEX_HOOK_COMMAND = "baton guard hook";
-export const BATON_CODEX_HOOK_DESCRIPTION = "Baton-owned host guard (PreToolUse and SubagentStart)";
-export const BATON_CODEX_HOOK_EVENTS = ["PreToolUse", "SubagentStart"] as const;
-export const BATON_CODEX_PRETOOLUSE_MATCHER = "^(Bash|apply_patch|Edit|Write|Agent|spawn_agent|(?:[A-Za-z0-9_]+\\.)+spawn_agent)$";
+export const BATON_CODEX_HOOK_DESCRIPTION = "Baton-owned host guard (scoped PreToolUse)";
+export const BATON_CODEX_HOOK_EVENTS = ["PreToolUse"] as const;
+const BATON_CODEX_LEGACY_EVENTS = ["PreToolUse", "SubagentStart"] as const;
+export const BATON_CODEX_PRETOOLUSE_MATCHER = "^(Bash|apply_patch|Edit|Write)$";
 
 export type CodexHookEvent = (typeof BATON_CODEX_HOOK_EVENTS)[number];
 
@@ -25,6 +27,8 @@ export interface CodexHooksOptions {
   /** Entry used by the runtime to execute the current Baton implementation. */
   entryPath?: string;
   cwd?: string;
+  /** Explicit mutation-guard posture. The config layer supplies this value. */
+  guardMode?: "enforce" | "off";
 }
 
 export interface CodexHooksStatus {
@@ -39,9 +43,18 @@ export interface CodexHooksStatus {
   command: string | null;
   command_usable: boolean;
   operational_error: string | null;
-  trust_required: true;
+  trust_required: boolean;
   trust_command: "/hooks";
   specialized_tool_paths_may_opt_out: true;
+  guard_mode: "enforce" | "off";
+  /** Dispatch integration is supplied by the control plane, not inferred from hook install. */
+  core_dispatch_ready: boolean | "unknown";
+  hook_configured: boolean;
+  /** Hook execution telemetry is read from the workspace observation ledger. */
+  recent_hook_observation: boolean | "unknown";
+  last_observed_at: string | null;
+  coverage: "scoped-pretooluse" | "none";
+  audit_only: boolean;
 }
 
 export interface CodexHooksInstallResult extends CodexHooksStatus {
@@ -288,11 +301,12 @@ function matcherGroup(matcher: string, command: string): HookMatcherGroup {
 }
 
 /** Canonical entries added to a user hook layer. All are synchronous. */
-export function batonCodexHookEntries(command = BATON_CODEX_HOOK_COMMAND): Record<CodexHookEvent, HookMatcherGroup[]> {
-  return {
-    PreToolUse: [matcherGroup(BATON_CODEX_PRETOOLUSE_MATCHER, command)],
-    SubagentStart: [matcherGroup(".*", command)],
-  };
+export function batonCodexHookEntries(
+  command = BATON_CODEX_HOOK_COMMAND,
+  guardMode: "enforce" | "off" = "enforce",
+): Record<CodexHookEvent, HookMatcherGroup[]> {
+  if (guardMode === "off") return { PreToolUse: [] };
+  return { PreToolUse: [matcherGroup(BATON_CODEX_PRETOOLUSE_MATCHER, command)] };
 }
 
 function readHooksFile(file: string): HooksFile | null {
@@ -316,13 +330,20 @@ function readHooksFile(file: string): HooksFile | null {
  * Existing Baton entries are replaced in-place at the end of their event list,
  * which makes repeated `init`/`update` calls idempotent.
  */
-export function mergeBatonCodexHooks(existing: unknown, command = BATON_CODEX_HOOK_COMMAND): HooksFile {
+export function mergeBatonCodexHooks(
+  existing: unknown,
+  command = BATON_CODEX_HOOK_COMMAND,
+  guardMode: "enforce" | "off" = "enforce",
+): HooksFile {
   const output: HooksFile = isRecord(existing) ? cloned(existing) as HooksFile : {};
   const hooks = isRecord(output.hooks) ? output.hooks : {};
   output.hooks = hooks;
-  const entries = batonCodexHookEntries(command);
+  const entries = batonCodexHookEntries(command, guardMode);
 
-  for (const event of BATON_CODEX_HOOK_EVENTS) {
+  // Always inspect the legacy lifecycle event even though it is no longer
+  // part of the current manifest. This is the migration/removal path for
+  // installations that predate the task-name native attachment contract.
+  for (const event of BATON_CODEX_LEGACY_EVENTS) {
     const current = hooks[event];
     if (current !== undefined && !Array.isArray(current)) {
       throw new Error(`CODEX_HOOKS_INVALID_EVENT: hooks.${event} must be an array`);
@@ -330,9 +351,16 @@ export function mergeBatonCodexHooks(existing: unknown, command = BATON_CODEX_HO
     const retained = (Array.isArray(current) ? current : [])
       .map(retainUnrelatedHandlers)
       .filter((item): item is unknown => item !== null);
-    hooks[event] = [...retained, ...cloned(entries[event])];
+    const next = event === "PreToolUse" ? [...retained, ...cloned(entries.PreToolUse)] : retained;
+    if (next.length) hooks[event] = next;
+    else delete hooks[event];
   }
   return output;
+}
+
+/** Exact inverse used by uninstall: remove only recognized Baton handlers. */
+export function removeBatonCodexHooks(existing: unknown): HooksFile {
+  return mergeBatonCodexHooks(existing, BATON_CODEX_HOOK_COMMAND, "off");
 }
 
 function countBatonEntries(value: unknown): { count: number; events: CodexHookEvent[] } {
@@ -404,13 +432,23 @@ function writeJsonAtomic(file: string, value: unknown): void {
   }
 }
 
-function statusFor(file: string, cwd: string | undefined, env: NodeJS.ProcessEnv | undefined, value: unknown): CodexHooksStatus {
+function statusFor(
+  file: string,
+  cwd: string | undefined,
+  env: NodeJS.ProcessEnv | undefined,
+  value: unknown,
+  guardMode: "enforce" | "off",
+): CodexHooksStatus {
   const found = countBatonEntries(value);
   const commands = batonCommands(value);
   const command = commands.at(-1) || null;
   const unusable = commands.find((item) => !commandOperational(item, { cwd, env }));
   const configured = found.count > 0;
-  const operational = configured && !unusable;
+  const operational = guardMode === "off" ? true : configured && !unusable;
+  const observation = latestHookObservation(cwd, "codex", env);
+  const recentObservation = cwd
+    ? Boolean(observation && Date.now() - new Date(observation.last_observed_at).getTime() <= 5 * 60_000)
+    : "unknown" as const;
   return {
     path: file,
     display_path: displayHomePath(file, { cwd, env: undefined }),
@@ -421,18 +459,37 @@ function statusFor(file: string, cwd: string | undefined, env: NodeJS.ProcessEnv
     configured,
     operational,
     command,
-    command_usable: operational,
-    operational_error: unusable ? "hook command is not usable: " + unusable : null,
-    trust_required: true,
+    command_usable: guardMode === "off" ? false : operational,
+    operational_error: guardMode === "enforce" && !configured
+      ? "required scoped PreToolUse hook is not configured"
+      : unusable ? "hook command is not usable: " + unusable : null,
+    trust_required: guardMode === "enforce",
     trust_command: "/hooks",
     specialized_tool_paths_may_opt_out: true,
+    guard_mode: guardMode,
+    core_dispatch_ready: "unknown",
+    hook_configured: configured,
+    recent_hook_observation: recentObservation,
+    last_observed_at: observation?.last_observed_at || null,
+    coverage: guardMode === "off" ? "none" : "scoped-pretooluse",
+    audit_only: guardMode === "off",
   };
+}
+
+function emptyCodexDocument(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "hooks")) return false;
+  return isRecord(value.hooks) && Object.keys(value.hooks).length === 0;
+}
+
+function resolveGuardMode(options: CodexHooksOptions): "enforce" | "off" {
+  const explicit = options.guardMode || String((options.env || process.env).BATON_GUARD_MODE || "").trim().toLowerCase();
+  return explicit === "off" ? "off" : "enforce";
 }
 
 export function codexHooksStatus(options: CodexHooksOptions = {}): CodexHooksStatus {
   const file = codexHooksPath(options);
   const value = readHooksFile(file);
-  const status = statusFor(file, options.cwd, options.env, value);
+  const status = statusFor(file, options.cwd, options.env, value, resolveGuardMode(options));
   status.display_path = displayHomePath(file, { cwd: options.cwd, env: options.env });
   return status;
 }
@@ -440,14 +497,30 @@ export function codexHooksStatus(options: CodexHooksOptions = {}): CodexHooksSta
 /** Install or refresh the Baton hook while preserving every unrelated entry. */
 export function installCodexHooks(options: CodexHooksOptions = {}): CodexHooksInstallResult {
   const file = codexHooksPath(options);
-  const command = resolveCodexHookCommand(options);
+  const guardMode = resolveGuardMode(options);
+  // Guard-off is deliberately a zero-hook posture and must not require a
+  // usable executable merely to remove stale Baton entries.
+  const command = guardMode === "off" ? BATON_CODEX_HOOK_COMMAND : resolveCodexHookCommand(options);
   const before = readHooksFile(file);
-  const merged = mergeBatonCodexHooks(before || {}, command);
+  // Explicit off with no existing integration is a true zero-hook/no-file
+  // posture. Do not create an empty hooks.json merely to report that state.
+  if (guardMode === "off" && before == null) {
+    const status = statusFor(file, options.cwd, options.env, null, guardMode);
+    status.display_path = displayHomePath(file, { cwd: options.cwd, env: options.env });
+    return { ...status, changed: false, action: "kept" };
+  }
+  const merged = mergeBatonCodexHooks(before || {}, command, guardMode);
   const beforeText = before == null ? null : `${JSON.stringify(before, null, 2)}\n`;
   const afterText = `${JSON.stringify(merged, null, 2)}\n`;
   const changed = beforeText !== afterText;
+  if (changed && guardMode === "off" && emptyCodexDocument(merged)) {
+    fs.unlinkSync(file);
+    const status = statusFor(file, options.cwd, options.env, null, guardMode);
+    status.display_path = displayHomePath(file, { cwd: options.cwd, env: options.env });
+    return { ...status, changed: true, action: "updated" };
+  }
   if (changed) writeJsonAtomic(file, merged);
-  const status = statusFor(file, options.cwd, options.env, merged);
+  const status = statusFor(file, options.cwd, options.env, merged, guardMode);
   status.display_path = displayHomePath(file, { cwd: options.cwd, env: options.env });
   return {
     ...status,

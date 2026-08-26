@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { runConfig } from "../src/commands/config.js";
-import { cliProfileForHost, loadConfig } from "../src/lib/config.js";
+import { cliProfileForHost, loadConfig, saveConfig } from "../src/lib/config.js";
 import type { CliModel, CliModelCatalog } from "../src/adapters/contract.js";
 import {
   isCommitOnlyClassification,
@@ -155,7 +155,8 @@ describe("per-CLI configuration and ops labels", () => {
         enabled: true,
         runner: "gpt-5.4-mini",
         longctx: "gpt-5.5",
-        subagent_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.5"],
+        coding_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
+        guard_mode: "off",
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -222,13 +223,15 @@ describe("per-CLI configuration and ops labels", () => {
         enabled: true,
         runner: "gpt-5.4-mini",
         longctx: "gpt-5.5",
-        subagent_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.5"],
+        coding_models: ["gpt-5.6-luna", "gpt-5.4-mini"],
+        guard_mode: "off",
       });
       assert.deepEqual(config.cli.grok, {
         enabled: true,
         runner: "grok-4.5",
         longctx: "",
-        subagent_models: ["grok-4.5", "grok-4.6"],
+        coding_models: ["grok-4.5", "grok-4.6"],
+        guard_mode: "enforce",
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -260,12 +263,11 @@ describe("per-CLI configuration and ops labels", () => {
         "--cli", "codex",
         "--runner", "gpt-5.4-mini",
         "--longctx", "-",
-        "--subagent-model", "gpt-5.3-codex-spark",
+        "--coding-model", "gpt-5.3-codex-spark",
         "--enable",
       ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(CATALOG) }), 0);
-      assert.deepEqual(loadConfig(cwd, { env }).cli.codex.subagent_models, [
+      assert.deepEqual(loadConfig(cwd, { env }).cli.codex.coding_models, [
         "gpt-5.3-codex-spark",
-        "gpt-5.4-mini",
       ]);
       const removed = capture();
       assert.equal(await run(["config", "model-selection", "on"], { cwd, env, stdout: removed, stderr: removed }), 1);
@@ -289,7 +291,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--cli", "grok",
         "--runner", "grok-4.5",
         "--longctx", "-",
-        "--subagent-model", "grok-4.5",
+        "--coding-model", "grok-4.5",
         "--enable",
       ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(grokCatalog) }), 0);
       assert.match(out.text(), /cli: grok \(enabled\)/);
@@ -311,7 +313,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--cli", "codex",
         "--runner", "gpt-5.4-mini",
         "--longctx", "gpt-5.3-codex-spark",
-        "--subagent-model", "gpt-5.6-luna",
+        "--coding-model", "gpt-5.6-luna",
         "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       const available = cards(cwd);
@@ -352,7 +354,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--cli", "codex",
         "--runner", "gpt-5.4-mini",
         "--longctx", "gpt-5.3-codex-spark",
-        "--subagent-model", "all",
+        "--coding-model", "all",
         "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       const available = cards(cwd);
@@ -415,7 +417,7 @@ describe("per-CLI configuration and ops labels", () => {
         "--cli", "codex",
         "--runner", "gpt-5.4-mini",
         "--longctx", "gpt-5.3-codex-spark",
-        "--subagent-model", "all",
+        "--coding-model", "all",
         "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
 
@@ -447,6 +449,8 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(config.cli.codex, undefined);
       assert.equal(cliProfileForHost(config, "codex").runner, "");
       assert.equal(cliProfileForHost(config, "codex").longctx, "");
+      config.cli.codex = { enabled: true, runner: "", longctx: "", coding_models: [], guard_mode: "off" };
+      saveConfig(cwd, config, { env });
       const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), {
         env, host: "codex", classification: { kind: "mechanical", operation: "test" },
       });
@@ -470,16 +474,15 @@ describe("per-CLI configuration and ops labels", () => {
         "rg parser",
       ]) {
         const out = capture();
-        assert.equal(await run(["spawn", text, "--host", "codex"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
-        assert.match(out.text(), /director-local/);
+        assert.equal(await run(["spawn", text, "--host", "codex"], { cwd, env, stdout: out, stderr: out }), 1, out.text());
+        assert.match(out.text(), /CLASSIFICATION_REQUIRED|OPS_ROUTE_UNAVAILABLE/);
         assert.deepEqual(spawnTicketFiles(cwd), []);
 
         const dispatchOut = capture();
         assert.equal(await run(["spawn", text, "--host", "codex", "--dispatch"], {
           cwd, env, stdout: dispatchOut, stderr: dispatchOut,
-        }), 0, dispatchOut.text());
-        assert.match(dispatchOut.text(), /director-local/);
-        assert.match(dispatchOut.text(), /spawn --dispatch ignored; nothing queued to reserve/);
+        }), 1, dispatchOut.text());
+        assert.match(dispatchOut.text(), /CLASSIFICATION_REQUIRED|OPS_ROUTE_UNAVAILABLE/);
         assert.deepEqual(spawnTicketFiles(cwd), []);
       }
     });
@@ -492,7 +495,7 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       assert.equal(await runConfig([
         "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
-        "--subagent-model", "all", "--disable",
+        "--coding-model", "all", "--disable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       assert.equal(loadConfig(cwd, { env }).cli.codex.enabled, false);
 
@@ -502,7 +505,7 @@ describe("per-CLI configuration and ops labels", () => {
       });
       const text = out.text();
       assert.ok(
-        code === 0 && /director-local/i.test(text)
+        code === 0 && /bypassed|ACTIVATION_DISABLED/i.test(text)
           || code === 1 && /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i.test(text),
         text,
       );
@@ -518,7 +521,7 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
       assert.equal(await runConfig([
         "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "-",
-        "--subagent-model", "all", "--disable",
+        "--coding-model", "all", "--disable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CATALOG) }), 0);
       assert.deepEqual(listOpsRouteChoices(cwd, "runner", cards(cwd), { env, host: "codex" }), []);
       assert.equal(resolveOpsDispatch(cwd, "bun test", cards(cwd), {

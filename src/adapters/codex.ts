@@ -30,6 +30,7 @@ export const CODEX_HOST_METADATA: CliHostMetadata = {
   isInvoking: (env = process.env) =>
     Boolean(String(env.CODEX_SANDBOX || env.CODEX_INTERNAL || "").trim()),
   guard: true,
+  executionHandleKind: "task_name",
 };
 
 /** Resolve the selected Codex CLI, with the desktop bundle as a fallback. */

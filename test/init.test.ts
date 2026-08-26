@@ -103,7 +103,7 @@ describe("Codex init and update", () => {
       assert.doesNotMatch(grokSkill, /models --json/);
       assert.match(grokSkill, /Director-owned classification is authoritative/);
       assert.match(grokSkill, /Never `git commit` from this director session for a classified unit/);
-      assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
+      assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `[^`]+` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
       assert.match(grokSkill, /order-ready frontier/);
       assert.match(grokSkill, /write-set intersection/);
@@ -195,7 +195,8 @@ describe("Codex init and update", () => {
         enabled: true,
         runner: "",
         longctx: "",
-        subagent_models: ["grok-4.5"],
+        coding_models: ["grok-4.5"],
+        guard_mode: "enforce",
       });
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
@@ -222,7 +223,7 @@ describe("Codex init and update", () => {
       // Shared contract clauses every host skill must carry.
       assert.match(skill, /Never expose human model selection/);
       assert.match(skill, /Director-owned classification is authoritative/);
-      assert.match(skill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets/);
+      assert.match(skill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `[^`]+` tickets/);
       assert.match(skill, /--dispatch --json/);
       assert.match(skill, /When `cli.claude.enabled` is true and the user applies an OpenSpec change/);
       assert.match(skill, /Do not edit OpenSpec apply skills/);
@@ -306,6 +307,35 @@ describe("Codex init and update", () => {
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
       assert.deepEqual(Object.keys(raw.cli as Record<string, unknown>), ["claude"]);
+    });
+  });
+
+  it("adds a selected host without migrating another profile's legacy Coding field", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-legacy-profile-"));
+      const env = fakeEnv(home);
+      const file = path.join(home, ".baton", "config.toml");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, [
+        "[director]",
+        "max_concurrent = 4",
+        "max_depth = 1",
+        "",
+        "[cli.codex]",
+        "enabled = true",
+        'runner = "gpt-5.6-luna"',
+        'longctx = "gpt-5.6-luna"',
+        'subagent_models = ["gpt-5.3-codex-spark", "gpt-5.6-luna"]',
+      ].join("\n"), "utf8");
+
+      await initProject(cwd, { env, cli: "grok" });
+      const saved = fs.readFileSync(file, "utf8");
+      assert.match(saved, /subagent_models = \["gpt-5\.3-codex-spark", "gpt-5\.6-luna"\]/);
+      assert.match(saved, /\[cli\.grok\]/);
+      assert.match(saved, /coding_models = \[\]/);
+      const config = loadConfig(cwd, { env });
+      assert.equal(config.cli.grok.enabled, true);
+      assert.deepEqual(config.cli.codex.coding_models, ["gpt-5.3-codex-spark", "gpt-5.6-luna"]);
     });
   });
 

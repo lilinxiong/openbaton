@@ -21,10 +21,10 @@ function project(): string {
   saveConfig(cwd, {
     director: { max_concurrent: 4, max_depth: 1 },
     cli: {
-      codex: { enabled: true, runner: "codex-model", longctx: "", subagent_models: ["codex-model"] },
-      grok: { enabled: true, runner: "grok-model", longctx: "", subagent_models: ["grok-model"] },
-      cursor: { enabled: true, runner: "cursor-model", longctx: "", subagent_models: ["cursor-model"] },
-      claude: { enabled: true, runner: "claude-model", longctx: "", subagent_models: ["claude-model"] },
+      codex: { enabled: true, runner: "codex-model", longctx: "", coding_models: ["codex-model"], guard_mode: "enforce" },
+      grok: { enabled: true, runner: "grok-model", longctx: "", coding_models: ["grok-model"], guard_mode: "enforce" },
+      cursor: { enabled: true, runner: "cursor-model", longctx: "", coding_models: ["cursor-model"], guard_mode: "off" },
+      claude: { enabled: true, runner: "claude-model", longctx: "", coding_models: ["claude-model"], guard_mode: "enforce" },
     },
   });
   return cwd;
@@ -75,7 +75,7 @@ describe("host-scoped profiles", () => {
       publishRouteSnapshot(cwd, { models: [{ id: route, namespaced: route }] }, new Date(), { cli: host, host });
       const config = loadConfig(cwd);
       config.cli[host].enabled = true;
-      config.cli[host].subagent_models = [route];
+      config.cli[host].coding_models = [route];
       saveConfig(cwd, config);
       const planned = ticket(cwd, host, `zly-${host}`);
 
@@ -94,8 +94,8 @@ describe("host-scoped profiles", () => {
     const config = loadConfig(cwd);
     assert.equal(Object.hasOwn(config.cli, "active"), false);
     assert.equal(cliProfileForHost(config, "codex").enabled, true);
-    assert.deepEqual(cliProfileForHost(config, "codex").subagent_models, ["codex-model"]);
-    assert.deepEqual(cliProfileForHost(config, "grok").subagent_models, ["grok-model"]);
+    assert.deepEqual(cliProfileForHost(config, "codex").coding_models, ["codex-model"]);
+    assert.deepEqual(cliProfileForHost(config, "grok").coding_models, ["grok-model"]);
   });
 
   it("isolates current host-keyed route snapshots", () => {
@@ -115,9 +115,11 @@ describe("host-scoped profiles", () => {
     config.cli.codex.enabled = false;
     saveConfig(cwd, config);
     ticket(cwd, "codex");
-    const result = reserveNext(cwd, { capacity: 1, host: "codex" });
-    assert.equal(result.reserved.length, 0);
-    assert.equal(result.blocked[0]?.code, "CLI_CONFIG_DISABLED");
+    assert.throws(
+      () => reserveNext(cwd, { capacity: 1, host: "codex" }),
+      (error: unknown) => (error as { code?: string }).code === "ACTIVATION_DISABLED"
+        || (error as { code?: string }).code === "CLI_CONFIG_DISABLED",
+    );
   });
 
   it("rejects explicit reservation/bind host mismatch before dispatch", () => {
@@ -142,7 +144,7 @@ describe("host-scoped profiles", () => {
       enabled: false,
       runner: "",
       longctx: "",
-      subagent_models: [],
+      coding_models: [], guard_mode: "off",
     });
   });
 
@@ -191,7 +193,7 @@ describe("Claude Code host tickets", () => {
     snapshots(cwd);
     // Allow the exact route this ticket carries, so reservation can succeed.
     const config = loadConfig(cwd);
-    config.cli.claude.subagent_models = ["claude/model"];
+    config.cli.claude.coding_models = ["claude/model"];
     saveConfig(cwd, config);
     const planned = ticket(cwd, "claude", "spn-claude-ok");
     const result = reserveNext(cwd, { capacity: 1, host: "claude" });
@@ -225,9 +227,11 @@ describe("Claude Code host tickets", () => {
     config.cli.claude.enabled = false;
     saveConfig(cwd, config);
     ticket(cwd, "claude", "spn-claude-disabled");
-    const result = reserveNext(cwd, { capacity: 1, host: "claude" });
-    assert.equal(result.reserved.length, 0);
-    assert.equal(result.blocked[0]?.code, "CLI_CONFIG_DISABLED");
+    assert.throws(
+      () => reserveNext(cwd, { capacity: 1, host: "claude" }),
+      (error: unknown) => (error as { code?: string }).code === "ACTIVATION_DISABLED"
+        || (error as { code?: string }).code === "CLI_CONFIG_DISABLED",
+    );
   });
 
   it("persists its capacity separately from the other hosts", () => {
@@ -246,7 +250,7 @@ describe("Claude Code host tickets", () => {
     const cwd = project();
     snapshots(cwd);
     const config = loadConfig(cwd);
-    config.cli.claude.subagent_models = ["claude/model"];
+    config.cli.claude.coding_models = ["claude/model"];
     saveConfig(cwd, config);
     const running = ticket(cwd, "claude", "spn-claude-running");
     running.status = "running";

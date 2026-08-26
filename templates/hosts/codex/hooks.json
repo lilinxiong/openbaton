@@ -1,28 +1,15 @@
 {
-  "description": "Baton-owned Codex host guard. Review and trust it from /hooks.",
+  "description": "Baton-owned Codex mutation guard. Review and trust it from /hooks.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(Bash|apply_patch|Edit|Write|Agent|spawn_agent|(?:[A-Za-z0-9_]+\\.)+spawn_agent)$",
+        "matcher": "^(Bash|apply_patch|Edit|Write)$",
         "hooks": [
           {
             "type": "command",
             "command": "baton guard hook",
             "timeout": 30,
             "statusMessage": "Checking Baton host guard"
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "matcher": ".*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "baton guard hook",
-            "timeout": 30,
-            "statusMessage": "Checking Baton subagent identity"
           }
         ]
       }

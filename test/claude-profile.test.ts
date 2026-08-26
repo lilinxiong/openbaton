@@ -122,7 +122,8 @@ describe("Claude Code appears in the shared init/config flow", () => {
         runner: "claude-sonnet-5",
         longctx: "claude-opus-5[1m]",
         // Configured labels must be truthfully present in the allowlist.
-        subagent_models: ["claude-sonnet-5", "claude-opus-5[1m]"],
+        coding_models: ["claude-sonnet-5"],
+        guard_mode: "enforce",
       });
       assert.equal(config.director.max_concurrent, 4);
       // Other host profiles are untouched.
@@ -151,7 +152,7 @@ describe("Claude Code appears in the shared init/config flow", () => {
         "config", "--cli", "claude",
         "--runner", "claude-sonnet-5",
         "--longctx", "-",
-        "--subagent-model", "claude-sonnet-5,claude-haiku-4-5-20251001",
+        "--coding-model", "claude-sonnet-5,claude-haiku-4-5-20251001",
         "--enable", "--json",
       ], {
         cwd, env, stdout: out, stderr: out,
@@ -167,7 +168,7 @@ describe("Claude Code appears in the shared init/config flow", () => {
       assert.equal(payload.max_concurrent_source, "director");
       assert.equal(payload.max_depth_source, "director");
       assert.equal(payload.model_source, "claude catalog");
-      assert.deepEqual(payload.subagent_models, ["claude-sonnet-5", "claude-haiku-4-5-20251001"]);
+      assert.deepEqual(payload.coding_models, ["claude-sonnet-5", "claude-haiku-4-5-20251001"]);
       assert.equal(Object.hasOwn(payload, "active"), false);
       assert.equal(loadConfig(cwd, { env }).cli.claude.enabled, true);
       assert.equal(Object.hasOwn(loadConfig(cwd, { env }).cli, "active"), false);
@@ -200,32 +201,32 @@ describe("Claude Code appears in the shared init/config flow", () => {
       const grok = capture();
       assert.equal(await run([
         "config", "--cli", "grok", "--runner", "grok-4.5", "--longctx", "-",
-        "--subagent-model", "grok-4.5", "--enable",
+        "--coding-model", "grok-4.5", "--enable",
       ], { cwd, env, stdout: grok, stderr: grok, adapterProvider: adapterProviderFor(GROK_CATALOG) }), 0, grok.text());
 
       const claude = capture();
       assert.equal(await run([
         "config", "--cli", "claude", "--runner", "claude-sonnet-5", "--longctx", "-",
-        "--subagent-model", "claude-sonnet-5", "--disable",
+        "--coding-model", "claude-sonnet-5", "--disable",
       ], { cwd, env, stdout: claude, stderr: claude, adapterProvider: adapterProviderFor(CLAUDE_CATALOG) }), 0, claude.text());
 
       const config = loadConfig(cwd, { env });
       // Configuring Claude must not disturb the Grok profile.
       assert.equal(config.cli.grok.enabled, true);
-      assert.deepEqual(config.cli.grok.subagent_models, ["grok-4.5"]);
+      assert.deepEqual(config.cli.grok.coding_models, ["grok-4.5"]);
       // A disabled Claude profile fails closed rather than borrowing Grok's.
       assert.equal(config.cli.claude.enabled, false);
 
       const cards = capture();
       assert.equal(await run(["cards", "--host", "claude"], { cwd, env, stdout: cards, stderr: cards }), 0, cards.text());
-      assert.match(cards.text(), /no enabled subagent models/);
+      assert.match(cards.text(), /no enabled Coding models/);
       assert.doesNotMatch(cards.text(), /grok-4\.5/);
 
       // Matching for the disabled host discloses no candidate and never reaches
       // into the enabled Grok profile.
       const match = capture();
-      await run(["match", "implement a small fix", "--host", "claude"], { cwd, env, stdout: match, stderr: match });
-      assert.match(match.text(), /preferred: none/);
+      assert.equal(await run(["match", "implement a small fix", "--host", "claude"], { cwd, env, stdout: match, stderr: match }), 1);
+      assert.match(match.text(), /CODING_MODELS_EXHAUSTED/);
       assert.doesNotMatch(match.text(), /grok-4\.5/);
 
       // The enabled host still resolves its own candidate normally.

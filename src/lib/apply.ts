@@ -144,6 +144,7 @@ interface ApplyChangeInput {
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
   selectionApprovals?: Map<string, ModelSelectionApproval>;
   unitScopes?: ApplyUnitScopeMap;
+  env?: NodeJS.ProcessEnv;
 }
 
 function errorMessage(error: unknown): string {
@@ -234,7 +235,7 @@ export function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map(), unitScopes }: ApplyChangeInput): ApplyResult {
+export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map(), unitScopes, env }: ApplyChangeInput): ApplyResult {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
@@ -269,7 +270,7 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       });
       continue;
     }
-    const id = nextSpawnId(cwd, "os");
+    const id = nextSpawnId(cwd, "os", env);
     const ticket: OpenSpecTicket = buildSpawnTicket({
       id,
       description: unit.description,
@@ -316,8 +317,8 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       ticket.read_only = false;
     }
     ticket.receipt_id = receipt.receipt_id;
-    writeReceipt(cwd, receipt);
-    writeSpawn(cwd, ticket);
+    writeReceipt(cwd, receipt, env);
+    writeSpawn(cwd, ticket, env);
     tickets.push(ticket);
   }
 
@@ -330,9 +331,9 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
     blocked,
     queue: { max_concurrent: cfg.director.max_concurrent, running: 0, queued: tickets.length },
   };
-  fs.mkdirSync(runsDir(cwd), { recursive: true });
+  fs.mkdirSync(runsDir(cwd, env), { recursive: true });
   fs.writeFileSync(
-    path.join(runsDir(cwd), `${run.id}.json`),
+    path.join(runsDir(cwd, env), `${run.id}.json`),
     JSON.stringify(run, null, 2) + "\n",
   );
 
@@ -347,7 +348,7 @@ export function concludeSpawn(cwd: string, id: string, text: OpenSpecConclusion)
   const ticket: OpenSpecTicket = readSpawn(cwd, id);
   if (Number(ticket.schema_version || 1) >= 2) {
     throw new ApplyError(
-      "schema v2+ tickets require a bound host agent; use the dispatch lifecycle after the host agent completes",
+      "schema v2+ tickets require an attached native execution handle; use the dispatch lifecycle after the native worker completes",
       "LIFECYCLE_REQUIRED",
     );
   }

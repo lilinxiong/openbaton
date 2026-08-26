@@ -537,12 +537,13 @@ const CLAUDE_HOOK_ID_KEYS = ["agent_id", "agentId"] as const;
 const codexIdentityAdapter: NativeWorkerIdentityAdapter = {
   host: "codex",
   hookIdentity: (value) => first(value, CODEX_HOOK_ID_KEYS),
-  // Codex's task_name is bind metadata only. The authoritative identity is
-  // the top-level agent_id emitted by SubagentStart.
-  toolReturnIdentity: () => null,
+  // Codex Desktop returns task_name from the native spawn call. It is the
+  // execution handle for dispatch; no SubagentStart observation is required
+  // before a ticket can attach. This is intentionally not a security claim.
+  toolReturnIdentity: (value) => first(value, ["task_name", "taskName"]),
   lifecycleDescription: (value) => first(value, ["description"]),
-  authoritativeSource: "hook",
-  callerIdentityAllowed: false,
+  authoritativeSource: "tool-return",
+  callerIdentityAllowed: true,
 };
 
 const claudeIdentityAdapter: NativeWorkerIdentityAdapter = {
@@ -611,7 +612,8 @@ export function nativeLifecycleDescription(host: NativeIdentityHost, value: unkn
 /** Only the host's declared authoritative carrier can authorize a native bind. */
 export function isAuthoritativeNativeObservation(host: NativeIdentityHost, source: NativeIdentitySource): boolean {
   const normalized = normalizedHost(host);
-  if (normalized === "codex" || normalized === "claude") return source === "hook";
+  if (normalized === "codex") return source === "tool-return";
+  if (normalized === "claude") return source === "hook";
   if (normalized === "grok") return source === "lifecycle";
   if (normalized === "cursor") return source === "tool-return";
   return false;

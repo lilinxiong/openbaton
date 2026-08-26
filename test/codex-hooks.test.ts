@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   BATON_CODEX_HOOK_COMMAND,
   BATON_CODEX_PRETOOLUSE_MATCHER,
+  batonCodexHookEntries,
   codexHooksPath,
   codexHooksStatus,
   installCodexHooks,
@@ -13,6 +14,7 @@ import {
   resolveCodexHookCommand,
 } from "../src/lib/codex-hooks.js";
 import { fakeEnv, withHome } from "./home.js";
+import { recordHookObservation } from "../src/lib/hook-observation.js";
 
 describe("Codex Baton hook manifest", () => {
   it("merges the guard while preserving unrelated user hooks and is idempotent", async () => {
@@ -37,7 +39,10 @@ describe("Codex Baton hook manifest", () => {
       const first = installCodexHooks({ cwd, env, command: BATON_CODEX_HOOK_COMMAND });
       assert.equal(first.changed, true);
       assert.equal(first.installed, true);
-      assert.deepEqual(first.events, ["PreToolUse", "SubagentStart"]);
+      assert.equal(first.guard_mode, "enforce");
+      assert.equal(first.core_dispatch_ready, "unknown");
+      assert.equal(first.recent_hook_observation, false);
+      assert.deepEqual(first.events, ["PreToolUse"]);
       const merged = JSON.parse(fs.readFileSync(file, "utf8"));
       assert.equal(merged.description, "keep me");
       assert.equal(merged.hooks.Stop[0].hooks[0].command, "custom-stop");
@@ -49,7 +54,7 @@ describe("Codex Baton hook manifest", () => {
       const second = installCodexHooks({ cwd, env, command: BATON_CODEX_HOOK_COMMAND });
       assert.equal(second.changed, false);
       assert.equal(second.action, "kept");
-      assert.equal(codexHooksStatus({ cwd, env }).baton_entries, 2);
+      assert.equal(codexHooksStatus({ cwd, env }).baton_entries, 1);
     });
   });
 
@@ -69,16 +74,69 @@ describe("Codex Baton hook manifest", () => {
     });
     assert.deepEqual(result.plugin, { enabled: true });
     assert.equal((result.hooks!.PreToolUse as unknown[]).length, 3);
-    assert.equal((result.hooks!.SubagentStart as unknown[]).length, 1);
+    assert.equal(result.hooks!.SubagentStart, undefined);
     const preToolUse = result.hooks!.PreToolUse as Array<{ hooks: Array<{ command: string }> }>;
     assert.equal(preToolUse[0].hooks[0].command, "keep-in-same-group");
     assert.equal(preToolUse[2].hooks[0].command, BATON_CODEX_HOOK_COMMAND);
   });
 
-  it("matches Codex spawn_agent aliases including namespaced collaboration variants", () => {
-    assert.match("spawn_agent", new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
-    assert.match("functions.collaboration.spawn_agent", new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
-    assert.match("commentary.collaboration.spawn_agent", new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
+  it("matches only the scoped mutation tools and never native child spawn", () => {
+    for (const tool of ["Bash", "apply_patch", "Edit", "Write"]) {
+      assert.match(tool, new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
+    }
+    for (const tool of ["Agent", "spawn_agent", "functions.collaboration.spawn_agent"]) {
+      assert.doesNotMatch(tool, new RegExp(BATON_CODEX_PRETOOLUSE_MATCHER));
+    }
+  });
+
+  it("removes all Baton entries and leaves zero Codex hooks in guard-off mode", () => {
+    const result = mergeBatonCodexHooks({
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: BATON_CODEX_HOOK_COMMAND }] }],
+        SubagentStart: [{ matcher: ".*", hooks: [{ type: "command", command: BATON_CODEX_HOOK_COMMAND }] }],
+      },
+    }, BATON_CODEX_HOOK_COMMAND, "off");
+    assert.equal(result.hooks!.PreToolUse, undefined);
+    assert.equal(result.hooks!.SubagentStart, undefined);
+  });
+
+  it("makes guard-off an explicit audit-only zero-hook posture", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-off-"));
+    const env = { HOME: fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-off-home-")), PATH: "" };
+    const result = installCodexHooks({ cwd, env, guardMode: "off" });
+    assert.equal(result.guard_mode, "off");
+    assert.equal(result.audit_only, true);
+    assert.equal(result.trust_required, false);
+    assert.equal(result.operational, true);
+    assert.equal(result.hook_configured, false);
+    assert.equal(result.coverage, "none");
+    assert.equal(result.recent_hook_observation, false);
+    assert.equal(fs.existsSync(codexHooksPath({ env })), false);
+  });
+
+  it("reports a missing enforced hook as an explicit operational error", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-missing-home-"));
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-missing-cwd-"));
+    const status = codexHooksStatus({ cwd, env: { HOME: home, PATH: "" }, guardMode: "enforce" });
+    assert.equal(status.hook_configured, false);
+    assert.equal(status.operational, false);
+    assert.match(status.operational_error || "", /not configured/);
+  });
+
+  it("removes a Baton-only file on off and preserves mixed user content", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-off-inverse-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-off-inverse-home-"));
+    const env = { HOME: home, PATH: "" };
+    const file = codexHooksPath({ cwd, env });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ hooks: batonCodexHookEntries("baton guard hook") }));
+    assert.equal(installCodexHooks({ cwd, env, guardMode: "off" }).changed, true);
+    assert.equal(fs.existsSync(file), false);
+    fs.writeFileSync(file, JSON.stringify({ description: "keep", hooks: batonCodexHookEntries("baton guard hook") }));
+    installCodexHooks({ cwd, env, guardMode: "off" });
+    const retained = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.equal(retained.description, "keep");
+    assert.deepEqual(retained.hooks, {});
   });
 
   it("fails closed instead of overwriting malformed user hook JSON", async () => {
@@ -160,5 +218,15 @@ describe("Codex Baton hook manifest", () => {
     assert.equal(status.operational, false);
     assert.equal(status.command_usable, false);
     assert.match(status.operational_error || "", /not usable/);
+  });
+
+  it("reports the last real hook observation when workspace context is available", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-observed-home-"));
+    const env = { HOME: home, PATH: "" };
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-hooks-observed-cwd-"));
+    recordHookObservation(cwd, "codex", "PreToolUse", new Date(), env);
+    const status = codexHooksStatus({ cwd, env });
+    assert.equal(status.recent_hook_observation, true);
+    assert.ok(status.last_observed_at);
   });
 });

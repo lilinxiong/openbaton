@@ -88,7 +88,7 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(completed.stdout).ticket.status, "completed");
       assert.equal(JSON.parse(completed.stdout).snapshot.available, 0);
 
-      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "codex-hook-dispatch-real", "--json"], { cwd, env });
+      const released = await command(["dispatch", "release", "spn-0001", "--task-name", "codex-task-dispatch-real", "--json"], { cwd, env });
       assert.equal(released.code, 0, released.stderr);
       assert.equal(JSON.parse(released.stdout).snapshot.available, 1);
 
@@ -190,7 +190,7 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(completed.stdout).snapshot.capacity, 2);
       assert.equal(JSON.parse(completed.stdout).snapshot.available, 0);
 
-      const released = await command(["dispatch", "release", "spn-0001", "--agent-id", "codex-hook-dispatch-capacity", "--json"], { cwd, env });
+      const released = await command(["dispatch", "release", "spn-0001", "--task-name", "codex-task-dispatch-capacity", "--json"], { cwd, env });
       assert.equal(released.code, 0, released.stderr);
       assert.equal(JSON.parse(released.stdout).snapshot.available, 1);
 
@@ -241,7 +241,7 @@ describe("dispatch CLI", () => {
       assert.equal((await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-build", "--host", "codex", "--json"], { cwd, env })).code, 0);
 
       const live = await command([
-        "dispatch", "probe", "spn-0001", "--agent-id", "codex-hook-dispatch-build", "--state", "running", "--activity", "status", "--json",
+        "dispatch", "probe", "spn-0001", "--task-name", "codex-task-dispatch-build", "--state", "running", "--activity", "status", "--json",
       ], { cwd, env });
       assert.equal(live.code, 0, live.stderr);
       const liveBody = JSON.parse(live.stdout);
@@ -256,7 +256,7 @@ describe("dispatch CLI", () => {
       assert.match(timeOnly.stderr, /elapsed wait time is never timeout evidence/);
 
       const missing = await command([
-        "dispatch", "probe", "spn-0001", "--agent-id", "codex-hook-dispatch-build", "--state", "not_found", "--json",
+        "dispatch", "probe", "spn-0001", "--task-name", "codex-task-dispatch-build", "--state", "not_found", "--json",
       ], { cwd, env });
       assert.equal(missing.code, 0, missing.stderr);
       const missingBody = JSON.parse(missing.stdout);
@@ -329,6 +329,26 @@ describe("dispatch CLI", () => {
       const bad = await command(["dispatch", "next", "--host", "not-a-registered-host", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(bad.code, 1);
       assert.match(bad.stderr, /invalid host/);
+    });
+  });
+
+  it("keeps every dispatch artifact under the injected HOME", async () => {
+    await withHome(async () => {
+      const alternateHome = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-alt-home-"));
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-dispatch-env-"));
+      const env = fakeEnv(alternateHome);
+      assert.equal((await command(["init"], { cwd, env })).code, 0);
+      publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] }, new Date(), { cli: "codex", host: "codex", env });
+      const previousHome = process.env.HOME;
+      process.env.HOME = alternateHome;
+      const spawned = await approvedSpawn(["spawn", "implement injected home unit", "--classification", "implementation"], { cwd, env });
+      process.env.HOME = previousHome;
+      assert.equal(spawned.code, 0, spawned.stderr || spawned.stdout);
+      assert.equal(fs.existsSync(path.join(spawnsDir(cwd, env), "spn-0001.json")), true);
+      assert.equal(fs.existsSync(path.join(spawnsDir(cwd), "spn-0001.json")), false);
+      const next = await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
+      assert.equal(next.code, 0, next.stderr);
+      assert.deepEqual(JSON.parse(next.stdout).reserved.map((item) => item.ticket_id), ["spn-0001"]);
     });
   });
 });

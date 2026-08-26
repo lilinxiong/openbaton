@@ -7,7 +7,7 @@ import { run } from "../src/cli.js";
 import { runConfig } from "../src/commands/config.js";
 import {
   cliProfileForHost,
-  configuredSubagentModelsForHost,
+  configuredCodingModelsForHost,
   effectiveMaxConcurrentForHost,
   effectiveMaxDepthForHost,
   loadConfig,
@@ -155,14 +155,14 @@ describe("cli host profiles without active", () => {
         "--cli", "codex",
         "--runner", "gpt-5.4-mini",
         "--longctx", "gpt-5.5",
-        "--subagent-model", "gpt-5.6-luna",
+        "--coding-model", "gpt-5.6-luna",
         "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CODEX_CATALOG) }), 0);
       assert.equal(await runConfig([
         "--cli", "grok",
         "--runner", "grok-4.5",
         "--longctx", "-",
-        "--subagent-model", "grok-4.5",
+        "--coding-model", "grok-4.5",
         "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(GROK_CATALOG) }), 0);
 
@@ -173,11 +173,9 @@ describe("cli host profiles without active", () => {
       const disabled = loadConfig(cwd, { env });
       assert.equal(disabled.cli.codex.enabled, false);
       assert.equal(disabled.cli.grok.enabled, true);
-      assert.deepEqual(configuredSubagentModelsForHost(disabled, "codex"), []);
-      assert.deepEqual(cliProfileForHost(disabled, "codex").subagent_models, [
+      assert.deepEqual(configuredCodingModelsForHost(disabled, "codex"), []);
+      assert.deepEqual(cliProfileForHost(disabled, "codex").coding_models, [
         "gpt-5.6-luna",
-        "gpt-5.4-mini",
-        "gpt-5.5",
       ]);
       assert.equal(cliProfileForHost(disabled, "codex").runner, "gpt-5.4-mini");
       assert.notEqual(cliProfileForHost(disabled, "codex").runner, cliProfileForHost(disabled, "grok").runner);
@@ -186,7 +184,7 @@ describe("cli host profiles without active", () => {
       assert.equal(await run(["spawn", "implement the Codex unit", "--host", "codex", "--json"], {
         cwd, env, stdout: out, stderr: out,
       }), 0, out.text());
-      assert.match(out.text(), /director-local|Baton host profile is disabled/i);
+      assert.match(out.text(), /bypassed|ACTIVATION_DISABLED|tickets=\[\]/i);
       assert.doesNotMatch(out.text(), /grok-4\.5/);
     });
   });
@@ -200,7 +198,7 @@ describe("cli host profiles without active", () => {
         "--cli", "codex",
         "--runner", "gpt-5.4-mini",
         "--longctx", "gpt-5.5",
-        "--subagent-model", "gpt-5.6-luna",
+        "--coding-model", "gpt-5.6-luna",
         "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CODEX_CATALOG) }), 0);
 
@@ -210,7 +208,8 @@ describe("cli host profiles without active", () => {
         enabled: true,
         runner: "gpt-5.4-mini",
         longctx: "gpt-5.5",
-        subagent_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.5"],
+        coding_models: ["gpt-5.6-luna"],
+        guard_mode: "off",
       });
 
       const out = capture();
@@ -218,7 +217,7 @@ describe("cli host profiles without active", () => {
         "--cli", "grok",
         "--runner", "grok-4.5",
         "--longctx", "-",
-        "--subagent-model", "grok-4.6",
+        "--coding-model", "grok-4.6",
         "--enable",
       ], {
         cwd,
@@ -267,7 +266,7 @@ describe("cli host profiles without active", () => {
         "--cli", "grok",
         "--runner", "grok-4.5",
         "--longctx", "-",
-        "--subagent-model", "grok-4.5",
+        "--coding-model", "grok-4.5",
         "--enable",
       ];
       assert.equal(await runConfig(args, {
@@ -300,6 +299,69 @@ describe("cli host profiles without active", () => {
       const profile = (raw.cli as Record<string, Record<string, unknown>>).grok;
       assert.equal(profile.max_concurrent, undefined);
       assert.equal(profile.max_depth, undefined);
+    });
+  });
+
+  it("migrates legacy Coding candidates only when config save succeeds", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-coding-migration-"));
+      const env = fakeEnv(home);
+      const file = configPath(cwd, { env });
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, [
+        "[director]",
+        "max_concurrent = 4",
+        "max_depth = 1",
+        "",
+        "[cli.codex]",
+        "enabled = true",
+        'runner = "gpt-5.4-mini"',
+        'longctx = "gpt-5.5"',
+        'subagent_models = ["gpt-5.3-codex-spark", "gpt-5.6-luna"]',
+      ].join("\n"), "utf8");
+      const before = fs.readFileSync(file, "utf8");
+      await assert.rejects(
+        runConfig(["--cli", "codex", "--subagent-model", "gpt-5.6-luna"], {
+          cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CODEX_CATALOG),
+        }),
+        (error: unknown) => (error as { code?: string }).code === "LEGACY_FLAG_REMOVED",
+      );
+      assert.equal(fs.readFileSync(file, "utf8"), before);
+      assert.equal(await runConfig([
+        "--cli", "codex", "--runner", "gpt-5.4-mini", "--longctx", "gpt-5.5",
+        "--coding-model", "gpt-5.4-mini,gpt-5.6-luna", "--enable",
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(CODEX_CATALOG) }), 0);
+      const config = loadConfig(cwd, { env });
+      assert.deepEqual(config.cli.codex.coding_models, ["gpt-5.4-mini", "gpt-5.6-luna"]);
+      const saved = fs.readFileSync(file, "utf8");
+      assert.match(saved, /coding_models = \["gpt-5\.4-mini", "gpt-5\.6-luna"\]/);
+      assert.doesNotMatch(saved, /subagent_models/);
+      assert.match(saved, /schema_version = 2/);
+    });
+  });
+
+  it("fails closed on an invalid explicit guard mode", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-invalid-guard-mode-"));
+      const env = fakeEnv(home);
+      const file = configPath(cwd, { env });
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, [
+        "[director]",
+        "max_concurrent = 4",
+        "max_depth = 1",
+        "",
+        "[cli.codex]",
+        "enabled = true",
+        'runner = "gpt-5.6-luna"',
+        'longctx = "gpt-5.6-luna"',
+        'coding_models = ["gpt-5.6-luna"]',
+        'guard_mode = "enfore"',
+      ].join("\n"), "utf8");
+      assert.throws(
+        () => loadConfig(cwd, { env }),
+        (error: unknown) => (error as { code?: string }).code === "CONFIG_GUARD_MODE_INVALID",
+      );
     });
   });
 });

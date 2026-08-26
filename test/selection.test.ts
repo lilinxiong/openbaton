@@ -12,7 +12,8 @@ import {
   readSelectionProposal,
   selectionSourceFingerprint,
 } from "../src/lib/selection.js";
-import { artificialAnalysisDbPath } from "../src/lib/paths.js";
+import { artificialAnalysisDbPath, modelAvailabilityPath } from "../src/lib/paths.js";
+import { availabilityForRoute, readModelAvailability } from "../src/lib/model-availability.js";
 import { configureCodex } from "./configure.js";
 import { withHome, fakeEnv } from "./home.js";
 
@@ -57,11 +58,25 @@ const MODELS = [
 
 function setup(cwd: string, env: NodeJS.ProcessEnv) {
   publishRouteSnapshot(cwd, { models: MODELS }, new Date(), { cli: "codex", engineVersion: "test" });
-  configureCodex(cwd, env, MODELS.map((model) => model.id));
+  configureCodex(cwd, env, ["gpt-5.3-codex-spark", "gpt-5.6-luna", "gpt-5.4-mini"]);
   return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd)).map((candidate) => candidate.card);
 }
 
 describe("automatic configured-model selection", () => {
+  it("fails closed when durable availability state is damaged", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-damaged-availability-"));
+    const env = fakeEnv(home);
+    const file = modelAvailabilityPath(cwd, env);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schema_version: 1, records: [{
+      host: "codex", account_scope: "scope", route_id: "gpt-5.3-codex-spark", status: "exhausted",
+      reason: "quota", observed_at: "not-a-timestamp", reset_at: null, next_probe_at: null,
+      probe_attempts: 1, probe_lease_owner: null, probe_lease_until: null,
+    }] }), "utf8");
+    assert.throws(() => readModelAvailability(cwd, env), (error: unknown) => (error as NodeJS.ErrnoException).code === "MODEL_AVAILABILITY_INVALID");
+    assert.throws(() => availabilityForRoute(cwd, { host: "codex", routeId: "gpt-5.3-codex-spark" }, new Date(), env), (error: unknown) => (error as NodeJS.ErrnoException).code === "MODEL_AVAILABILITY_INVALID");
+  }));
+
   it("maps explicit speed/simple work to low effort and complex work to max", () => {
     assert.deepEqual(estimateTaskComplexity("implement a quick small coding fix"), { effort: "low", reason: "simple" });
     assert.deepEqual(estimateTaskComplexity("implement a complex repository-wide architecture migration"), { effort: "max", reason: "very-complex" });
@@ -208,10 +223,10 @@ describe("automatic configured-model selection", () => {
       const result = JSON.parse(out.text());
       assert.equal(result.selection_mode, "baton-recommendation");
       assert.equal(result.status, "approved");
-      assert.equal(result.approvals[0].selected_model_id, "gpt-5.4-mini@low");
+      assert.equal(result.approvals[0].selected_model_id, "gpt-5.3-codex-spark@low");
       assert.equal(result.approvals[0].confirmed_by, "baton-recommendation");
-      assert.equal(result.approvals[0].service_tier, "fast");
-      assert.equal(result.tickets[0].service_tier, "fast");
+      assert.equal(result.approvals[0].service_tier, null);
+      assert.equal(result.tickets[0].service_tier, null);
 
       const audit = capture();
       assert.equal(await run(["selection", "show", result.proposal_id, "--host", "codex", "--json"], {

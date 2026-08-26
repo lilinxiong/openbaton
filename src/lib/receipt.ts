@@ -159,14 +159,14 @@ export function buildCommitReceipt({
   };
 }
 
-function receiptPath(cwd: string, receiptId: string): string {
-  return path.join(receiptsDir(cwd), `${receiptId}.json`);
+function receiptPath(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(receiptsDir(cwd, env), `${receiptId}.json`);
 }
 
-export function writeReceipt(cwd: string, receipt: DelegationReceipt): DelegationReceipt {
-  const dir = receiptsDir(cwd);
+export function writeReceipt(cwd: string, receipt: DelegationReceipt, env?: NodeJS.ProcessEnv): DelegationReceipt {
+  const dir = receiptsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
-  const file = receiptPath(cwd, receipt.receipt_id);
+  const file = receiptPath(cwd, receipt.receipt_id, env);
   const content = `${JSON.stringify(receipt, null, 2)}\n`;
   if (fs.existsSync(file)) {
     if (fs.readFileSync(file, "utf8") === content) return receipt;
@@ -182,8 +182,8 @@ export function writeReceipt(cwd: string, receipt: DelegationReceipt): Delegatio
   return receipt;
 }
 
-export function readReceipt(cwd: string, receiptId: string): DelegationReceipt {
-  const file = receiptPath(cwd, receiptId);
+export function readReceipt(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): DelegationReceipt {
+  const file = receiptPath(cwd, receiptId, env);
   if (!fs.existsSync(file)) throw new ReceiptError(`receipt not found: ${receiptId}`, "RECEIPT_NOT_FOUND");
   return JSON.parse(fs.readFileSync(file, "utf8")) as DelegationReceipt;
 }

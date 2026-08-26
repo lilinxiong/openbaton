@@ -1,4 +1,5 @@
 # baton director config
+schema_version = 2
 # Each CLI owns its picker-visible model catalog and any scheduling limits it
 # explicitly reports. Baton stores only selected profiles.
 
@@ -15,3 +16,10 @@ max_depth = 1
 # Execution classification is supplied by the director workflow contract.
 # Operation labels are audit metadata and are never serialized as a routing
 # table. Model labels live under selected CLI profiles.
+
+# A selected [cli.<host>] profile also stores:
+# enabled = true
+# runner = "gpt-5.6-luna"
+# longctx = "gpt-5.6-luna"
+# coding_models = ["gpt-5.3-codex-spark", "gpt-5.6-luna"] # ordered priority
+# guard_mode = "enforce" # Codex may use "off" for zero Baton hooks

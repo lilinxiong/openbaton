@@ -26,7 +26,7 @@ describe("invoking host resolution", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-cwd-"));
     const env = { HOME: home };
     const cfg = emptyConfig();
-    cfg.cli.grok = { enabled: true, runner: "", longctx: "", subagent_models: [] };
+    cfg.cli.grok = { enabled: true, runner: "", longctx: "", coding_models: [], guard_mode: "enforce" };
     saveConfig(cwd, cfg, { env });
     assert.throws(
       () => resolveRuntimeHost({ cwd, env }),
@@ -45,7 +45,7 @@ describe("invoking host resolution", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-host-cwd-"));
     const env = { HOME: home };
     const cfg = emptyConfig();
-    cfg.cli.codex = { enabled: true, runner: "", longctx: "", subagent_models: [] };
+    cfg.cli.codex = { enabled: true, runner: "", longctx: "", coding_models: [], guard_mode: "off" };
     saveConfig(cwd, cfg, { env });
     assert.equal(resolveRuntimeHost({ cwd, env: { ...env, CURSOR_AGENT: "1" } }), "cursor");
   });

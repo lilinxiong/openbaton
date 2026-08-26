@@ -83,7 +83,7 @@ describe("global Baton storage paths", () => {
     writeSpawn(cwd, current);
 
     assert.deepEqual(listSpawns(cwd).map((ticket) => ticket.id), ["os-0001"]);
-    assert.equal(readSpawn(cwd, "os-0001").schema_version, 7);
+    assert.equal(readSpawn(cwd, "os-0001").schema_version, 8);
     assert.equal(readSpawn(cwd, "os-0001").work_unit.kind, "concrete");
     assert.equal("classification" in readSpawn(cwd, "os-0001").work_unit, false);
     assert.equal(fs.existsSync(path.join(legacySpawns, "spn-0001.json")), true);

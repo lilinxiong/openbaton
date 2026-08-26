@@ -11,6 +11,7 @@ import {
   installClaudeHooks,
   isBatonClaudeHookHandler,
   mergeBatonClaudeHooks,
+  removeBatonClaudeHooks,
   resolveClaudeHookCommand,
 } from "../src/lib/claude-hooks.js";
 import { withHome, fakeEnv } from "./home.js";
@@ -141,6 +142,22 @@ describe("Claude Code hook merge", () => {
       () => mergeBatonClaudeHooks({ hooks: { PreToolUse: "not-an-array" } }, COMMAND),
       /CLAUDE_SETTINGS_INVALID_EVENT/,
     );
+  });
+
+  it("removes current and legacy Baton handlers while retaining mixed groups", () => {
+    const removed = removeBatonClaudeHooks({
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [
+          { type: "command", command: COMMAND },
+          { type: "command", command: "echo keep" },
+        ] }],
+        SubagentStart: [{ matcher: "", hooks: [{ type: "command", command: COMMAND }] }],
+      },
+      permissions: { allow: ["Bash(git status)"] },
+    });
+    assert.deepEqual((removed as Record<string, unknown>).permissions, { allow: ["Bash(git status)"] });
+    assert.equal((removed.hooks as Record<string, unknown>).SubagentStart, undefined);
+    assert.equal(handlerAt(removed, "PreToolUse", 0).command, "echo keep");
   });
 });
 

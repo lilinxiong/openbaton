@@ -7,6 +7,7 @@ import {
   publishRouteSnapshot,
   readRouteSnapshot,
 } from "../lib/routes.js";
+import { resetRouteAvailability } from "../lib/model-availability.js";
 import type { WritableLike } from "../types.js";
 
 export interface RouteCommandOptions {
@@ -63,5 +64,16 @@ export async function runRoutes(args: string[], {
     stdout.write(`${JSON.stringify(buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd), { host, env }), null, 2)}\n`);
     return 0;
   }
-  throw new Error("usage: baton models refresh|status|candidates");
+  if (sub === "reset") {
+    const routeId = String(args[1] || "").trim();
+    if (!routeId || routeId.startsWith("--")) {
+      throw new Error("usage: baton models reset ROUTE --host HOST [--json]");
+    }
+    const reset = resetRouteAvailability(cwd, { host, routeId }, { env });
+    const result = { host, route_id: routeId, reset };
+    if (args.includes("--json")) stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    else stdout.write(`${reset ? "reset" : "already available"}: ${host}/${routeId}\n`);
+    return 0;
+  }
+  throw new Error("usage: baton models refresh|status|candidates|reset ROUTE");
 }

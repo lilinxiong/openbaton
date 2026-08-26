@@ -26,7 +26,8 @@ export function configureCli(
     enabled,
     runner,
     longctx,
-    subagent_models: [...new Set([...models, runner, longctx].filter(Boolean))],
+    coding_models: [...new Set([...models, runner, longctx].filter(Boolean))],
+    guard_mode: cli === "claude" || cli === "grok" ? "enforce" : "off",
   };
   saveConfig(cwd, config, { env });
 }

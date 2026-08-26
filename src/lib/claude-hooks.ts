@@ -250,6 +250,25 @@ export function mergeBatonClaudeHooks(existing: unknown, command = BATON_CLAUDE_
   return output;
 }
 
+/** Exact inverse used by uninstall: retain settings and unrelated handlers. */
+export function removeBatonClaudeHooks(existing: unknown): SettingsFile {
+  const output: SettingsFile = isRecord(existing) ? structuredClone(existing) as SettingsFile : {};
+  const hooks = isRecord(output.hooks) ? output.hooks : {};
+  output.hooks = hooks;
+  for (const event of BATON_CLAUDE_HOOK_EVENTS) {
+    const current = hooks[event];
+    if (current !== undefined && !Array.isArray(current)) {
+      throw new Error(`CLAUDE_SETTINGS_INVALID_EVENT: hooks.${event} must be an array`);
+    }
+    const retained = (Array.isArray(current) ? current : [])
+      .map(retainUnrelatedHandlers)
+      .filter((item): item is unknown => item !== null);
+    if (retained.length) hooks[event] = retained;
+    else delete hooks[event];
+  }
+  return output;
+}
+
 function countBatonEntries(value: unknown): { count: number; events: ClaudeHookEvent[] } {
   if (!isRecord(value) || !isRecord(value.hooks)) return { count: 0, events: [] };
   let count = 0;

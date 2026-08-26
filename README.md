@@ -78,7 +78,7 @@ variables are not persisted as if the CLI had reported them.
     enabled = true
     runner = "gpt-5.4-mini"
     longctx = "gpt-5.5"
-    subagent_models = [
+    coding_models = [
       "gpt-5.6-luna",
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
@@ -86,8 +86,17 @@ variables are not persisted as if the CLI had reported them.
 
 runner and longctx are labels only. They do not claim that a model is fast, has a particular context window, or supports any other capability. Both labels use the same CLI-returned model surface.
 
-Configured label values are automatically included in subagent_models. A disabled profile contributes no candidates.
+`coding_models` is an explicit ordered multi-select: the array order is the Coding priority. Runner and longctx remain independent labels and are never inserted into or reordered within this array. A disabled profile contributes no candidates.
 Unselected CLIs have no placeholder table in the file.
+
+Guard posture is explicit per host: use `--guard-mode enforce|off` for a
+single CLI. Codex `off` removes Baton hooks and is audit-only; Cursor is always
+off. Claude/Grok retain their host lifecycle hooks and report enforce.
+
+Migration note: older installations may contain `subagent_models`. It is read
+only at the schema migration boundary, copied to `coding_models` in its existing
+order, and never written again. The removed `--subagent-model` flag reports
+`LEGACY_FLAG_REMOVED`; use repeated `--coding-model` flags instead.
 
 Non-interactive setup is also supported:
 
@@ -95,16 +104,17 @@ Non-interactive setup is also supported:
       --cli codex|grok|cursor|claude \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
-      --subagent-model gpt-5.6-luna \
-      --subagent-model gpt-5.4-mini \
-      --subagent-model gpt-5.3-codex-spark \
+      --coding-model gpt-5.3-codex-spark \
+      --coding-model gpt-5.6-luna \
+      --coding-model gpt-5.4-mini \
+      --guard-mode enforce \
       --enable
 
 Run baton models refresh when the selected CLI's picker surface changes.
 
 ## Mini and Spark
 
-If Codex returns gpt-5.4-mini or gpt-5.3-codex-spark from model/list, Baton displays them and lets the user put them in subagent_models.
+If Codex returns gpt-5.4-mini or gpt-5.3-codex-spark from model/list, Baton displays them and lets the user put them in `coding_models`.
 
 Catalog visibility and actual host execution are distinct evidence:
 
@@ -117,7 +127,9 @@ Baton has no hard-coded family bans. It does not label Mini or Spark unsupported
 
 ## Automatic routing
 
-baton spawn and baton apply never ask the user to pick a model. Baton automatically chooses:
+baton spawn and baton apply never ask the user to pick a model. After hard eligibility gates (host, effort, context, availability, and activation), a simple implementation uses the first eligible `coding_models` entry. More complex work follows the same configured order. Baton does not reorder this list by score; the selected reason and skipped-route diagnostics are recorded.
+
+Baton automatically chooses:
 
 - a configured model based on the work-unit text and CLI model description;
 - one of the reasoning efforts that the CLI returned, fitted to task complexity;
@@ -150,11 +162,11 @@ The Baton CLI creates tickets and lifecycle state; only the selected host (Codex
 
 1. baton spawn or baton apply creates automatically routed tickets and immutable Receipts.
 2. The host reserves work with baton dispatch next.
-3. The host calls its native subagent tool (Codex `spawn_agent`, including namespaced collaboration variants, Grok `spawn_subagent`, Cursor `Task`, or Claude Code `Agent`) with the returned `prompt` and, when supported, `description` unchanged, plus the exact model and only the effort/service-tier options the tool can express. The first-line JSON envelope carries an opaque per-attempt reservation identity; ticket ids such as `spn-*`, `os-*`, or any future form are never classified by prefix. Codex `task_name` is bind metadata only and never replaces the authoritative `SubagentStart` UUID. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
+3. The host calls its native subagent tool (Codex `spawn_agent`, including namespaced collaboration variants, Grok `spawn_subagent`, Cursor `Task`, or Claude Code `Agent`) with the returned `prompt` and, when supported, `description` unchanged, plus the exact model and only the effort/service-tier options the tool can express. The first-line JSON envelope is dispatch audit data; ticket ids are never classified by prefix. Codex `task_name` is the native execution handle for attach/liveness/release; `agent_id` is only an optional diagnostic. Grok must pass `spawn_subagent.model`; omitting it inherits the parent model.
 4. The host binds the returned agent id, persists activity and progress, and records exactly one terminal result.
 5. The host closes the native agent and runs dispatch release before refilling FIFO.
 
-Logical work is uncapped; physical concurrency follows the current host limit. AgentLimitReached defers the same ticket without consuming an attempt or changing its model. Polling timeouts are not worker failures; a ticket can time out only after the exact agent is probed as not_found.
+Logical work is uncapped; physical concurrency follows the current host limit. AgentLimitReached defers the same ticket without consuming an attempt or changing its model. Polling timeouts are not worker failures; a ticket can time out only after its exact native execution handle is probed as not_found.
 
 Read-only is the default. Write tickets require an immutable path and operation allowlist plus parent Git safety checks. Pre-existing uncommitted work is kept as baseline dirt; the worker may continue allowlisted files incrementally and must not mutate unrelated dirt. The sole Git exception is an exclusive commit-only ticket over an exact parent-staged tree; it may create one audited commit and may not stage, amend, branch, rebase, tag, or push.
 
@@ -232,7 +244,8 @@ OpenSpec remains optional. When present, it owns task breakdown and status; Bato
 Baton never creates project-local runtime state:
 
 - ~/.baton/config.toml — director and per-CLI profiles
-- ~/.baton/cache/cli-models.json — selected CLI catalog snapshot
+- ~/.baton/cache/cli-models-<host>.json — selected CLI catalog snapshots
+- ~/.baton/state/model-availability.json — durable host/account route availability
 - ~/.baton/cache/capabilities/ — optional local capability evidence
 - ~/.baton/workspaces/CANONICAL-ROOT-SHA256/ — tickets, Receipts, selections, locks, and lifecycle state
 
@@ -241,8 +254,10 @@ Baton never creates project-local runtime state:
     baton init [--force] [--cli codex|grok|cursor|claude]
     baton update
     baton config [--cli codex|grok|cursor|claude] [--runner MODEL|-] [--longctx MODEL|-]
-                 [--subagent-model MODEL|all] [--enable|--disable]
+                 [--coding-model MODEL|all] [--guard-mode enforce|off] [--enable|--disable]
+    baton enable|disable all|curproject --host HOST [--json]
     baton models refresh|status|candidates
+    baton models reset ROUTE --host HOST [--json]
     baton cards [--ranked|--unranked] [--json]
     baton match "fix the flaky auth tests quickly"
     baton spawn "implement the migration" [--unit KEY=TEXT ...]
@@ -252,15 +267,37 @@ Baton never creates project-local runtime state:
     baton apply [change]
     baton apply [change] --host HOST --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host HOST --capacity N --json
-    baton dispatch bind TICKET --agent-id ID --host HOST --json
+    baton dispatch bind TICKET --task-name CODEX_TASK_NAME --host codex --json
+    baton dispatch bind TICKET --agent-id ID --host HOST --json  # other hosts
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-    baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
+    baton dispatch probe TICKET --task-name CODEX_TASK_NAME --host codex --state pending_init|running|interrupted|shutdown|not_found --json
     baton dispatch progress TICKET --phase PHASE --text "short status" --json
     baton dispatch complete TICKET --text "short conclusion" --json
     baton dispatch fail|timeout|close TICKET --json
-    baton dispatch release TICKET --agent-id ID --json
+    baton dispatch release TICKET --host HOST --task-name CODEX_TASK_NAME --json
     baton dispatch recover|status --json
-    baton status
+    baton status [--host HOST] [--json]
+
+    baton match "fix the flaky auth tests quickly" --host HOST
+    baton uninstall [--host HOST] [--dry-run]
+    baton uninstall --clean --yes
+
+`all` changes only the selected CLI host globally; `curproject` changes only the
+current canonical workspace and host. An explicit disabled state bypasses Baton
+and returns the host's ordinary native behavior. Invalid or unreadable state is
+fail-closed. `baton status` reports activation provenance, ordered Coding route
+availability, hook posture, and native execution handles as `kind:value`.
+
+Model availability remembers explicit quota exhaustion (including remaining=0)
+across projects and sessions. Generic 429/network/timeout failures remain
+transient route health. Known reset times schedule a probe; unknown resets use a
+bounded backoff and a single durable probe lease. Until a host exposes a stable
+account identity, this state uses the documented opaque `host-profile` scope.
+Use
+`baton models reset ROUTE --host HOST` to clear one route. `uninstall --dry-run`
+shows only the selected host's integration files and preserves all Baton state;
+`--clean --yes` removes recognized integrations for every host plus Baton state,
+only when no active tickets are draining. Package executables are retained.
 
 Standalone requests use one proposal shape: without `--unit`, the request is
 stored as the `standalone` unit. Classification values and fields are strict;

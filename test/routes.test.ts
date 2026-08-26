@@ -13,6 +13,7 @@ import {
   routeSnapshotSchemaVersion,
 } from "../src/lib/routes.js";
 import { hostRouteSnapshotPath } from "../src/lib/paths.js";
+import { availabilityForRoute, markRouteExhausted } from "../src/lib/model-availability.js";
 import { withHome, fakeEnv } from "./home.js";
 import { adapterProviderFor } from "./configure.js";
 
@@ -123,6 +124,29 @@ describe("CLI model catalog snapshot", () => {
     });
   });
 
+  it("resets exactly one durable route availability decision", async () => {
+    await withHome(async (home) => {
+      const cwd = workspace();
+      const env = fakeEnv(home);
+      markRouteExhausted(cwd, { host: "codex", routeId: "gpt-5.3-codex-spark" }, { env });
+      markRouteExhausted(cwd, { host: "codex", routeId: "gpt-5.4-mini" }, { env });
+      const stdout = sink();
+      assert.equal(await runRoutes(["reset", "gpt-5.3-codex-spark", "--host", "codex", "--json"], {
+        cwd,
+        env,
+        stdout,
+        host: "codex",
+      }), 0);
+      assert.deepEqual(JSON.parse(stdout.text()), {
+        host: "codex",
+        route_id: "gpt-5.3-codex-spark",
+        reset: true,
+      });
+      assert.equal(availabilityForRoute(cwd, { host: "codex", routeId: "gpt-5.3-codex-spark" }, new Date(), env).status, "available");
+      assert.equal(availabilityForRoute(cwd, { host: "codex", routeId: "gpt-5.4-mini" }, new Date(), env).status, "exhausted");
+    });
+  });
+
   it("creates every CLI-supported effort card even without benchmark data", () => withHome(() => {
     const cwd = workspace();
     publishRouteSnapshot(cwd, { models: MODELS }, new Date(), { cli: "codex" });
@@ -137,7 +161,7 @@ describe("CLI model catalog snapshot", () => {
   it("rejects malformed and unkeyed snapshots", () => withHome((home) => {
     assert.throws(() => normalizeRouteCatalog({ nope: true }), /model catalog/);
     const cwd = workspace();
-    const file = path.join(home, ".baton", "cache", "cli-models.json");
+    const file = path.join(home, ".baton", "cache", "cli-models-codex.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ schema_version: 4, routes: [], provider_quotas: [] }));
     assert.equal(readRouteSnapshot(cwd), null);

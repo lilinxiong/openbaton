@@ -21,11 +21,11 @@ Baton persists the returned model ids and any display, reasoning-effort, or spee
         ├── enabled
         ├── runner       (label only)
         ├── longctx      (label only)
-        ├── subagent_models
+        ├── coding_models
         ├── max_concurrent?  (only when CLI-reported)
         └── max_depth?       (only when CLI-reported)
 
-runner and longctx are labels, not capability assertions. The subagent_models list is the complete configured allowlist for that CLI. Configured labels are members of the allowlist. Disabled profiles contribute no routes.
+runner and longctx are labels, not capability assertions. The ordered coding_models list is the complete configured Coding priority for that CLI. Configured labels remain independent and are not automatically inserted. Disabled profiles contribute no routes.
 Unselected CLIs have no placeholder profile. Each missing scheduling limit falls
 back independently to the director value; adapter guesses do not become
 CLI-reported configuration.
@@ -73,7 +73,7 @@ fail closed, including when a write path is present.
 
 A model returned by the selected CLI is picker-visible and therefore configurable. For Codex this includes gpt-5.4-mini and gpt-5.3-codex-spark whenever they occur in model/list.
 
-Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. Codex `spawn_agent` and its namespaced collaboration variants can pass model, effort, and tier, but the returned `task_name` remains metadata only: the authoritative bound worker id comes from `SubagentStart`. Grok `spawn_subagent` takes an exact `model` and independent context; if a ticket has effort or tier that the installed Grok tool cannot express, that option is unavailable rather than silently claimed. Omitting Grok `model` inherits the parent model and is forbidden. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not silently rewritten to another model.
+Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. Codex `spawn_agent` and its namespaced collaboration variants can pass model, effort, and tier; the returned `task_name` is the native execution handle for attach/liveness/release, while `agent_id` is optional diagnostics. Grok `spawn_subagent` takes an exact `model` and independent context; if a ticket has effort or tier that the installed Grok tool cannot express, that option is unavailable rather than silently claimed. Omitting Grok `model` inherits the parent model and is forbidden. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not rewritten in place.
 
 ## Automatic policy
 
@@ -103,7 +103,7 @@ Parallel dispatch is permitted only for units with complete, pairwise disjoint w
 
 ## Safety and lifecycle invariants
 
-- No parent-model inheritance, cross-model fallback, or invented effort or speed fields.
+- No parent-model inheritance, in-place model change, cross-host fallback, or invented effort or speed fields. Explicit quota exhaustion may create an immutable, auditable successor after a clean pre-mutation baseline; successors rerun all hard gates.
 - Tickets are immutable model assignments with Delegation Receipts.
 - Depth is one; physical concurrency is host-bounded and logical work queues FIFO.
 - AgentLimitReached defers the same ticket without changing its model.

@@ -110,14 +110,14 @@ function recommendedCandidate(proposal: SelectionProposal, key: string): Selecti
     ? unit.candidates.find((item) => item.model_id === unit.recommended_model_id)
     : null;
   if (!candidate?.selectable || !candidate.automatic_eligible) {
-    throw new Error(`MODEL_RECOMMENDATION_UNAVAILABLE: ${key} has no automatic configured candidate (${unit.recommendation_reason})`);
+    throw unavailableRecommendationError(unit, key);
   }
   return candidate;
 }
 
-function validateProposal(cwd: string, proposal: SelectionProposal): void {
+function validateProposal(cwd: string, proposal: SelectionProposal, env?: NodeJS.ProcessEnv): void {
   if (proposal.status !== "pending_confirmation") throw new Error(`selection proposal ${proposal.id} is already ${proposal.status}`);
-  const snapshot = readRouteSnapshot(cwd, { host: proposal.host });
+  const snapshot = readRouteSnapshot(cwd, { host: proposal.host, env });
   if (!snapshot || snapshot.fingerprint !== proposal.catalog_fingerprint) {
     throw new Error("ROUTE_SNAPSHOT_STALE: refresh the active CLI model catalog and create a new proposal");
   }
@@ -126,7 +126,7 @@ function validateProposal(cwd: string, proposal: SelectionProposal): void {
   }
 }
 
-function approveStandalone(cwd: string, proposal: SelectionProposal, cards: ModelCard[]) {
+function approveStandalone(cwd: string, proposal: SelectionProposal, cards: ModelCard[], env?: NodeJS.ProcessEnv) {
   const units = proposal.units.filter((item) => !item.director_local);
   if (!units.length) throw new Error(`proposal ${proposal.id} has no delegated unit`);
   const choices = units.map((unit) => ({ unit, candidate: recommendedCandidate(proposal, unit.key) }));
@@ -152,6 +152,10 @@ function approveStandalone(cwd: string, proposal: SelectionProposal, cards: Mode
       forceDelegate: true,
     });
     if (planned.director_local === true) throw new Error(`selection source no longer requires delegation: ${unit.key}`);
+    planned.ticket.routing_requirements = {
+      required_reasoning_effort: unit.target_reasoning_effort,
+      estimated_context_tokens: unit.estimated_context_tokens,
+    };
     if (writePaths.length) {
       const operations = Array.isArray(proposal.payload.write_operations)
         ? proposal.payload.write_operations.map(String) as SafetyOperation[]
@@ -165,8 +169,8 @@ function approveStandalone(cwd: string, proposal: SelectionProposal, cards: Mode
       planned.ticket.mode = "write";
       planned.ticket.read_only = false;
     }
-    writeReceipt(cwd, planned.receipt);
-    writeSpawn(cwd, planned.ticket);
+    writeReceipt(cwd, planned.receipt, env);
+    writeSpawn(cwd, planned.ticket, env);
     tickets.push(planned.ticket);
     approvals.push({ key: unit.key, approval });
   }
@@ -197,11 +201,23 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     cards,
     includeTask: (task) => includedTasks.has(applyTaskId(task)),
     selectCard: (task) => selected.get(applyTaskId(task)),
-    selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt, selectionHost),
+    selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt, selectionHost, env),
     selectionApprovals: approvals,
     unitScopes: scopesFromRecord(proposal.payload.unit_scopes),
+    env,
   });
   if (result.error || result.blocked.length) throw new Error(result.error || result.blocked.map((item) => `${item.id}: ${item.error}`).join("; "));
+  for (const ticket of result.tickets) {
+    const binding = ticket.openspec as Record<string, unknown> | null;
+    const unitKey = binding?.number ? String(binding.number) : typeof binding?.line_index === "number" ? `line-${binding.line_index}` : "";
+    const unit = proposal.units.find((item) => item.key === unitKey);
+    if (!unit) continue;
+    ticket.routing_requirements = {
+      required_reasoning_effort: unit.target_reasoning_effort,
+      estimated_context_tokens: unit.estimated_context_tokens,
+    };
+    writeSpawn(cwd, ticket, env);
+  }
   return {
     tickets: result.tickets,
     approvals: [...approvals.entries()].map(([key, approval]) => ({ key, approval })),
@@ -230,6 +246,7 @@ function finalizeSelectionApproval(
   cwd: string,
   proposal: SelectionProposal,
   result: SelectionExecutionResult,
+  env?: NodeJS.ProcessEnv,
 ): SelectionApprovalOutput {
   proposal.status = "approved";
   proposal.approved_at = result.confirmation.confirmed_at;
@@ -257,7 +274,7 @@ function finalizeSelectionApproval(
     selected_provider_ids: approval.selected_provider_ids,
     global_provider_ids: approval.global_provider_ids,
   }));
-  writeSelectionProposal(cwd, proposal);
+  writeSelectionProposal(cwd, proposal, env);
   return {
     proposal_id: proposal.id,
     status: proposal.status,
@@ -275,12 +292,26 @@ export function assertRecommendedSelectionAvailable(units: SelectionProposal["un
       ? unit.candidates.find((item) => item.model_id === unit.recommended_model_id)
       : null;
     if (!candidate?.selectable || !candidate.automatic_eligible) {
-      throw new Error(
-        `MODEL_RECOMMENDATION_UNAVAILABLE: ${unit.key} has no automatic configured candidate (${unit.recommendation_reason}). `
-        + "Run `baton config` and enable at least one CLI subagent model.",
-      );
+      throw unavailableRecommendationError(unit, unit.key);
     }
   }
+}
+
+function unavailableRecommendationError(
+  unit: SelectionProposal["units"][number],
+  key: string,
+): Error & { code: string } {
+  const exhausted = unit.recommendation_reason === "CODING_MODELS_EXHAUSTED";
+  const code = exhausted ? "CODING_MODELS_EXHAUSTED" : "MODEL_RECOMMENDATION_UNAVAILABLE";
+  const reasons = unit.candidates.length
+    ? unit.candidates.map((candidate) => `${candidate.route_id}:${candidate.selection_code}:${candidate.selection_reason}`).join("; ")
+    : "no configured Coding routes";
+  const error = new Error(
+    `${code}: ${key} has no automatic configured candidate (${unit.recommendation_reason}); ${reasons}. `
+    + "Run `baton config`, wait for recovery, or reset confirmed quota state.",
+  ) as Error & { code: string };
+  error.code = code;
+  return error;
 }
 
 export function approveRecommendedSelection({
@@ -294,18 +325,19 @@ export function approveRecommendedSelection({
   cards: ModelCard[];
   env?: NodeJS.ProcessEnv;
 }): SelectionApprovalOutput {
-  validateProposal(cwd, proposal);
+  validateProposal(cwd, proposal, env);
   assertRecommendedSelectionAvailable(proposal.units);
   const result = proposal.source === "standalone"
-    ? approveStandalone(cwd, proposal, cards)
+    ? approveStandalone(cwd, proposal, cards, env)
     : approveOpenSpec(cwd, proposal, cards, env);
-  return finalizeSelectionApproval(cwd, proposal, result);
+  return finalizeSelectionApproval(cwd, proposal, result, env);
 }
 
 export function runSelection(args: string[], {
   cwd,
   stdout,
   host,
+  env,
 }: {
   cwd: string;
   stdout: WritableLike;
@@ -315,11 +347,11 @@ export function runSelection(args: string[], {
 }): number {
   const sub = args[0] || "show";
   if (sub !== "show") {
-    throw new Error("MODEL_SELECTION_REMOVED: selector rendering and model approval are not supported; Baton routes automatically from cli.<id>.subagent_models");
+    throw new Error("MODEL_SELECTION_REMOVED: selector rendering and model approval are not supported; Baton routes automatically from cli.<id>.coding_models");
   }
   const id = args[1];
   if (!id) throw new Error("usage: baton selection show PROPOSAL [--json]");
-  const proposal = readSelectionProposal(cwd, id);
+  const proposal = readSelectionProposal(cwd, id, env);
   if (host && proposal.host && parseHostId(host) !== parseHostId(proposal.host)) {
     throw new Error(`HOST_MISMATCH: selection ${id} belongs to ${proposal.host}, not ${host}`);
   }

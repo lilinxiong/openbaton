@@ -1,3 +1,4 @@
+import readline from "node:readline";
 import { initProject } from "./commands/init.js";
 import { updateProject } from "./commands/update.js";
 import { runCapabilities } from "./commands/capabilities.js";
@@ -6,6 +7,8 @@ import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { runHost } from "./commands/host.js";
 import { cliPromptChoices, runConfig } from "./commands/config.js";
+import { runActivation } from "./commands/activation.js";
+import { runUninstall } from "./commands/uninstall.js";
 import { GUARD_HOSTS, runGuard } from "./commands/guard.js";
 import {
   approveRecommendedSelection,
@@ -15,7 +18,7 @@ import {
 } from "./commands/selection.js";
 import {
   cliProfileForHost,
-  configuredSubagentModelsForHost,
+  configuredCodingModelsForHost,
   effectiveMaxConcurrentForHost,
   effectiveMaxDepthForHost,
   loadConfig,
@@ -36,6 +39,12 @@ import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
+import { availabilityForRoute } from "./lib/model-availability.js";
+import { codexHooksStatus } from "./lib/codex-hooks.js";
+import { claudeHooksStatus } from "./lib/claude-hooks.js";
+import { grokHooksStatus } from "./lib/grok-hooks.js";
+import { latestHookObservation } from "./lib/hook-observation.js";
+import { resolveActivation, listDrainingTickets, withActivationLock } from "./lib/activation.js";
 import {
   buildSelectionUnit,
   createSelectionProposal,
@@ -66,18 +75,98 @@ interface RunOptions {
 type FlagValue = string | boolean;
 type FlagMap = Record<string, FlagValue | FlagValue[]>;
 
+async function readStdinLine(stream: NodeJS.ReadableStream, output: WritableLike): Promise<string> {
+  const lineReader = readline.createInterface({
+    input: stream as NodeJS.ReadableStream,
+    output: output as unknown as NodeJS.WritableStream,
+    terminal: false,
+  });
+  return await new Promise<string>((resolve) => {
+    lineReader.question("", (answer) => {
+      lineReader.close();
+      resolve(answer);
+    });
+  });
+}
+
 export const VERSION = "0.2.0";
 
 function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, host: ReturnType<typeof parseHostId>): ModelCard[] {
   const cfg = loadConfig(cwd, { env });
   const profile = cliProfileForHost(cfg, host);
-  const allowed = new Set(configuredSubagentModelsForHost(cfg, host));
+  const allowed = new Set(configuredCodingModelsForHost(cfg, host));
   if (!allowed.size) return [];
   const snapshot = readRouteSnapshot(cwd, { host, env });
   if (!snapshot || snapshot.cli !== host || !profile.enabled) return [];
   return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd), { host, env })
     .map((candidate) => candidate.card)
     .filter((card) => card.route_id && allowed.has(card.route_id));
+}
+
+function codingModelsForHost(cwd: string, env: NodeJS.ProcessEnv, host: CliId): string[] {
+  return [...configuredCodingModelsForHost(loadConfig(cwd, { env }), host)];
+}
+
+function formatExecutionHandle(handle: unknown): string | null {
+  if (!handle) return null;
+  if (typeof handle === "object" && !Array.isArray(handle)) {
+    const value = handle as Record<string, unknown>;
+    if (typeof value.kind === "string" && typeof value.value === "string") return `${value.kind}:${value.value}`;
+  }
+  return typeof handle === "string" ? handle : String(handle);
+}
+
+function hookPostureForStatus(host: CliId, cwd: string, env: NodeJS.ProcessEnv, guardMode: "enforce" | "off", coreDispatchReady: boolean) {
+  if (host === "codex") {
+    const status = codexHooksStatus({ cwd, env, guardMode });
+    return {
+      supported: true,
+      hook_configured: status.hook_configured,
+      configured: status.configured,
+      operational: status.operational,
+      coverage: status.coverage,
+      audit_only: status.audit_only,
+      core_dispatch_ready: coreDispatchReady,
+      recent_hook_observation: status.recent_hook_observation,
+      last_observed_at: status.last_observed_at,
+      events: status.events,
+      command_usable: status.command_usable,
+      operational_error: status.operational_error,
+    };
+  }
+  if (host === "claude" || host === "grok") {
+    const status = host === "claude" ? claudeHooksStatus({ cwd, env }) : grokHooksStatus({ cwd, env });
+    const observation = latestHookObservation(cwd, host, env);
+    const recent = Boolean(observation && Date.now() - new Date(observation.last_observed_at).getTime() <= 5 * 60_000);
+    return {
+      supported: true,
+      hook_configured: status.configured,
+      configured: status.configured,
+      operational: status.operational,
+      coverage: status.configured ? "scoped-pretooluse" : "none",
+      audit_only: false,
+      core_dispatch_ready: coreDispatchReady,
+      recent_hook_observation: recent,
+      last_observed_at: observation?.last_observed_at || null,
+      events: status.events,
+      command_usable: status.command_usable,
+      operational_error: status.operational_error,
+    };
+  }
+  return {
+    supported: false,
+    hook_configured: false,
+    configured: false,
+    operational: false,
+    coverage: "unsupported",
+    audit_only: true,
+    core_dispatch_ready: coreDispatchReady,
+    recent_hook_observation: "unknown" as const,
+    last_observed_at: null,
+    events: [],
+    command_usable: false,
+    operational_error: "host does not expose a Baton hook status API",
+  };
 }
 
 function runtimeHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): ReturnType<typeof parseHostId> {
@@ -90,6 +179,23 @@ function batonProfileEnabled(cwd: string, env: NodeJS.ProcessEnv, host: ReturnTy
   } catch {
     return false;
   }
+}
+
+function requireActivation(cwd: string, env: NodeJS.ProcessEnv, host: CliId): ReturnType<typeof resolveActivation> {
+  const activation = resolveActivation(cwd, { env, host });
+  if (!activation.valid) {
+    const error = new Error(`ACTIVATION_INVALID: ${activation.reason || "activation state is invalid"}`) as CodedError;
+    error.code = "ACTIVATION_INVALID";
+    throw error;
+  }
+  return activation;
+}
+
+function activationBypass(stdout: WritableLike, activation: ReturnType<typeof resolveActivation>, json: boolean): number {
+  const payload = { bypassed: true, reason: "ACTIVATION_DISABLED", activation, tickets: [] };
+  if (json) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  else stdout.write(`bypassed: Baton activation is disabled for ${activation.host}; no tickets created\n`);
+  return 0;
 }
 
 function directorOnlyClassification(classification: ReturnType<typeof normalizeAgentTaskClassification>): boolean {
@@ -137,17 +243,21 @@ Together: OpenSpec owns breakdown/status; baton owns who runs each task and keep
 the director context clean. Apply is multi-model, uncapped, card-routed execution
 of OpenSpec tasks, with conclusions written back. Not a thin adapter.
 The selected CLI owns model visibility; Baton routes only within the configured candidate set.
-Interactive init/config use arrow-key select; space toggles CLIs and subagent models.
+Interactive init/config use arrow-key select; space toggles CLIs and ordered Coding models.
 
 Usage:
   baton init [--force] [--cli ${HOSTS}]  initialize Baton + host skills
   baton update                        refresh host skills + global config defaults
-  baton guard status|install|hook [--host ${GUARD_HOSTS.join("|")}]  inspect/install a host guard or serve hook stdin
+  baton guard status|install|claim|continuation|hook [--host ${GUARD_HOSTS.join("|")}]  inspect/install a host guard or serve hook stdin
   baton models refresh|status|candidates [--host ${HOSTS}]  inspect/refresh one CLI model catalog
+  baton models reset ROUTE --host ${HOSTS} [--json]           clear one durable quota decision
   baton cards [--host ${HOSTS}] [--ranked|--unranked] [--provider ID] [--json]
   baton host detect [--json]               resolve invoking host from runtime signals
   baton config [--cli ${HOSTS}] [--runner MODEL|-] [--longctx MODEL|-]
-               [--subagent-model MODEL|all] [--enable|--disable]
+               [--coding-model MODEL|all] [--guard-mode enforce|off] [--enable|--disable]
+  baton enable|disable all|curproject --host ${HOSTS} [--json]
+  baton uninstall [--host ${HOSTS}] [--dry-run]
+  baton uninstall --clean [--dry-run] [--yes]
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
   baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--classification mechanical|long-context|implementation|analysis|discussion|general] [--operation LABEL]
                [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...] [--dispatch]
@@ -169,7 +279,7 @@ Usage:
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json
   baton dispatch status --host HOST --json
-  baton status [--host ${HOSTS}]  director queue + OpenSpec status if present
+  baton status [--host ${HOSTS}] [--json]  activation, Coding routes, queue + OpenSpec status
   baton help | --help | -h
   baton version | --version | -v
 `;
@@ -213,6 +323,17 @@ export async function run(argv: string[], {
         return cmdMatch(args, cwd, stdout, env);
       case "config":
         return await runConfig(args, { cwd, stdout, stdin: streamStdin, env, adapterProvider, prompt });
+      case "enable":
+      case "disable":
+        return runActivation([cmd, ...args], { cwd, stdout, env });
+      case "uninstall":
+        return await runUninstall(args, { cwd, stdout, env, interactive: injectedStdin !== undefined || isInteractiveIo(streamStdin, stdout), confirm: async () => {
+          if (injectedStdin !== undefined) return /^y(?:es)?$/i.test(injectedStdin.trim());
+          if (!isInteractiveIo(streamStdin, stdout)) return false;
+          (args.includes("--json") ? stderr : stdout).write("Clean all Baton state after active tickets drain? [y/N] ");
+          const input = await readStdinLine(streamStdin, stderr);
+          return /^y(?:es)?$/i.test(input.trim());
+        } });
       case "spawn":
         return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
@@ -286,7 +407,11 @@ async function cmdInit(
     const label = item.host === "claude" ? "Claude Code" : item.host === "grok" ? "Grok" : "Codex";
     stdout.write(`  ${label} guard: ${item.action} at ${item.display_path}\n`);
   }
-  stdout.write("  Trust it in Codex: open `/hooks`, review the Baton-owned entries, and trust them.\n");
+  if (result.guard.guard_mode === "off") {
+    stdout.write("  Codex guard: off (zero Baton hooks; audit-only; no trust step required).\n");
+  } else {
+    stdout.write("  Trust it in Codex: open `/hooks`, review the Baton-owned entries, and trust them.\n");
+  }
   stdout.write("  Note: specialized tool paths may opt out of the default Codex hook path.\n");
   stdout.write("  Claude Code applies user settings hooks without a trust prompt; review them with `/hooks`.\n");
   stdout.write("  Grok global hooks apply without a trust prompt; review them with `/hooks`.\n");
@@ -294,7 +419,7 @@ async function cmdInit(
     stdout.write("\n");
     return runConfig([], { cwd, stdout, stdin, env, adapterProvider, prompt, clis });
   }
-  stdout.write("\nNext: run `baton config`; choose CLIs, their runner/longctx labels, and the subagent candidate models.\n");
+  stdout.write("\nNext: run `baton config`; choose CLIs, their runner/longctx labels, and ordered Coding models.\n");
   stdout.write("Model visibility comes from the selected CLI. Later routing is automatic.\n");
   stdout.write("OpenSpec is optional. baton is complete without it.\n");
   return 0;
@@ -304,7 +429,11 @@ function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
   const result = updateProject(cwd, { env });
   stdout.write("updated Baton global files\n");
   for (const a of result.actions) stdout.write(`  ${a}\n`);
-  stdout.write("  Trust the Codex guard in Codex: open `/hooks` and review/trust the Baton-owned entries.\n");
+  if (result.guard.guard_mode === "off") {
+    stdout.write("  Codex guard: off (zero Baton hooks; audit-only; no trust step required).\n");
+  } else {
+    stdout.write("  Trust the Codex guard in Codex: open `/hooks` and review/trust the Baton-owned entries.\n");
+  }
   stdout.write("  Note: specialized tool paths may opt out of the default Codex hook path.\n");
   stdout.write("  Grok global hooks apply without a trust prompt; review them with `/hooks`.\n");
   return 0;
@@ -324,7 +453,7 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     return 0;
   }
   if (models.length === 0) {
-    stdout.write("no enabled subagent models. Run: baton config\n");
+    stdout.write("no enabled Coding models. Run: baton config\n");
     return 0;
   }
   stdout.write(`cards: ${models.length}\n`);
@@ -343,8 +472,11 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     const cards = resolvedCards(cwd, env, host);
     const unit = buildSelectionUnit({
       cwd, host, key: "preview", description: text, prompt: text, cards,
-      automaticCards: cardsForAutomaticSelection(cwd, cards, text, host),
+      automaticCards: cardsForAutomaticSelection(cwd, cards, text, host, env),
+      codingModels: codingModelsForHost(cwd, env, host),
+      env,
     });
+    assertRecommendedSelectionAvailable([unit]);
     if (flags.json) stdout.write(`${JSON.stringify(unit, null, 2)}\n`);
     else {
       stdout.write(`preferred: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
@@ -370,9 +502,12 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
 async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
+  const activation = requireActivation(cwd, env, host);
+  if (!activation.effective_enabled) return activationBypass(stdout, activation, Boolean(flags.json));
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]");
   const allCards = resolvedCards(cwd, env, host);
+  const codingModels = codingModelsForHost(cwd, env, host);
   const hostEnabled = batonProfileEnabled(cwd, env, host);
   const removedSpawnFlags = ["task-kind", "deliverable", "done-when"];
   const removedSpawnFlag = removedSpawnFlags.find((key) => Object.hasOwn(flags, key));
@@ -403,7 +538,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   }
   validateClassificationContract(hostEnabled, classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
   if (stringFlag(flags, "model")) {
-    throw new Error("MODEL_SELECTION_REMOVED: --model is not supported; configure cli.<id>.subagent_models and let Baton route automatically");
+    throw new Error("MODEL_SELECTION_REMOVED: --model is not supported; configure cli.<id>.coding_models and let Baton route automatically");
   }
   const explicitModel = null;
   if (unitDefinitions.length) {
@@ -468,10 +603,15 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
           selectionApproval: ops.approval,
           host,
           forceDelegate: true,
+          env,
         });
         if (!writePathsEarly.length && ops.commit_only === true) planned = authorizeCommitOpsPlan(cwd, planned);
         planned = materializeStandaloneWriteScope(cwd, planned, writePathsEarly, writeOperationsEarly);
-        const ticket = persistStandalonePlan(cwd, planned);
+        const ticket = withActivationLock(cwd, env, () => {
+          const current = requireActivation(cwd, env, host);
+          if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
+          return persistStandalonePlan(cwd, planned, env);
+        }, { host, scope: "both" });
         dispatched.push({ key: item.key, operation: ops.operation || null, profile: ops.profile, ticket });
         continue;
       }
@@ -480,17 +620,20 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         || (!hostEnabled && !classificationFlag.present)
         || (!hostEnabled && directorMayRun(item.description));
       if (directorLocal) {
-        local.push({ key: item.key, kind: "director-local", operation: null, reason: "tiny unit; no subagent model selection is needed" });
+        local.push({ key: item.key, kind: "director-local", operation: null, reason: "tiny unit; no Coding model selection is needed" });
         continue;
       }
-      units.push(buildSelectionUnit({
+      const unit = buildSelectionUnit({
         cwd,
         host,
         key: item.key,
         description: item.description,
         prompt: item.description,
         cards: allCards,
-        automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description, host),
+        automaticCards: cardsForAutomaticSelection(cwd, allCards, item.description, host, env),
+        codingModels,
+        probeRouteIds: [],
+        env,
         requestedModelId: explicitModel,
         directorLocal: false,
         metadata: {
@@ -498,7 +641,8 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
           classification: unitClassification?.kind || classificationFlag.value?.kind || null,
           operation: unitOperations.get(item.key) || classificationFlag.value?.operation || null,
         },
-      }));
+      });
+      units.push(unit);
     }
     assertRecommendedSelectionAvailable(units);
     const proposal = units.length ? createSelectionProposal(cwd, {
@@ -507,8 +651,13 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       units,
       sourceFingerprint: selectionSourceFingerprint(source),
       payload: source,
+      env,
     }) : null;
-    const approval = proposal ? approveRecommendedSelection({ cwd, proposal, cards: allCards, env }) : null;
+    const approval = proposal ? withActivationLock(cwd, env, () => {
+      const current = requireActivation(cwd, env, host);
+      if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
+      return approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
+    }, { host, scope: "both" }) : null;
     const createdTickets = dispatched.length > 0 || Boolean(approval?.tickets.length);
     const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
     if (flags.json) {
@@ -539,11 +688,14 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
+  const activation = requireActivation(cwd, env, host);
+  if (!activation.effective_enabled) return activationBypass(stdout, activation, Boolean(flags.json));
   const change = firstPositionalArg(args);
   if (multiFlag(flags, "route").length) {
-    throw new Error("MODEL_SELECTION_REMOVED: --route is not supported; configure cli.<id>.subagent_models and let Baton route automatically");
+    throw new Error("MODEL_SELECTION_REMOVED: --route is not supported; configure cli.<id>.coding_models and let Baton route automatically");
   }
   const cards = resolvedCards(cwd, env, host);
+  const codingModels = codingModelsForHost(cwd, env, host);
   if (!detectOpenSpecRoot(cwd) && !change) {
     stdout.write("OpenSpec is not in this project. baton still works standalone:\n");
     stdout.write("  baton spawn \"explore the auth module\"\n");
@@ -588,12 +740,12 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     throw err;
   }
   const liveStatuses = new Set(["reserved", "dispatching", "running"]);
-  const inflight = listSpawns(cwd)
+  const inflight = listSpawns(cwd, env)
     .filter((ticket) => liveStatuses.has(ticket.status))
     .filter((ticket) => (ticket.target_host || ticket.dispatch_host || ticket.host) === host)
     .map((ticket) => {
       const write_allowlist = ticket.receipt_id
-        ? readReceipt(cwd, ticket.receipt_id).scope.write_allowlist
+        ? readReceipt(cwd, ticket.receipt_id, env).scope.write_allowlist
         : null;
       return {
         id: ticket.id,
@@ -616,20 +768,24 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   const units = [];
   for (const task of tasks) {
     const prompt = formatTaskPrompt(task);
-    units.push(buildSelectionUnit({
+    const unit = buildSelectionUnit({
       cwd,
       host,
       key: task.number,
       description: task.description,
       prompt,
       cards,
-      automaticCards: cardsForAutomaticSelection(cwd, cards, prompt, host),
+      automaticCards: cardsForAutomaticSelection(cwd, cards, prompt, host, env),
+      codingModels,
+      probeRouteIds: [],
+      env,
       requestedModelId: null,
       // An explicitly scoped OpenSpec unit is an executable implementation
       // request.  Its prose must never reclassify it as a tiny director edit.
       directorLocal: false,
       metadata: { line_index: task.line_index, section: task.section, classification: "implementation" },
-    }));
+    });
+    units.push(unit);
   }
   const taskSource = pending.map((task) => ({ number: task.number, description: task.description, section: task.section }));
   assertRecommendedSelectionAvailable(units);
@@ -643,8 +799,13 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
       change_dir: changeDir,
       unit_scopes: scopeRecord(scopes),
     },
+    env,
   });
-  const approval = approveRecommendedSelection({ cwd, proposal, cards, env });
+  const approval = withActivationLock(cwd, env, () => {
+    const current = requireActivation(cwd, env, host);
+    if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
+    return approveRecommendedSelection({ cwd, proposal, cards, env });
+  }, { host, scope: "both" });
   const createdTickets = Boolean(approval?.tickets.length);
   const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
   if (flags.json) {
@@ -672,32 +833,129 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
     throw err;
   }
   const host = runtimeHost(flags, cwd, env);
-  stdout.write("baton status\n");
   const cards = resolvedCards(cwd, env, host);
   const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
   const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
-  stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
-  stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
   const cliProfile = cliProfileForHost(cfg, host);
-  stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
-  stdout.write(`  max_concurrent: ${effectiveMaxConcurrentForHost(cfg, host, env)} (queue beyond this; never refuse)\n`);
-  stdout.write(`  max_depth: ${effectiveMaxDepthForHost(cfg, host)}\n`);
   const snapshot = readRouteSnapshot(cwd, { host, env });
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
-  stdout.write(`  CLI models: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton config)"}\n`);
-  const selections = listSelectionProposals(cwd).filter((item) => !item.host || item.host === host);
-  stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
-  const spawns = listSpawns(cwd).filter((s) => (s.target_host || s.dispatch_host || s.host) === host);
+  const selections = listSelectionProposals(cwd, env).filter((item) => !item.host || item.host === host);
+  const spawns = listSpawns(cwd, env).filter((s) => (s.target_host || s.dispatch_host || s.host || s.selection?.host) === host);
   const running = spawns.filter((s) => s.status === "running").length;
   const queued = spawns.filter((s) => s.status === "queued").length;
   const dispatching = spawns.filter((s) => s.status === "dispatching").length;
   const terminal = spawns.filter((s) => ["completed", "errored", "timed_out", "closed", "done"].includes(s.status)).length;
+  const activation = resolveActivation(cwd, { env, host });
+  const drainingScope = activation.valid && activation.global_enabled === false ? "all" : "curproject";
+  const draining = activation.valid ? listDrainingTickets(cwd, host, { scope: drainingScope, env }) : [];
+  const configuredDispatchRoutes = [...new Set([...
+    cliProfile.coding_models,
+    cliProfile.runner,
+    cliProfile.longctx,
+  ].filter(Boolean))];
+  const availableDispatchRoutes = configuredDispatchRoutes.filter((routeId) =>
+    snapshot?.routes.some((route) => route.route_id === routeId && !route.disabled));
+  const coreDispatchReady = Boolean(activation.valid && activation.effective_enabled && cliProfile.enabled && snapshot && availableDispatchRoutes.length > 0);
+  const coreDispatchReason = !activation.valid
+    ? "ACTIVATION_INVALID"
+    : !activation.effective_enabled
+      ? "ACTIVATION_DISABLED"
+      : !cliProfile.enabled
+        ? "HOST_PROFILE_DISABLED"
+        : !snapshot
+          ? "ROUTE_SNAPSHOT_MISSING"
+          : !availableDispatchRoutes.length ? "CONFIGURED_ROUTES_UNAVAILABLE" : "READY";
+  const codingAvailability = cliProfile.coding_models.map((routeId) => {
+    const state = availabilityForRoute(cwd, { host, routeId }, new Date(), env);
+    const catalogRoute = snapshot?.routes.find((route) => route.route_id === routeId);
+    const eligibility = !snapshot
+      ? { eligible: false, code: "ROUTE_SNAPSHOT_MISSING", reason: "run baton config to capture the active CLI model catalog" }
+      : !catalogRoute
+        ? { eligible: false, code: "ROUTE_NOT_IN_ACTIVE_CATALOG", reason: "route is not present in the captured active CLI model catalog" }
+        : catalogRoute.disabled
+          ? { eligible: false, code: "ROUTE_DISABLED", reason: "route is disabled in the captured active CLI model catalog" }
+          : state.status === "exhausted"
+            ? { eligible: false, code: "DURABLE_QUOTA_EXHAUSTED", reason: state.reason || "quota is durably exhausted" }
+            : state.status === "probe_due"
+              ? {
+                eligible: false,
+                code: state.probe_available ? "PROBE_DUE" : "PROBE_LEASE_HELD",
+                reason: state.probe_available
+                  ? "route is recoverable by one dispatch-side probe lease"
+                  : "route is waiting for the current probe lease to complete or expire",
+              }
+              : { eligible: true, code: "AVAILABLE", reason: "route is present, enabled, and not durably exhausted" };
+    return {
+      route_id: routeId,
+      availability_scope: "host-profile",
+      eligible: eligibility.eligible,
+      eligibility_code: eligibility.code,
+      eligibility_reason: eligibility.reason,
+      status: state.status,
+      reason: state.reason,
+      next_probe_at: state.next_probe_at,
+      probe_available: state.probe_available,
+    };
+  });
+  const codingDispatchReady = codingAvailability.some((route) => route.eligible);
+  const codingDispatchReason = codingDispatchReady ? "READY" : "CODING_MODELS_EXHAUSTED";
+  const hook = hookPostureForStatus(host, cwd, env, cliProfile.guard_mode, coreDispatchReady);
+  const spawnOutput = spawns.map((s) => ({
+    id: s.id,
+    status: s.status,
+    model_id: s.model_id,
+    execution_handle: s.execution_handle ? formatExecutionHandle(s.execution_handle) : null,
+    agent_id: s.agent_id || null,
+  }));
+  if (flags.json) {
+    stdout.write(`${JSON.stringify({
+      host,
+      activation,
+      draining_tickets: draining,
+      draining_count: draining.length,
+      draining_scope: drainingScope,
+      guard_mode: cliProfile.guard_mode,
+      core_dispatch_ready: coreDispatchReady,
+      core_dispatch_reason: coreDispatchReason,
+      hook_posture: hook,
+      coding_dispatch_ready: codingDispatchReady,
+      coding_dispatch_reason: codingDispatchReason,
+      coding_models: codingAvailability,
+      cards: { total: cards.length, ranked: rankedCards, unranked: unrankedCards },
+      max_concurrent: effectiveMaxConcurrentForHost(cfg, host, env),
+      max_depth: effectiveMaxDepthForHost(cfg, host),
+      cli_models: { executable: executableRoutes, snapshot: snapshot?.fingerprint || null },
+      selections: {
+        total: selections.length,
+        pending: selections.filter((item) => item.status === "pending_confirmation").length,
+        approved: selections.filter((item) => item.status === "approved").length,
+      },
+      spawns: { total: spawns.length, dispatching, running, queued, terminal, tickets: spawnOutput },
+      openspec: readOpenSpecStatus(cwd),
+    }, null, 2)}\n`);
+    return 0;
+  }
+  stdout.write("baton status\n");
+  stdout.write(`  activation: global=${activation.global_enabled ?? "invalid"} project=${activation.project_enabled ?? "invalid"} effective=${activation.effective_enabled ? "enabled" : "disabled"} provenance=${activation.provenance}${activation.reason ? ` reason=${activation.reason}` : ""}\n`);
+  stdout.write(`  draining: scope=${drainingScope} ${draining.length}${draining.length ? ` (${draining.map((ticket) => ticket.ticket_id).join(", ")})` : ""}\n`);
+  stdout.write(`  core dispatch: ${coreDispatchReady ? "ready" : "not-ready"} (${coreDispatchReason})\n`);
+  stdout.write(`  guard: mode=${cliProfile.guard_mode} configured=${hook.hook_configured ? "yes" : "no"} hook=${hook.coverage}/${hook.operational ? "operational" : "not-operational"} core_dispatch=${hook.core_dispatch_ready ? "ready" : "not-ready"} audit_only=${hook.audit_only ? "yes" : "no"} recent_observation=${hook.recent_hook_observation} last_observed_at=${hook.last_observed_at || "none"}\n`);
+  stdout.write(`  Coding priority: ${cliProfile.coding_models.length ? cliProfile.coding_models.join(" > ") : "(none)"} (${codingDispatchReason})\n`);
+  for (const route of codingAvailability) stdout.write(`    ${route.route_id}: ${route.status}; ${route.eligibility_code} (${route.eligibility_reason})${route.next_probe_at ? `; probe ${route.next_probe_at}` : ""}\n`);
+  stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
+  stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
+  stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
+  stdout.write(`  max_concurrent: ${effectiveMaxConcurrentForHost(cfg, host, env)} (queue beyond this; never refuse)\n`);
+  stdout.write(`  max_depth: ${effectiveMaxDepthForHost(cfg, host)}\n`);
+  stdout.write(`  CLI models: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton config)"}\n`);
+  stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
   stdout.write(`  spawns: ${spawns.length}  dispatching ${dispatching}  running ${running}  queued ${queued}  terminal ${terminal}\n`);
   for (const s of spawns) {
     const extra = s.conclusion ? ` → ${s.conclusion}` : s.progress ? ` → ${s.progress.phase}: ${s.progress.summary}` : "";
     const worker = s.agent_id ? ` agent=${s.agent_id}` : "";
     const kind = s.work_unit?.kind ? ` ${s.work_unit.kind}` : "";
-    stdout.write(`    ${s.id}  ${s.status}${kind}  ${s.model_id || "director"}${worker}  ${s.description}${extra}\n`);
+    const handle = s.execution_handle ? ` execution_handle=${formatExecutionHandle(s.execution_handle)}` : "";
+    stdout.write(`    ${s.id}  ${s.status}${kind}  ${s.model_id || "director"}${worker}${handle}  ${s.description}${extra}\n`);
   }
   const os = readOpenSpecStatus(cwd);
   stdout.write(`  openspec (${os.source}): ${os.text}\n`);
@@ -852,8 +1110,9 @@ function maybeReserveQueuedSpawn(
   const host = runtimeHost(flags, cwd, env);
   const capacityFlag = stringFlag(flags, "capacity");
   return reserveNext(cwd, {
-    capacity: capacityFlag != null ? Number(capacityFlag) : (persistedCapacity(cwd, host) ?? effectiveMaxConcurrentForHost(cfg, host, env)),
+    capacity: capacityFlag != null ? Number(capacityFlag) : (persistedCapacity(cwd, host, env) ?? effectiveMaxConcurrentForHost(cfg, host, env)),
     host,
+    env,
   });
 }
 

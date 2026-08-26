@@ -129,8 +129,8 @@ describe("host identity ledger", () => {
     assert.ok(fs.existsSync(hostIdentityStatePath(cwd, env)));
   });
 
-  it("requires authoritative observation for hook hosts but accepts Cursor tool identity", () => {
-    assert.equal(resolveNativeWorkerIdentity("codex", { callerIdentity: "tool-token" }).code, "AGENT_IDENTITY_REQUIRED");
+  it("accepts Codex task-name attachment and Cursor tool identity", () => {
+    assert.equal(resolveNativeWorkerIdentity("codex", { callerIdentity: "task-token" }).code, "OK");
     assert.equal(resolveNativeWorkerIdentity("claude", { callerIdentity: "tool-token" }).code, "AGENT_IDENTITY_REQUIRED");
     assert.equal(resolveNativeWorkerIdentity("grok", { callerIdentity: "tool-token" }).code, "AGENT_IDENTITY_REQUIRED");
     assert.equal(resolveNativeWorkerIdentity("cursor", { callerIdentity: "tool-token" }).identity, "tool-token");
@@ -147,8 +147,8 @@ describe("host identity ledger", () => {
     assert.equal(nativeHookIdentity("codex", { agent_id: "hook-agent" }), "hook-agent");
     assert.equal(nativeHookIdentity("codex", { agentId: "legacy-agent" }), null);
     assert.equal(nativeHookIdentity("codex", { tool_input: { agent_id: "nested-agent" } }), null);
-    assert.equal(nativeToolReturnIdentity("codex", { task_name: "metadata-only" }), null);
-    assert.equal(nativeToolReturnIdentity("codex", { taskName: "metadata-only" }), null);
+    assert.equal(nativeToolReturnIdentity("codex", { task_name: "native-task" }), "native-task");
+    assert.equal(nativeToolReturnIdentity("codex", { taskName: "native-task-alias" }), "native-task-alias");
   });
 
   it("matches Codex parent session and optional transcript without comparing turns", () => {
@@ -215,7 +215,7 @@ describe("host identity ledger", () => {
       tool_input: { agent_id: "caller-forged" },
     }, { state, host: "codex" });
     assert.equal(nestedCallerIdentity.allowed, false);
-    assert.equal(nestedCallerIdentity.reason, HOST_GUARD_REASONS.agent_identity_required);
+    assert.equal(nestedCallerIdentity.reason, HOST_GUARD_REASONS.invalid_input);
 
     const correlated = evaluateSubagentStart({
       hook_event_name: "SubagentStart",
@@ -225,7 +225,8 @@ describe("host identity ledger", () => {
       transcript_path: `/tmp/${first.id}.json`,
       turn_id: "child-turn",
     }, { state, host: "codex" });
-    assert.equal(correlated.allowed, true);
+    assert.equal(correlated.allowed, false);
+    assert.equal(correlated.reason, HOST_GUARD_REASONS.invalid_input);
   });
 
   it("clears only current reservation state without extra metadata", () => {
@@ -259,7 +260,7 @@ describe("host identity ledger", () => {
     // A Claude handshake must not be blocked by a pending Codex observation.
     assert.equal(evaluatePreToolUse(reservedAgentEvent(claude), { state, host: "claude" }).allowed, true);
     const codexBlocked = evaluatePreToolUse(reservedAgentEvent(codexSecond), { state, host: "codex" });
-    assert.equal(codexBlocked.allowed, false);
+    assert.equal(codexBlocked.allowed, true);
 
     const start = evaluateSubagentStart({
       hook_event_name: "SubagentStart",
@@ -270,7 +271,8 @@ describe("host identity ledger", () => {
       turn_id: "child-turn",
       transcript_path: `/tmp/${codexFirst.id}.json`,
     }, { state, host: "codex" });
-    assert.equal(start.allowed, true);
+    assert.equal(start.allowed, false);
+    assert.equal(start.reason, HOST_GUARD_REASONS.invalid_input);
     state.tickets[0] = { ...state.tickets[0], status: "running", agent_id: "codex-agent-10" };
     const workerRead = evaluatePreToolUse({
       hook_event_name: "PreToolUse",

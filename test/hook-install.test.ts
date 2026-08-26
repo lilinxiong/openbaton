@@ -7,6 +7,7 @@ import { run } from "../src/cli.js";
 import { GUARD_HOSTS } from "../src/commands/guard.js";
 import { CLI_ADAPTERS } from "../src/adapters/index.js";
 import { codexHooksPath } from "../src/lib/codex-hooks.js";
+import { issueGuardClaim } from "../src/lib/guard-claims.js";
 import { claudeSettingsPath } from "../src/lib/claude-hooks.js";
 import { withHome, fakeEnv } from "./home.js";
 
@@ -50,6 +51,24 @@ describe("Codex guard CLI", () => {
       const result = JSON.parse(out.text());
       assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
       assert.equal(result.hookSpecificOutput.permissionDecisionReason, "BATON_GUARD_NOT_INITIALIZED");
+    });
+  });
+
+  it("exposes a first-class Codex claim control-plane entry", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-guard-claim-cli-"));
+      const env = fakeEnv(home);
+      const issued = issueGuardClaim({ cwd, ticket_id: "spn-cli-claim", attempt: 1, host: "codex", env });
+      const out = capture();
+      assert.equal(await run([
+        "guard", "claim", "--token", issued.token, "--json",
+      ], { cwd, env, stdout: out, stderr: out }), 0, out.text());
+      const result = JSON.parse(out.text());
+      assert.equal(result.ok, true);
+      assert.equal(result.binding, false);
+      assert.equal(await run([
+        "guard", "claim", "--token", issued.token, "--turn-id", "turn-cli", "--json",
+      ], { cwd, env, stdout: capture(), stderr: capture() }), 1);
     });
   });
 });
@@ -107,7 +126,7 @@ describe("Claude Code guard CLI", () => {
     );
     const out = capture();
     assert.equal(await run(["help"], { stdout: out, stderr: out }), 0);
-    assert.match(out.text(), new RegExp(`baton guard status\\|install\\|hook \\[--host ${GUARD_HOSTS.join("\\|")}\\]`));
+    assert.match(out.text(), new RegExp(`baton guard status\\|install\\|claim\\|continuation\\|hook \\[--host ${GUARD_HOSTS.join("\\|")}\\]`));
   });
 });
 

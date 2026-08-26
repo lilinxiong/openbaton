@@ -349,7 +349,7 @@ async function finishTicket(options: {
   }
   if (options.mode === "fixture") seedFixtureIdentity(options.cwd, options.env, ticketId, options.host);
   const bound = await baton(
-    ["dispatch", "bind", ticketId, "--agent-id", `compare-${ticketId}`, "--host", options.host, "--json"],
+    ["dispatch", "bind", ticketId, ...(options.host === "codex" ? ["--task-name", `compare-${ticketId}`] : ["--agent-id", `compare-${ticketId}`]), "--host", options.host, "--json"],
     options.cwd,
     options.env,
   );

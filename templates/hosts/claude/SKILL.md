@@ -47,10 +47,10 @@ Claude Code identity is host-specific: bind the child id observed by `SubagentSt
   it contributes only the default marker and is never a selectable model. Rows
   marked `disabled` are visible but not selectable and are excluded. `claude
   models` is a live model prompt, not a catalog; never parse its prose.
-- Store the selected profile, runner and longctx labels, and subagent_models allowlist under [cli.claude] in the user-global config. Never create unselected CLI placeholders. Persist max_concurrent/max_depth overrides only when Claude Code explicitly reports them; otherwise use the director fallbacks.
+- Store the selected profile, runner and longctx labels, and ordered coding_models allowlist under [cli.claude] in the user-global config. Never create unselected CLI placeholders. Persist max_concurrent/max_depth overrides only when Claude Code explicitly reports them; otherwise use the director fallbacks.
 - runner and longctx are labels only. They do not imply context-window or other capability support.
 - Every Claude-returned model is configurable. A missing name in host-tool prose is not proof of unsupported execution.
-- Runtime model choice is automatic from the configured allowlist. Do not show a selector, request model confirmation, accept --model/--route overrides, inherit the parent model, or silently fall back.
+- Runtime model choice is automatic from the configured allowlist. Do not show a selector, request model confirmation, accept --model/--route overrides, inherit the parent model, change a ticket in place, or cross-host silently fall back. Explicit quota evidence may create an audited successor only after a clean pre-mutation baseline and fresh hard gates.
 - Match the model from catalog metadata, optional local evidence, and route health. `list_models` reports `supportsEffort` and `supportedEffortLevels` (low, medium, high, xhigh, max) but never a default effort; do not invent one. It reports no service tiers or speed tiers for this host, so never claim them.
 - At dispatch, require `cli.claude` to be enabled and require the exact model to remain in the captured Claude catalog. Record an actual native spawn rejection against that attempt and report it without substitution.
 
@@ -59,7 +59,7 @@ Claude Code identity is host-specific: bind the child id observed by `SubagentSt
 - Create queued tickets and immutable Receipts before native dispatch. Baton CLI never calls host tools itself and never executes work via `claude -p` or any other Claude print/headless process.
 - Exact-model dispatch goes through an **agent definition**, not the Agent tool's `model` parameter. That parameter is a closed enum (`sonnet`, `opus`, `haiku`, `fable`) and cannot express an exact id. Agent-definition frontmatter accepts a full model ID, so for each reserved ticket write `.claude/agents/<name>.md` with `model: <the ticket's exact model id>`, then call the native Agent tool with `subagent_type` set to that definition and **no** `model` parameter. Setting `model` would override the definition and downgrade the request to an alias.
 - Verified behavior: with a definition pinned to `claude-sonnet-5`, a parent on `claude-opus-5` produced a child whose transcript recorded `claude-sonnet-5`. A definition naming a nonexistent model fails with "There's an issue with the selected model" and the child never runs — no inheritance, no default, no substitution.
-- Compact dispatch is the same for runner ops, longctx ops, and ordinary `subagent_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host claude --json` only for already-queued work. Pass the returned reservation-bearing `prompt` and `description` unchanged to the Agent tool, then bind the returned agent id immediately. Mechanical prompts are one-shot: run the director-supplied operation; do not explore. Do not start a new claude process with `--model`/`--effort`/`-p`.
+- Compact dispatch is the same for runner ops, longctx ops, and ordinary `coding_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host claude --json` only for already-queued work. Pass the returned reservation-bearing `prompt` and `description` unchanged to the Agent tool, then bind the returned agent id immediately. Mechanical prompts are one-shot: run the director-supplied operation; do not explore. Do not start a new claude process with `--model`/`--effort`/`-p`.
 - The Agent tool returns a stable `agent_id` (also delivered to the SubagentStart hook) and the child's transcript lands under the parent session's `subagents/` directory. Bind that exact id; it is what every later lifecycle call uses.
 - Children start with a fresh context. Verified: a parent-only nonce held outside the child prompt was not recoverable by the child, and never appeared in the child transcript. Everything the worker needs must be in the prompt.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
@@ -78,11 +78,18 @@ Claude Code identity is host-specific: bind the child id observed by `SubagentSt
 - At the hook boundary the native child-agent call appears as tool name `Agent`; the installed PreToolUse matcher is `Bash|Edit|Write|NotebookEdit|Agent`.
 - SubagentStart cannot cancel a child and its payload does not repeat the Agent tool input, so it never guesses a ticket. PreToolUse is the enforcing reservation gate; the returned child id becomes authoritative only after `baton dispatch bind`. If a future host payload carries Baton's complete envelope, the hook may record that exact association early.
 
+Use `baton disable|enable all|curproject --host claude` for host-global or
+current-project activation. Disabled activation bypasses Baton; invalid state
+fails closed. OpenSpec apply still creates and dispatches native Claude tickets;
+hooks remain an optional mutation guard and audit surface.
+
 ## Commands
 
     baton config --cli claude [--runner MODEL|-] [--longctx MODEL|-]
-                 [--subagent-model MODEL|all] [--enable|--disable]
+                 [--coding-model MODEL|all] [--enable|--disable]
+    baton enable|disable all|curproject --host claude [--json]
     baton models refresh|status|candidates --host claude
+    baton models reset ROUTE --host claude [--json]
     baton match <text> --host claude
     baton spawn <request> --host claude [--unit KEY=BUSINESS_TASK ...]
                  [--classification CLASS] [--operation LABEL]
@@ -96,6 +103,9 @@ Claude Code identity is host-specific: bind the child id observed by `SubagentSt
     baton dispatch bind TICKET --agent-id ID --host claude --json
     baton dispatch probe|progress|complete|fail|timeout|close|release TICKET --host claude
     baton dispatch recover|status --host claude --json
+    baton status --host claude [--json]
+    baton uninstall --host claude [--dry-run]
+    baton uninstall --clean --yes
 
 ## Red lines
 

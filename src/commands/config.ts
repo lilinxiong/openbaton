@@ -16,6 +16,11 @@ import {
   saveConfig,
   type Config,
 } from "../lib/config.js";
+import { installCodexHooks } from "../lib/codex-hooks.js";
+import { installClaudeHooks } from "../lib/claude-hooks.js";
+import { installGrokHooks } from "../lib/grok-hooks.js";
+import { HOST_IDS } from "../lib/hosts.js";
+import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
 import { normalizeCliRuntimeCapabilities } from "../adapters/shared.js";
 import { detectInvokingHost } from "../lib/hosts.js";
 import {
@@ -25,7 +30,7 @@ import {
   type SelectPrompt,
 } from "../lib/prompt.js";
 import { publishRouteSnapshot } from "../lib/routes.js";
-import type { WritableLike } from "../types.js";
+import type { CodedError, WritableLike } from "../types.js";
 
 export interface ConfigCommandOptions {
   cwd: string;
@@ -87,14 +92,14 @@ function requireModel(models: CliModel[], value: string, label: string): string 
   return model.id;
 }
 
-function parseModelSet(models: CliModel[], values: string[]): string[] {
+function parseModelSet(models: CliModel[], values: string[], label = "coding model"): string[] {
   const tokens = values.flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
   if (tokens.some((value) => value.toLowerCase() === "all")) return models.map((model) => model.id);
   if (tokens.length === 1 && ["0", "-", "none"].includes(tokens[0].toLowerCase())) return [];
   const chosen: string[] = [];
   for (const token of tokens) {
     const model = modelByChoice(models, token);
-    if (!model) throw new Error(`subagent model ${token} is not in the ${models.length}-model CLI response`);
+    if (!model) throw new Error(`${label} ${token} is not in the ${models.length}-model CLI response`);
     if (!chosen.includes(model.id)) chosen.push(model.id);
   }
   return chosen;
@@ -136,7 +141,8 @@ interface CliProfileResult {
   enabled: boolean;
   runner: string | null;
   longctx: string | null;
-  subagent_models: string[];
+  coding_models: string[];
+  guard_mode: "enforce" | "off";
   max_concurrent: number;
   max_depth: number;
   max_concurrent_source: "cli" | "director";
@@ -156,6 +162,7 @@ async function configureCliProfile(
     catalog,
     ask,
     single,
+    interactiveGuardPrompt,
   }: {
     cwd: string;
     stdout: WritableLike;
@@ -164,6 +171,7 @@ async function configureCliProfile(
     catalog: CliModelCatalog;
     ask: () => SelectPrompt;
     single: boolean;
+    interactiveGuardPrompt: boolean;
   },
 ): Promise<CliProfileResult> {
   if (!catalog.models.length) throw new Error(`${cli} returned no picker-visible models`);
@@ -198,21 +206,16 @@ async function configureCliProfile(
   }
   longctx = requireModel(catalog.models, longctx, "longctx");
 
-  const subagentFlags = single ? repeated(args, "subagent-model") : [];
-  let subagentModels: string[];
-  if (!subagentFlags.length) {
-    subagentModels = await ask().multiSelect({
-      message: "Select models callable by subagents",
+  const codingFlags = single ? repeated(args, "coding-model") : [];
+  let codingModels: string[];
+  if (!codingFlags.length) {
+    codingModels = await ask().multiSelect({
+      message: "Select Coding models in priority order",
       choices: modelChoices(catalog.models),
-      initial: existing.subagent_models.filter((id) => catalog.models.some((model) => model.id === id)),
+      initial: existing.coding_models.filter((id) => catalog.models.some((model) => model.id === id)),
     });
   } else {
-    subagentModels = parseModelSet(catalog.models, subagentFlags);
-  }
-  // runner and longctx are themselves subagent routes when configured, so the
-  // persisted allowlist must truthfully include them.
-  for (const model of [runner, longctx]) {
-    if (model && !subagentModels.includes(model)) subagentModels.push(model);
+    codingModels = parseModelSet(catalog.models, codingFlags);
   }
 
   if (args.includes("--enable") && args.includes("--disable")) {
@@ -228,7 +231,34 @@ async function configureCliProfile(
         { value: true, label: "yes" },
         { value: false, label: "no" },
       ],
-      initial: existing.enabled || existing.subagent_models.length === 0,
+      initial: existing.enabled || existing.coding_models.length === 0,
+    });
+  }
+  const requestedGuardMode = lastFlag(args, "guard-mode");
+  let guardMode: "enforce" | "off" = current.cli[cli]
+    ? existing.guard_mode
+    : cli === "claude" || cli === "grok" ? "enforce" : "off";
+  if (cli === "cursor") {
+    if (requestedGuardMode === "enforce") throw new Error("Cursor does not support Baton guard_mode=enforce");
+    guardMode = "off";
+  } else if (requestedGuardMode !== undefined) {
+    if (requestedGuardMode !== "enforce" && requestedGuardMode !== "off") {
+      throw new Error("--guard-mode must be enforce or off");
+    }
+    if ((cli === "claude" || cli === "grok") && requestedGuardMode === "off") {
+      throw new Error(`${cli} requires guard_mode=enforce while its lifecycle hooks are installed`);
+    }
+    guardMode = requestedGuardMode;
+  } else if (interactiveGuardPrompt) {
+    guardMode = await ask().select({
+      message: `Baton guard mode for ${cli}`,
+      choices: cli === "claude" || cli === "grok"
+        ? [{ value: "enforce" as const, label: "enforce (host lifecycle + mutation guard)" }]
+        : [
+          { value: "enforce" as const, label: "enforce (scoped mutation guard)" },
+          { value: "off" as const, label: "off (audit-only; zero Codex hooks)" },
+        ],
+      initial: guardMode,
     });
   }
 
@@ -239,23 +269,24 @@ async function configureCliProfile(
     enabled,
     runner,
     longctx,
-    subagent_models: subagentModels,
+    coding_models: codingModels,
+    guard_mode: guardMode,
     ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
-  const file = saveConfig(cwd, current, { env });
   return {
     cli,
     enabled,
     runner: runner || null,
     longctx: longctx || null,
-    subagent_models: subagentModels,
+    coding_models: codingModels,
+    guard_mode: guardMode,
     max_concurrent: effectiveMaxConcurrentForHost(current, cli),
     max_depth: effectiveMaxDepthForHost(current, cli),
     max_concurrent_source: maxConcurrent !== undefined ? "cli" : "director",
     max_depth_source: maxDepth !== undefined ? "cli" : "director",
     model_source: `${cli} catalog`,
-    config: file,
+    config: "",
   };
 }
 
@@ -263,7 +294,7 @@ function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
   stdout.write(`  cli: ${result.cli} (${result.enabled ? "enabled" : "disabled"})\n`);
   stdout.write(`  runner: ${result.runner || "(missing route blocks classified work)"}\n`);
   stdout.write(`  longctx: ${result.longctx || "(missing route blocks classified work)"}\n`);
-  stdout.write(`  subagent models: ${result.subagent_models.length ? result.subagent_models.join(", ") : "(none)"}\n`);
+  stdout.write(`  Coding priority: ${result.coding_models.length ? result.coding_models.join(" > ") : "(none)"}\n`);
   stdout.write(`  max_concurrent: ${result.max_concurrent} (${result.max_concurrent_source})\n`);
   stdout.write(`  max_depth: ${result.max_depth} (${result.max_depth_source})\n`);
 }
@@ -277,13 +308,23 @@ export async function runConfig(args: string[], {
   prompt,
   clis: presetClis,
 }: ConfigCommandOptions): Promise<number> {
-  if (args[0] === "model-selection") {
-    throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.subagent_models; configure the candidate set with `baton config`");
+  // Reject the removed spelling before loading or writing anything so a
+  // failed migration is always atomic from the user's perspective.
+  if (args.includes("--subagent-model")) {
+    const error = new Error("LEGACY_FLAG_REMOVED: use --coding-model; Coding models are an ordered priority list") as CodedError;
+    error.code = "LEGACY_FLAG_REMOVED";
+    throw error;
   }
-  const current = loadConfig(cwd, { env });
+  if (repeated(args, "guard-mode").length > 1) {
+    throw new Error("--guard-mode is a single-CLI option; configure one host at a time");
+  }
+  if (args[0] === "model-selection") {
+    throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.coding_models; configure the candidate set with `baton config`");
+  }
+  const current = structuredClone(loadConfig(cwd, { env }));
   const ask = (): SelectPrompt => requirePrompt(
     prompt, stdin, stdout, env,
-    "--cli, --runner, --longctx, --subagent-model, and --enable|--disable",
+    "--cli, --runner, --longctx, --coding-model, --guard-mode, and --enable|--disable",
   );
 
   const flaggedCli = lastFlag(args, "cli");
@@ -316,12 +357,26 @@ export async function runConfig(args: string[], {
     const catalog = await adapterProvider(cli).discoverModels({ cwd, env });
     results.push(await configureCliProfile(cli, args, {
       cwd, stdout, env, current, catalog, ask, single,
+      interactiveGuardPrompt: !prompt && isInteractiveIo(stdin, stdout),
     }));
   }
 
   // Persist only the selected profiles; do not write a global active CLI or
   // rewrite director.max_concurrent to the last configured host's cap.
-  const file = results[results.length - 1]?.config || saveConfig(cwd, current, { env });
+  // Discovery, validation, and every prompt above operate on this in-memory
+  // copy. A multi-CLI failure therefore leaves the previous config bytes and
+  // legacy fields untouched. This is the sole config write for the command.
+  const file = saveConfig(cwd, current, { env });
+  // Keep the selected host's installed guard posture synchronized with the
+  // explicit profile. The model/config transaction has already validated all
+  // hosts above, so a failed discovery/prompt never leaves partial config.
+  for (const result of results) {
+    if (result.cli === "codex") installCodexHooks({ cwd, env, guardMode: result.guard_mode });
+    else if (result.cli === "claude") installClaudeHooks({ cwd, env });
+    else if (result.cli === "grok") installGrokHooks({ cwd, env });
+  }
+  writeInstallManifest(buildInstallManifest(cwd, HOST_IDS, env), env);
+  for (const result of results) result.config = file;
 
   const payload = single
     ? { ...results[0], config: file }

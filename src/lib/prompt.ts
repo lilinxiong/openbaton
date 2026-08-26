@@ -80,14 +80,19 @@ async function runSelect<T>(
   const cols = Math.max(20, terminalColumns(stdout));
   const viewSize = Math.max(1, Math.min(choices.length, pageSize || Math.min(12, Math.max(3, rows - 6))));
   const selected = new Set<number>();
+  const selectedOrder: number[] = [];
   if (multiple) {
     const initial = ((options as MultiSelectPromptOptions<T>).initial || []) as T[];
-    for (let index = 0; index < choices.length; index += 1) {
-      if (initial.some((value) => Object.is(value, choices[index].value))) selected.add(index);
+    for (const value of initial) {
+      const index = choices.findIndex((choice) => Object.is(value, choice.value));
+      if (index >= 0 && !selected.has(index)) {
+        selected.add(index);
+        selectedOrder.push(index);
+      }
     }
   }
   let active = multiple
-    ? (selected.size ? Math.min(...selected) : 0)
+    ? (selectedOrder.length ? selectedOrder[0] : 0)
     : initialIndex(choices, (options as SelectPromptOptions<T>).initial);
   let windowStart = Math.min(Math.max(0, active - Math.floor(viewSize / 2)), Math.max(0, choices.length - viewSize));
   const required = multiple && Boolean((options as MultiSelectPromptOptions<T>).required);
@@ -131,14 +136,26 @@ async function runSelect<T>(
         return;
       }
       if (multiple && key.name === "space") {
-        if (selected.has(active)) selected.delete(active);
-        else selected.add(active);
+        if (selected.has(active)) {
+          selected.delete(active);
+          const index = selectedOrder.indexOf(active);
+          if (index >= 0) selectedOrder.splice(index, 1);
+        } else {
+          selected.add(active);
+          selectedOrder.push(active);
+        }
         render();
         return;
       }
       if (multiple && key.name === "a") {
-        if (selected.size === choices.length) selected.clear();
-        else for (let index = 0; index < choices.length; index += 1) selected.add(index);
+        if (selected.size === choices.length) {
+          selected.clear();
+          selectedOrder.splice(0, selectedOrder.length);
+        } else {
+          selected.clear();
+          selectedOrder.splice(0, selectedOrder.length, ...choices.map((_, index) => index));
+          for (const index of selectedOrder) selected.add(index);
+        }
         render();
         return;
       }
@@ -148,11 +165,11 @@ async function runSelect<T>(
       }
     });
     const summaryValue = multiple
-      ? [...selected].sort((left, right) => left - right).map((index) => choices[index].label).join(", ") || "(none)"
+      ? selectedOrder.map((index) => choices[index].label).join(", ") || "(none)"
       : choices[active].label;
     menu.finish(`${paint.green}✔${paint.reset} ${options.message} ${paint.cyan}${summaryValue}${paint.reset}`);
     if (multiple) {
-      return [...selected].sort((left, right) => left - right).map((index) => choices[index].value);
+      return selectedOrder.map((index) => choices[index].value);
     }
     return choices[active].value;
   } catch (cause) {

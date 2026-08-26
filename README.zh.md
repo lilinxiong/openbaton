@@ -76,7 +76,7 @@ Baton 才把哪个字段写入所选的 `[cli.<id>]`，该 host 使用这个真�
     enabled = true
     runner = "gpt-5.4-mini"
     longctx = "gpt-5.5"
-    subagent_models = [
+    coding_models = [
       "gpt-5.6-luna",
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
@@ -84,8 +84,13 @@ Baton 才把哪个字段写入所选的 `[cli.<id>]`，该 host 使用这个真�
 
 runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份所选 CLI 返回的模型列表。
 
-被设置为 runner 或 longctx 的模型会自动加入 subagent_models。CLI 配置关闭时，不提供任何候选。
+`coding_models` 是明确的有序多选，数组顺序就是 Coding 优先级。runner 和
+longctx 是独立标签，不会自动插入或重排 Coding 数组。CLI 配置关闭时不提供候选。
 未选择的 CLI 不会在文件中生成占位 table。
+
+Guard 模式按 host 明确配置：单个 CLI 使用 `--guard-mode enforce|off`。
+Codex 的 `off` 会移除 Baton hooks 并仅保留审计；Cursor 固定为 off；Claude/Grok
+保留各自 host 的生命周期 hooks，并显示为 enforce。
 
 也可以非交互配置：
 
@@ -93,16 +98,23 @@ runner、longctx 只是标签，不声明模型一定快、一定有长上下文
       --cli codex|grok|cursor|claude \
       --runner gpt-5.4-mini \
       --longctx gpt-5.5 \
-      --subagent-model gpt-5.6-luna \
-      --subagent-model gpt-5.4-mini \
-      --subagent-model gpt-5.3-codex-spark \
+      --coding-model gpt-5.3-codex-spark \
+      --coding-model gpt-5.6-luna \
+      --coding-model gpt-5.4-mini \
+      --guard-mode enforce \
       --enable
 
 所选 CLI 的 picker 列表变化后，运行 baton models refresh。
 
 ## Mini 与 Spark
 
-只要 Codex 的 model/list 返回 gpt-5.4-mini 或 gpt-5.3-codex-spark，Baton 就会把它们展示出来，并允许写入 subagent_models。
+只要 Codex 的 model/list 返回 gpt-5.4-mini 或 gpt-5.3-codex-spark，Baton
+就会把它们展示出来，并允许写入 `coding_models`。
+
+迁移说明：旧安装可能含有 `subagent_models`。它只会在 schema 迁移边界被
+读取，并按原顺序写入 `coding_models`，之后不再写回旧字段。已移除的
+`--subagent-model` 会明确返回 `LEGACY_FLAG_REMOVED`，请改用重复的
+`--coding-model`。
 
 这里区分四层证据：
 
@@ -115,7 +127,10 @@ Baton 没有硬编码模型系列禁令。不能只因为某个 tool schema 或�
 
 ## 自动匹配
 
-baton spawn 和 baton apply 不再让用户选模型。Baton自动决定：
+baton spawn 和 baton apply 不再让用户选模型。完成 host、effort、上下文、
+可用性和 activation 等硬门槛后，简单 implementation 选择第一个 eligible 的
+`coding_models`；复杂任务也严格沿配置顺序继续尝试。不会按 score 重排，选择
+原因和跳过路由诊断都会记录。Baton 自动决定：
 
 - 根据 work unit 和 CLI 模型描述选择已配置模型；
 - 根据任务复杂度，从 CLI 返回的 reasoning effort 中选择一个；
@@ -126,7 +141,7 @@ Artificial Analysis 数据只是可选证据。没有 benchmark 时保持 unrank
 
 显式 --model、--route、baton config model-selection、selector render 和用户模型确认都已移除。自动决策仍会写入 proposal、ticket 和 Delegation Receipt，便于审计。
 
-Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没返回的 effort 或 fast 参数，也不会在 ticket 失败后静默换模型。
+Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没返回的 effort 或 fast 参数，也不会原地改 ticket 或跨 host 静默换模型。只有明确 quota 证据且 mutation 尚未开始、baseline 仍干净时，才按后续 Coding 优先级创建可审计的 immutable successor，并重新执行全部硬门槛。
 
 ## Director/worker 路由
 
@@ -148,11 +163,11 @@ Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex、Grok
 
 1. baton spawn 或 baton apply 创建已自动路由的 ticket 和不可变 Receipt。
 2. host 用 baton dispatch next 预留任务。
-3. host 调用原生 subagent 工具（Codex `spawn_agent`、Grok `spawn_subagent`、Cursor `Task` 或 Claude Code `Agent`），原样传回 dispatch 返回的 `prompt`，工具支持时也原样传 `description`，并传精确模型；仅在 host 工具能表达时才传 reasoning effort 和 service tier。首行 JSON envelope 携带每次 dispatch 随机生成的 opaque reservation identity；`spn-*`、`os-*` 或未来任何 ticket id 都不会再按前缀分类。Grok 必须传 `spawn_subagent.model`，省略会继承 parent 模型。若 host 无法表达某个已选项，必须报告该执行选项不可用，不能静默声称已启用。
+3. host 调用原生 subagent 工具（Codex `spawn_agent`、Grok `spawn_subagent`、Cursor `Task` 或 Claude Code `Agent`），原样传回 dispatch 返回的 `prompt`，工具支持时也原样传 `description`，并传精确模型；仅在 host 工具能表达时才传 reasoning effort 和 service tier。首行 JSON envelope 是 dispatch 审计数据，ticket id 不按前缀分类。Codex 的 `task_name` 是 attach/liveness/release 使用的 native execution handle，`agent_id` 仅是可选诊断字段。Grok 必须传 `spawn_subagent.model`，省略会继承 parent 模型。若 host 无法表达某个已选项，必须报告该执行选项不可用，不能静默声称已启用。
 4. host 绑定 agent id，记录活动和进度，并只写一个终态。
 5. host 关闭原生 agent，执行 dispatch release 后再从 FIFO 补位。
 
-逻辑任务不封顶；物理并发遵守当前 host 上限。AgentLimitReached 只把同一 ticket 延后，不消耗 attempt，也不换模型。轮询 timeout 不是 worker 失败；只有 exact agent 被 probe 为 not_found 后，ticket 才能 timeout。
+逻辑任务不封顶；物理并发遵守当前 host 上限。AgentLimitReached 只把同一 ticket 延后，不消耗 attempt，也不换模型。轮询 timeout 不是 worker 失败；只有对应的原生 execution handle 被 probe 为 not_found 后，ticket 才能 timeout。
 
 默认只读。写任务必须带不可变路径和操作 allowlist，并通过 parent Git safety gate。已有的未提交改动会记入 baseline，worker 可以在 allowlist 上增量，不能改无关脏文件。唯一的 Git 例外是独占 commit-only ticket：它只消费 parent 已精确 staged 的 tree，允许创建一个受审计 commit，不能 stage、amend、切分支、rebase、tag 或 push。
 
@@ -230,7 +245,8 @@ OpenSpec 可选。存在时它负责任务拆解与状态，Baton 负责路由 r
 Baton 不创建项目内运行时目录：
 
 - ~/.baton/config.toml：director 与各 CLI 配置
-- ~/.baton/cache/cli-models.json：所选 CLI 的 catalog snapshot
+- ~/.baton/cache/cli-models-<host>.json：按 host 隔离的 catalog snapshot
+- ~/.baton/state/model-availability.json：持久化的 host/account 路由可用性
 - ~/.baton/cache/capabilities/：可选本地 capability 证据
 - ~/.baton/workspaces/CANONICAL-ROOT-SHA256/：ticket、Receipt、selection、lock 和生命周期状态
 
@@ -239,10 +255,12 @@ Baton 不创建项目内运行时目录：
     baton init [--force] [--cli codex|grok|cursor|claude]
     baton update
     baton config [--cli codex|grok|cursor|claude] [--runner MODEL|-] [--longctx MODEL|-]
-                 [--subagent-model MODEL|all] [--enable|--disable]
+                 [--coding-model MODEL|all] [--guard-mode enforce|off] [--enable|--disable]
+    baton enable|disable all|curproject --host HOST [--json]
     baton models refresh|status|candidates
+    baton models reset ROUTE --host HOST [--json]
     baton cards [--ranked|--unranked] [--json]
-    baton match "快速修复 flaky auth tests"
+    baton match "快速修复 flaky auth tests" --host HOST
     baton spawn "实现迁移" [--unit KEY=TEXT ...]
                  [--classification CLASS] [--operation LABEL]
                  [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
@@ -250,15 +268,32 @@ Baton 不创建项目内运行时目录：
     baton apply [change]
     baton apply [change] --host HOST --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
     baton dispatch next --host HOST --capacity N --json
-    baton dispatch bind TICKET --agent-id ID --host HOST --json
+    baton dispatch bind TICKET --task-name CODEX_TASK_NAME --host codex --json
+    baton dispatch bind TICKET --agent-id ID --host HOST --json  # 其他 host
     baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-    baton dispatch probe TICKET --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
+    baton dispatch probe TICKET --task-name CODEX_TASK_NAME --host codex --state pending_init|running|interrupted|shutdown|not_found --json
     baton dispatch progress TICKET --phase PHASE --text "short status" --json
     baton dispatch complete TICKET --text "short conclusion" --json
     baton dispatch fail|timeout|close TICKET --json
-    baton dispatch release TICKET --agent-id ID --json
+    baton dispatch release TICKET --host HOST --task-name CODEX_TASK_NAME --json
     baton dispatch recover|status --json
-    baton status
+    baton status [--host HOST] [--json]
+    baton uninstall [--host HOST] [--dry-run]
+    baton uninstall --clean --yes
+
+`all` 只修改当前 CLI host 的全局开关；`curproject` 只修改当前 canonical
+workspace 与该 host。明确 disabled 时绕过 Baton，恢复该 host 普通 native
+行为；配置缺失、损坏或不可读时 fail closed。status 会显示开关来源、Coding
+有序可用性、hook posture、draining tickets 以及 `kind:value` 形式的
+execution handle。
+
+显式 quota/remaining=0 会跨项目和窗口持久记忆；普通 429、网络错误和 timeout
+只进入临时 route health。已知 reset 时间用于 probe，未知 reset 使用有界退避，
+同一路由同时只有一个 probe lease。在 host 尚未暴露稳定账号身份时，状态使用文档化的
+opaque `host-profile` scope。可用
+`baton models reset ROUTE --host HOST` 精确 reset 单一路由。uninstall 默认
+只清理指定 host 的集成文件并保留全部 Baton state，`--dry-run` 先展示边界；`--clean --yes` 会清理所有 host 的已识别集成和
+Baton 状态，但有 active ticket draining 时拒绝，package executable 保留。
 
 Standalone 统一使用一种 proposal：没有 `--unit` 时，请求会保存为
 `standalone` 单元。分类字段和值是严格契约；operation 只作审计元数据，不能

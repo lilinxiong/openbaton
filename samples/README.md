@@ -35,7 +35,7 @@ The ordinary business request is decomposed once. Baton records an auditable pro
 
 Every automatic choice must satisfy all of the following:
 
-- the exact base model was returned by the invoking CLI catalog and is present in that host's enabled `subagent_models`;
+- the exact base model was returned by the invoking CLI catalog and is present in that host's enabled `coding_models`;
 - when the catalog reports reasoning efforts or service tiers, the chosen values must come from that model's catalog entry;
 - `confirmed_by=baton-recommendation` and `changed_by_user=false` are persisted as audit evidence;
 - a zero benchmark score, score tie, or missing Artificial Analysis record does not open a manual-choice flow;

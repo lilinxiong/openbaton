@@ -10,6 +10,7 @@ import {
   deferDispatch,
   dispatchSnapshot,
   finishAgent,
+  issueDispatchContinuation,
   persistedCapacity,
   recoverDispatches,
   releaseAgent,
@@ -17,9 +18,11 @@ import {
   reportAgentProgress,
   reserveNext,
 } from "../src/lib/dispatch.js";
-import { emptyConfig, saveConfig } from "../src/lib/config.js";
+import { normalizeSpawnTicket } from "../src/lib/spawn.js";
+import { emptyConfig, loadConfig, saveConfig } from "../src/lib/config.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { hostDispatchStatePath, runsDir, spawnsDir, workspaceId } from "../src/lib/paths.js";
+import { claimGuardTurn, guardClaimsPath, readGuardClaimState } from "../src/lib/guard-claims.js";
 import { readRouteHealth } from "../src/lib/route-health.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { isolatedHome } from "./home.js";
@@ -32,6 +35,7 @@ import {
   resolveNativeWorkerIdentity,
 } from "../src/lib/host-identity.js";
 import { buildWorkerPrompt, compileWorkUnit, coordinationFor } from "../src/lib/work-unit.js";
+import { availabilityForRoute, claimRouteProbe, markRouteExhausted, resetRouteAvailability } from "../src/lib/model-availability.js";
 
 const TEST_HOME = isolatedHome("baton-dispatch-home-");
 
@@ -54,7 +58,8 @@ function makeProject(models = [{ id: "codex/default", namespaced: "codex/default
     enabled: true,
     runner: "",
     longctx: "",
-    subagent_models: routeIds,
+    coding_models: routeIds,
+    guard_mode: "enforce",
   };
   saveConfig(cwd, config);
   publishRouteSnapshot(cwd, { models }, new Date(), { cli: "codex", host: "codex" });
@@ -67,7 +72,7 @@ function makeTicket(id, overrides = {}) {
   const workUnit = overrides.work_unit || compileWorkUnit(description, { kind: "concrete" });
   const coordination = overrides.coordination || coordinationFor(workUnit);
   const ticket = {
-    schema_version: 7,
+    schema_version: 8,
     id,
     description,
     prompt: buildWorkerPrompt(rawPrompt, workUnit, coordination),
@@ -87,6 +92,7 @@ function makeTicket(id, overrides = {}) {
     attempt: 0,
     max_attempts: 3,
     agent_id: null,
+    execution_handle: null,
     host: null,
     target_host: "codex",
     error: null,
@@ -180,6 +186,89 @@ function expectDispatchError(fn, code) {
 }
 
 describe("reserveNext", () => {
+  it("returns an ephemeral Codex guard claim without persisting the raw token", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1);
+    const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    const prompt = result.reserved[0].prompt;
+    const token = prompt.match(/--baton-claim ([A-Za-z0-9_-]+)/)?.[1];
+    assert.ok(token);
+    assert.match(prompt, /baton guard claim --baton-claim/);
+    assert.match(result.reserved[0].description, new RegExp(token));
+    const rawTicket = fs.readFileSync(path.join(spawnsDir(cwd), "t-0001.json"), "utf8");
+    assert.equal(rawTicket.includes(token), false);
+    const rawClaims = fs.readFileSync(guardClaimsPath(cwd), "utf8");
+    assert.equal(rawClaims.includes(token), false);
+  });
+
+  it("does not issue a guard claim when Codex guard mode is off", () => {
+    const cwd = makeProject();
+    const config = loadConfig(cwd);
+    config.cli.codex.guard_mode = "off";
+    saveConfig(cwd, config);
+    seedQueued(cwd, 1);
+    const result = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    assert.equal(result.reserved[0].prompt.includes("baton-claim"), false);
+    assert.equal(fs.existsSync(guardClaimsPath(cwd)), false);
+  });
+
+  it("rejects new reservations while activation is disabled", () => {
+    const cwd = makeProject();
+    const config = loadConfig(cwd);
+    config.cli.codex.enabled = false;
+    saveConfig(cwd, config);
+    seedQueued(cwd, 1);
+    expectDispatchError(
+      () => reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) }),
+      "ACTIVATION_DISABLED",
+    );
+    assert.equal(readTicket(cwd, "t-0001").status, "queued");
+  });
+
+  it("issues a distinct continuation claim and clears it on terminal completion", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1);
+    const reserved = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+    const spec = reserved.reserved[0];
+    const initialToken = spec.prompt.match(/--baton-claim ([A-Za-z0-9_-]+)/)?.[1];
+    assert.ok(initialToken);
+    bindAgent(cwd, "t-0001", { taskName: "codex-continuation-task", host: "codex", now: at(20) });
+    assert.equal(claimGuardTurn(cwd, {
+      token: initialToken,
+      ticket_id: "t-0001",
+      reservation_id: spec.reservation.reservation_id,
+      attempt: spec.reservation.attempt,
+      host: "codex",
+      turn_id: "turn-initial",
+      now: at(21),
+    }).ok, true);
+    const continuation = issueDispatchContinuation(cwd, "t-0001", {
+      host: "codex",
+      now: at(22),
+    });
+    assert.notEqual(continuation.token, initialToken);
+    assert.match(continuation.instructions, /baton guard continuation --baton-claim/);
+    finishAgent(cwd, "t-0001", { status: "completed", conclusion: "done", now: at(30) });
+    assert.deepEqual(readGuardClaimState(cwd).state.claims, []);
+  });
+
+  it("claims a due probe lease before reservation and restores availability on bind", () => {
+    const cwd = makeProject();
+    markRouteExhausted(cwd, { host: "codex", routeId: "codex/default" }, { now: at(0) });
+    const due = at(15 * 60 * 1000 + 1);
+    const first = claimRouteProbe(cwd, { host: "codex", routeId: "codex/default" }, { owner: "project-a:t-0001:attempt-1", now: due });
+    const second = claimRouteProbe(cwd, { host: "codex", routeId: "codex/default" }, { owner: "project-b:t-0002:attempt-1", now: due });
+    assert.equal(first.claimed, true);
+    assert.equal(second.claimed, false);
+    resetRouteAvailability(cwd, { host: "codex", routeId: "codex/default" });
+    markRouteExhausted(cwd, { host: "codex", routeId: "codex/default" }, { now: at(0) });
+    seedQueued(cwd, 1);
+    const reserved = reserveNext(cwd, { capacity: 1, host: "codex", now: due });
+    assert.equal(reserved.reserved.length, 1);
+    bindAgent(cwd, "t-0001", { taskName: "probe-task", host: "codex", now: due });
+    assert.equal(availabilityForRoute(cwd, { host: "codex", routeId: "codex/default" }, due).status, "available");
+  });
+
   it("rejects a non-current ticket without upgrading or rewriting it", () => {
     const cwd = makeProject();
     const legacy = makeTicket("t-old");
@@ -196,6 +285,17 @@ describe("reserveNext", () => {
     );
     assert.equal(fs.readFileSync(path.join(spawnsDir(cwd), "t-old.json"), "utf8"), before);
     assert.equal(written.schema_version, 5);
+  });
+
+  it("normalizes schema-7 agent metadata into an execution handle in memory", () => {
+    const legacy = makeTicket("t-legacy", { schema_version: 7, agent_id: "legacy-agent" });
+    const normalized = normalizeSpawnTicket(legacy);
+    assert.equal(normalized.schema_version, 8);
+    assert.deepEqual(normalized.execution_handle, {
+      kind: "agent_id",
+      value: "legacy-agent",
+      source: "legacy",
+    });
   });
 
   it("ignores unversioned workspace tickets and accepts current schema independent of id prefix", () => {
@@ -261,7 +361,7 @@ describe("reserveNext", () => {
     // One active slot occupied by an older running ticket: only 1 slot free.
     writeTicket(cwd, makeTicket("t-0000", {
       created_at: at(0), updated_at: at(0),
-      status: "running", agent_id: "agent-old", host: "codex", started_at: at(5),
+      status: "running", agent_id: "agent-old", execution_handle: { kind: "task_name", value: "agent-old", source: "native-return" }, host: "codex", started_at: at(5),
     }));
 
     const first = reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
@@ -286,7 +386,7 @@ describe("reserveNext", () => {
     const first = reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
     assert.deepEqual(first.reserved.map((r) => r.ticket_id), ["t-0001", "t-0002"]);
     observeCodexReservation(cwd, "t-0001", "agent-1", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(20) });
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "shipped", now: at(30) });
     releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(35) });
 
@@ -463,20 +563,25 @@ describe("reserveNext", () => {
 });
 
 describe("bindAgent", () => {
-  it("binds a real agent id: dispatching -> running with started_at and host", () => {
+  it("binds a native Codex task handle: dispatching -> running with started_at and host", () => {
     const cwd = makeProject();
     seedQueued(cwd, 2);
     reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
     observeCodexReservation(cwd, "t-0001", "subagent-abc123", at(15));
 
-    const bound = bindAgent(cwd, "t-0001", { agentId: "subagent-abc123", host: "codex", now: at(20) });
+    const bound = bindAgent(cwd, "t-0001", { agentId: "subagent-abc123", taskName: "subagent-abc123", host: "codex", now: at(20) });
     assert.equal(bound.status, "running");
     assert.equal(bound.agent_id, "subagent-abc123");
     assert.equal(bound.host, "codex");
     assert.equal(bound.started_at, at(20));
 
     const snap = dispatchSnapshot(cwd, { capacity: 2 });
-    assert.deepEqual(snap.running, [{ ticket_id: "t-0001", agent_id: "subagent-abc123", host: "codex" }]);
+    assert.deepEqual(snap.running, [{
+      ticket_id: "t-0001",
+      execution_handle: { kind: "task_name", value: "subagent-abc123", source: "native-return" },
+      agent_id: "subagent-abc123",
+      host: "codex",
+    }]);
   });
 
   it("fails closed on illegal transitions: queued/running/terminal states", () => {
@@ -485,18 +590,18 @@ describe("bindAgent", () => {
 
     // queued -> running is not allowed.
     expectDispatchError(
-      () => bindAgent(cwd, "t-0001", { agentId: "agent-x", host: "codex", now: at(10) }),
+      () => bindAgent(cwd, "t-0001", { agentId: "agent-x", taskName: "agent-x", host: "codex", now: at(10) }),
       "INVALID_TICKET_TRANSITION",
     );
     assert.equal(readTicket(cwd, "t-0001").status, "queued");
 
     reserveNext(cwd, { capacity: 1, host: "codex", now: at(20) });
     observeCodexReservation(cwd, "t-0001", "agent-x", at(25));
-    bindAgent(cwd, "t-0001", { agentId: "agent-x", host: "codex", now: at(30) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-x", taskName: "agent-x", host: "codex", now: at(30) });
 
     // running -> running is not allowed.
     expectDispatchError(
-      () => bindAgent(cwd, "t-0001", { agentId: "agent-y", host: "codex", now: at(40) }),
+      () => bindAgent(cwd, "t-0001", { agentId: "agent-y", taskName: "agent-y", host: "codex", now: at(40) }),
       "INVALID_TICKET_TRANSITION",
     );
     const ticket = readTicket(cwd, "t-0001");
@@ -504,14 +609,27 @@ describe("bindAgent", () => {
     assert.equal(ticket.agent_id, "agent-x");
   });
 
-  it("requires an agent id and the reserving host", () => {
+  it("requires an execution handle and the reserving host", () => {
     const cwd = makeProject();
     seedQueued(cwd, 1);
     reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
 
     expectDispatchError(
       () => bindAgent(cwd, "t-0001", { agentId: "", host: "codex", now: at(20) }),
-      "AGENT_ID_REQUIRED",
+      "EXECUTION_HANDLE_REQUIRED",
+    );
+    const ticket = readTicket(cwd, "t-0001");
+    const pending = recordPendingReservation(cwd, {
+      schema: 1,
+      reservation_id: ticket.reservation_id,
+      ticket_id: ticket.id,
+      attempt: ticket.attempt,
+      host: "codex",
+    }, { now: at(21) });
+    recordNativeIdentity(cwd, pending, "synthetic-tool-agent", "tool-return", { now: at(22) });
+    expectDispatchError(
+      () => bindAgent(cwd, "t-0001", { agentId: "synthetic-tool-agent", host: "codex", now: at(23) }),
+      "EXECUTION_HANDLE_REQUIRED",
     );
     expectDispatchError(
       () => bindAgent(cwd, "t-0001", { agentId: "agent-x", host: "grok", now: at(20) }),
@@ -520,7 +638,7 @@ describe("bindAgent", () => {
     assert.equal(readTicket(cwd, "t-0001").status, "dispatching");
   });
 
-  it("uses the Codex hook agent_id and rejects the native task_name caller token", () => {
+  it("uses Codex task_name and treats hook identity as non-authoritative diagnostic", () => {
     const cwd = makeProject();
     seedQueued(cwd, 1);
     const reserved = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
@@ -528,18 +646,51 @@ describe("bindAgent", () => {
     const pending = recordPendingReservation(cwd, reservation, { now: at(11) });
     recordNativeIdentity(cwd, pending, "hook-agent-123", "hook", { now: at(12) });
 
-    expectDispatchError(
-      () => bindAgent(cwd, "t-0001", { agentId: "task_name-from-codex", host: "codex", now: at(20) }),
-      "AGENT_IDENTITY_MISMATCH",
-    );
-    assert.equal(readTicket(cwd, "t-0001").status, "dispatching");
-
-    const bound = bindAgent(cwd, "t-0001", { host: "codex", now: at(21) });
+    const bound = bindAgent(cwd, "t-0001", {
+      taskName: "task_name-from-codex",
+      agentId: "caller-diagnostic",
+      host: "codex",
+      now: at(20),
+    });
     assert.equal(bound.status, "running");
     assert.equal(bound.agent_id, "hook-agent-123");
+    assert.deepEqual(bound.execution_handle, {
+      kind: "task_name",
+      value: "task_name-from-codex",
+      source: "native-return",
+    });
   });
 
-  it("accepts Codex --task-name metadata but still binds the hook UUID", () => {
+  it("binds a Codex task_name without any SubagentStart observation", () => {
+    const cwd = makeProject();
+    seedQueued(cwd, 1);
+    reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
+
+    const bound = bindAgent(cwd, "t-0001", {
+      taskName: "codex-task-only",
+      host: "codex",
+      now: at(20),
+    });
+    assert.equal(bound.status, "running");
+    assert.deepEqual(bound.execution_handle, {
+      kind: "task_name",
+      value: "codex-task-only",
+      source: "native-return",
+    });
+    assert.equal(bound.agent_id, null);
+
+    const completed = finishAgent(cwd, "t-0001", {
+      status: "completed",
+      conclusion: "done",
+      host: "codex",
+      now: at(30),
+    });
+    assert.equal(completed.status, "completed");
+    const released = releaseAgent(cwd, "t-0001", { host: "codex", now: at(31) });
+    assert.equal(released.slot_released_at, at(31));
+  });
+
+  it("accepts Codex --task-name metadata and keeps hook UUID diagnostic only", () => {
     const cwd = makeProject();
     seedQueued(cwd, 1);
     const reserved = reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
@@ -554,27 +705,30 @@ describe("bindAgent", () => {
     });
     assert.equal(bound.status, "running");
     assert.equal(bound.agent_id, "hook-agent-456");
+    assert.deepEqual(bound.execution_handle, {
+      kind: "task_name",
+      value: "codex-task-name",
+      source: "native-return",
+    });
     assert.equal(bound.history.at(-1).task_name, "codex-task-name");
   });
 
-  it("rejects Codex --task-name when the identity ledger has no authoritative observation", () => {
+  it("accepts Codex --task-name when the identity ledger has no observation", () => {
     const cwd = makeProject();
     seedQueued(cwd, 1);
     reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
 
-    expectDispatchError(
-      () => bindAgent(cwd, "t-0001", {
-        taskName: "codex-task-name",
-        host: "codex",
-        now: at(20),
-      }),
-      "AGENT_IDENTITY_REQUIRED",
-    );
-    assert.equal(readTicket(cwd, "t-0001").status, "dispatching");
+    const bound = bindAgent(cwd, "t-0001", {
+      taskName: "codex-task-name",
+      host: "codex",
+      now: at(20),
+    });
+    assert.equal(bound.status, "running");
+    assert.equal(bound.agent_id, null);
   });
 
   it("keeps host identity sources distinct across Codex, Grok, and Cursor", () => {
-    assert.equal(nativeToolReturnIdentity("codex", { task_name: "codex-task" }), null);
+    assert.equal(nativeToolReturnIdentity("codex", { task_name: "codex-task" }), "codex-task");
     assert.equal(nativeHookIdentity("codex", { agent_id: "codex-hook" }), "codex-hook");
     assert.equal(nativeHookIdentity("codex", { native_agent_id: "copied-hook" }), null);
     assert.equal(nativeHookIdentity("grok", { subagentId: "grok-child", sessionId: "grok-session" }), "grok-child");
@@ -601,18 +755,23 @@ describe("finishAgent", () => {
     // completed from dispatching (no bound agent) is illegal.
     expectDispatchError(
       () => finishAgent(cwd, "t-0001", { status: "completed", conclusion: "early", now: at(20) }),
-      "AGENT_NOT_BOUND",
+      "EXECUTION_HANDLE_REQUIRED",
     );
 
     observeCodexReservation(cwd, "t-0001", "agent-1", at(25));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(30) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(30) });
     const done = finishAgent(cwd, "t-0001", { status: "completed", conclusion: "implemented and tested", now: at(40) });
     assert.equal(done.status, "completed");
     assert.equal(done.conclusion, "implemented and tested");
     assert.equal(done.finished_at, at(40));
     assert.equal(dispatchSnapshot(cwd, { capacity: 1, now: at(41) }).available, 0);
     assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, now: at(41) }).awaiting_release, [
-      { ticket_id: "t-0001", agent_id: "agent-1", status: "completed" },
+      {
+        ticket_id: "t-0001",
+        execution_handle: { kind: "task_name", value: "agent-1", source: "native-return" },
+        agent_id: "agent-1",
+        status: "completed",
+      },
     ]);
     assert.deepEqual(readBindings(cwd), []);
     releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(50) });
@@ -624,7 +783,7 @@ describe("finishAgent", () => {
     seedQueued(cwd, 1);
     reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     observeCodexReservation(cwd, "t-0001", "agent-1", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(20) });
 
     const dump = "tool_call: read_file\ntool_result: {\"role\": \"tool\", \"content\": \"...\"}";
     expectDispatchError(
@@ -657,7 +816,7 @@ describe("finishAgent", () => {
       observed_at: at(11),
     }], null, 2));
     observeCodexReservation(cwd, "t-0002", "agent-2", at(15));
-    bindAgent(cwd, "t-0002", { agentId: "agent-2", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0002", { agentId: "agent-2", taskName: "agent-2", host: "codex", now: at(20) });
 
     // Spawn/bind failure: still dispatching, no agent ever bound.
     const spawnFailed = finishAgent(cwd, "t-0001", {
@@ -674,14 +833,14 @@ describe("finishAgent", () => {
       "TIMEOUT_REQUIRES_NOT_FOUND_PROBE",
     );
     const runningProbe = reportAgentProbe(cwd, "t-0002", {
-      agentId: "agent-2", state: "running", now: at(40),
+      taskName: "agent-2", state: "running", now: at(40),
     });
     expectDispatchError(
       () => finishAgent(cwd, "t-0002", { status: "timed_out", probeSequence: runningProbe.liveness?.sequence, now: at(41) }),
       "TIMEOUT_REQUIRES_NOT_FOUND_PROBE",
     );
     const missingProbe = reportAgentProbe(cwd, "t-0002", {
-      agentId: "agent-2", state: "not_found", now: at(42),
+      taskName: "agent-2", state: "not_found", now: at(42),
     });
     const timedOut = finishAgent(cwd, "t-0002", {
       status: "timed_out",
@@ -855,7 +1014,7 @@ describe("finishAgent", () => {
     seedQueued(cwd, 1);
     reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     observeCodexReservation(cwd, "t-0001", "agent-1", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(20) });
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "done", now: at(30) });
 
     expectDispatchError(
@@ -924,7 +1083,12 @@ describe("recoverDispatches", () => {
     const recovered = recoverDispatches(cwd, { staleMs: 60_000, now: at(120_000) });
 
     assert.deepEqual(recovered.expired, ["t-stale"]);
-    assert.deepEqual(recovered.resumable, [{ ticket_id: "t-runner", agent_id: "agent-live", host: "codex" }]);
+    assert.deepEqual(recovered.resumable, [{
+      ticket_id: "t-runner",
+      execution_handle: { kind: "agent_id", value: "agent-live", source: "legacy" },
+      agent_id: "agent-live",
+      host: "codex",
+    }]);
     assert.deepEqual(recovered.needs_close, []);
 
     const stale = readTicket(cwd, "t-stale");
@@ -955,7 +1119,7 @@ describe("restart: state reloads from disk", () => {
     seedQueued(cwd, 3);
     reserveNext(cwd, { capacity: 2, host: "codex", now: at(10) });
     observeCodexReservation(cwd, "t-0001", "agent-1", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(20) });
 
     // Simulate a dispatcher restart: all knowledge comes from the global workspace spawns directory.
     const snap = dispatchSnapshot(cwd, { capacity: 2 });
@@ -964,16 +1128,31 @@ describe("restart: state reloads from disk", () => {
     assert.equal(snap.counts.queued, 1);
     assert.equal(snap.available, 0);
     assert.deepEqual(snap.queued, ["t-0003"]);
-    assert.deepEqual(snap.running, [{ ticket_id: "t-0001", agent_id: "agent-1", host: "codex" }]);
+    assert.deepEqual(snap.running, [{
+      ticket_id: "t-0001",
+      execution_handle: { kind: "task_name", value: "agent-1", source: "native-return" },
+      agent_id: "agent-1",
+      host: "codex",
+    }]);
 
     // Recovery after restart still resumes the bound agent and can finish it.
     const recovered = recoverDispatches(cwd, { staleMs: 60_000, now: at(30) });
     assert.deepEqual(recovered.expired, []);
-    assert.deepEqual(recovered.resumable, [{ ticket_id: "t-0001", agent_id: "agent-1", host: "codex" }]);
+    assert.deepEqual(recovered.resumable, [{
+      ticket_id: "t-0001",
+      execution_handle: { kind: "task_name", value: "agent-1", source: "native-return" },
+      agent_id: "agent-1",
+      host: "codex",
+    }]);
 
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "resumed and done", now: at(40) });
     assert.deepEqual(recoverDispatches(cwd, { staleMs: 60_000, now: at(45) }).needs_close, [
-      { ticket_id: "t-0001", agent_id: "agent-1", host: "codex" },
+      {
+        ticket_id: "t-0001",
+        execution_handle: { kind: "task_name", value: "agent-1", source: "native-return" },
+        agent_id: "agent-1",
+        host: "codex",
+      },
     ]);
     releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(46) });
     const next = reserveNext(cwd, { capacity: 2, host: "codex", now: at(50) });
@@ -1004,7 +1183,7 @@ describe("dispatch capacity persistence", () => {
     assert.equal(dispatchSnapshot(cwd, { capacity: 5 }).capacity, 5);
 
     observeCodexReservation(cwd, "t-0001", "agent-1", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(20) });
     finishAgent(cwd, "t-0001", { status: "completed", conclusion: "done", now: at(30) });
     releaseAgent(cwd, "t-0001", { agentId: "agent-1", now: at(40) });
     const after = dispatchSnapshot(cwd);
@@ -1072,7 +1251,7 @@ describe("host backpressure and progress", () => {
     assert.match(spec.prompt, /\[Baton work unit\]/);
     assert.match(spec.prompt, /Send a brief progress update/);
     observeCodexReservation(cwd, "t-0001", "agent-1", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-1", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-1", taskName: "agent-1", host: "codex", now: at(20) });
 
     const progress = reportAgentProgress(cwd, "t-0001", {
       phase: "working",
@@ -1095,10 +1274,10 @@ describe("host backpressure and progress", () => {
     seedQueued(cwd, 1, { description: "build the Android target", prompt: "build the Android target" });
     reserveNext(cwd, { capacity: 1, host: "codex", now: at(10) });
     observeCodexReservation(cwd, "t-0001", "agent-build", at(15));
-    bindAgent(cwd, "t-0001", { agentId: "agent-build", host: "codex", now: at(20) });
+    bindAgent(cwd, "t-0001", { agentId: "agent-build", taskName: "agent-build", host: "codex", now: at(20) });
 
     const first = reportAgentProbe(cwd, "t-0001", {
-      agentId: "agent-build", state: "running", activity: "status", now: at(300_000),
+      taskName: "agent-build", state: "running", activity: "status", now: at(300_000),
     });
     assert.equal(first.status, "running");
     assert.equal(first.progress, null);
@@ -1114,7 +1293,7 @@ describe("host backpressure and progress", () => {
     assert.equal(readTicket(cwd, "t-0001").status, "running");
 
     const heartbeat = reportAgentProbe(cwd, "t-0001", {
-      agentId: "agent-build", state: "running", activity: "heartbeat", now: at(600_000),
+      taskName: "agent-build", state: "running", activity: "heartbeat", now: at(600_000),
     });
     assert.equal(heartbeat.liveness?.sequence, 3);
     assert.equal(heartbeat.progress, null);

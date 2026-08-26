@@ -70,8 +70,8 @@ export function hasStagedDiff(cwd: string): boolean {
   }
 }
 
-function cardForRoute(cards: ModelCard[], routeId: string, cwd: string, host?: HostId): ModelCard | null {
-  const snapshot = readRouteSnapshot(cwd, { host });
+function cardForRoute(cards: ModelCard[], routeId: string, cwd: string, host?: HostId, env?: NodeJS.ProcessEnv): ModelCard | null {
+  const snapshot = readRouteSnapshot(cwd, { host, env });
   const route = snapshot?.routes.find((item) => item.route_id === routeId);
   const preferred = route?.default_reasoning_effort;
   const effort = preferred && route?.reasoning_efforts.includes(preferred) ? preferred : route?.reasoning_efforts[0];
@@ -237,7 +237,7 @@ function resolveOpsProfileDispatch(
       reason: `ops ${configured.profile} model is unset or unusable; classified work is not executable on the director`,
     };
   }
-  const card = cardForRoute(cards, configured.route, cwd, host);
+  const card = cardForRoute(cards, configured.route, cwd, host, env);
   if (!card?.route_id) {
     return {
       kind: "blocked",
@@ -252,7 +252,7 @@ function resolveOpsProfileDispatch(
     approval_id: `ops-${configured.profile}-${safeApprovalPart(input.operation || input.classification)}`,
     approved_at: new Date().toISOString(),
     confirmed_by: "ops-config",
-    catalog_fingerprint: readRouteSnapshot(cwd, { host })?.fingerprint || "",
+    catalog_fingerprint: readRouteSnapshot(cwd, { host, env })?.fingerprint || "",
     recommended_model_id: card.id,
     selected_model_id: card.id,
     changed_by_user: false,

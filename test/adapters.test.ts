@@ -8,7 +8,7 @@ import {
 } from "../src/adapters/index.js";
 import {
   cliProfileForHost,
-  configuredSubagentModelsForHost,
+  configuredCodingModelsForHost,
   emptyConfig,
   enabledForHost,
   hostMaxConcurrent,
@@ -25,6 +25,7 @@ describe("CLI adapter contract and registry", () => {
       assert.equal(adapter.id, adapter.host.id);
       assert.ok(adapter.host.skillPath.endsWith("SKILL.md"));
       assert.equal(typeof adapter.host.guard, "boolean");
+      assert.ok(["task_name", "agent_id", "session_id", "task_id", "opaque"].includes(adapter.host.executionHandleKind));
       assert.equal(typeof adapter.resolveCommand, "function");
       assert.equal(typeof adapter.discoverModels, "function");
       assert.strictEqual(getCliAdapter(adapter.id), adapter);
@@ -50,6 +51,10 @@ describe("CLI adapter contract and registry", () => {
     assert.equal(getCliAdapter("claude").host.guard, true);
     assert.equal(getCliAdapter("grok").host.guard, true);
     assert.equal(getCliAdapter("cursor").host.guard, false);
+    assert.equal(getCliAdapter("codex").host.executionHandleKind, "task_name");
+    assert.equal(getCliAdapter("claude").host.executionHandleKind, "agent_id");
+    assert.equal(getCliAdapter("grok").host.executionHandleKind, "agent_id");
+    assert.equal(getCliAdapter("cursor").host.executionHandleKind, "agent_id");
   });
 
   it("keeps unconfigured adapters absent and resolves missing profiles as disabled", () => {
@@ -59,7 +64,8 @@ describe("CLI adapter contract and registry", () => {
       enabled: false,
       runner: "",
       longctx: "",
-      subagent_models: [],
+      coding_models: [],
+      guard_mode: "off",
     });
 
     const unselected = normalizeConfig({
@@ -69,7 +75,7 @@ describe("CLI adapter contract and registry", () => {
       },
       cli: {
         active: "grok",
-        grok: { enabled: true, runner: "grok-4.5", subagent_models: ["grok-4.5"] },
+        grok: { enabled: true, runner: "grok-4.5", coding_models: ["grok-4.5"] },
       },
     });
     assert.equal(Object.hasOwn(unselected.cli, "active"), false);
@@ -84,28 +90,28 @@ describe("CLI adapter contract and registry", () => {
     const config = normalizeConfig({
       cli: {
         active: "codex",
-        codex: { enabled: true, runner: "gpt-5.4", subagent_models: ["gpt-5.4"] },
-        grok: { enabled: true, runner: "grok-4.5", subagent_models: ["grok-4.5"] },
-        claude: { enabled: false, runner: "", longctx: "", subagent_models: [] },
+        codex: { enabled: true, runner: "gpt-5.4", coding_models: ["gpt-5.4"] },
+        grok: { enabled: true, runner: "grok-4.5", coding_models: ["grok-4.5"] },
+        claude: { enabled: false, runner: "", longctx: "", coding_models: [] },
       },
     });
     assert.equal(Object.hasOwn(config.cli, "active"), false);
     // A disabled host must fail closed rather than borrow another profile.
-    assert.deepEqual(configuredSubagentModelsForHost(config, "claude"), []);
+    assert.deepEqual(configuredCodingModelsForHost(config, "claude"), []);
     assert.equal(enabledForHost(config, "claude"), false);
-    assert.deepEqual(cliProfileForHost(config, "claude").subagent_models, []);
-    assert.deepEqual(configuredSubagentModelsForHost(config, "codex"), ["gpt-5.4"]);
+    assert.deepEqual(cliProfileForHost(config, "claude").coding_models, []);
+    assert.deepEqual(configuredCodingModelsForHost(config, "codex"), ["gpt-5.4"]);
 
     const enabled = normalizeConfig({
       cli: {
         active: "codex",
-        codex: { enabled: true, runner: "gpt-5.4", subagent_models: ["gpt-5.4"] },
-        claude: { enabled: true, runner: "claude-sonnet-5", longctx: "claude-opus-5[1m]", subagent_models: ["claude-sonnet-5", "claude-opus-5[1m]"] },
+        codex: { enabled: true, runner: "gpt-5.4", coding_models: ["gpt-5.4"] },
+        claude: { enabled: true, runner: "claude-sonnet-5", longctx: "claude-opus-5[1m]", coding_models: ["claude-sonnet-5", "claude-opus-5[1m]"] },
       },
     });
     assert.equal(Object.hasOwn(enabled.cli, "active"), false);
-    assert.deepEqual(configuredSubagentModelsForHost(enabled, "claude"), ["claude-sonnet-5", "claude-opus-5[1m]"]);
+    assert.deepEqual(configuredCodingModelsForHost(enabled, "claude"), ["claude-sonnet-5", "claude-opus-5[1m]"]);
     // Enabling Claude must not alter another host's profile.
-    assert.deepEqual(configuredSubagentModelsForHost(enabled, "codex"), ["gpt-5.4"]);
+    assert.deepEqual(configuredCodingModelsForHost(enabled, "codex"), ["gpt-5.4"]);
   });
 });
