@@ -218,3 +218,35 @@ baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --rel
 发布检查应分别报告 SDK conformance、manifest 发现、构建与打包、实时目录、
 原生 execution handle、ticket 与 quota lineage、清理结果，以及精确 changed-path
 审计。
+
+## 一次实测
+
+已完成的 OpenSpec 变更 `scope-subagent-capacity-per-agent-tree` 通过 Baton
+分派给原生子 agent 执行。这次把 dispatch 容量从 workspace/host 共享池改成
+不可变的 `(host, session_uid)` root-agent tree，覆盖 session 身份、tree-local
+槽位、status provenance、跨 tree 安全隔离、adapter quota 语义和
+installed-runtime 验收。
+
+### 任务规模
+
+| 维度 | 规模 |
+|---|---|
+| OpenSpec 工作 | 7 个章节，30 个任务 |
+| Spec 合同 | 10 条 requirement，26 个 scenario |
+| 实现提交 `2aca248` | 46 个文件，+3,293 / −246 |
+| 源码验证 | 223 passed，1 skipped |
+
+### 执行
+
+对比口径排除了另一任务的兼容性门禁等待 33分36秒。金额按公开 API 单价换算，
+不是订阅账单。主 Agent 单独执行一行是反事实估算：同样的生产性 Token 规模
+按 `gpt-5.6-sol` 计价并串行完成，不是第二次实跑。
+
+| | 主 Agent 单独串行估算 | Baton（1 个主 Agent + 36 个 subagent） |
+|---|---|---|
+| 模型 | 全程 `gpt-5.6-sol` | 主 Agent `gpt-5.6-sol`（`high`，3 次自动压缩）；subagent 全部 `gpt-5.6-luna`（无自动压缩） |
+| 有效端到端 | 2小时34分33秒 | 1小时58分05秒（节省 36分28秒，1.31×） |
+| 生产性 Token | 约 137.16M | 约 137.16M |
+| API 等价成本 | $79.70 | $30.56（节省 $49.14，降 61.7%） |
+
+subagent 承担了过半 Token，但按 `gpt-5.6-luna` 单价合计约 $2.66。
