@@ -17,7 +17,6 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import { cliProfileForHost, loadConfig } from "../src/lib/config.js";
-import { recordNativeIdentity, recordPendingReservation, type NativeIdentitySource } from "../src/lib/host-identity.js";
 import { resolveRuntimeHost } from "../src/lib/hosts.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import type { CliId } from "../src/adapters/contract.js";
@@ -209,29 +208,6 @@ function readTicket(cwd: string, env: NodeJS.ProcessEnv, id: string) {
   return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd, env), `${id}.json`), "utf8"));
 }
 
-function fixtureIdentitySource(host: string): NativeIdentitySource {
-  const normalized = String(host || "").trim().toLowerCase();
-  if (normalized === "grok") return "lifecycle";
-  if (normalized === "cursor") return "tool-return";
-  if (normalized === "codex" || normalized === "claude") return "hook";
-  throw new Error(`fixture compare has no authoritative identity source for host ${host}`);
-}
-
-function seedFixtureIdentity(cwd: string, env: NodeJS.ProcessEnv, ticketId: string, host: string): void {
-  const ticket = readTicket(cwd, env, ticketId) as Record<string, unknown>;
-  const normalizedHost = String(host || ticket.dispatch_host || ticket.host || "").trim().toLowerCase();
-  const agentId = `compare-${ticketId}`;
-  const context = normalizedHost === "grok" ? { session_id: agentId } : {};
-  const pending = recordPendingReservation(cwd, {
-    schema: 1,
-    reservation_id: String(ticket.reservation_id || ""),
-    ticket_id: String(ticket.id || ticketId),
-    attempt: Number(ticket.attempt || 0),
-    host: normalizedHost,
-  }, context, undefined, env);
-  recordNativeIdentity(cwd, pending, agentId, fixtureIdentitySource(normalizedHost), context, undefined, env);
-}
-
 export function createFixtureWorkspace(root?: string): string {
   const cwd = root || fs.mkdtempSync(path.join(os.tmpdir(), "baton-compare-"));
   fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
@@ -347,7 +323,6 @@ async function finishTicket(options: {
   if (!options.reserved.has(ticketId)) {
     throw new Error(`${ticketId} was created but not reserved`);
   }
-  if (options.mode === "fixture") seedFixtureIdentity(options.cwd, options.env, ticketId, options.host);
   const bound = await baton(
     ["dispatch", "bind", ticketId, ...(options.host === "codex" ? ["--task-name", `compare-${ticketId}`] : ["--agent-id", `compare-${ticketId}`]), "--host", options.host, "--json"],
     options.cwd,

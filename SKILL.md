@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use this director automatically for approved Goal or multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Before any shell, patch, or native-agent tool call, complete the Baton host-guard preflight. Skip ordinary discussion."
+description: "Use this director automatically for approved Goal or multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Baton has no runtime hooks; the director owns orchestration and safety. Skip ordinary discussion."
 ---
 
 # baton
@@ -32,31 +32,20 @@ Parallel dispatch is permitted only when every participating unit has a complete
 
 Ordinary discussion and diagnosis that need neither delegation nor a configured mechanical route stay on the director. For approved multi-agent execution, create immutable tickets, dispatch them through the current host's native subagent tool, and wait for their conclusions. If another execution skill is explicitly requested, preserve it as workflow owner only; when this host's `cli.<id>.enabled` is true, executable work still goes through Baton.
 
-## Host-guard preflight (mandatory in Codex, Grok, and Claude Code)
+## Director preflight (all hosts; no runtime hooks)
 
-- Before any `Bash`, `apply_patch`/ `Edit`/ `Write`, or native `Agent` call, run `baton guard status --host HOST` on a guard-capable host. Baton init/update installs only the host-supported scoped mutation guards while preserving unrelated hook configuration. Codex enforce uses a scoped `PreToolUse`; Codex off has zero Baton hooks and is audit-only. Grok and Claude Code user-global hooks apply without a separate trust prompt and should still be reviewed with `/hooks`. Cursor has no equivalent guard surface and must not claim interception.
-- Ticket presence is the declared-work signal: with no reserved ticket for this host, director mutating tools are allowed (undeclared / empty-label work). While this host has a reserved, dispatching, or running worker ticket, director implementation writes are denied. The guard serves only its own host's tickets: a Codex guard never satisfies itself with a Claude ticket, and the reverse. Reserve a Baton ticket, native-spawn the exact worker, and bind the returned identity with `baton dispatch bind ...` before the worker uses tools. A child starting during the spawn-to-bind race remains denied until the bind is visible.
-- Only guard claim/status/hook, dispatch lifecycle/status, `spawn`/`apply` with `--dispatch`, and read-only status/match/models/cards are direct-command exemptions. `init`, `update`, `config`, `uninstall`, and activation mutations remain guarded control-plane operations; do not hide them behind a shell wrapper or chained command.
-- Every native spawn for a reserved ticket MUST pass the returned `prompt` unchanged and, when supported, the returned `description` unchanged. The reservation envelope is dispatch audit data. Codex has no lifecycle hook or Agent matcher: enforce performs only a synchronous mutation deny/claim check, while off installs zero Baton hooks and is audit-only. Codex native `task_name` is the execution handle for attach/liveness/release; `agent_id` is only an optional host diagnostic on hosts that expose it. Hooks never replace immutable Receipts, worker path allowlists, and the parent Git safety audit.
+- Before any mutation or native-agent call, the director resolves the host, classification, dependencies, exact write paths, and allowed operations. Baton has no runtime hooks, hook installation, hook trust, or hook observation surface.
+- Ticket presence and lifecycle are enforced through explicit director/CLI orchestration, immutable Receipts, native execution handles, worker path allowlists, and the parent Git audit. Reserve a Baton ticket, native-spawn the exact worker, and bind the returned execution handle before the worker uses tools.
+- Every native spawn for a reserved ticket MUST pass the returned `prompt` unchanged and, when supported, the returned `description` unchanged. The reservation envelope is dispatch audit data, not a hook instruction. Native execution handles are used for attach/liveness/release; they do not depend on lifecycle hooks.
 
 ### Activation and cleanup
 
-Use `baton disable all|curproject --host HOST` and the matching `enable` commands
-to control only the invoking CLI host. `all` is user-global; `curproject` is
-workspace/host scoped. In `guard_mode=enforce`, valid disabled activation bypasses
-Baton only for an idle current canonical workspace: the hook abstains with empty
-successful output, without a permission decision or model-visible policy, so Codex
-and unrelated hooks continue normally. Current `reserved`, `dispatching`, or
-`running` tickets make that workspace `draining` and retain claim/write/Git/director
-boundaries until terminal release; queued-only tickets do not block bypass. Invalid
-activation or unreadable lifecycle state is `invalid` and fails closed.
-`guard_mode=off` remains configured zero-hook, audit-only behavior, not dynamic
-bypass. Only the trusted director may use the exact standalone
-`baton enable|disable all|curproject --host HOST` command; worker calls, wrappers,
-substitutions, and shell composition are rejected. OpenSpec apply
-is intercepted by Baton to create tickets and dispatch native subagents. Hooks
-only provide an optional scoped mutation guard and audit observation; they do not
-classify or dispatch tasks.
+Activation and cleanup are explicit director/CLI operations. Baton does not
+install, trust, rewrite, or observe runtime hooks. OpenSpec apply is owned by the
+director workflow: it reads the task graph, creates scoped tickets, dispatches
+native subagents, and records conclusions. Baton persists tickets and Receipts
+and applies command-boundary checks; it does not classify or dispatch through a
+hook callback.
 
 `baton uninstall --dry-run` reports only the selected host's integration files;
 state is preserved. `baton uninstall --clean --dry-run` additionally lists the
@@ -128,7 +117,6 @@ This loop is the same for runner ops, longctx ops, and ordinary `coding_models` 
 
 ## Commands
 
-    baton guard status|install|hook [--json]
     baton config --cli codex|grok|cursor|claude [--runner MODEL|-] [--longctx MODEL|-]
                  [--coding-model MODEL|all] [--guard-mode enforce|off] [--enable|--disable]
     baton enable|disable all|curproject --host HOST [--json]

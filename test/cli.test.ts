@@ -7,7 +7,6 @@ import { spawn as spawnProcess } from "node:child_process";
 import { run } from "../src/cli.js";
 import type { CliModelCatalog } from "../src/adapters/contract.js";
 import { projectSettingsPath, receiptsDir, selectionsDir, spawnsDir } from "../src/lib/paths.js";
-import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { markRouteExhausted } from "../src/lib/model-availability.js";
 import { loadConfig, saveConfig } from "../src/lib/config.js";
@@ -107,37 +106,6 @@ async function initHostProfiles(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   configureCli(cwd, env, "grok", ["grok/model"]);
 }
 
-function observeCodexDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, hookAgentId: string): void {
-  const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
-  const pending = recordPendingReservation(cwd, {
-    schema: 1,
-    reservation_id: ticket.reservation_id,
-    ticket_id: ticket.id,
-    attempt: ticket.attempt,
-    host: "codex",
-  }, { now: new Date() }, undefined, env);
-  recordNativeIdentity(cwd, pending, hookAgentId, "hook", { now: new Date() }, undefined, env);
-}
-
-function observeGrokDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, agentId: string, sessionId: string): void {
-  const ticket = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
-  const pending = recordPendingReservation(cwd, {
-    schema: 1,
-    reservation_id: ticket.reservation_id,
-    ticket_id: ticket.id,
-    attempt: ticket.attempt,
-    host: "grok",
-  }, { session_id: sessionId }, undefined, env);
-  recordNativeIdentity(cwd, pending, agentId, "lifecycle", { session_id: sessionId }, undefined, env);
-}
-
-function setCodexGuardMode(cwd: string, env: NodeJS.ProcessEnv, guardMode: "enforce" | "off"): void {
-  const config = loadConfig(cwd, { env });
-  assert.ok(config.cli.codex);
-  config.cli.codex.guard_mode = guardMode;
-  saveConfig(cwd, config, { env });
-}
-
 function writeCodexTicket(cwd: string, env: NodeJS.ProcessEnv, id: string, status: "reserved" | "dispatching" | "running"): void {
   const directory = spawnsDir(cwd, env);
   fs.mkdirSync(directory, { recursive: true });
@@ -218,9 +186,6 @@ describe("CLI automatic model routing", () => {
       assert.equal(status.coding_dispatch_ready, true);
       assert.equal(status.coding_dispatch_reason, "READY");
       assert.equal(status.core_dispatch_ready, true);
-      assert.equal(status.hook_posture.hook_configured, false);
-      assert.equal(status.hook_posture.audit_only, true);
-      assert.equal(status.hook_posture.core_dispatch_ready, true);
       assert.deepEqual(status.coding_models.map((route: { route_id: string }) => route.route_id), [
         "gpt-5.3-codex-spark",
         "gpt-5.4-mini",
@@ -235,51 +200,19 @@ describe("CLI automatic model routing", () => {
     });
   });
 
-  it("reports configured guard-off as audit-only while preserving status compatibility fields", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-guard-off-"));
-      const env = fakeEnv(home);
-      await initAndConfigure(cwd, env);
-
-      const output = capture();
-      assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
-      const status = JSON.parse(output.text());
-      assert.equal(status.guard_mode, "off");
-      assert.equal(status.effective_hook_posture, "audit-only");
-      assert.equal(status.effective_hook_reason, "GUARD_OFF");
-      assert.equal(status.neutral_bypass, false);
-      assert.equal(status.audit_only, true);
-      assert.equal(status.draining_scope, "curproject");
-      assert.equal(status.hook_posture.audit_only, true);
-      assert.equal(status.core_dispatch_ready, true);
-      assert.equal(status.hook_posture.core_dispatch_ready, true);
-    });
-  });
-
   it("reports an idle project-disabled workspace as a neutral bypass", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-project-bypass-"));
       const env = fakeEnv(home);
       await initAndConfigure(cwd, env);
-      setCodexGuardMode(cwd, env, "enforce");
       const disabled = capture();
       assert.equal(await run(["disable", "curproject", "--host", "codex", "--json"], { cwd, env, stdout: disabled, stderr: disabled }), 0, disabled.text());
 
       const output = capture();
       assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
       const status = JSON.parse(output.text());
-      assert.equal(status.guard_mode, "enforce");
-      assert.equal(status.effective_hook_posture, "bypass");
-      assert.equal(status.effective_hook_reason, "PROJECT_DISABLED");
-      assert.equal(status.neutral_bypass, true);
-      assert.equal(status.audit_only, false);
       assert.equal(status.activation.project_enabled, false);
-      assert.equal(status.draining_scope, "curproject");
-      assert.equal(status.draining_count, 0);
-      assert.deepEqual(status.draining_tickets, []);
-      assert.equal(status.hook_posture.audit_only, false);
       assert.equal(status.core_dispatch_ready, false);
-      assert.equal(status.hook_posture.core_dispatch_ready, false);
     });
   });
 
@@ -288,7 +221,6 @@ describe("CLI automatic model routing", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-draining-"));
       const env = fakeEnv(home);
       await initAndConfigure(cwd, env);
-      setCodexGuardMode(cwd, env, "enforce");
       writeCodexTicket(cwd, env, "spn-active", "running");
       const disabled = capture();
       assert.equal(await run(["disable", "curproject", "--host", "codex", "--json"], { cwd, env, stdout: disabled, stderr: disabled }), 0, disabled.text());
@@ -296,13 +228,6 @@ describe("CLI automatic model routing", () => {
       const output = capture();
       assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
       const status = JSON.parse(output.text());
-      assert.equal(status.effective_hook_posture, "draining");
-      assert.equal(status.effective_hook_reason, "ACTIVE_TICKETS");
-      assert.equal(status.neutral_bypass, false);
-      assert.equal(status.audit_only, false);
-      assert.equal(status.draining_scope, "curproject");
-      assert.equal(status.draining_count, 1);
-      assert.deepEqual(status.draining_tickets.map((ticket: { ticket_id: string }) => ticket.ticket_id), ["spn-active"]);
       assert.equal(status.core_dispatch_ready, false);
     });
   });
@@ -312,7 +237,6 @@ describe("CLI automatic model routing", () => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-invalid-activation-"));
       const env = fakeEnv(home);
       await initAndConfigure(cwd, env);
-      setCodexGuardMode(cwd, env, "enforce");
       const settings = projectSettingsPath(cwd, env);
       fs.mkdirSync(path.dirname(settings), { recursive: true });
       fs.writeFileSync(settings, "[cli.codex]\nenabled = \"yes\"\n", "utf8");
@@ -320,34 +244,8 @@ describe("CLI automatic model routing", () => {
       const output = capture();
       assert.equal(await run(["status", "--host", "codex", "--json"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
       const status = JSON.parse(output.text());
-      assert.equal(status.effective_hook_posture, "invalid");
-      assert.equal(status.effective_hook_reason, "ACTIVATION_INVALID");
-      assert.equal(status.neutral_bypass, false);
-      assert.equal(status.audit_only, false);
       assert.equal(status.activation.valid, false);
-      assert.equal(status.draining_scope, "curproject");
       assert.equal(status.core_dispatch_ready, false);
-      assert.equal(status.hook_posture.core_dispatch_ready, false);
-    });
-  });
-
-  it("separates effective hook posture from configured guard and hook facts in text status", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-status-text-"));
-      const env = fakeEnv(home);
-      await initAndConfigure(cwd, env);
-      setCodexGuardMode(cwd, env, "enforce");
-      const disabled = capture();
-      assert.equal(await run(["disable", "curproject", "--host", "codex"], { cwd, env, stdout: disabled, stderr: disabled }), 0, disabled.text());
-
-      const output = capture();
-      assert.equal(await run(["status", "--host", "codex"], { cwd, env, stdout: output, stderr: output }), 0, output.text());
-      const text = output.text();
-      assert.match(text, /configured guard: mode=enforce/);
-      assert.match(text, /effective hook: posture=bypass reason=PROJECT_DISABLED neutral_bypass=yes audit_only=no/);
-      assert.match(text, /draining: scope=curproject 0/);
-      assert.match(text, /hook facts: .*audit_only=no/);
-      assert.doesNotMatch(text, /configured guard:.*audit-only/);
     });
   });
 
@@ -423,7 +321,7 @@ describe("CLI automatic model routing", () => {
     });
   });
 
-  it("accepts Codex dispatch bind --task-name without letting it replace the hook UUID", async () => {
+  it("binds Codex dispatch directly from the native task handle", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-cli-bind-task-name-"));
       const env = fakeEnv(home);
@@ -433,13 +331,18 @@ describe("CLI automatic model routing", () => {
       assert.equal(await run(["spawn", "implement a quick small coding fix", "--host", "codex", "--classification", "implementation", "--dispatch", "--capacity", "1", "--json"], {
         cwd, env, stdout: spawn, stderr: spawn,
       }), 0, spawn.text());
-      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-uuid");
 
       const bind = capture();
       assert.equal(await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", "codex-task-name", "--json"], {
         cwd, env, stdout: bind, stderr: bind,
       }), 0, bind.text());
-      assert.equal(JSON.parse(bind.text()).ticket.agent_id, "codex-hook-uuid");
+      const bound = JSON.parse(bind.text()).ticket;
+      assert.equal(bound.agent_id, null);
+      assert.deepEqual(bound.execution_handle, {
+        kind: "task_name",
+        value: "codex-task-name",
+        source: "native-return",
+      });
       const status = capture();
       assert.equal(await run(["status", "--host", "codex", "--json"], {
         cwd, env, stdout: status, stderr: status,
@@ -583,7 +486,6 @@ describe("CLI automatic model routing", () => {
         stdout: nextGrok,
         stderr: nextGrok,
       }), 0, nextGrok.text());
-      observeGrokDispatch(releaseMismatch, releaseEnv, "spn-0001", "agent-grok", "grok-session");
       for (const argv of [
         ["dispatch", "bind", "spn-0001", "--host", "grok", "--agent-id", "agent-grok", "--json"],
         ["dispatch", "complete", "spn-0001", "--host", "grok", "--text", "done", "--json"],

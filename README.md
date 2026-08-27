@@ -31,7 +31,7 @@ baton init
 baton config
 ```
 
-If Baton is already installed locally, run the same script to rebuild and update skills, config defaults, and hooks from the latest checkout.
+If Baton is already installed locally, run the same script to rebuild and update skills and config defaults from the latest checkout. Baton does not install or depend on runtime hooks.
 
 For a faster dev loop when you accept skipping tests:
 
@@ -89,9 +89,10 @@ runner and longctx are labels only. They do not claim that a model is fast, has 
 `coding_models` is an explicit ordered multi-select: the array order is the Coding priority. Runner and longctx remain independent labels and are never inserted into or reordered within this array. A disabled profile contributes no candidates.
 Unselected CLIs have no placeholder table in the file.
 
-Guard posture is explicit per host: use `--guard-mode enforce|off` for a
-single CLI. Codex `off` removes Baton hooks and is audit-only; Cursor is always
-off. Claude/Grok retain their host lifecycle hooks and report enforce.
+Baton has no runtime hook layer. The director owns classification, dependency
+ordering, native-subagent orchestration, and the Receipt/Git safety boundary.
+Host integrations are configuration and dispatch adapters only; no host hook is
+installed, trusted, or used as an execution signal.
 
 Migration note: older installations may contain `subagent_models`. It is read
 only at the schema migration boundary, copied to `coding_models` in its existing
@@ -352,29 +353,11 @@ Baton never creates project-local runtime state:
 `all` changes only the selected CLI host globally; `curproject` changes only the
 current canonical workspace and host. An explicit disabled state bypasses Baton
 and returns the host's ordinary native behavior only when that workspace is idle.
-In `guard_mode=enforce`, the Codex hook reports this as a neutral `bypass` (empty
-successful output, no permission decision or model-visible context). A current
-`reserved`, `dispatching`, or `running` ticket changes the effective posture to
-`draining` and keeps claim, write-scope, Git, and director/worker enforcement until
-terminal release; queued-only tickets do not block bypass. Invalid or unreadable
-activation/lifecycle state is `invalid` and fail-closed. `guard_mode=off` is a
-separate configured zero-Baton-hook, audit-only posture, not dynamic bypass.
-`baton status` reports `guard_mode`, `effective_hook_posture`,
-`effective_hook_reason`, `neutral_bypass`, `audit_only`, current-scope
-`draining_count`/`draining_tickets`, and `hook_posture` alongside compatibility
-facts and native execution handles as `kind:value`. Activation changes do not
-rewrite or retrust the installed hook. Only the trusted director may use the exact
-standalone activation command; worker calls, wrappers, substitutions, and shell
-composition are rejected.
-
-Recoverable project activation smoke check (run from the target workspace):
-
-```bash
-baton disable curproject --host codex
-baton status --host codex --json # effective_hook_posture=bypass when idle
-baton enable curproject --host codex
-baton status --host codex --json # enforce resumes; hook definition is unchanged
-```
+Activation and dispatch state are evaluated by the director and Baton CLI at
+command boundaries. There is no hook posture, hook observation, bypass mode, or
+runtime hook trust/rewrite step. Native execution handles, immutable Receipts,
+write allowlists, and the parent Git audit are the evidence and enforcement
+surfaces.
 
 Model availability remembers explicit quota exhaustion (including remaining=0)
 across projects and sessions. Generic 429/network/timeout failures remain

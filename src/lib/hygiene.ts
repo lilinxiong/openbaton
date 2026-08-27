@@ -48,17 +48,3 @@ export function sanitizeProgress(text: unknown): ConclusionResult {
     conclusion: cleaned.conclusion.slice(0, MAX_PROGRESS_CHARS - 1).trimEnd() + "…",
   };
 }
-
-/**
- * Dynamic per-unit choice: tiny local edits MAY stay on the director.
- * Not a static L1/L3 table. Implementation/explore work always leaves.
- */
-export function directorMayRun(description: unknown): boolean {
-  const text = String(description || "").trim();
-  if (!text) return false;
-  if (text.length > 80) return false;
-  if (/\b(implement|explore|refactor|migrate|investigate|debug|design|test suite|rewrite)\b/i.test(text)) {
-    return false;
-  }
-  return /^(rename|typo|status|note|bump|checkbox|tweak)\b/i.test(text);
-}

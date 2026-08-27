@@ -1,9 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { claudeSettingsPath } from "./claude-hooks.js";
-import { codexHooksPath, isBatonCodexHookHandler } from "./codex-hooks.js";
-import { grokHooksPath, isBatonGrokHookHandler } from "./grok-hooks.js";
 import { batonHomeDir, hostHome, packageRoot, skillPath } from "./paths.js";
 import { hostSkillDest, skillTemplatePath, HOST_IDS, type HostId } from "./hosts.js";
 
@@ -19,28 +16,10 @@ export interface InstallManifestFile {
   fingerprint: string;
 }
 
-export interface InstallManifestHook {
-  host: HostId;
-  path: string;
-  /** Observational file digest; ownership is decided from entries, never this field. */
-  fingerprint: string | null;
-  entries: InstallManifestHookEntry[];
-  /** Legacy whole-file signature, retained for reading old manifests only. */
-  signature?: string;
-}
-
-export interface InstallManifestHookEntry {
-  event: string;
-  matcher: string | null;
-  command: string;
-  signature: string;
-}
-
 export interface InstallManifest {
   schema: typeof INSTALL_MANIFEST_SCHEMA;
   generated_at: string;
   files: InstallManifestFile[];
-  hooks: InstallManifestHook[];
 }
 
 function digestFile(file: string): string | null {
@@ -63,47 +42,6 @@ export function fileFingerprint(file: string): string | null {
   return digestFile(normalizedPath(file));
 }
 
-function hookPath(host: HostId, env?: NodeJS.ProcessEnv): string | null {
-  if (host === "codex") return codexHooksPath({ env });
-  if (host === "claude") return claudeSettingsPath({ env });
-  if (host === "grok") return grokHooksPath({ env });
-  // Cursor has no supported Baton hook surface and must not appear as an
-  // owned hook integration in the manifest.
-  return null;
-}
-
-function entrySignature(host: HostId, event: string, matcher: string | null, command: string): string {
-  return crypto.createHash("sha256").update(JSON.stringify({ host, event, matcher, command })).digest("hex");
-}
-
-function hookEntries(host: HostId, file: string): InstallManifestHookEntry[] {
-  let parsed: unknown;
-  try { parsed = JSON.parse(fs.readFileSync(file, "utf8")); } catch { return []; }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-  const hooks = (parsed as Record<string, unknown>).hooks;
-  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return [];
-  const recognizer = host === "codex" ? isBatonCodexHookHandler : host === "grok" ? isBatonGrokHookHandler : null;
-  const result: InstallManifestHookEntry[] = [];
-  for (const [event, groups] of Object.entries(hooks as Record<string, unknown>)) {
-    if (!Array.isArray(groups)) continue;
-    for (const group of groups) {
-      if (!group || typeof group !== "object" || Array.isArray(group)) continue;
-      const row = group as Record<string, unknown>;
-      const matcher = typeof row.matcher === "string" ? row.matcher : null;
-      const handlers = row.hooks;
-      if (!Array.isArray(handlers)) continue;
-      for (const handler of handlers) {
-        const command = handler && typeof handler === "object" && typeof (handler as Record<string, unknown>).command === "string"
-          ? String((handler as Record<string, unknown>).command).trim() : null;
-        const owned = host === "claude"
-          ? handler && typeof handler === "object" && /\bguard\s+hook\b/.test(command || "") && /--host[\s=]claude(?:\s|$)/.test(command || "")
-          : recognizer?.(handler) === true;
-        if (owned && command) result.push({ event, matcher, command, signature: entrySignature(host, event, matcher, command) });
-      }
-    }
-  }
-  return result;
-}
 
 function validHost(value: string): value is HostId {
   return (HOST_IDS as readonly string[]).includes(value);
@@ -131,26 +69,17 @@ export function buildInstallManifest(
       files.push({ path: normalizedPath(file), kind: "host-skill", host, fingerprint });
     }
   }
-  const hooks = (prior?.hooks || []).filter((entry) => !selected.has(entry.host));
-  for (const host of hosts) {
-    const file = hookPath(host, env);
-    if (!file) continue;
-    const entries = fs.existsSync(file) ? hookEntries(host, file) : [];
-    if (!entries.length) continue;
-    hooks.push({ host, path: normalizedPath(file), fingerprint: digestFile(file), entries });
-  }
   return {
     schema: INSTALL_MANIFEST_SCHEMA,
     generated_at: new Date().toISOString(),
     files,
-    hooks,
   };
 }
 
 function normalizeManifest(value: unknown): InstallManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("install manifest must be an object");
   const raw = value as Record<string, unknown>;
-  if (raw.schema !== INSTALL_MANIFEST_SCHEMA || typeof raw.generated_at !== "string" || Number.isNaN(Date.parse(raw.generated_at)) || !Array.isArray(raw.files) || !Array.isArray(raw.hooks)) {
+  if (raw.schema !== INSTALL_MANIFEST_SCHEMA || typeof raw.generated_at !== "string" || Number.isNaN(Date.parse(raw.generated_at)) || !Array.isArray(raw.files)) {
     throw new Error("install manifest schema is invalid");
   }
   const files = raw.files.map((item) => {
@@ -164,33 +93,9 @@ function normalizeManifest(value: unknown): InstallManifest {
     }
     return { path: normalizedPath(row.path), kind: row.kind as ManifestFileKind, host: host as HostId | null, fingerprint: row.fingerprint };
   });
-  const hooks = raw.hooks.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("install manifest hook entry is invalid");
-    const row = item as Record<string, unknown>;
-    const host = String(row.host || "").trim().toLowerCase();
-    if (!validHost(host) || typeof row.path !== "string" || !path.isAbsolute(row.path)
-      || (row.fingerprint !== null && (typeof row.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(row.fingerprint)))
-      || (row.signature !== undefined && (typeof row.signature !== "string" || !new RegExp(`^${host}:baton-owned-hook:(?:absent|[a-f0-9]{64})$`).test(row.signature)))
-      || (row.entries !== undefined && !Array.isArray(row.entries))) {
-      throw new Error("install manifest hook entry is malformed");
-    }
-    const rawEntries: unknown[] = row.entries === undefined ? [] : row.entries as unknown[];
-    const entries = rawEntries.map((entry) => {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("install manifest hook entry metadata is invalid");
-      const value = entry as Record<string, unknown>;
-      if (typeof value.event !== "string" || (value.matcher !== null && typeof value.matcher !== "string")
-        || typeof value.command !== "string" || !/^[a-f0-9]{64}$/.test(String(value.signature || ""))) {
-        throw new Error("install manifest hook entry metadata is malformed");
-      }
-      return { event: value.event, matcher: value.matcher as string | null, command: value.command, signature: String(value.signature) };
-    });
-    return { host, path: normalizedPath(row.path), fingerprint: row.fingerprint as string | null, entries, ...(typeof row.signature === "string" ? { signature: row.signature } : {}) };
-  });
   const paths = new Set<string>();
   for (const file of files) if (paths.has(file.path)) throw new Error("install manifest contains duplicate file paths"); else paths.add(file.path);
-  const hookPaths = new Set<string>();
-  for (const hook of hooks) if (hookPaths.has(hook.path)) throw new Error("install manifest contains duplicate hook paths"); else hookPaths.add(hook.path);
-  return { schema: INSTALL_MANIFEST_SCHEMA, generated_at: raw.generated_at, files, hooks };
+  return { schema: INSTALL_MANIFEST_SCHEMA, generated_at: raw.generated_at, files };
 }
 
 export function readInstallManifest(env?: NodeJS.ProcessEnv): InstallManifest | null {

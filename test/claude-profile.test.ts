@@ -123,7 +123,6 @@ describe("Claude Code appears in the shared init/config flow", () => {
         longctx: "claude-opus-5[1m]",
         // Configured labels must be truthfully present in the allowlist.
         coding_models: ["claude-sonnet-5"],
-        guard_mode: "enforce",
       });
       assert.equal(config.director.max_concurrent, 4);
       // Other host profiles are untouched.

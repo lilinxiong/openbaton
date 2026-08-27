@@ -5,7 +5,7 @@ import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
 import { planStandaloneSpawn, type SpawnTicket } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
-import { applyTaskId } from "../lib/apply-waves.js";
+import { applyTaskId } from "../lib/task-id.js";
 import { scopesFromRecord } from "../lib/apply-scope.js";
 import { type SafetyOperation } from "../lib/safety.js";
 import { materializeStandalonePlanAsync } from "../lib/ticket-materialization.js";

@@ -7,7 +7,6 @@ import path from "node:path";
 import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCodex } from "./configure.js";
 import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
@@ -37,19 +36,7 @@ function readTicket(cwd: string, id: string) {
   return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
 }
 
-function observeCodexDispatch(cwd: string, env: NodeJS.ProcessEnv, id: string, hookAgentId: string): void {
-  const ticket = readTicket(cwd, id);
-  const pending = recordPendingReservation(cwd, {
-    schema: 1,
-    reservation_id: ticket.reservation_id,
-    ticket_id: ticket.id,
-    attempt: ticket.attempt,
-    host: "codex",
-  }, {}, undefined, env);
-  recordNativeIdentity(cwd, pending, hookAgentId, "hook", {}, undefined, env);
-}
-
-describe("baton apply waves", () => {
+describe("baton apply orchestration", () => {
   it("plans without tickets; scoped dispatch writes only director paths", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-cli-"));
@@ -77,8 +64,7 @@ describe("baton apply waves", () => {
       const planned = await command(["apply", "wave-demo", "--host", "codex", "--json"], { cwd, env });
       assert.equal(planned.code, 0, planned.stderr || planned.stdout);
       const plan = JSON.parse(planned.stdout);
-      assert.deepEqual(plan.ready_wave.task_ids, ["1.1", "1.2"]);
-      assert.equal(plan.ready_wave.parallel, true);
+      assert.deepEqual(plan.pending_tasks, ["1.1", "1.2", "2.1"]);
       assert.equal(fs.existsSync(spawnsDir(cwd)), false);
 
       const unscoped = await command(["apply", "wave-demo", "--host", "codex", "--dispatch", "--json"], { cwd, env });
@@ -93,8 +79,7 @@ describe("baton apply waves", () => {
       ], { cwd, env });
       assert.equal(result.code, 0, result.stderr || result.stdout);
       const body = JSON.parse(result.stdout);
-      assert.deepEqual(body.ready_wave.task_ids, ["1.1", "1.2"]);
-      assert.deepEqual(body.waves[1].task_ids, ["2.1"]);
+      assert.deepEqual(body.pending_tasks, ["1.1", "1.2", "2.1"]);
       const ticketFiles = fs.readdirSync(spawnsDir(cwd)).filter((name) => name.endsWith(".json"));
       assert.equal(ticketFiles.length, 2);
       assert.equal(body.reserved.length, 2);
@@ -134,7 +119,7 @@ describe("baton apply waves", () => {
 
 ## 1. Shared host guard
 
-- [ ] 1.1 Unify Codex, Grok, and Claude PreToolUse on ticket presence
+- [ ] 1.1 Unify Codex, Grok, and Claude dispatch on ticket presence
 `);
       const result = await command([
         "apply", "unify-demo", "--host", "codex", "--dispatch", "--json",
@@ -177,7 +162,7 @@ describe("baton apply waves", () => {
     });
   });
 
-  it("dispatches later same-section order_ready cluster outside ready_wave", async () => {
+  it("lets the director explicitly dispatch a later same-section task", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-order-ready-"));
       const env = fakeEnv(home);
@@ -197,9 +182,7 @@ describe("baton apply waves", () => {
       const planned = await command(["apply", "shared-split", "--host", "codex", "--json"], { cwd, env });
       assert.equal(planned.code, 0, planned.stderr || planned.stdout);
       const plan = JSON.parse(planned.stdout);
-      assert.deepEqual(plan.ready_wave.task_ids, ["1.1"]);
-      assert.deepEqual(plan.order_ready.task_ids, ["1.1", "1.2"]);
-      assert.ok(!plan.ready_wave.task_ids.includes("1.2"));
+      assert.deepEqual(plan.pending_tasks, ["1.1", "1.2"]);
 
       const result = await command([
         "apply", "shared-split", "--host", "codex", "--dispatch", "--json",
@@ -217,7 +200,7 @@ describe("baton apply waves", () => {
     });
   });
 
-  it("rejects later-section dispatch while earlier section is pending", async () => {
+  it("lets the director explicitly dispatch a later-section task", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-section-order-"));
       const env = fakeEnv(home);
@@ -241,13 +224,13 @@ describe("baton apply waves", () => {
         "apply", "section-order", "--host", "codex", "--dispatch", "--json",
         "--unit", "2.1", "--write-path", "src/cli.ts",
       ], { cwd, env });
-      assert.equal(result.code, 1);
-      assert.match(result.stderr, /APPLY_SECTION_ORDER/);
-      assert.equal(fs.existsSync(spawnsDir(cwd)), false);
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.tickets.length, 1);
     });
   });
 
-  it("rejects pairwise intersecting write paths in one dispatch", async () => {
+  it("leaves overlapping write decisions to terminal Receipt audits", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-write-conflict-"));
       const env = fakeEnv(home);
@@ -269,9 +252,13 @@ describe("baton apply waves", () => {
         "--unit", "1.1", "--write-path", "src/lib/config.ts",
         "--unit", "1.2", "--write-path", "src/lib/config.ts",
       ], { cwd, env });
-      assert.equal(result.code, 1);
-      assert.match(result.stderr, /APPLY_WRITE_CONFLICT/);
-      assert.equal(fs.existsSync(spawnsDir(cwd)), false);
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.tickets.length, 2);
+      for (const planned of body.tickets) {
+        const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${planned.receipt_id}.json`), "utf8"));
+        assert.deepEqual(receipt.scope.write_allowlist, ["src/lib/config.ts"]);
+      }
     });
   });
 
@@ -306,8 +293,6 @@ describe("baton apply waves", () => {
       const body = JSON.parse(result.stdout);
       const ids = body.tickets.map((ticket: { id: string }) => ticket.id);
       assert.equal(ids.length, 2);
-      observeCodexDispatch(cwd, env, ids[0], "codex-hook-apply-a");
-      observeCodexDispatch(cwd, env, ids[1], "codex-hook-apply-b");
       assert.equal((await command(["dispatch", "bind", ids[0], "--task-name", "codex-task-apply-a", "--host", "codex", "--json"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "bind", ids[1], "--task-name", "codex-task-apply-b", "--host", "codex", "--json"], { cwd, env })).code, 0);
       fs.appendFileSync(path.join(cwd, "src", "lib", "config.ts"), "A\n");

@@ -42,8 +42,8 @@ export interface CliRuntimeCapabilities {
 
 /**
  * The opaque handle returned by a host's native child-spawn API.  This is
- * deliberately separate from hook/lifecycle identity: some hosts return a
- * usable task handle while never exposing a child agent id to hooks.
+ * deliberately separate from host lifecycle metadata: some hosts return a
+ * usable task handle while never exposing a child-agent diagnostic id.
  */
 export type NativeExecutionHandleKind = "task_name" | "agent_id" | "session_id" | "task_id" | "opaque";
 
@@ -80,8 +80,6 @@ export interface CliHostMetadata {
   maxConcurrent: (env?: NodeJS.ProcessEnv) => number;
   /** Return true when this host appears to be the current invoking runtime. */
   isInvoking?: (env?: NodeJS.ProcessEnv) => boolean;
-  /** True when this host exposes a hook surface Baton can install and enforce. */
-  guard: boolean;
   /** Kind of handle returned by this host's native child execution API. */
   executionHandleKind: NativeExecutionHandleKind;
 }

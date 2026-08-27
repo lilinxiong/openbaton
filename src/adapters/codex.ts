@@ -29,7 +29,6 @@ export const CODEX_HOST_METADATA: CliHostMetadata = {
   maxConcurrent: () => 4,
   isInvoking: (env = process.env) =>
     Boolean(String(env.CODEX_SANDBOX || env.CODEX_INTERNAL || "").trim()),
-  guard: true,
   executionHandleKind: "task_name",
 };
 

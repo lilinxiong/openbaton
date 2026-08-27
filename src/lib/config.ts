@@ -15,7 +15,6 @@ export const DEFAULT_MAX_CONCURRENT = 4;
 export const GROK_HOST_MAX_CONCURRENT = getCliAdapter("grok").host.defaultMaxConcurrent;
 export const DEFAULT_MAX_DEPTH = 1;
 export const CONFIG_SCHEMA_VERSION = 2;
-export type GuardMode = "enforce" | "off";
 
 /** Adapter-declared host fact retained for diagnostics. */
 export function hostMaxConcurrent(cli: CliId, env: NodeJS.ProcessEnv = process.env): number {
@@ -34,7 +33,6 @@ export interface CliProfileSettings {
   longctx: string;
   /** Ordered Coding routes. Array order is the user's priority. */
   coding_models: string[];
-  guard_mode: GuardMode;
   /** CLI-reported values. Missing fields inherit the director fallback. */
   max_concurrent?: number;
   max_depth?: number;
@@ -75,7 +73,6 @@ export function emptyCliProfile(): CliProfileSettings {
     runner: "",
     longctx: "",
     coding_models: [],
-    guard_mode: "off",
   };
 }
 
@@ -103,24 +100,7 @@ function positiveInteger(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
-function invalidGuardMode(host: CliId | undefined, value: unknown): never {
-  const error = new Error(`CONFIG_GUARD_MODE_INVALID: cli.${host || "<unknown>"}.guard_mode=${String(value)} (expected enforce|off)`) as CodedError;
-  error.code = "CONFIG_GUARD_MODE_INVALID";
-  throw error;
-}
-
-function normalizeGuardMode(profile: UnknownRecord, host?: CliId): GuardMode {
-  if (!Object.hasOwn(profile, "guard_mode")) {
-    return host === "claude" || host === "grok" ? "enforce" : "off";
-  }
-  const mode = profile.guard_mode;
-  if (mode !== "enforce" && mode !== "off") invalidGuardMode(host, mode);
-  if (host === "cursor" && mode !== "off") invalidGuardMode(host, mode);
-  if ((host === "claude" || host === "grok") && mode !== "enforce") invalidGuardMode(host, mode);
-  return mode;
-}
-
-function normalizeCliProfile(value: unknown, host?: CliId): CliProfileSettings {
+function normalizeCliProfile(value: unknown): CliProfileSettings {
   const profile = isUnknownRecord(value) ? value : {};
   const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
   const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
@@ -132,30 +112,14 @@ function normalizeCliProfile(value: unknown, host?: CliId): CliProfileSettings {
     : stringList(profile.subagent_models);
   const maxConcurrent = positiveInteger(profile.max_concurrent);
   const maxDepth = positiveInteger(profile.max_depth);
-  // Codex has an explicit opt-in guard posture and Cursor has no Baton hook;
-  // Claude/Grok currently install their enforcing hook layer, so an older
-  // profile without a field must describe that real posture as enforce.
-  const guardMode = normalizeGuardMode(profile, host);
   return {
     enabled: profile.enabled === true,
     runner: rawRunner,
     longctx: rawLongctx,
     coding_models: codingModels,
-    guard_mode: guardMode,
     ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
-}
-
-/** Read only the raw guard posture before normalization/migration writes it. */
-export function explicitGuardMode(cwd: string, host: CliId, options: ConfigEnvOptions = {}): GuardMode | null {
-  const file = configPath(cwd, { env: options.env });
-  if (!fs.existsSync(file)) return null;
-  const parsed = parseToml(fs.readFileSync(file, "utf8"));
-  const cli = isUnknownRecord(parsed.cli) ? parsed.cli : {};
-  const profile = isUnknownRecord(cli[host]) ? cli[host] : {};
-  if (!Object.hasOwn(profile, "guard_mode")) return null;
-  return normalizeGuardMode(profile, host);
 }
 
 /**
@@ -211,7 +175,7 @@ function normalizeCli(value: unknown): CliSettings {
   for (const adapter of listCliAdapters()) {
     const rawProfile = cli[adapter.id];
     if (!isUnknownRecord(rawProfile)) continue;
-    profiles[adapter.id] = normalizeCliProfile(rawProfile, adapter.id);
+    profiles[adapter.id] = normalizeCliProfile(rawProfile);
   }
   return profiles;
 }
@@ -248,7 +212,6 @@ function serializeConfig(cfg: Config): UnknownRecord {
       runner: profile.runner,
       longctx: profile.longctx,
       coding_models: profile.coding_models,
-      guard_mode: profile.guard_mode,
       ...(profile.max_concurrent !== undefined ? { max_concurrent: profile.max_concurrent } : {}),
       ...(profile.max_depth !== undefined ? { max_depth: profile.max_depth } : {}),
     };

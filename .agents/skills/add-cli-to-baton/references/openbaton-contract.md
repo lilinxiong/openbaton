@@ -9,7 +9,7 @@ Before editing, inspect the current Codex and Grok implementations and create a 
 | Capability | Codex | Grok | Target | Required action | Evidence |
 |---|---|---|---|---|---|
 
-Cover every shared feature and every host-specific feature you encounter. Shared features are mandatory for a successful target adapter. A host-specific feature such as a native hook is not automatically mandatory merely because one host has it, but it must be evaluated and mapped when the target exposes an equivalent.
+Cover every shared feature and every host-specific feature you encounter. Shared features are mandatory for a successful target adapter. All hosts in this release are hookless; orchestration is a director responsibility.
 
 Search the current repository for the following extension surfaces and their tests:
 
@@ -21,7 +21,7 @@ Search the current repository for the following extension surfaces and their tes
 - ticket creation, immutable host capture, reserve, bind, progress, wait/probe, terminal recording, release, recovery, and status;
 - runner and longctx mechanical labels, read-only/write/commit-only boundaries, Receipts, and Git safety;
 - interactive and non-interactive CLI flows, usage/help text, package contents, and English/Chinese documentation;
-- host guard or hook integration where the target offers a compatible interception mechanism.
+- explicit director orchestration; Baton has no runtime hook or interception layer.
 
 Useful current anchors include `src/adapters/`, `src/lib/config.ts`, `src/lib/hosts.ts`, `src/commands/config.ts`, `src/commands/init.ts`, route/match/spawn/dispatch modules, `templates/hosts/`, and the adapter, model, init, profile, CLI, and dispatch tests. Follow imports and registry-derived callers from those anchors.
 
@@ -64,7 +64,7 @@ Every new CLI MUST ship the same director/worker routing table in its runtime sk
 
 Every adapter MUST use the shared dispatch reservation protocol: `dispatch next` returns an opaque per-attempt `reservation` plus `prompt` and `description` with the same first-line JSON envelope. The native tool receives the returned `prompt` unchanged and, when it exposes a description field, the returned `description` unchanged. Ticket ids are opaque data; adapters and guards MUST NOT infer reservation identity from a prefix, business prose, or a unique-ticket fallback.
 
-Native identity is adapter-specific. Codex and Claude Code expose the authoritative child id through lifecycle hooks; Grok carries `subagentId`/session identity in its native lifecycle payload; Cursor has no compatible guard hook and binds the identity returned by `Task`. Keep these field names in per-CLI identity adapters and hand dispatch one normalized identity. A universal `agent_id` assumption, ticket-prefix inference, or unique-ticket fallback is invalid; caller and hook observations must match before a worker is bound.
+Native identity is adapter-specific and comes from the native execution handle returned by each CLI. Keep host-specific fields in per-CLI adapters and hand dispatch one normalized handle. A universal `agent_id` assumption, ticket-prefix inference, or unique-ticket fallback is invalid.
 
 ## Automatic workflow contract
 
@@ -78,7 +78,7 @@ Parallel dispatch is allowed only for units whose write scopes are complete and 
 
 The installed global Baton skill and every host runtime skill are release artifacts of this same contract. `scripts/update_local_baton.py` must build/link this checkout and invoke the linked `baton update`, which refreshes the active global `~/.baton/SKILL.md` from the checkout as well as installed host skills that already exist.
 
-If the target exposes a PreToolUse-compatible hook, the shared host guard MUST implement ticket-presence: no reserved ticket → director mutating tools allowed; reserved/dispatching/running worker tickets → director implementation writes denied; every reserved native spawn → exact reservation envelope required even when only one ticket exists; bound workers stay inside the Receipt. MUST NOT ship fail-closed-always or allow-always. Cursor and other hookless hosts still MUST ship the table and reservation protocol in the runtime skill; missing a hook is not a license to implement declared classified work in the parent.
+All hosts are hookless. The director MUST enforce ticket presence, reservation, lifecycle, path scope, and Git safety explicitly at command boundaries; runtime skills MUST NOT describe hook installation, trust, observation, or interception.
 
 Keep the adapter-boundary and model/configuration invariants above. Do not rewrite OpenSpec apply skills. OpenSpec apply intercept remains in the target host Baton skill via `baton apply` plan → read-only director impact/dependency pass → filter the order-ready frontier (`--write-path`/`--read-only`) → pack only complete, disjoint write scopes by section order and host cap → one scoped `--dispatch` with multiple `--unit` flags. A write scope also carries its allowed operations (`write`, `create`, `delete`, `rename`, `chmod`); the standalone write surface is `--write-path PATH --write-ops OPS`.
 

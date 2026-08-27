@@ -3,11 +3,9 @@ import path from "node:path";
 import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
 import { installHostSkills, type HostId } from "../lib/hosts.js";
 import type { CliId } from "../adapters/contract.js";
-import { explicitGuardMode, hasLegacyCodingModels, loadConfig, patchRawCliProfile, saveConfig } from "../lib/config.js";
-import { codexHooksStatus, installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
-import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
-import { installGrokHooks, type GrokHooksInstallResult } from "../lib/grok-hooks.js";
+import { hasLegacyCodingModels, loadConfig, patchRawCliProfile, saveConfig } from "../lib/config.js";
 import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
+import { cleanupLegacyHook } from "../lib/legacy-hook-cleanup.js";
 
 export interface InitProjectOptions {
   force?: boolean;
@@ -20,14 +18,6 @@ export interface InitProjectResult {
   created: string[];
   skipped: string[];
   tools: HostId[];
-  /** Codex guard result. */
-  guard: CodexHooksInstallResult;
-  /** Every guard-capable host that Baton installed a hook layer for. */
-  guards: Array<
-    | ({ host: "codex" } & CodexHooksInstallResult)
-    | ({ host: "claude" } & ClaudeHooksInstallResult)
-    | ({ host: "grok" } & GrokHooksInstallResult)
-  >;
 }
 
 export async function initProject(cwd: string, options: InitProjectOptions = {}): Promise<InitProjectResult> {
@@ -59,7 +49,6 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   }
 
   const hasLegacyModels = hasLegacyCodingModels(cwd, { env });
-  const rawCodexGuardMode = explicitGuardMode(cwd, "codex", { env });
   const cfg = loadConfig(cwd, { env });
   if (cli) {
     // Initializing a named host creates exactly that selected profile. Keep
@@ -71,7 +60,6 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
       runner: existing?.runner || "",
       longctx: existing?.longctx || "",
       coding_models: existing?.coding_models ? [...existing.coding_models] : [],
-      guard_mode: cli === "codex" ? (rawCodexGuardMode || "off") : cli === "cursor" ? "off" : (existing?.guard_mode || "enforce"),
       ...(existing?.max_concurrent !== undefined ? { max_concurrent: existing.max_concurrent } : {}),
       ...(existing?.max_depth !== undefined ? { max_depth: existing.max_depth } : {}),
     };
@@ -89,32 +77,17 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
         runner: "",
         longctx: "",
         coding_models: [],
-        guard_mode: cli === "codex" || cli === "cursor" ? "off" : "enforce",
       }, { env });
   }
 
   const hosts = installHostSkills(cwd, { force, env });
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
-  const legacyGuard = codexHooksStatus({ cwd, env });
-  const guardMode = rawCodexGuardMode || (legacyGuard.baton_entries > 0 ? "enforce" : "off");
-  if (!rawCodexGuardMode && cfg.cli.codex) {
-    cfg.cli.codex.guard_mode = guardMode;
-    if (hasLegacyModels) patchRawCliProfile(cwd, "codex", { guard_mode: guardMode }, { env });
-    else saveConfig(cwd, cfg, { env });
-  }
-  const guard = installCodexHooks({ cwd, env, guardMode });
-  const claudeGuard = installClaudeHooks({ cwd, env });
-  const grokGuard = installGrokHooks({ cwd, env });
-  const guards: InitProjectResult["guards"] = [
-    { host: "codex", ...guard },
-    { host: "claude", ...claudeGuard },
-    { host: "grok", ...grokGuard },
-  ];
-  for (const item of guards) {
-    if (item.changed) created.push(item.display_path);
+  for (const host of ["codex", "claude", "grok"] as const) {
+    const action = cleanupLegacyHook(host, env);
+    if (action === "removed" || action === "updated") created.push(`${host} legacy hook cleanup: ${action}`);
   }
   writeInstallManifest(buildInstallManifest(cwd, hosts.tools, env), env);
 
-  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools, guard, guards };
+  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools };
 }

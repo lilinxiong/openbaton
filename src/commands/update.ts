@@ -1,14 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, skillPath, configPath, displayHomePath } from "../lib/paths.js";
-import { explicitGuardMode, hasLegacyCodingModels, loadConfig, patchRawCliProfile, saveConfig, normalizeConfig } from "../lib/config.js";
+import { hasLegacyCodingModels, loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
-import { codexHooksStatus, installCodexHooks, type CodexHooksInstallResult } from "../lib/codex-hooks.js";
-import { installClaudeHooks, type ClaudeHooksInstallResult } from "../lib/claude-hooks.js";
-import { installGrokHooks, type GrokHooksInstallResult } from "../lib/grok-hooks.js";
 import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
 import { HOST_IDS } from "../lib/hosts.js";
+import { cleanupLegacyHook } from "../lib/legacy-hook-cleanup.js";
 
 export interface UpdateProjectOptions {
   forceSkill?: boolean;
@@ -17,10 +15,6 @@ export interface UpdateProjectOptions {
 
 export interface UpdateProjectResult {
   actions: string[];
-  /** Codex guard result. */
-  guard: CodexHooksInstallResult;
-  claudeGuard: ClaudeHooksInstallResult;
-  grokGuard: GrokHooksInstallResult;
 }
 
 /**
@@ -33,7 +27,6 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
   const dir = batonHomeDir(env);
   fs.mkdirSync(dir, { recursive: true });
   const tmplRoot = packageRoot();
-  const rawCodexGuardMode = explicitGuardMode(cwd, "codex", { env });
   const actions: string[] = [];
 
   const destSkill = skillPath(cwd, { env });
@@ -70,22 +63,11 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
   if (!hasLegacyModels) saveConfig(cwd, current, { env });
   const hosts = refreshInstalledHostSkills(cwd, { env });
   actions.push(...hosts.actions);
-  const existingGuard = codexHooksStatus({ cwd, env });
-  const guardMode = rawCodexGuardMode || (existingGuard.baton_entries > 0 ? "enforce" : "off");
-  if (!rawCodexGuardMode && current.cli.codex) {
-    current.cli.codex.guard_mode = guardMode;
-    if (hasLegacyModels) patchRawCliProfile(cwd, "codex", { guard_mode: guardMode }, { env });
-    else saveConfig(cwd, current, { env });
+  for (const host of ["codex", "claude", "grok"] as const) {
+    const action = cleanupLegacyHook(host, env);
+    if (action !== "absent" && action !== "unchanged") actions.push(`${host} legacy hook cleanup: ${action}`);
   }
-  const guard = installCodexHooks({ cwd, env, guardMode });
-  actions.push(guard.guard_mode === "off"
-    ? `${guard.action} Codex Baton host guard at ${guard.display_path}; zero Baton hooks (audit-only, no trust step)`
-    : `${guard.action} Codex Baton host guard at ${guard.display_path}; trust it from /hooks`);
-  const claudeGuard = installClaudeHooks({ cwd, env });
-  actions.push(`${claudeGuard.action} Claude Code Baton host guard at ${claudeGuard.display_path}; user settings hooks apply without a trust prompt`);
-  const grokGuard = installGrokHooks({ cwd, env });
-  actions.push(`${grokGuard.action} Grok Baton host guard at ${grokGuard.display_path}; global Grok hooks apply without a trust prompt`);
   writeInstallManifest(buildInstallManifest(cwd, HOST_IDS, env), env);
 
-  return { actions, guard, claudeGuard, grokGuard };
+  return { actions };
 }

@@ -30,7 +30,7 @@ Before creating or dispatching any write ticket, the director MUST perform a rea
 
 Parallel dispatch is permitted only when every participating unit has a complete scope and the write sets are pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Otherwise the director sequences the units or keeps them director-local. If a worker discovers an undeclared path or operation, it MUST stop before mutation and return a scope decision to the director. It must never edit first and rely on a terminal retry or audit to authorize the change. Mechanical routing still uses the structured execution class; operation labels remain opaque audit metadata and never choose the route.
 
-Cursor identity is host-specific: use the native `Task` return identity for binding. Cursor has no compatible guard hook, so do not invent a hook `agent_id` or treat a ticket prefix as an identity.
+Cursor identity is host-specific: use the native `Task` return identity for binding. Baton has no runtime hooks, so do not invent a hook `agent_id` or treat a ticket prefix as an identity.
 
 ## Model contract
 
@@ -38,7 +38,7 @@ Cursor identity is host-specific: use the native `Task` return identity for bind
   profile or model, pass `--host cursor`. Consult only `cli.cursor.enabled`;
   never another profile. A disabled or missing `cli.cursor` profile fails closed
   and never falls back to Codex, Grok, or any other CLI. Cursor does not claim
-  Codex hook protection.
+  host hook protection; Baton provides no runtime hook layer.
 - baton config selects the CLI first. For Cursor, obtain exactly the picker-visible models from `cursor-agent models`. Official cursor-agent prints a text listing (`Available models` plus `id - display` lines). Parse those listed ids only; login and prose lines are not models. JSON stdout is accepted if cursor-agent emits it.
 - Store the selected profile, runner and longctx labels, and ordered coding_models allowlist under [cli.cursor] in the user-global config. Never create unselected CLI placeholders. Persist max_concurrent/max_depth overrides only when Cursor explicitly reports them; otherwise use the director fallbacks.
 - runner and longctx are labels only. They do not imply context-window or other capability support.
@@ -50,7 +50,7 @@ Cursor identity is host-specific: use the native `Task` return identity for bind
 ## Execution contract
 
 - Create queued tickets and immutable Receipts before native dispatch. Baton CLI never calls host tools itself and never executes work via `cursor-agent -p`, `cursor-agent --print`, or any other cursor-agent print/headless process.
-- Compact dispatch is the same for runner ops, longctx ops, and ordinary `coding_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host cursor --json` only for already-queued work. For each reserved ticket, call native `Task` with the returned reservation-bearing `prompt` and `description` unchanged, exact `model`, `run_in_background=true`, and no `resume` unless continuing the same child, then bind immediately. Cursor has no compatible interception hook; status reports this as unsupported. Mechanical prompts are one-shot: run the director-supplied operation; do not explore. Do not start a new cursor-agent process with `--model`/`--print`.
+- Compact dispatch is the same for runner ops, longctx ops, and ordinary `coding_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host cursor --json` only for already-queued work. For each reserved ticket, call native `Task` with the returned reservation-bearing `prompt` and `description` unchanged, exact `model`, `run_in_background=true`, and no `resume` unless continuing the same child, then bind immediately. The director owns orchestration; Baton has no runtime hook surface. Mechanical prompts are one-shot: run the director-supplied operation; do not explore. Do not start a new cursor-agent process with `--model`/`--print`.
 - Always pass `model`. Omitting it inherits the parent model, which Baton forbids. If the installed `Task` schema has no `model` field, or the ticket has reasoning_effort/service_tier that Task cannot express, report that execution option as unavailable rather than silently claiming it.
 - Fresh child context is the default when `resume` is omitted. Do not pass parent conversation into the Task prompt unless the ticket explicitly requires continuation of the same child.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
@@ -64,8 +64,8 @@ Cursor identity is host-specific: use the native `Task` return identity for bind
 
 Use `baton disable|enable all|curproject --host cursor` for host-global or
 current-project activation. Disabled activation bypasses Baton; invalid state
-fails closed. Cursor has no compatible hook surface, so status reports
-unsupported; OpenSpec apply still creates and dispatches native Cursor tickets.
+fails closed. Cursor has no runtime hook surface; OpenSpec apply still creates
+and dispatches native Cursor tickets under director orchestration.
 
 ## Commands
 

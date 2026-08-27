@@ -10,7 +10,6 @@ import { activationLockPath, dispatchLockPath, globalActivationLockPath, spawnsD
 import { finishAgent, reserveNext } from "../src/lib/dispatch.js";
 import { GitSafetyError } from "../src/lib/git-safety-process.js";
 import { collectGitSafetyFacts } from "../src/lib/git-safety-facts.js";
-import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { configureCodex } from "./configure.js";
 import { fakeEnv, withHome } from "./home.js";
@@ -73,15 +72,6 @@ async function bindCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   const reserved = capture();
   assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "4", "--json"], { cwd, env, stdout: reserved, stderr: reserved }), 0, reserved.text());
   assert.equal(JSON.parse(reserved.text()).reserved.length, 1);
-  const ticket = readTicket(cwd);
-  const pending = recordPendingReservation(cwd, {
-    schema: 1,
-    reservation_id: ticket.reservation_id,
-    ticket_id: ticket.id,
-    attempt: ticket.attempt,
-    host: "codex",
-  }, {}, undefined, env);
-  recordNativeIdentity(cwd, pending, "codex-hook-uuid", "hook", {}, undefined, env);
   assert.equal(await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", "codex-task-name", "--json"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
 }
 
@@ -376,19 +366,4 @@ describe("commit-only dispatch integration", () => {
     });
   });
 
-  it("reserves a commit-only ticket exclusively before later mechanical work", async () => {
-    await withHome(async (home) => {
-      const cwd = fixture();
-      const env = fakeEnv(home);
-      await createCommitTicket(cwd, env);
-      assert.equal(await run(["spawn", "bun test", "--host", "codex", "--classification", "mechanical", "--operation", "test"], { cwd, env, stdout: sink(), stderr: sink() }), 0);
-
-      const out = capture();
-      assert.equal(await run(["dispatch", "next", "--host", "codex", "--capacity", "4", "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
-      const result = JSON.parse(out.text());
-      assert.deepEqual(result.reserved.map((item) => item.ticket_id), ["spn-0001"]);
-      assert.equal(result.reserved[0].mode, "commit-only");
-      assert.deepEqual(result.snapshot.queued, ["spn-0002"]);
-    });
-  });
 });

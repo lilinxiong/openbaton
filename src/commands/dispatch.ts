@@ -5,7 +5,6 @@ import {
   deferDispatch,
   dispatchSnapshot,
   finishAgent,
-  issueDispatchContinuation,
   persistedCapacity,
   releaseAgent,
   reportAgentProbe,
@@ -27,7 +26,6 @@ const USAGE = `usage:
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--message MESSAGE] [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch close TICKET --host HOST [--message MESSAGE] [--release] --json
   baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE|--task-name NAME|--agent-id ID] --json
-  baton dispatch continuation TICKET --host codex --json
   baton dispatch recover [--host HOST] [--stale-ms N] --json
   baton dispatch status [--host HOST] [--capacity N] --json
 
@@ -252,18 +250,6 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       ...(host ? { host } : {}),
     });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host, env }) }, json);
-    return 0;
-  }
-
-  if (sub === "continuation") {
-    const id = values[0];
-    if (!id) throw new Error(USAGE.trim());
-    const host = stringFlag(flags, "host");
-    const continuation = issueDispatchContinuation(cwd, id, {
-      ...(host ? { host } : {}),
-      env,
-    });
-    print(stdout, { continuation, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host, env }) }, json);
     return 0;
   }
 

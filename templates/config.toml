@@ -22,4 +22,3 @@ max_depth = 1
 # runner = "gpt-5.6-luna"
 # longctx = "gpt-5.6-luna"
 # coding_models = ["gpt-5.3-codex-spark", "gpt-5.6-luna"] # ordered priority
-# guard_mode = "enforce" # Codex may use "off" for zero Baton hooks

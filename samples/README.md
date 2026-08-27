@@ -107,12 +107,13 @@ the trusted director, then restore activation:
 baton disable curproject --host codex
 baton status --host codex --json # idle: bypass, neutral_bypass=true
 baton enable curproject --host codex
-baton status --host codex --json # enforce resumes without hook rewrite/retrust
+baton status --host codex --json # director/CLI state is evaluated explicitly
 ```
 
 If a `reserved`, `dispatching`, or `running` ticket exists, status must show
 `draining` until terminal release. Invalid activation/lifecycle state must fail
-closed; `guard_mode=off` is zero-hook audit-only and is not this bypass path.
+closed. Baton has no runtime hooks; the director owns activation, orchestration,
+and the safety boundary.
 
 ## Probe E2E path (post-adapter coding)
 

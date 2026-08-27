@@ -1,9 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { removeBatonClaudeHooks, claudeSettingsPath } from "./claude-hooks.js";
-import { removeBatonCodexHooks, codexHooksPath } from "./codex-hooks.js";
-import { grokHooksPath, removeBatonGrokHooks } from "./grok-hooks.js";
+import { legacyHookPath, removeLegacyHooks } from "./legacy-hook-cleanup.js";
 import {
   batonHomeDir,
   configPath,
@@ -120,19 +118,8 @@ function readJsonObject(file: string): { value: Record<string, unknown>; text: s
   return { value: value as Record<string, unknown>, text };
 }
 
-function canonicalOwnedDocument(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const object = value as Record<string, unknown>;
-  return Object.keys(object).length === 1 && Object.hasOwn(object, "hooks")
-    && !!object.hooks && typeof object.hooks === "object" && !Array.isArray(object.hooks)
-    && Object.keys(object.hooks as object).length === 0;
-}
-
 function hookTarget(host: HostId, cwd: string, env: NodeJS.ProcessEnv | undefined): string {
-  if (host === "codex") return codexHooksPath({ cwd, env });
-  if (host === "claude") return claudeSettingsPath({ cwd, env });
-  if (host === "grok") return grokHooksPath({ cwd, env });
-  return path.join(hostHome(env), `.${host}`, "hooks.json");
+  return legacyHookPath(host, env);
 }
 
 function removeHookEntry(host: HostId, cwd: string, env?: NodeJS.ProcessEnv): UninstallTarget {
@@ -146,22 +133,12 @@ function removeHookEntry(host: HostId, cwd: string, env?: NodeJS.ProcessEnv): Un
     return { action: "conflict", path: shown, host, reason: `hook file unreadable: ${error instanceof Error ? error.message : String(error)}` };
   }
   try {
-    // Codex/Claude inverse primitives return the retained document directly;
-    // Grok additionally reports whether the complete file is canonical and
-    // safe to delete. Normalize both shapes before building the plan.
-    const result = host === "codex"
-      ? { document: removeBatonCodexHooks(loaded.value), action: "preserved" as const, canDelete: false }
-      : host === "claude"
-        ? { document: removeBatonClaudeHooks(loaded.value), action: "preserved" as const, canDelete: false }
-        : host === "grok"
-          ? removeBatonGrokHooks(loaded.value)
-          : { document: loaded.value, action: "conflict" as const, canDelete: false };
+    const result = removeLegacyHooks(host, loaded.value);
     const after = jsonText(result.document);
-    if (host === "grok" && result.action === "removed" && result.canDelete) {
+    if (result.action === "removed" && result.canDelete) {
       return targetFile(file, { action: "remove", path: shown, host, reason: "canonical Baton-owned hook file", before: loaded.text, after: null });
     }
     if (after === loaded.text) return targetFile(file, { action: result.action === "conflict" ? "conflict" : "preserve", path: shown, host, reason: result.action === "conflict" ? "ambiguous hook ownership" : "no Baton-owned handler", before: loaded.text, after: loaded.text });
-    if (canonicalOwnedDocument(result.document)) return targetFile(file, { action: "remove", path: shown, host, reason: "canonical Baton-owned hook file", before: loaded.text, after: null });
     return targetFile(file, { action: "update-entry", path: shown, host, reason: "remove Baton-owned handlers and retain unrelated hooks", before: loaded.text, after });
   } catch (error) {
     return { action: "conflict", path: shown, host, reason: `ambiguous hook ownership: ${error instanceof Error ? error.message : String(error)}`, before: loaded.text };
@@ -341,11 +318,9 @@ function resolvePlanPath(target: UninstallTarget, env?: NodeJS.ProcessEnv): stri
   const file = displayed.startsWith("~/") ? path.join(hostHome(env), displayed.slice(2)) : path.resolve(displayed);
   const home = path.resolve(hostHome(env));
   const relative = path.relative(home, file);
-  const exactCustomClaude = target.host === "claude" && path.resolve(claudeSettingsPath({ env })) === file;
-  if ((!relative || relative.startsWith("..") || path.isAbsolute(relative)) && !exactCustomClaude) {
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
     throw coded(`uninstall plan escapes the user home: ${displayed}`, UNINSTALL_STATE_INVALID);
   }
-  if (exactCustomClaude && target.expected_kind === "directory") throw coded(`custom Claude hook target is a directory: ${displayed}`, UNINSTALL_STATE_INVALID);
   return file;
 }
 

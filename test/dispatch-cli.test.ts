@@ -9,7 +9,6 @@ import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { withHome, fakeEnv } from "./home.js";
 import { configureCodex } from "./configure.js";
 import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
-import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 
 function capture() {
   const chunks = [];
@@ -39,18 +38,6 @@ function readTicket(cwd, id) {
   return JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${id}.json`), "utf8"));
 }
 
-function observeCodexDispatch(cwd, env, id, hookAgentId) {
-  const ticket = readTicket(cwd, id);
-  const pending = recordPendingReservation(cwd, {
-    schema: 1,
-    reservation_id: ticket.reservation_id,
-    ticket_id: ticket.id,
-    attempt: ticket.attempt,
-    host: "codex",
-  }, {}, undefined, env);
-  recordNativeIdentity(cwd, pending, hookAgentId, "hook", {}, undefined, env);
-}
-
 describe("dispatch CLI", () => {
   it("queues tickets, binds a real agent, completes it, and refills FIFO", async () => {
     await withHome(async (home) => {
@@ -78,7 +65,6 @@ describe("dispatch CLI", () => {
       assert.equal(reserved.reserved[0].reservation.ticket_id, "spn-0001");
       assert.deepEqual(reserved.snapshot.queued, ["spn-0002"]);
 
-      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-real");
       const bound = await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-real", "--host", "codex", "--capacity", "1", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       assert.equal(JSON.parse(bound.stdout).ticket.status, "running");
@@ -115,7 +101,6 @@ describe("dispatch CLI", () => {
       assert.deepEqual(parseDispatchReservationEnvelope(payload.reserved[0].prompt), payload.reserved[0].reservation);
       assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), "spn-0001.json"), "utf8")).status, "dispatching");
 
-      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-compact");
       const bound = await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-compact", "--host", "codex", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       const completed = await command(["dispatch", "complete", "spn-0001", "--text", "first done", "--release", "--json"], { cwd, env });
@@ -180,7 +165,6 @@ describe("dispatch CLI", () => {
       assert.equal(snap.active, 2);
       assert.equal(snap.available, 0);
 
-      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-capacity");
       const bound = await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-capacity", "--host", "codex", "--json"], { cwd, env });
       assert.equal(bound.code, 0, bound.stderr);
       assert.equal(JSON.parse(bound.stdout).snapshot.capacity, 2);
@@ -215,7 +199,6 @@ describe("dispatch CLI", () => {
       assert.equal(JSON.parse(fs.readFileSync(hostDispatchStatePath(cwd, "codex"), "utf8")).capacity, 1);
 
       await command(["dispatch", "next", "--host", "codex", "--json"], { cwd, env });
-      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-thinking");
       await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-thinking", "--host", "codex", "--json"], { cwd, env });
       const progress = await command([
         "dispatch", "progress", "spn-0001", "--phase", "working", "--text", "mapped current states",
@@ -237,7 +220,6 @@ describe("dispatch CLI", () => {
       publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] });
       assert.equal((await approvedSpawn(["spawn", "build the Android target", "--classification", "implementation"], { cwd, env })).code, 0);
       assert.equal((await command(["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"], { cwd, env })).code, 0);
-      observeCodexDispatch(cwd, env, "spn-0001", "codex-hook-dispatch-build");
       assert.equal((await command(["dispatch", "bind", "spn-0001", "--task-name", "codex-task-dispatch-build", "--host", "codex", "--json"], { cwd, env })).code, 0);
 
       const live = await command([

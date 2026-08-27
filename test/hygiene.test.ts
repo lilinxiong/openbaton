@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeConclusion, sanitizeProgress, directorMayRun, MAX_CONCLUSION_CHARS, MAX_PROGRESS_CHARS } from "../src/lib/hygiene.js";
+import { sanitizeConclusion, sanitizeProgress, MAX_CONCLUSION_CHARS, MAX_PROGRESS_CHARS } from "../src/lib/hygiene.js";
 
 describe("sanitizeConclusion", () => {
   it("rejects a tool dump", () => {
@@ -25,17 +25,5 @@ describe("sanitizeProgress", () => {
     assert.equal(long.ok, true);
     assert.ok(long.conclusion.length <= MAX_PROGRESS_CHARS);
     assert.equal(sanitizeProgress("tool_result: noisy trace").ok, false);
-  });
-});
-
-describe("directorMayRun", () => {
-  it("is true only for tiny rename/typo-style units", () => {
-    assert.equal(directorMayRun("rename helper to formatDate"), true);
-    assert.equal(directorMayRun("typo in README title"), true);
-  });
-
-  it("is false for implement/explore", () => {
-    assert.equal(directorMayRun("implement the auth module"), false);
-    assert.equal(directorMayRun("explore why CI is red"), false);
   });
 });

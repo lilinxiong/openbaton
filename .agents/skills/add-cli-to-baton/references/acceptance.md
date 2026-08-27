@@ -32,7 +32,7 @@ Add or extend tests for all applicable items.
 - automatic matching never selects outside the enabled target allowlist;
 - stale model, unsupported effort/tier, missing profile, and disabled profile fail closed;
 - proposal, ticket, Receipt, reservation, binding, terminal outcome, and release retain the immutable target host;
-- target identity handling uses its CLI-specific adapter (never a universal `agent_id` assumption), and caller identity mismatches or missing authoritative hook identity fail closed where the host requires observation;
+- target identity handling uses its CLI-specific adapter and native execution handle (never a universal `agent_id` assumption);
 - reserve/bind/complete/release under a different host returns a host-mismatch failure;
 - concurrency/backpressure defers the same target ticket without consuming an attempt or switching models;
 - recovery and status do not leak or relabel target tickets;
@@ -54,21 +54,12 @@ Inspect the installed target runtime Baton skill. It MUST state the shared routi
 
 Omitting the table or substituting a host-specific exception is not `PASS`. Unit tests still must not merely regex-match documentation wording; this gate is an acceptance completeness check that the runtime skill contains the table, not a wording-regex unit test.
 
-### Hook-capable hosts
-
-If the target exposes a PreToolUse-compatible hook that Baton installs, acceptance MUST require ticket-presence:
-
-- no reserved ticket → director mutating tools allowed
-- reserved/dispatching/running worker tickets → director implementation writes denied; standalone baton control-plane commands still allowed
-- every reserved native spawn requires the exact returned reservation envelope, including with one reservation; ticket-like prose and unknown/stale/conflicting identities are denied
-- two simultaneous reservations with different opaque ticket-id formats can each spawn and bind without a unique-ticket fallback
-- bound workers stay inside the Receipt
-
-`fail-closed-always` and `allow-always` are both incomplete.
-
 ### Hookless hosts
 
-Hosts without a compatible hook (Cursor today) still MUST ship the table and pass the shared reservation-bearing prompt unchanged plus the description unchanged when the native tool exposes one. Missing a hook is not a license to implement declared classified work in the parent. Do not pretend a missing hook enforces the table.
+All hosts are hookless. Acceptance verifies that the director performs classification,
+reservation, native spawn, bind, lifecycle, and release explicitly through command
+boundaries, Receipts, execution handles, and Git audits. Runtime skills must not claim
+hook installation, trust, observation, or interception.
 
 ### Automatic workflow contract
 
@@ -104,7 +95,7 @@ npm run build
 npm pack --dry-run
 ```
 
-Also run the repository's diff/format check and inspect the exact changed-path allowlist. Exercise the locally built Baton executable with an isolated temporary home so testing does not overwrite the user's real `~/.baton` configuration, installed skills, hooks, cache, or tickets.
+Also run the repository's diff/format check and inspect the exact changed-path allowlist. Exercise the locally built Baton executable with an isolated temporary home so testing does not overwrite the user's real `~/.baton` configuration, installed skills, cache, or tickets.
 
 Any pre-existing baseline failure must be reported separately. A regression caused by the adapter must be fixed before proceeding.
 

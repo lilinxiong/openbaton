@@ -31,7 +31,7 @@ baton init
 baton config
 ```
 
-本地已有 Baton 时，同样运行该脚本即可按仓库最新代码重建并更新 skills、配置默认值和 hooks。
+本地已有 Baton 时，同样运行该脚本即可按仓库最新代码重建并更新 skills 与配置默认值。Baton 不安装也不依赖运行时 hooks。
 
 若接受跳过测试、加快开发迭代：
 
@@ -89,8 +89,9 @@ longctx 是独立标签，不会自动插入或重排 Coding 数组。CLI 配置
 未选择的 CLI 不会在文件中生成占位 table。
 
 Guard 模式按 host 明确配置：单个 CLI 使用 `--guard-mode enforce|off`。
-Codex 的 `off` 会移除 Baton hooks 并仅保留审计；Cursor 固定为 off；Claude/Grok
-保留各自 host 的生命周期 hooks，并显示为 enforce。
+Baton 没有运行时 hook 层。director 负责分类、依赖排序、原生 subagent 编排以及
+Receipt/Git 安全边界；host 集成只负责配置和 dispatch，不安装、不信任、也不使用
+任何 host hook 作为执行信号。
 
 也可以非交互配置：
 
@@ -337,29 +338,10 @@ Baton 不创建项目内运行时目录：
     baton uninstall --clean --yes
 
 `all` 只修改当前 CLI host 的全局开关；`curproject` 只修改当前 canonical
-workspace 与该 host。明确 disabled 时绕过 Baton，恢复该 host 普通 native
-行为。`guard_mode=enforce` 下，只有 activation 有效且当前 workspace 没有
-`reserved`、`dispatching` 或 `running` ticket 时，disabled 才会产生中性的
-`bypass`：hook 成功返回空输出，不做 permission decision，也不向 Codex 暴露
-policy context。存在这些 active ticket 时为 `draining`，继续保留 claim、
-write-scope、Git 以及 director/worker 边界，直到 terminal release；只有 queued
-ticket 不阻止 bypass。activation 或 lifecycle 缺失、损坏、不可读时为 `invalid`
-并 fail closed。`guard_mode=off` 是独立的零 Baton hook、audit-only 配置，不是
-动态 bypass。status 会显示 `guard_mode`、`effective_hook_posture`、
-`effective_hook_reason`、`neutral_bypass`、`audit_only`、当前 scope 的
-`draining_count`/`draining_tickets` 与 `hook_posture`，以及兼容字段和
-`kind:value` execution handle。activation 不会重写或重新信任已安装 hook。只有
-受信任 director 能执行精确 standalone `baton enable|disable all|curproject
---host HOST`；worker、wrapper、替换或 shell composition 一律拒绝。
-
-可恢复的 project activation smoke check（在目标 workspace 执行）：
-
-```bash
-baton disable curproject --host codex
-baton status --host codex --json # idle 时 effective_hook_posture=bypass
-baton enable curproject --host codex
-baton status --host codex --json # 恢复 enforce，hook definition 未改变
-```
+workspace 与该 host。activation、ticket lifecycle 与安全边界由 director 和
+Baton CLI 在命令边界显式评估。Baton 没有运行时 hook、hook posture、观测、信任
+或重写步骤；native execution handle、不可变 Receipt、write allowlist 与父级
+Git audit 才是编排和校验依据。
 
 显式 quota/remaining=0 会跨项目和窗口持久记忆；普通 429、网络错误和 timeout
 只进入临时 route health。已知 reset 时间用于 probe，未知 reset 使用有界退避，

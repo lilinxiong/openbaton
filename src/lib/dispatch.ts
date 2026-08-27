@@ -29,18 +29,7 @@ import {
   withDispatchReservationEnvelope,
   type DispatchReservationIdentity,
 } from "./dispatch-reservation.js";
-import {
-  clearNativeIdentity,
-  hostIdentityAdapter,
-  isAuthoritativeNativeObservation,
-  observedNativeIdentity,
-  readHostIdentityState,
-  resolveNativeWorkerIdentity,
-} from "./host-identity.js";
-import { clearHostGuardBindingsForTicketAttempt } from "./host-guard.js";
 import { withActivationLock, withActivationLockAsync, resolveActivation, type ActivationLockOptions } from "./activation.js";
-import { clearGuardClaims, issueGuardClaim, issueGuardContinuationClaim, readGuardClaimState } from "./guard-claims.js";
-import { codexHooksStatus } from "./codex-hooks.js";
 import {
   availabilityForRoute,
   claimRouteProbe,
@@ -283,8 +272,6 @@ export interface DispatchSpec {
   receipt_id: string;
   write_allowlist: string[];
   allowed_operations: string[];
-  /** One-shot guard instruction; present only in the returned dispatch spec. */
-  instructions?: string;
   commit_authorization: {
     expected_head: string;
     expected_tree: string;
@@ -302,7 +289,6 @@ export interface DispatchSpec {
 function publicDispatchSpec(
   ticket: SpawnTicket & { route_id: string; receipt_id: string; reservation_id: string },
   receipt: DelegationReceipt,
-  guardClaim?: string,
 ): DispatchSpec {
   const reservation: DispatchReservationIdentity = {
     schema: BATON_DISPATCH_RESERVATION_SCHEMA,
@@ -311,9 +297,6 @@ function publicDispatchSpec(
     attempt: ticket.attempt,
     host: ticketTargetHost(ticket),
   };
-  const claimInstruction = guardClaim
-    ? `Before mutation, run: baton guard claim --baton-claim ${guardClaim}`
-    : null;
   return {
     ticket_id: ticket.id,
     reservation,
@@ -333,14 +316,13 @@ function publicDispatchSpec(
       expected_tree: receipt.commit_baseline.staged_tree,
       staged_paths: receipt.commit_baseline.staged_paths,
     } : null,
-    description: withDispatchReservationEnvelope(ticket.description, reservation) + (claimInstruction ? `\n\n${claimInstruction}` : ""),
-    prompt: withDispatchReservationEnvelope(ticket.prompt, reservation) + (claimInstruction ? `\n\n${claimInstruction}` : ""),
+    description: withDispatchReservationEnvelope(ticket.description, reservation),
+    prompt: withDispatchReservationEnvelope(ticket.prompt, reservation),
     work_unit: ticket.work_unit,
     coordination: ticket.coordination,
     attempt: ticket.attempt,
     max_attempts: ticket.max_attempts,
     selection: ticket.selection!,
-    ...(claimInstruction ? { instructions: claimInstruction } : {}),
   };
 }
 
@@ -538,32 +520,6 @@ function ticketMatchesHost(ticket: SpawnTicket, host: HostId): boolean {
   }
 }
 
-function guardUnavailableForReservation(
-  cwd: string,
-  ticket: SpawnTicket,
-  host: HostId,
-  env: NodeJS.ProcessEnv,
-): { ticket_id: string; code: string; message: string } | null {
-  if (host !== "codex" || (ticket.mode !== "write" && ticket.mode !== "commit-only")) return null;
-  try {
-    const profile = cliProfileForHost(loadConfig(cwd, { env }), host);
-    if (profile.guard_mode !== "enforce") return null;
-    const status = codexHooksStatus({ cwd, env, guardMode: "enforce" });
-    if (status.hook_configured && status.command_usable && status.recent_hook_observation === true) return null;
-    return {
-      ticket_id: ticket.id,
-      code: "GUARD_UNAVAILABLE",
-      message: `Codex enforce guard is unavailable: ${status.operational_error || (!status.hook_configured ? "scoped hook is not configured" : !status.command_usable ? "hook command is not usable" : "no recent hook observation")}`,
-    };
-  } catch (error) {
-    return {
-      ticket_id: ticket.id,
-      code: "GUARD_UNAVAILABLE",
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
 export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host = "codex", now, env = process.env, safety, activationLock = {}, dispatchLock = {} }: ReserveOptions) {
   const targetHost = requireHost(host);
   const max = capacityValue(capacity);
@@ -575,8 +531,7 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
     const tickets = fifoTickets(cwd, env);
     const activeTickets = tickets.filter((ticket) => holdsHostSlot(ticket) && ticketMatchesHost(ticket, targetHost));
     const active = activeTickets.length;
-    const anyActive = tickets.filter(holdsHostSlot);
-    let available = anyActive.some((ticket) => ticket.mode === "commit-only") ? 0 : Math.max(0, max - active);
+    let available = Math.max(0, max - active);
     const reserved: DispatchSpec[] = [];
     const blocked: Array<{ ticket_id: string; code: string; message: string }> = [];
     let activationChecked = false;
@@ -615,8 +570,6 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
         blocked.push({ ticket_id: ticket.id, code: "HOST_MISMATCH", message: `ticket ${ticket.id} targets ${ticketHost}, not ${targetHost}` });
         continue;
       }
-      if (ticket.mode === "commit-only" && (anyActive.length > 0 || reserved.length > 0)) break;
-      if (reserved.some((item) => item.mode === "commit-only")) break;
       ensureActivation();
       const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions);
       if (rejected) {
@@ -625,11 +578,6 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
           await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
           writeSpawn(cwd, ticket, env);
         }
-        continue;
-      }
-      const guardRejected = guardUnavailableForReservation(cwd, ticket, targetHost, env);
-      if (guardRejected) {
-        blocked.push(guardRejected);
         continue;
       }
       const availability = availabilityForRoute(cwd, { host: targetHost, routeId: ticket.route_id! }, at, env);
@@ -659,26 +607,6 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
       ticket.dispatch_requested_at = at;
       ticket.attempt = Number(ticket.attempt || 0) + 1;
       ticket.reservation_id = crypto.randomUUID();
-      let guardClaim: string | undefined;
-      if (targetHost === "codex") {
-        try {
-          const config = loadConfig(cwd, { env });
-          const profile = cliProfileForHost(config, targetHost);
-          if (profile.guard_mode === "enforce") {
-            guardClaim = issueGuardClaim({
-              cwd,
-              ticket_id: ticket.id,
-              reservation_id: ticket.reservation_id,
-              attempt: ticket.attempt,
-              host: targetHost,
-              now: at,
-              env,
-            }).token;
-          }
-        } catch (error) {
-          if ((error as { code?: string }).code !== "BATON_NOT_INITIALIZED") throw error;
-        }
-      }
       transition(ticket, "queued", "dispatching", {
         at,
         event: "dispatch_reserved",
@@ -687,11 +615,7 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
       ticket.error = null;
       writeSpawn(cwd, ticket, env);
       const receipt = readReceipt(cwd, ticket.receipt_id!, env);
-      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string; reservation_id: string }, receipt, guardClaim));
-      if (ticket.mode === "commit-only") {
-        available = 0;
-        break;
-      }
+      reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string; reservation_id: string }, receipt));
       available -= 1;
     }
     rememberDispatchCapacity(cwd, max, targetHost, env);
@@ -701,12 +625,11 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
 }
 
 interface BindOptions {
-  /** Optional native diagnostic identity for non-Codex hosts and synthetic binds. */
+  /** Native execution handle returned by the serving host. */
+  executionHandle?: NativeExecutionHandle;
+  /** Legacy aliases accepted while callers migrate to executionHandle. */
   agentId?: string;
-  /** Codex native task_name execution handle. */
   taskName?: string;
-  /** Strict mode is automatic once the host identity ledger exists. */
-  requireIdentityObservation?: boolean;
   host?: string;
   now?: TimeInput;
   env?: NodeJS.ProcessEnv;
@@ -746,9 +669,9 @@ function legacyHandleForTicket(ticket: SpawnTicket): NativeExecutionHandle | nul
 }
 
 export function bindAgent(cwd: string, id: string, {
+  executionHandle,
   agentId,
   taskName,
-  requireIdentityObservation,
   host = "codex",
   now,
   env = process.env,
@@ -763,8 +686,6 @@ export function bindAgent(cwd: string, id: string, {
     if (targetHost !== host || (ticket.dispatch_host && ticket.dispatch_host !== host)) {
       throw new DispatchError(`ticket ${id} targets ${targetHost}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
-    // Preserve lifecycle validation precedence: an identity observation can
-    // never make a queued, running, or terminal ticket bindable.
     if (ticket.status !== "dispatching") {
       throw new DispatchError(
         `invalid ticket transition ${ticket.id}: ${ticket.status} -> running`,
@@ -772,60 +693,9 @@ export function bindAgent(cwd: string, id: string, {
         { ticketId: id, currentStatus: ticket.status, nextStatus: "running" },
       );
     }
-    // Codex's native child API returns task_name. An agent id from a hook or
-    // identity ledger is diagnostic only and can never attach a new ticket.
-    if (host === "codex" && !codexTaskName) {
-      throw new DispatchError(`ticket ${id} requires a Codex task_name execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
-    }
-    let observedEntry: ReturnType<typeof observedNativeIdentity> = null;
-    try {
-      // Hook identity is optional diagnostics for a native task handle. A
-      // malformed or unavailable identity ledger must never block Codex
-      // task_name attachment.
-      observedEntry = observedNativeIdentity(cwd, {
-        ticket_id: id,
-        host,
-        reservation_id: ticket.reservation_id || null,
-        attempt: ticket.attempt,
-      }, env);
-    } catch {
-      observedEntry = null;
-    }
-    const observed = observedEntry && isAuthoritativeNativeObservation(host, observedEntry.source)
-      ? observedEntry.agent_id
-      : null;
-    const observedDiagnostic = observedEntry?.agent_id || null;
-    let workerId: string | null = callerAgentId || observed;
-    let handle: NativeExecutionHandle | null = null;
-    if (host === "codex") {
-      // Codex's task_name is the native execution handle. SubagentStart and
-      // its optional agent_id are diagnostic observations only.
-      handle = executionHandleForHost(host, codexTaskName);
-      workerId = observedDiagnostic || callerAgentId;
-    } else {
-      const strictHost = !hostIdentityAdapter(host).callerIdentityAllowed;
-      const identityState = readHostIdentityState(cwd, env);
-      const strict = strictHost || requireIdentityObservation === true || Boolean(identityState.error);
-      const resolved = resolveNativeWorkerIdentity(host, {
-        callerIdentity: callerAgentId,
-        observedIdentity: observed,
-        observedSource: observedEntry && isAuthoritativeNativeObservation(host, observedEntry.source)
-          ? observedEntry.source
-          : undefined,
-        requireObserved: strict,
-      });
-      if (!resolved.ok || !resolved.identity) {
-        const message = resolved.code === "AGENT_IDENTITY_MISMATCH"
-          ? `ticket ${id} caller identity ${resolved.caller_identity || "<empty>"} does not match authoritative identity ${resolved.observed_identity || "<empty>"}`
-          : resolved.code === "AGENT_IDENTITY_REQUIRED"
-            ? `ticket ${id} has no authoritative native identity observation`
-            : `agentId is required`;
-        throw new DispatchError(message, resolved.code, { ticketId: id });
-      }
-      workerId = resolved.identity;
-      handle = executionHandleForHost(host, workerId);
-    }
-    if (!handle) throw new DispatchError(`ticket ${id} has no native execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
+    const handle = executionHandle || (codexTaskName ? executionHandleForHost(host, codexTaskName) : callerAgentId ? executionHandleForHost(host, callerAgentId) : null);
+    if (!handle || !handle.value.trim()) throw new DispatchError(`ticket ${id} has no native execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
+    const workerId: string | null = callerAgentId || null;
     const detail: UnknownRecord = { host, execution_handle: handle };
     if (workerId) detail.agent_id = workerId;
     if (host === "codex") detail.task_name = codexTaskName || null;
@@ -879,9 +749,6 @@ export function deferDispatch(cwd: string, id: string, {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (ticket.execution_handle) throw new DispatchError(`ticket ${id} is already bound`, "EXECUTION_HANDLE_ALREADY_BOUND", { ticketId: id });
-    const priorReservation = ticket.reservation_id;
-    const priorAttempt = ticket.attempt;
-    const priorHost = ticket.dispatch_host || ticket.host || ticket.target_host;
     transition(ticket, "dispatching", "queued", {
       at,
       event: "dispatch_deferred",
@@ -889,17 +756,6 @@ export function deferDispatch(cwd: string, id: string, {
     });
     ticket.attempt = Math.max(0, Number(ticket.attempt || 0) - 1);
     ticket.error = null;
-    if (priorHost && priorReservation) {
-      clearNativeIdentity(cwd, {
-        ticket_id: id,
-        host: priorHost,
-        reservation_id: priorReservation,
-        attempt: priorAttempt,
-      }, env);
-    }
-    if (priorHost) {
-      clearGuardClaims(cwd, { ticket_id: id, host: priorHost, attempt: priorAttempt, env });
-    }
     delete ticket.reservation_id;
     delete ticket.dispatch_host;
     delete ticket.dispatch_requested_at;
@@ -1094,30 +950,6 @@ interface FinishOptions {
   /** Internal await-safety injection surface; not part of CLI syntax. */
   safety?: AsyncSafetyOptions;
   dispatchLock?: DispatchLockOptions;
-}
-
-function clearTicketNativeIdentity(cwd: string, ticket: SpawnTicket, env: NodeJS.ProcessEnv = process.env): void {
-  const reservationId = ticket.reservation_id;
-  const host = ticket.dispatch_host || ticket.host || ticket.target_host;
-  if (reservationId && host) {
-    clearNativeIdentity(cwd, {
-      ticket_id: ticket.id,
-      host,
-      reservation_id: reservationId,
-      attempt: ticket.attempt,
-    }, env);
-  }
-  if (host) {
-    clearGuardClaims(cwd, { ticket_id: ticket.id, host, attempt: ticket.attempt, env });
-  }
-  clearHostGuardBindingsForTicketAttempt(cwd, {
-    id: ticket.id,
-    reservation_id: reservationId || null,
-    attempt: ticket.attempt,
-    host: ticket.host || null,
-    dispatch_host: ticket.dispatch_host || null,
-    agent_id: ticket.agent_id,
-  }, { env });
 }
 
 function availabilityOutcome(
@@ -1392,7 +1224,6 @@ export async function finishAgent(cwd: string, id: string, {
         if (hostError && isConfirmedQuotaExhaustion({ errorCode: hostError.code, message: hostError.message })) {
           ticket.fallback_reason = "FALLBACK_REQUIRES_RECONCILIATION";
         }
-        clearTicketNativeIdentity(cwd, ticket, env);
         writeSpawn(cwd, ticket, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
@@ -1431,7 +1262,6 @@ export async function finishAgent(cwd: string, id: string, {
         if (hostError && isConfirmedQuotaExhaustion({ errorCode: hostError.code, message: hostError.message })) {
           ticket.fallback_reason = "FALLBACK_REQUIRES_RECONCILIATION";
         }
-        clearTicketNativeIdentity(cwd, ticket, env);
         writeSpawn(cwd, ticket, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
@@ -1477,7 +1307,6 @@ export async function finishAgent(cwd: string, id: string, {
       // unpersisted quota decision.
       await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
     }
-    clearTicketNativeIdentity(cwd, ticket, env);
     writeSpawn(cwd, ticket, env);
     updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at, env);
     return ticket;
@@ -1542,68 +1371,8 @@ export function releaseAgent(cwd: string, id: string, {
       execution_handle: ticket.execution_handle,
       ...(ticket.agent_id ? { agent_id: ticket.agent_id } : {}),
     });
-    clearTicketNativeIdentity(cwd, ticket, env);
     writeSpawn(cwd, ticket, env);
     return ticket;
-  });
-}
-
-interface ContinuationOptions {
-  predecessorTurnId?: string;
-  host?: string;
-  now?: TimeInput;
-  env?: NodeJS.ProcessEnv;
-}
-
-/** Issue a one-shot follow-up capability without copying the initial token. */
-export function issueDispatchContinuation(cwd: string, id: string, {
-  predecessorTurnId,
-  host,
-  now,
-  env = process.env,
-}: ContinuationOptions): { ticket_id: string; reservation_id: string | null; attempt: number; token: string; instructions: string } {
-  return withLock(cwd, () => {
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
-    const targetHost = requireHost(host || ticketTargetHost(ticket));
-    if (targetHost !== "codex") throw new DispatchError("guard continuations are supported only for Codex", "GUARD_CONTINUATION_UNSUPPORTED", { ticketId: id });
-    if (ticket.status !== "running" || !ticket.reservation_id || ticket.attempt < 1) {
-      throw new DispatchError(`ticket ${id} is not a running reservation`, "GUARD_CONTINUATION_REQUIRES_RUNNING", { ticketId: id, currentStatus: ticket.status });
-    }
-    const config = loadConfig(cwd, { env });
-    if (cliProfileForHost(config, targetHost).guard_mode !== "enforce") {
-      throw new DispatchError(`ticket ${id} does not have an enforcing guard`, "GUARD_CONTINUATION_DISABLED", { ticketId: id });
-    }
-    const loadedClaims = readGuardClaimState(cwd, {
-      env,
-    });
-    if (loadedClaims.error) throw new DispatchError(loadedClaims.error, "GUARD_CONTINUATION_REQUIRES_CLAIM", { ticketId: id });
-    const latestClaim = loadedClaims.state.claims
-      .filter((claim) => claim.status === "claimed"
-        && claim.host === targetHost
-        && claim.ticket_id === id
-        && claim.reservation_id === ticket.reservation_id
-        && claim.attempt === ticket.attempt
-        && claim.turn_id)
-      .sort((left, right) => String(right.claimed_at || "").localeCompare(String(left.claimed_at || "")))[0];
-    const predecessor = String(predecessorTurnId || latestClaim?.turn_id || "").trim();
-    if (!predecessor) throw new DispatchError(`ticket ${id} has no active claimed turn`, "GUARD_CONTINUATION_REQUIRES_CLAIM", { ticketId: id });
-    const issued = issueGuardContinuationClaim({
-      cwd,
-      ticket_id: id,
-      reservation_id: ticket.reservation_id,
-      attempt: ticket.attempt,
-      host: targetHost,
-      predecessor_turn_id: predecessor,
-      now: instant(now).toISOString(),
-      env,
-    });
-    return {
-      ticket_id: id,
-      reservation_id: ticket.reservation_id,
-      attempt: ticket.attempt,
-      token: issued.token,
-      instructions: `Before mutation, run: baton guard continuation --baton-claim ${issued.token}`,
-    };
   });
 }
 
@@ -1636,7 +1405,6 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now, en
       ticket.error = { code: "DISPATCH_LEASE_EXPIRED", message: "host did not bind an agent before the dispatch lease expired" };
       ticket.finished_at = at;
       const expiredReservation = ticket.reservation_id;
-      if (expiredReservation) clearTicketNativeIdentity(cwd, ticket, env);
       writeSpawn(cwd, ticket, env);
       expired.push(ticket.id);
     }

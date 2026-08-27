@@ -21,10 +21,10 @@ function project(): string {
   saveConfig(cwd, {
     director: { max_concurrent: 4, max_depth: 1 },
     cli: {
-      codex: { enabled: true, runner: "codex-model", longctx: "", coding_models: ["codex-model"], guard_mode: "enforce" },
-      grok: { enabled: true, runner: "grok-model", longctx: "", coding_models: ["grok-model"], guard_mode: "enforce" },
-      cursor: { enabled: true, runner: "cursor-model", longctx: "", coding_models: ["cursor-model"], guard_mode: "off" },
-      claude: { enabled: true, runner: "claude-model", longctx: "", coding_models: ["claude-model"], guard_mode: "enforce" },
+      codex: { enabled: true, runner: "codex-model", longctx: "", coding_models: ["codex-model"] },
+      grok: { enabled: true, runner: "grok-model", longctx: "", coding_models: ["grok-model"] },
+      cursor: { enabled: true, runner: "cursor-model", longctx: "", coding_models: ["cursor-model"] },
+      claude: { enabled: true, runner: "claude-model", longctx: "", coding_models: ["claude-model"] },
     },
   });
   return cwd;
@@ -144,7 +144,7 @@ describe("host-scoped profiles", () => {
       enabled: false,
       runner: "",
       longctx: "",
-      coding_models: [], guard_mode: "off",
+      coding_models: [],
     });
   });
 
@@ -162,23 +162,6 @@ describe("host-scoped profiles", () => {
     assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-codex.json")));
   });
 
-  it("keeps commit-only exclusivity global while ordinary capacity stays host-scoped", async () => {
-    const cwd = project();
-    publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
-    publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
-    const commit = ticket(cwd, "codex", "spn-commit");
-    commit.mode = "commit-only";
-    commit.read_only = false;
-    commit.status = "running";
-    commit.agent_id = "agent-codex";
-    commit.host = "codex";
-    writeSpawn(cwd, commit);
-    const ordinary = ticket(cwd, "grok", "spn-grok");
-    const result = await reserveNext(cwd, { capacity: 1, host: "grok" });
-    assert.deepEqual(result.reserved, []);
-    assert.deepEqual(result.blocked, []);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${ordinary.id}.json`), "utf8")).status, "queued");
-  });
 });
 
 describe("Claude Code host tickets", () => {

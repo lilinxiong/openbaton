@@ -156,7 +156,6 @@ describe("per-CLI configuration and ops labels", () => {
         runner: "gpt-5.4-mini",
         longctx: "gpt-5.5",
         coding_models: ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
-        guard_mode: "off",
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -224,14 +223,12 @@ describe("per-CLI configuration and ops labels", () => {
         runner: "gpt-5.4-mini",
         longctx: "gpt-5.5",
         coding_models: ["gpt-5.6-luna", "gpt-5.4-mini"],
-        guard_mode: "off",
       });
       assert.deepEqual(config.cli.grok, {
         enabled: true,
         runner: "grok-4.5",
         longctx: "",
         coding_models: ["grok-4.5", "grok-4.6"],
-        guard_mode: "enforce",
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -451,7 +448,7 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(config.cli.codex, undefined);
       assert.equal(cliProfileForHost(config, "codex").runner, "");
       assert.equal(cliProfileForHost(config, "codex").longctx, "");
-      config.cli.codex = { enabled: true, runner: "", longctx: "", coding_models: [], guard_mode: "off" };
+      config.cli.codex = { enabled: true, runner: "", longctx: "", coding_models: [] };
       saveConfig(cwd, config, { env });
       const testOps = resolveOpsDispatch(cwd, "bun test", cards(cwd), {
         env, host: "codex", classification: { kind: "mechanical", operation: "test" },

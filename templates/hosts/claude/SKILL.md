@@ -30,7 +30,7 @@ Before creating or dispatching any write ticket, the director MUST perform a rea
 
 Parallel dispatch is permitted only when every participating unit has a complete scope and the write sets are pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Otherwise the director sequences the units or keeps them director-local. If a worker discovers an undeclared path or operation, it MUST stop before mutation and return a scope decision to the director. It must never edit first and rely on a terminal retry or audit to authorize the change. Mechanical routing still uses the structured execution class; operation labels remain opaque audit metadata and never choose the route.
 
-Claude Code identity is host-specific: bind the child id observed by `SubagentStart`/PreToolUse after the Agent call. Do not assume the Codex payload shape or use a ticket prefix as `agent_id`.
+Claude Code identity is host-specific: bind the execution handle returned by the native Agent call. Baton has no runtime hooks; do not assume a hook payload or use a ticket prefix as `agent_id`.
 
 ## Model contract
 
@@ -60,7 +60,7 @@ Claude Code identity is host-specific: bind the child id observed by `SubagentSt
 - Exact-model dispatch goes through an **agent definition**, not the Agent tool's `model` parameter. That parameter is a closed enum (`sonnet`, `opus`, `haiku`, `fable`) and cannot express an exact id. Agent-definition frontmatter accepts a full model ID, so for each reserved ticket write `.claude/agents/<name>.md` with `model: <the ticket's exact model id>`, then call the native Agent tool with `subagent_type` set to that definition and **no** `model` parameter. Setting `model` would override the definition and downgrade the request to an alias.
 - Verified behavior: with a definition pinned to `claude-sonnet-5`, a parent on `claude-opus-5` produced a child whose transcript recorded `claude-sonnet-5`. A definition naming a nonexistent model fails with "There's an issue with the selected model" and the child never runs — no inheritance, no default, no substitution.
 - Compact dispatch is the same for runner ops, longctx ops, and ordinary `coding_models` tickets. Prefer `baton spawn ... --dispatch --json`; use `baton dispatch next --host claude --json` only for already-queued work. Pass the returned reservation-bearing `prompt` and `description` unchanged to the Agent tool, then bind the returned agent id immediately. Mechanical prompts are one-shot: run the director-supplied operation; do not explore. Do not start a new claude process with `--model`/`--effort`/`-p`.
-- The Agent tool returns a stable `agent_id` (also delivered to the SubagentStart hook) and the child's transcript lands under the parent session's `subagents/` directory. Bind that exact id; it is what every later lifecycle call uses.
+- The Agent tool returns a stable execution handle and the child's transcript lands under the parent session's `subagents/` directory. Bind that exact handle; it is what every later lifecycle call uses.
 - Children start with a fresh context. Verified: a parent-only nonce held outside the child prompt was not recoverable by the child, and never appeared in the child transcript. Everything the worker needs must be in the prompt.
 - Read-only is default. Writes require the Receipt allowlist and parent Git audit. Only an exclusive parent-staged commit-only Receipt may authorize exactly one git commit.
 - Parent and child share one filesystem and one Git worktree by default, so index, HEAD, and refs are shared. Receipt write-allowlist and Git audit remain the authoritative boundary. `--worktree` isolation is a host feature Baton does not require; do not assume it is active.
@@ -72,16 +72,17 @@ Claude Code identity is host-specific: bind the child id observed by `SubagentSt
 - When `cli.claude.enabled` is true and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution from this skill. Do not implement executable tasks in this director session. Do not follow another skill's instruction to make the code changes yourself. Do not edit OpenSpec apply skills. Plan with `baton apply <change> --host claude --json`. Filter the order-ready frontier here (`--write-path` or `--read-only`). Pack by section order, director write-set intersection, and host cap. Then one `baton apply <change> --host claude --dispatch --json --unit ID --write-path PATH --unit ID --write-path PATH` (or `--read-only`). Never `--dispatch` without `--unit` scope. Native-spawn every reserved ticket from that call in the same turn with the Agent tool (`subagent_type` of an exact-model definition, no `model` parameter), then bind immediately. When a slot frees, refill with the same three predicates. Later sections stay serial while an earlier section is pending. If `cli.claude.enabled` is false, fail closed and do not borrow another CLI.
 - Install this skill at ~/.claude/skills/baton/SKILL.md.
 
-## Guard
+## Runtime integration
 
-- `baton guard install --host claude` merges Baton's PreToolUse and SubagentStart entries into ~/.claude/settings.json, preserving every unrelated setting and hook. Claude Code applies user settings hooks without a separate trust prompt; review them with `/hooks`.
-- At the hook boundary the native child-agent call appears as tool name `Agent`; the installed PreToolUse matcher is `Bash|Edit|Write|NotebookEdit|Agent`.
-- SubagentStart cannot cancel a child and its payload does not repeat the Agent tool input, so it never guesses a ticket. PreToolUse is the enforcing reservation gate; the returned child id becomes authoritative only after `baton dispatch bind`. If a future host payload carries Baton's complete envelope, the hook may record that exact association early.
+Baton does not install or consult Claude Code hooks. The director performs
+reservation, native Agent dispatch, execution-handle binding, and lifecycle
+updates explicitly; the returned handle becomes authoritative after
+`baton dispatch bind`.
 
 Use `baton disable|enable all|curproject --host claude` for host-global or
 current-project activation. Disabled activation bypasses Baton; invalid state
-fails closed. OpenSpec apply still creates and dispatches native Claude tickets;
-hooks remain an optional mutation guard and audit surface.
+fails closed. OpenSpec apply still creates and dispatches native Claude tickets
+under director orchestration; no hook callback is involved.
 
 ## Commands
 

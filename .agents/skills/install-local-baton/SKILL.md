@@ -5,7 +5,7 @@ description: Install or update Baton from an OpenBaton source checkout onto the 
 
 # Install or update local Baton
 
-Link this OpenBaton checkout to the machine, build it, and refresh the user's global Baton files (`~/.baton`, host runtime skills, Codex hooks) from the repository.
+Link this OpenBaton checkout to the machine, build it, and refresh the user's global Baton files (`~/.baton` and host runtime skills) from the repository. Baton is hookless.
 
 Fresh clone and existing install use the same path: build, `bun link`, then `baton update`.
 
@@ -43,7 +43,7 @@ This script:
 2. `bun run test`
 3. `bun run build`
 4. `bun link` so global `baton` points at this checkout's `dist/bin/baton.js`
-5. `baton update` to refresh global skills, config defaults, host runtime skills, and Codex hooks
+5. `baton update` to refresh global skills, config defaults, and host runtime skills
 6. `baton version` as a smoke check
 
 If the user explicitly asks for a faster dev loop and accepts skipping verification, rerun with:
@@ -100,7 +100,6 @@ Report a short summary:
 - version string
 - whether `baton init` ran
 - next step for the user: run `baton config` (or `baton models refresh`) if models are not configured yet
-- for Codex users: open `/hooks` and trust the Baton-owned entries after install/update
 
 ## Red lines
 

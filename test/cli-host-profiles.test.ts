@@ -209,7 +209,6 @@ describe("cli host profiles without active", () => {
         runner: "gpt-5.4-mini",
         longctx: "gpt-5.5",
         coding_models: ["gpt-5.6-luna"],
-        guard_mode: "off",
       });
 
       const out = capture();
@@ -340,28 +339,4 @@ describe("cli host profiles without active", () => {
     });
   });
 
-  it("fails closed on an invalid explicit guard mode", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-invalid-guard-mode-"));
-      const env = fakeEnv(home);
-      const file = configPath(cwd, { env });
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, [
-        "[director]",
-        "max_concurrent = 4",
-        "max_depth = 1",
-        "",
-        "[cli.codex]",
-        "enabled = true",
-        'runner = "gpt-5.6-luna"',
-        'longctx = "gpt-5.6-luna"',
-        'coding_models = ["gpt-5.6-luna"]',
-        'guard_mode = "enfore"',
-      ].join("\n"), "utf8");
-      assert.throws(
-        () => loadConfig(cwd, { env }),
-        (error: unknown) => (error as { code?: string }).code === "CONFIG_GUARD_MODE_INVALID",
-      );
-    });
-  });
 });

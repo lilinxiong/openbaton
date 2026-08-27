@@ -3,7 +3,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
-import { directorMayRun } from "./hygiene.js";
 import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import type { NativeExecutionHandleKind } from "../adapters/contract.js";
@@ -331,14 +330,7 @@ export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
   | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
-export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, host = null, forceDelegate = false, env }: PlanStandaloneOptions): StandalonePlan {
-  if (!forceDelegate && directorMayRun(description)) {
-    return {
-      director_local: true,
-      reason: "tiny unit; director can do it without polluting context",
-      description,
-    };
-  }
+export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, host = null, forceDelegate: _forceDelegate = false, env }: PlanStandaloneOptions): StandalonePlan {
   void queue;
   const card = explicitModel
     ? requireCardId(explicitModel, cards)

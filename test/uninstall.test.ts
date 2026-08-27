@@ -5,9 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runUninstall } from "../src/commands/uninstall.js";
-import { batonCodexHookEntries, codexHooksPath } from "../src/lib/codex-hooks.js";
-import { batonClaudeHookEntries, claudeSettingsPath } from "../src/lib/claude-hooks.js";
-import { batonGrokHookDocument, grokHooksPath } from "../src/lib/grok-hooks.js";
 import { buildInstallManifest, installManifestPath, legacyOwnsSkill, readInstallManifest, writeInstallManifest } from "../src/lib/install-manifest.js";
 import { buildUninstallPlan, applyUninstallPlan } from "../src/lib/uninstall.js";
 import { batonHomeDir, skillPath, spawnsDir } from "../src/lib/paths.js";
@@ -60,55 +57,6 @@ describe("uninstall plan and ownership", () => {
     assert.match(fs.readFileSync(installManifestPath(env), "utf8"), /"fingerprint"/);
     fs.writeFileSync(installManifestPath(env), "{\"schema\":999}\n");
     assert.throws(() => readInstallManifest(env), /INSTALL_MANIFEST_INVALID/);
-  });
-
-  it("removes canonical skill and Baton hook entries but preserves mixed user hooks", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-default-home-"));
-    const env = fakeEnv(home);
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-default-cwd-"));
-    const skill = copySkill("codex", cwd, env);
-    const sharedSkill = skillPath(cwd, { env });
-    fs.mkdirSync(path.dirname(sharedSkill), { recursive: true });
-    fs.copyFileSync(path.join(process.cwd(), "SKILL.md"), sharedSkill);
-    const hookFile = codexHooksPath({ cwd, env });
-    fs.mkdirSync(path.dirname(hookFile), { recursive: true });
-    fs.writeFileSync(hookFile, JSON.stringify({
-      description: "keep",
-      hooks: {
-        PreToolUse: [
-          { matcher: "Bash", hooks: [{ type: "command", command: "echo keep" }] },
-          ...batonCodexHookEntries("baton guard hook").PreToolUse,
-        ],
-      },
-    }, null, 2) + "\n");
-    const plan = buildUninstallPlan({ cwd, env, hosts: ["codex"] });
-    assert.equal(plan.targets.some((item) => item.action === "remove" && item.path.includes("SKILL.md")), true);
-    assert.equal(plan.targets.some((item) => item.action === "update-entry"), true);
-    applyUninstallPlan(plan, { env });
-    assert.equal(fs.existsSync(skill), false);
-    assert.equal(fs.existsSync(sharedSkill), false);
-    const remaining = JSON.parse(fs.readFileSync(hookFile, "utf8"));
-    assert.equal(remaining.description, "keep");
-    assert.equal(remaining.hooks.PreToolUse[0].hooks[0].command, "echo keep");
-    const second = buildUninstallPlan({ cwd, env, hosts: ["codex"] });
-    assert.equal(second.targets.some((item) => item.action === "remove"), false);
-  });
-
-  it("preserves modified skills and reports canonical Grok file removal safely", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-grok-home-"));
-    const env = fakeEnv(home);
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-grok-cwd-"));
-    const skill = copySkill("grok", cwd, env);
-    fs.appendFileSync(skill, "\nuser change\n");
-    const grokFile = grokHooksPath({ cwd, env });
-    fs.mkdirSync(path.dirname(grokFile), { recursive: true });
-    fs.writeFileSync(grokFile, `${JSON.stringify(batonGrokHookDocument(), null, 2)}\n`);
-    const plan = buildUninstallPlan({ cwd, env, hosts: ["grok"] });
-    assert.equal(plan.targets.some((item) => item.action === "conflict" && item.path.includes("SKILL.md")), true);
-    assert.equal(plan.targets.some((item) => item.action === "remove" && item.path.includes("baton.json")), true);
-    applyUninstallPlan(plan, { env });
-    assert.equal(fs.existsSync(skill), true);
-    assert.equal(fs.existsSync(grokFile), false);
   });
 
   it("clean dry-run does not mutate and active/corrupt tickets fail closed before mutation", () => {
@@ -246,41 +194,26 @@ describe("uninstall plan and ownership", () => {
     assert.equal(fs.existsSync(config), true);
   });
 
-  it("does not record skipped user skills and records hook entries, not file ownership hashes", () => {
+  it("does not record skipped user skills or file ownership hashes", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-manifest-ownership-home-"));
     const env = fakeEnv(home);
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-manifest-ownership-cwd-"));
     const skill = hostSkillDest("codex", { cwd, env });
     fs.mkdirSync(path.dirname(skill), { recursive: true });
     fs.writeFileSync(skill, "name: baton\nuser-owned content\n");
-    const hookFile = codexHooksPath({ cwd, env });
-    fs.mkdirSync(path.dirname(hookFile), { recursive: true });
-    fs.writeFileSync(hookFile, JSON.stringify({ hooks: batonCodexHookEntries("baton guard hook") }));
     const manifest = buildInstallManifest(cwd, ["codex", "cursor"], env);
     assert.equal(manifest.files.some((entry) => entry.host === "codex"), false);
-    assert.equal(manifest.hooks.some((entry) => entry.host === "cursor"), false);
-    assert.equal(manifest.hooks[0]?.entries[0]?.command, "baton guard hook");
-    assert.equal(manifest.hooks[0]?.signature, undefined);
+    assert.equal(manifest.hooks, undefined);
   });
 
-  it("revalidates every mutation before applying and handles custom Claude settings", () => {
+  it("revalidates every mutation before applying", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-toctou-home-"));
-    const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-claude-config-"));
-    const env = fakeEnv(home, { CLAUDE_CONFIG_DIR: configHome });
+    const env = fakeEnv(home);
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-uninstall-toctou-cwd-"));
     const skill = copySkill("codex", cwd, env);
-    const claudeFile = claudeSettingsPath({ cwd, env });
-    fs.mkdirSync(path.dirname(claudeFile), { recursive: true });
-    fs.writeFileSync(claudeFile, JSON.stringify({ hooks: batonClaudeHookEntries() }, null, 2) + "\n", { mode: 0o640 });
-    const plan = buildUninstallPlan({ cwd, env, hosts: ["codex", "claude"] });
+    const plan = buildUninstallPlan({ cwd, env, hosts: ["codex"] });
     fs.appendFileSync(skill, "\nchanged after planning\n");
     assert.throws(() => applyUninstallPlan(plan, { env }), (error: unknown) => (error as Error & { code?: string }).code === "UNINSTALL_PLAN_STALE");
     assert.equal(fs.existsSync(skill), true);
-    assert.equal(fs.existsSync(claudeFile), true);
-    const fresh = buildUninstallPlan({ cwd, env, hosts: ["claude"] });
-    const claudeTarget = fresh.targets.find((target) => target.host === "claude");
-    assert.equal(claudeTarget?.path, claudeFile);
-    applyUninstallPlan(fresh, { env });
-    assert.equal(fs.existsSync(claudeFile), false);
   });
 });

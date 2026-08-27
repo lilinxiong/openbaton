@@ -84,7 +84,7 @@ Never run these mutation probes in the user's real OpenBaton checkout.
 
 - Determine the target's documented skill-discovery location and whether symlinks or copied skill directories are supported.
 - Install the Baton runtime skill into an isolated target home or profile first, then verify discovery from a fresh host session when the host requires restart.
-- Inspect native hook or tool-interception support. If a target supports an equivalent guard surface, implement and test safe merge, trust, status, and fail-closed behavior. If it does not, document the limitation without claiming Codex hook protection.
+- Confirm the host is operated hooklessly: no runtime hook installation, trust, observation, or tool-interception surface is required. Verify director command-boundary checks, Receipts, execution handles, and Git audits instead.
 
 ## Pre-registration result
 

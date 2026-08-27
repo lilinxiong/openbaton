@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use Baton automatically for approved multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Complete the Baton Codex host-guard preflight before shell, patch, or native-agent tools. Skip ordinary discussion."
+description: "Use Baton automatically for approved multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Baton has no runtime hooks; the director owns orchestration and safety. Skip ordinary discussion."
 ---
 
 # baton
@@ -33,21 +33,17 @@ Parallel dispatch is permitted only when every participating unit has a complete
 Codex's native `task_name` is the execution handle. Use it for attach, liveness,
 and release; it does not depend on a `SubagentStart` identity or hook observation.
 
-When `/openspec-apply-change` is invoked, Baton creates the ticket set and
-dispatches native Codex subagents. The scoped PreToolUse guard is only an
-optional mutation guard and audit surface; it does not classify or dispatch.
+When `/openspec-apply-change` is invoked, the director reads the task graph,
+creates the scoped ticket set, and dispatches native Codex subagents. Baton has
+no runtime hooks; command-boundary checks, Receipts, and Git audits are the
+enforcement surfaces.
 
-## Mandatory host-guard preflight
+## Director preflight (no runtime hooks)
 
-- Before any `Bash`, `apply_patch`/`Edit`/`Write`, or native `Agent` call, run `baton guard status`. In `guard_mode=enforce`, review and trust the scoped Baton `PreToolUse` entry in Codex `/hooks`; `guard_mode=off` has zero Baton hooks and is audit-only, with no trust step.
-- Ticket presence is the declared-work signal: with no reserved ticket for this host, director mutating tools are allowed (undeclared / empty-label work). While this host has a reserved, dispatching, or running worker ticket, director implementation writes are denied. Reserve and dispatch a Baton ticket, start the native worker, and bind its returned `task_name` execution handle before the worker uses tools; the spawn-to-bind race stays denied until binding is visible.
-- Only direct `baton ...` control-plane commands are exempt. Specialized Codex tool paths may opt out of the default hook path, so retain Receipt and parent Git safety checks.
-- Every reserved native spawn must pass the returned `prompt` unchanged. The
-  reservation envelope is dispatch audit data; Codex has no lifecycle hook or
-  Agent matcher. Enforce only synchronously denies unclaimed mutations and
-  records the turn claim; off has zero Baton hooks and is audit-only.
-- Reservation authorization happens at the scoped `PreToolUse` mutation gate. Native `task_name` is the execution handle; no `SubagentStart` identity chain is required for bind, attach, liveness, or release.
-- `$baton disable all|curproject --host codex` and `$baton enable all|curproject --host codex` are the explicit global/project activation controls; they do not alter another CLI host. In `guard_mode=enforce`, a valid disabled idle canonical workspace is a neutral `bypass`: the Baton hook exits successfully with empty output and leaves Codex permissions and unrelated hooks to decide. Existing `reserved`, `dispatching`, or `running` tickets make the workspace `draining`, so claim, write-scope, Git, and director/worker protections remain enforced until terminal release; queued-only work does not prevent bypass. Invalid activation or unreadable lifecycle state is `invalid` and fails closed. `guard_mode=off` is configured zero-hook, audit-only behavior, not dynamic bypass. Only the trusted director may issue the exact standalone activation command; worker calls, wrappers, substitutions, and shell composition are denied.
+- Before any mutation or native `spawn_agent` call, the director resolves the host, classification, dependencies, exact write paths, and allowed operations. Baton has no runtime hooks, hook installation, trust, or observation surface.
+- Ticket lifecycle is enforced by explicit director/CLI orchestration, immutable Receipts, native `task_name` execution handles, worker path allowlists, and the parent Git audit. Reserve and dispatch a Baton ticket, start the native worker, and bind its returned `task_name` before the worker uses tools.
+- Every reserved native spawn must pass the returned `prompt` unchanged. The reservation envelope is dispatch audit data, not a hook instruction; no lifecycle identity chain is required for bind, attach, liveness, or release.
+- `$baton disable all|curproject --host codex` and `$baton enable all|curproject --host codex` are explicit activation controls for the invoking CLI. Activation and lifecycle are evaluated by the director and CLI commands; no runtime hook is installed, trusted, rewritten, or consulted. Invalid state fails closed.
 
 ## Model contract
 
@@ -76,7 +72,6 @@ optional mutation guard and audit surface; it does not classify or dispatch.
 
 ## Commands
 
-    baton guard status|install|hook [--json]
     baton config --cli codex [--runner MODEL|-] [--longctx MODEL|-]
                  [--coding-model MODEL|all] [--enable|--disable]
     baton enable|disable all|curproject --host codex [--json]

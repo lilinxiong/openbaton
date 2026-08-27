@@ -24,7 +24,6 @@ describe("CLI adapter contract and registry", () => {
     for (const adapter of CLI_ADAPTERS) {
       assert.equal(adapter.id, adapter.host.id);
       assert.ok(adapter.host.skillPath.endsWith("SKILL.md"));
-      assert.equal(typeof adapter.host.guard, "boolean");
       assert.ok(["task_name", "agent_id", "session_id", "task_id", "opaque"].includes(adapter.host.executionHandleKind));
       assert.equal(typeof adapter.resolveCommand, "function");
       assert.equal(typeof adapter.discoverModels, "function");
@@ -47,10 +46,6 @@ describe("CLI adapter contract and registry", () => {
     assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "3" }), 3);
     assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "0" }), 20);
     assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "nope" }), 20);
-    assert.equal(getCliAdapter("codex").host.guard, true);
-    assert.equal(getCliAdapter("claude").host.guard, true);
-    assert.equal(getCliAdapter("grok").host.guard, true);
-    assert.equal(getCliAdapter("cursor").host.guard, false);
     assert.equal(getCliAdapter("codex").host.executionHandleKind, "task_name");
     assert.equal(getCliAdapter("claude").host.executionHandleKind, "agent_id");
     assert.equal(getCliAdapter("grok").host.executionHandleKind, "agent_id");
@@ -65,7 +60,6 @@ describe("CLI adapter contract and registry", () => {
       runner: "",
       longctx: "",
       coding_models: [],
-      guard_mode: "off",
     });
 
     const unselected = normalizeConfig({

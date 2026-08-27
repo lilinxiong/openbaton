@@ -31,7 +31,6 @@ export const CURSOR_HOST_METADATA: CliHostMetadata = {
   isInvoking: (env = process.env) =>
     String(env.CURSOR_AGENT || "").trim() === "1"
     || Boolean(String(env.CURSOR_CONVERSATION_ID || "").trim()),
-  guard: false,
   executionHandleKind: "agent_id",
 };
 

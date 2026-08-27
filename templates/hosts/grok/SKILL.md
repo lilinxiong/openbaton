@@ -32,11 +32,9 @@ Parallel dispatch is permitted only when every participating unit has a complete
 
 Grok identity is host-specific: correlate the lifecycle `subagentId`/session carrier with the reserved description before binding. Do not assume the Codex `agent_id` field or infer identity from a ticket prefix.
 
-## Mandatory host-guard preflight
+## Director preflight (no runtime hooks)
 
-- The installed `~/.grok/hooks/baton.json` PreToolUse entry only enforces Baton constraints. Ordinary Grok shell, edits, and `spawn_subagent` stay allowed. After `baton init` or `baton update`, review it with `/hooks`. Global Grok hooks apply without a trust prompt.
-- Reserve a Baton ticket, native-spawn with exact `model`, and bind the returned identity before that worker uses tools. Vanilla OpenSpec apply is not rewritten; the hook is the intercept. Grok PreToolUse omits Codex `agent_id`; SubagentStart supplies the native `subagentId`, and Baton's unchanged returned `description` carries the exact reservation envelope used to associate that child session.
-- Baton intercepts: every reserved `spawn_subagent`, including a single reservation, must pass both the returned `prompt` and `description` unchanged. The guard matches the complete opaque reservation identity exactly; it never scans ticket prefixes or chooses the unique running/reserved ticket. Bound workers stay inside the Receipt, and a live commit-only ticket freezes the index (director must not `git add`/`commit`/edit until it finishes).
+- Baton has no runtime hooks or hook installation/trust step. The director owns orchestration: reserve a ticket, native-spawn with exact `model`, pass the returned `prompt` and `description` unchanged, and bind the returned execution handle before the worker uses tools. Receipts, path allowlists, and the parent Git audit remain authoritative.
 
 ## Model contract
 
@@ -68,8 +66,8 @@ Grok identity is host-specific: correlate the lifecycle `subagentId`/session car
 
 Use `baton disable|enable all|curproject --host grok` for host-global or
 current-project activation. Disabled activation bypasses Baton; invalid state
-fails closed. OpenSpec apply creates and dispatches native Grok tickets; hooks
-remain an optional mutation guard and audit surface.
+fails closed. OpenSpec apply creates and dispatches native Grok tickets under
+director orchestration; no hook callback classifies or dispatches work.
 
 ## Commands
 

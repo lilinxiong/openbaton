@@ -16,11 +16,6 @@ import {
   saveConfig,
   type Config,
 } from "../lib/config.js";
-import { installCodexHooks } from "../lib/codex-hooks.js";
-import { installClaudeHooks } from "../lib/claude-hooks.js";
-import { installGrokHooks } from "../lib/grok-hooks.js";
-import { HOST_IDS } from "../lib/hosts.js";
-import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
 import { normalizeCliRuntimeCapabilities } from "../adapters/shared.js";
 import { detectInvokingHost } from "../lib/hosts.js";
 import {
@@ -142,7 +137,6 @@ interface CliProfileResult {
   runner: string | null;
   longctx: string | null;
   coding_models: string[];
-  guard_mode: "enforce" | "off";
   max_concurrent: number;
   max_depth: number;
   max_concurrent_source: "cli" | "director";
@@ -162,7 +156,6 @@ async function configureCliProfile(
     catalog,
     ask,
     single,
-    interactiveGuardPrompt,
   }: {
     cwd: string;
     stdout: WritableLike;
@@ -171,7 +164,6 @@ async function configureCliProfile(
     catalog: CliModelCatalog;
     ask: () => SelectPrompt;
     single: boolean;
-    interactiveGuardPrompt: boolean;
   },
 ): Promise<CliProfileResult> {
   if (!catalog.models.length) throw new Error(`${cli} returned no picker-visible models`);
@@ -234,33 +226,6 @@ async function configureCliProfile(
       initial: existing.enabled || existing.coding_models.length === 0,
     });
   }
-  const requestedGuardMode = lastFlag(args, "guard-mode");
-  let guardMode: "enforce" | "off" = current.cli[cli]
-    ? existing.guard_mode
-    : cli === "claude" || cli === "grok" ? "enforce" : "off";
-  if (cli === "cursor") {
-    if (requestedGuardMode === "enforce") throw new Error("Cursor does not support Baton guard_mode=enforce");
-    guardMode = "off";
-  } else if (requestedGuardMode !== undefined) {
-    if (requestedGuardMode !== "enforce" && requestedGuardMode !== "off") {
-      throw new Error("--guard-mode must be enforce or off");
-    }
-    if ((cli === "claude" || cli === "grok") && requestedGuardMode === "off") {
-      throw new Error(`${cli} requires guard_mode=enforce while its lifecycle hooks are installed`);
-    }
-    guardMode = requestedGuardMode;
-  } else if (interactiveGuardPrompt) {
-    guardMode = await ask().select({
-      message: `Baton guard mode for ${cli}`,
-      choices: cli === "claude" || cli === "grok"
-        ? [{ value: "enforce" as const, label: "enforce (host lifecycle + mutation guard)" }]
-        : [
-          { value: "enforce" as const, label: "enforce (scoped mutation guard)" },
-          { value: "off" as const, label: "off (audit-only; zero Codex hooks)" },
-        ],
-      initial: guardMode,
-    });
-  }
 
   const capabilities = normalizeCliRuntimeCapabilities(catalog);
   const maxConcurrent = capabilities?.max_concurrent;
@@ -270,7 +235,6 @@ async function configureCliProfile(
     runner,
     longctx,
     coding_models: codingModels,
-    guard_mode: guardMode,
     ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
@@ -280,7 +244,6 @@ async function configureCliProfile(
     runner: runner || null,
     longctx: longctx || null,
     coding_models: codingModels,
-    guard_mode: guardMode,
     max_concurrent: effectiveMaxConcurrentForHost(current, cli),
     max_depth: effectiveMaxDepthForHost(current, cli),
     max_concurrent_source: maxConcurrent !== undefined ? "cli" : "director",
@@ -315,16 +278,13 @@ export async function runConfig(args: string[], {
     error.code = "LEGACY_FLAG_REMOVED";
     throw error;
   }
-  if (repeated(args, "guard-mode").length > 1) {
-    throw new Error("--guard-mode is a single-CLI option; configure one host at a time");
-  }
   if (args[0] === "model-selection") {
     throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.coding_models; configure the candidate set with `baton config`");
   }
   const current = structuredClone(loadConfig(cwd, { env }));
   const ask = (): SelectPrompt => requirePrompt(
     prompt, stdin, stdout, env,
-    "--cli, --runner, --longctx, --coding-model, --guard-mode, and --enable|--disable",
+    "--cli, --runner, --longctx, --coding-model, and --enable|--disable",
   );
 
   const flaggedCli = lastFlag(args, "cli");
@@ -357,7 +317,6 @@ export async function runConfig(args: string[], {
     const catalog = await adapterProvider(cli).discoverModels({ cwd, env });
     results.push(await configureCliProfile(cli, args, {
       cwd, stdout, env, current, catalog, ask, single,
-      interactiveGuardPrompt: !prompt && isInteractiveIo(stdin, stdout),
     }));
   }
 
@@ -367,15 +326,6 @@ export async function runConfig(args: string[], {
   // copy. A multi-CLI failure therefore leaves the previous config bytes and
   // legacy fields untouched. This is the sole config write for the command.
   const file = saveConfig(cwd, current, { env });
-  // Keep the selected host's installed guard posture synchronized with the
-  // explicit profile. The model/config transaction has already validated all
-  // hosts above, so a failed discovery/prompt never leaves partial config.
-  for (const result of results) {
-    if (result.cli === "codex") installCodexHooks({ cwd, env, guardMode: result.guard_mode });
-    else if (result.cli === "claude") installClaudeHooks({ cwd, env });
-    else if (result.cli === "grok") installGrokHooks({ cwd, env });
-  }
-  writeInstallManifest(buildInstallManifest(cwd, HOST_IDS, env), env);
   for (const result of results) result.config = file;
 
   const payload = single

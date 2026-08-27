@@ -61,8 +61,8 @@ describe("Codex init and update", () => {
     const addCli = path.join(root, ".agents", "skills", "add-cli-to-baton");
     const contract = fs.readFileSync(path.join(addCli, "references", "openbaton-contract.md"), "utf8");
     assert.match(contract, /Director\/worker routing invariant/);
-    assert.match(contract, /ticket-presence/);
-    assert.match(contract, /fail-closed-always/);
+    assert.match(contract, /All hosts are hookless/);
+    assert.match(contract, /explicit director orchestration/);
 
     assertDirectorWorkerRoutingTable(
       fs.readFileSync(path.join(addCli, "SKILL.md"), "utf8"),
@@ -71,7 +71,7 @@ describe("Codex init and update", () => {
 
     const acceptance = fs.readFileSync(path.join(addCli, "references", "acceptance.md"), "utf8");
     assert.match(acceptance, /Director\/worker routing acceptance/);
-    assert.match(acceptance, /ticket-presence/);
+    assert.match(acceptance, /All hosts are hookless/);
   });
 
   it("installs the CLI-owned automatic-routing policy without placeholder profiles", async () => {
@@ -196,7 +196,6 @@ describe("Codex init and update", () => {
         runner: "",
         longctx: "",
         coding_models: ["grok-4.5"],
-        guard_mode: "enforce",
       });
       const raw = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((raw.cli as Record<string, unknown>), "active"), false);
@@ -232,63 +231,6 @@ describe("Codex init and update", () => {
       assert.doesNotMatch(skill, /spawn_subagent/);
       assert.doesNotMatch(skill, /grok models/);
       assert.doesNotMatch(skill, /model\/list/);
-    });
-  });
-
-  it("installs the Claude Code guard into user settings without touching unrelated keys", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-claude-guard-"));
-      const env = fakeEnv(home);
-      const settings = path.join(home, ".claude", "settings.json");
-      fs.mkdirSync(path.dirname(settings), { recursive: true });
-      fs.writeFileSync(settings, `${JSON.stringify({
-        env: { EXAMPLE_TOKEN: "keep-me" },
-        hooks: {
-          PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo user-owned" }] }],
-        },
-      }, null, 2)}\n`);
-
-      const result = await initProject(cwd, { env });
-      const claudeGuard = result.guards.find((item) => item.host === "claude");
-      assert.ok(claudeGuard, "expected a Claude Code guard result");
-      assert.equal(claudeGuard.installed, true);
-      assert.equal(claudeGuard.trust_required, false);
-      assert.deepEqual(claudeGuard.events, ["PreToolUse", "SubagentStart"]);
-
-      const merged = JSON.parse(fs.readFileSync(settings, "utf8")) as Record<string, never>;
-      // Unrelated settings and the user's own hook survive.
-      assert.deepEqual(merged.env, { EXAMPLE_TOKEN: "keep-me" });
-      const pre = merged.hooks.PreToolUse as Array<Record<string, never>>;
-      assert.equal(pre[0].matcher, "Bash");
-      assert.equal((pre[0].hooks as Array<Record<string, string>>)[0].command, "echo user-owned");
-      // Baton's entry matches the tool name the hook boundary actually reports.
-      assert.equal(pre.at(-1)!.matcher, "Bash|Edit|Write|NotebookEdit|Agent");
-      assert.match((pre.at(-1)!.hooks as Array<Record<string, string>>)[0].command, /guard hook --host claude/);
-
-      // Repeating init is idempotent.
-      const before = fs.readFileSync(settings, "utf8");
-      await initProject(cwd, { env });
-      assert.equal(fs.readFileSync(settings, "utf8"), before);
-    });
-  });
-
-  it("installs the Grok guard as a dedicated global hook file", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-grok-guard-"));
-      const env = fakeEnv(home);
-      const result = await initProject(cwd, { env });
-      const grokGuard = result.guards.find((item) => item.host === "grok");
-      assert.ok(grokGuard, "expected a Grok guard result");
-      assert.equal(grokGuard.installed, true);
-      assert.equal(grokGuard.trust_required, false);
-      const hookFile = path.join(home, ".grok", "hooks", "baton.json");
-      assert.equal(fs.existsSync(hookFile), true);
-      const parsed = JSON.parse(fs.readFileSync(hookFile, "utf8"));
-      assert.match(parsed.hooks.PreToolUse[0].hooks[0].command, /guard hook --host grok/);
-      assert.match(fs.readFileSync(path.join(home, HOST_SKILL_REL.grok), "utf8"), /~\/\.grok\/hooks\/baton\.json/);
-      const applySkill = fs.readFileSync(path.join(process.cwd(), ".agents/skills/openspec-apply-change/SKILL.md"), "utf8");
-      assert.match(applySkill, /Implement tasks from an OpenSpec change/);
-      assert.doesNotMatch(applySkill, /baton apply <change>/);
     });
   });
 
