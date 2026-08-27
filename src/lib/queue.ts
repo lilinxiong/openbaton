@@ -1,28 +1,33 @@
 /**
  * Unlimited logical spawn count. Wide fan-out queues; it never refuses.
- * max_concurrent is a process-health valve, not a product cap.
+ *
+ * This queue is only director planning metadata. Its planning valve must not
+ * be confused with dispatchSnapshot's tree-local runtime capacity or its
+ * `capacity`/`available` fields.
  */
 
 export const START = "start";
 export const ENQUEUE = "enqueue";
 
 export class DispatchQueue {
-  readonly maxConcurrent: number;
+  readonly planningMaxConcurrent: number;
   running: number;
   queued: number;
 
-  constructor(maxConcurrent = 4) {
-    this.maxConcurrent = Math.max(1, maxConcurrent);
+  constructor(planningMaxConcurrent = 4) {
+    this.planningMaxConcurrent = Math.max(1, planningMaxConcurrent);
     this.running = 0;
     this.queued = 0;
   }
 
   static fromConfig(cfg: { director?: { max_concurrent?: number } } | null | undefined): DispatchQueue {
+    // `director.max_concurrent` is a policy input for planning only here.
+    // Runtime dispatch resolves host/session capacity independently.
     return new DispatchQueue(cfg?.director?.max_concurrent ?? 4);
   }
 
   admit(): typeof START | typeof ENQUEUE {
-    return this.running < this.maxConcurrent ? START : ENQUEUE;
+    return this.running < this.planningMaxConcurrent ? START : ENQUEUE;
   }
 
   noteStarted(): void {
@@ -52,9 +57,10 @@ export class DispatchQueue {
     return decisions;
   }
 
-  snapshot(): { max_concurrent: number; running: number; queued: number } {
+  snapshot(): { scope: "director-planning"; planning_max_concurrent: number; running: number; queued: number } {
     return {
-      max_concurrent: this.maxConcurrent,
+      scope: "director-planning",
+      planning_max_concurrent: this.planningMaxConcurrent,
       running: this.running,
       queued: this.queued,
     };

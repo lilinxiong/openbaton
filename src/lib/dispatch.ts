@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeConclusion, sanitizeProgress } from "./hygiene.js";
-import { listSpawns, readSpawn, writeSpawn, sessionTicketId } from "./spawn.js";
+import { listSpawns, readSpawn, writeSpawn, sessionTicketId, sessionUid, validateSpawnSessionScope } from "./spawn.js";
 import type {
   AgentProbeActivity,
   AgentProbeState,
@@ -16,7 +16,7 @@ import { normalizeSpawnTicket } from "./spawn.js";
 import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 import { getCliAdapter } from "../adapters/index.js";
 import type { UnknownRecord } from "../types.js";
-import { dispatchLockPath, hostDispatchStatePath, workspaceId } from "./paths.js";
+import { dispatchLockPath, spawnsDir, workspaceId } from "./paths.js";
 import { readReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
 import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, type AsyncSafetyOptions, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
@@ -38,6 +38,7 @@ import {
   markRouteExhausted,
 } from "./model-availability.js";
 import { withOwnedLock, withOwnedLockAsync, type OwnedLock, type OwnedLockOptions } from "./owned-lock.js";
+import { resolveAgentTreeCapacity, type EffectiveAgentTreeCapacity } from "./agent-tree-capacity.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
@@ -63,6 +64,12 @@ function requireCurrentTicket(ticket: SpawnTicket): SpawnTicket {
   return ticket;
 }
 
+function requireSessionTicket(ticket: SpawnTicket, env: NodeJS.ProcessEnv): SpawnTicket {
+  ticket = requireCurrentTicket(ticket);
+  validateSpawnSessionScope(ticket, env);
+  return ticket;
+}
+
 /** A bound agent keeps consuming a host thread until close_agent is confirmed. */
 function holdsHostSlot(ticket: SpawnTicket): boolean {
   if (ticket.status === "dispatching") return true;
@@ -83,6 +90,7 @@ export class DispatchError extends Error {
   readonly ticketId?: string;
   readonly currentStatus?: TicketStatus;
   readonly nextStatus?: TicketStatus;
+  readonly compatibility_blockers?: CompatibilityBlocker[];
 
   constructor(message: string, code = "DISPATCH_ERROR", extras: DispatchErrorExtras = {}) {
     super(message);
@@ -90,6 +98,53 @@ export class DispatchError extends Error {
     this.code = code;
     Object.assign(this, extras);
   }
+}
+
+export interface CompatibilityBlocker {
+  readonly code: "UNATTRIBUTED_ACTIVE_RECORD";
+  readonly file: string;
+  readonly ticket_id: string | null;
+  readonly status: string | null;
+  readonly host: string | null;
+  readonly reason: string;
+}
+
+const SESSION_UID_PATTERN = /^[0-9a-f]{64}$/;
+
+function rawRecordHoldsSlot(value: Record<string, unknown>): boolean {
+  const status = value.status;
+  if (status === "dispatching" || status === "running") return true;
+  return (status === "completed" || status === "errored" || status === "timed_out" || status === "closed")
+    && value.execution_handle != null
+    && !value.slot_released_at;
+}
+
+/** Find legacy/current records which hold a slot but cannot be assigned safely. */
+export function dispatchCompatibilityBlockers(cwd: string, env: NodeJS.ProcessEnv = process.env): CompatibilityBlocker[] {
+  const dir = spawnsDir(cwd, env);
+  if (!fs.existsSync(dir)) return [];
+  const blockers: CompatibilityBlocker[] = [];
+  for (const name of fs.readdirSync(dir).filter((item) => item.endsWith(".json"))) {
+    const file = path.join(dir, name);
+    let value: unknown;
+    try {
+      value = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    } catch {
+      continue;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    if (SESSION_UID_PATTERN.test(String(record.session_uid || "")) || !rawRecordHoldsSlot(record)) continue;
+    blockers.push({
+      code: "UNATTRIBUTED_ACTIVE_RECORD",
+      file: path.relative(cwd, file).replaceAll("\\", "/"),
+      ticket_id: typeof record.id === "string" ? record.id : null,
+      status: typeof record.status === "string" ? record.status : null,
+      host: typeof record.target_host === "string" ? record.target_host : typeof record.host === "string" ? record.host : null,
+      reason: "active record has no valid root-agent-tree session_uid; reconciliation is required",
+    });
+  }
+  return blockers;
 }
 
 /** Host-reported terminal failure, kept as structured evidence when the safety gate overrides it. */
@@ -158,9 +213,17 @@ function transition(ticket: SpawnTicket, expected: TicketStatus | TicketStatus[]
 }
 
 function fifoTickets(cwd: string, env?: NodeJS.ProcessEnv): SpawnTicket[] {
-  return listSpawns(cwd, env).map(requireCurrentTicket).sort((a, b) => {
+  const uid = sessionUid(env);
+  // Filter the immutable tree key before validating the remaining lifecycle
+  // shape.  A malformed record belonging to another root must not prevent
+  // this tree from selecting/refilling its own queue; workspace-wide safety
+  // scans deliberately use their own unfiltered inventory.
+  return listSpawns(cwd, env).filter((ticket) => ticket.session_uid === uid).map(requireCurrentTicket).sort((a, b) => {
     const time = String(a.created_at || "").localeCompare(String(b.created_at || ""));
-    return time || String(a.id).localeCompare(String(b.id));
+    // Descendants can be materialized in the same timestamp.  Their
+    // session-local ordinal is the durable enqueue order; ticket ids are only
+    // an opaque final tie-breaker (their prefix is not queue priority).
+    return time || (Number(a.session_ordinal) - Number(b.session_ordinal)) || String(a.id).localeCompare(String(b.id));
   });
 }
 
@@ -220,44 +283,6 @@ function capacityValue(capacity: unknown): number {
   const value = Number(capacity);
   if (!Number.isInteger(value) || value < 1) throw new DispatchError("capacity must be a positive integer", "INVALID_CAPACITY");
   return value;
-}
-
-function readDispatchState(cwd: string, host: HostId, env?: NodeJS.ProcessEnv): UnknownRecord {
-  const file = hostDispatchStatePath(cwd, host, env);
-  try {
-    const state = JSON.parse(fs.readFileSync(file, "utf8")) as UnknownRecord;
-    return state.host === host ? state : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeDispatchState(cwd: string, state: UnknownRecord, host: HostId, env?: NodeJS.ProcessEnv): void {
-  const file = hostDispatchStatePath(cwd, host, env);
-  const next = { ...state, host };
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = file + ".tmp-" + process.pid + "-" + crypto.randomUUID();
-  try {
-    fs.writeFileSync(temp, JSON.stringify(next, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } finally {
-    if (fs.existsSync(temp)) fs.unlinkSync(temp);
-  }
-}
-
-/** Capacity persisted by `dispatch next`, or null when no dispatch session has run yet. */
-export function persistedCapacity(cwd: string, host: HostId, env?: NodeJS.ProcessEnv): number | null {
-  const value = Number(readDispatchState(cwd, host, env).capacity);
-  return Number.isInteger(value) && value >= 1 ? value : null;
-}
-
-/** Remember the capacity used by `dispatch next` so later bind/complete/status/recover calls inherit it. */
-export function rememberDispatchCapacity(cwd: string, capacity: number, host: HostId, env?: NodeJS.ProcessEnv): number {
-  const max = capacityValue(capacity);
-  const state = readDispatchState(cwd, host, env);
-  state.capacity = max;
-  writeDispatchState(cwd, state, host, env);
-  return max;
 }
 
 export interface DispatchSpec {
@@ -483,7 +508,7 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
 }
 
 interface ReserveOptions {
-  capacity: number;
+  capacity?: number;
   limit?: number;
   host?: string;
   now?: TimeInput;
@@ -502,6 +527,24 @@ function requireHost(host: string, env: NodeJS.ProcessEnv = process.env): HostId
   }
 }
 
+function resolvedCapacity(cwd: string, host: HostId | undefined, env: NodeJS.ProcessEnv, operationLimit?: number): EffectiveAgentTreeCapacity {
+  const adapter = host ? getCliAdapter(host, env) : undefined;
+  let config;
+  try {
+    config = loadConfig(cwd, { env });
+  } catch {
+    // Direct library callers and pre-init diagnostics may provide an explicit
+    // operation limit; the host resolver remains authoritative when config is
+    // unavailable.
+  }
+  return resolveAgentTreeCapacity({ host: adapter?.host, config, currentOperationLimit: operationLimit, session: sessionUid(env), env });
+}
+
+function requiredCapacity(value: EffectiveAgentTreeCapacity): number {
+  if (value.capacity == null) throw new DispatchError("capacity is unknown", "CAPACITY_UNKNOWN");
+  return value.capacity;
+}
+
 /** Resolve the host captured by a ticket. Hostless tickets are not attributed. */
 function ticketTargetHost(ticket: SpawnTicket, env: NodeJS.ProcessEnv = process.env): HostId {
   const captured = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host;
@@ -517,17 +560,51 @@ function ticketMatchesHost(ticket: SpawnTicket, host: HostId, env: NodeJS.Proces
   }
 }
 
+/**
+ * Return only tickets owned by this root tree and targeting this host.
+ *
+ * Capacity is a property of the pair (host, session_uid), not of every
+ * ticket in the workspace.  Keep the session check here next to the host
+ * check so active-slot callers cannot accidentally widen their accounting by
+ * reusing a workspace-wide ticket list.
+ */
+function ticketsInDispatchScope(tickets: SpawnTicket[], host: HostId, env: NodeJS.ProcessEnv = process.env): SpawnTicket[] {
+  const uid = sessionUid(env);
+  return tickets.filter((ticket) => ticket.session_uid === uid && ticketMatchesHost(ticket, host, env));
+}
+
+/**
+ * A dispatching ticket reserves a slot before binding; a bound running ticket
+ * keeps it; and every terminal ticket keeps it until release is confirmed.
+ */
+function activeTicketsInDispatchScope(tickets: SpawnTicket[], host: HostId, env: NodeJS.ProcessEnv = process.env): SpawnTicket[] {
+  return ticketsInDispatchScope(tickets, host, env).filter(holdsHostSlot);
+}
+
 export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host, now, env = process.env, safety, activationLock = {}, dispatchLock = {} }: ReserveOptions) {
+  // Establish the root-agent-tree scope before acquiring either mutation
+  // lock.  A missing BATON_SESSION_ID must not create a reservation or a
+  // lifecycle lock as a side effect of a failed capacity-sensitive call.
+  sessionUid(env);
   if (!host) throw new DispatchError("host is required", "HOST_REQUIRED");
   const targetHost = requireHost(host, env);
-  const max = capacityValue(capacity);
+  const compatibilityBlockers = dispatchCompatibilityBlockers(cwd, env);
+  if (compatibilityBlockers.length) {
+    throw new DispatchError(
+      "cannot reserve dispatches while unattributed active records require reconciliation",
+      "COMPATIBILITY_BLOCKED",
+      { compatibility_blockers: compatibilityBlockers },
+    );
+  }
+  const capacityResolution = resolvedCapacity(cwd, targetHost, env, capacity);
+  const max = requiredCapacity(capacityResolution);
   const safetyOptions = safety || {};
   return withActivationLockAsync(cwd, env, async () => {
     const maxTake = Math.max(0, Math.floor(Number(limit) || 0));
     return withDispatchLockAsync(cwd, async () => {
     const at = instant(now).toISOString();
     const tickets = fifoTickets(cwd, env);
-    const activeTickets = tickets.filter((ticket) => holdsHostSlot(ticket) && ticketMatchesHost(ticket, targetHost, env));
+    const activeTickets = activeTicketsInDispatchScope(tickets, targetHost, env);
     const active = activeTickets.length;
     let available = Math.max(0, max - active);
     const reserved: DispatchSpec[] = [];
@@ -616,8 +693,7 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
       reserved.push(publicDispatchSpec(ticket as SpawnTicket & { route_id: string; receipt_id: string; reservation_id: string }, receipt, env));
       available -= 1;
     }
-    rememberDispatchCapacity(cwd, max, targetHost, env);
-      return { reserved, blocked, snapshot: dispatchSnapshot(cwd, { capacity: max, host: targetHost, env }) };
+      return { reserved, blocked, snapshot: dispatchSnapshot(cwd, { host: targetHost, env, capacityResolution }) };
     }, { ...dispatchLock, env });
   }, { ...activationLock, host: targetHost, scope: "both", operation: "dispatch-reservation" });
 }
@@ -660,10 +736,11 @@ export function bindAgent(cwd: string, id: string, {
   now,
   env = process.env,
 }: BindOptions): SpawnTicket {
+  sessionUid(env);
   host = requireHost(host, env);
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
+    const ticket = requireSessionTicket(readSpawn(cwd, id, env), env);
     const targetHost = ticketTargetHost(ticket, env);
     if (targetHost !== host || (ticket.dispatch_host && ticket.dispatch_host !== host)) {
       throw new DispatchError(`ticket ${id} targets ${targetHost}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
@@ -722,11 +799,17 @@ export function deferDispatch(cwd: string, id: string, {
   now,
   env = process.env,
 }: DeferOptions = {}): SpawnTicket {
+  sessionUid(env);
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
-    if (host && ticketTargetHost(ticket, env) !== requireHost(host, env)) {
-      throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket, env)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
+    const ticket = requireSessionTicket(readSpawn(cwd, id, env), env);
+    // Resolve the captured host before clearing reservation metadata.  A
+    // legacy/current ticket may carry only dispatch_host while dispatching;
+    // clearing it first would make observed-capacity bookkeeping fail after
+    // the ticket had already been persisted back to the queue.
+    const targetHost = ticketTargetHost(ticket, env);
+    if (host && targetHost !== requireHost(host, env)) {
+      throw new DispatchError(`ticket ${id} targets ${targetHost}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
     if (ticket.execution_handle) throw new DispatchError(`ticket ${id} is already bound`, "EXECUTION_HANDLE_ALREADY_BOUND", { ticketId: id });
     transition(ticket, "dispatching", "queued", {
@@ -740,10 +823,6 @@ export function deferDispatch(cwd: string, id: string, {
     delete ticket.dispatch_host;
     delete ticket.dispatch_requested_at;
     writeSpawn(cwd, ticket, env);
-    if (observedCapacity != null) {
-      const rememberedHost = host ? requireHost(host, env) : ticketTargetHost(ticket, env);
-      rememberDispatchCapacity(cwd, observedCapacity, rememberedHost, env);
-    }
     return ticket;
   }, env);
 }
@@ -771,6 +850,7 @@ export function reportAgentProbe(cwd: string, id: string, {
   now,
   env = process.env,
 }: ProbeOptions): SpawnTicket {
+  sessionUid(env);
   if (!AGENT_PROBE_STATES.has(state)) throw new DispatchError(`invalid agent probe state: ${state}`, "INVALID_AGENT_PROBE_STATE", { ticketId: id });
   if (!AGENT_PROBE_ACTIVITIES.has(activity)) throw new DispatchError(`invalid agent probe activity: ${activity}`, "INVALID_AGENT_PROBE_ACTIVITY", { ticketId: id });
   if (!LIVE_AGENT_PROBE_STATES.has(state) && activity !== "status") {
@@ -778,7 +858,7 @@ export function reportAgentProbe(cwd: string, id: string, {
   }
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
+    const ticket = requireSessionTicket(readSpawn(cwd, id, env), env);
     if (host && ticketTargetHost(ticket, env) !== requireHost(host, env)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket, env)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -831,10 +911,11 @@ export function reportAgentProgress(cwd: string, id: string, {
   now,
   env = process.env,
 }: ProgressOptions): SpawnTicket {
+  sessionUid(env);
   if (!PROGRESS_PHASES.has(phase)) throw new DispatchError(`invalid progress phase: ${phase}`, "INVALID_PROGRESS_PHASE", { ticketId: id });
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
+    const ticket = requireSessionTicket(readSpawn(cwd, id, env), env);
     if (host && ticketTargetHost(ticket, env) !== requireHost(host, env)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket, env)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -1134,12 +1215,13 @@ export async function finishAgent(cwd: string, id: string, {
   safety,
   dispatchLock = {},
 }: FinishOptions): Promise<SpawnTicket> {
+  sessionUid(env);
   const terminal = String(status || "").trim();
   if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
   const safetyOptions = safety || {};
   return withDispatchLockAsync(cwd, async () => {
     const at = instant(now).toISOString();
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
+    const ticket = requireSessionTicket(readSpawn(cwd, id, env), env);
     if (host && ticketTargetHost(ticket, env) !== requireHost(host, env)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket, env)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -1318,9 +1400,10 @@ export function releaseAgent(cwd: string, id: string, {
   now,
   env = process.env,
 }: ReleaseOptions = {}): SpawnTicket {
+  sessionUid(env);
   return withLock(cwd, () => {
     const at = instant(now).toISOString();
-    const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
+    const ticket = requireSessionTicket(readSpawn(cwd, id, env), env);
     if (host && ticketTargetHost(ticket, env) !== requireHost(host, env)) {
       throw new DispatchError(`ticket ${id} targets ${ticketTargetHost(ticket, env)}, not ${host}`, "HOST_MISMATCH", { ticketId: id });
     }
@@ -1339,7 +1422,11 @@ export function releaseAgent(cwd: string, id: string, {
       throw new DispatchError(`ticket ${id} is bound to ${ticket.execution_handle.value}, not ${requestedHandle.value}`, "EXECUTION_HANDLE_MISMATCH", { ticketId: id });
     }
     if (ticket.slot_released_at) {
-      throw new DispatchError(`ticket ${id} slot is already released`, "SLOT_ALREADY_RELEASED", { ticketId: id });
+      // Native release confirmation may be retried after a transport timeout.
+      // The first confirmation already returned this tree-local slot, so a
+      // repeated confirmation must be a no-op rather than a second lifecycle
+      // mutation or a second release event.
+      return ticket;
     }
     ticket.slot_released_at = at;
     history(ticket, "agent_slot_released", at, {
@@ -1353,6 +1440,7 @@ export function releaseAgent(cwd: string, id: string, {
 interface RecoverOptions { staleMs?: number; host?: string; now?: TimeInput; env?: NodeJS.ProcessEnv }
 
 export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now, env = process.env }: RecoverOptions = {}) {
+  sessionUid(env);
   const threshold = Number(staleMs);
   if (!Number.isFinite(threshold) || threshold < 0) throw new DispatchError("staleMs must be non-negative", "INVALID_STALE_MS");
   return withLock(cwd, () => {
@@ -1385,16 +1473,21 @@ export function recoverDispatches(cwd: string, { staleMs = 60_000, host, now, en
   }, env);
 }
 
-export function dispatchSnapshot(cwd: string, { capacity, host, now, env }: { capacity?: number; host?: string; now?: TimeInput; env?: NodeJS.ProcessEnv } = {}) {
+export function dispatchSnapshot(cwd: string, { capacity, host, now, env = process.env, capacityResolution }: { capacity?: number; host?: string; now?: TimeInput; env?: NodeJS.ProcessEnv; capacityResolution?: EffectiveAgentTreeCapacity } = {}) {
+  sessionUid(env);
   const targetHost = host ? requireHost(host, env) : undefined;
-  const max = capacity == null
-    ? (targetHost ? persistedCapacity(cwd, targetHost, env) ?? 1 : 1)
-    : capacityValue(capacity);
+  // Legacy dispatch-<host>.json files remain rollback residue only. Capacity
+  // is resolved by the current caller and is never remembered here.
+  const resolved = capacityResolution || resolvedCapacity(cwd, targetHost, env, capacity);
+  const compatibilityBlockers = dispatchCompatibilityBlockers(cwd, env);
+  const max = requiredCapacity(resolved);
   const allTickets = fifoTickets(cwd, env);
-  const tickets = allTickets.filter((ticket) => !targetHost || ticketMatchesHost(ticket, targetHost, env));
+  const tickets = targetHost ? ticketsInDispatchScope(allTickets, targetHost, env) : allTickets;
   const counts: Partial<Record<TicketStatus, number>> = {};
   for (const ticket of tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;
-  const active = tickets.filter(holdsHostSlot);
+  const active = targetHost
+    ? activeTicketsInDispatchScope(allTickets, targetHost, env)
+    : tickets.filter(holdsHostSlot);
   const currentMs = instant(now).getTime();
   const progressDue = tickets.filter((ticket) => {
     if (ticket.status !== "running" || ticket.coordination?.mode !== "checkpointed") return false;
@@ -1410,9 +1503,13 @@ export function dispatchSnapshot(cwd: string, { capacity, host, now, env }: { ca
     return !Number.isFinite(last) || currentMs - last >= DEFAULT_AGENT_PROBE_INTERVAL_MS;
   }).map((ticket) => ticket.id);
   return {
+    host: targetHost || null,
+    session_uid: resolved.session_uid,
     capacity: max,
+    capacity_sources: resolved.capacity_sources,
     active: active.length,
     available: Math.max(0, max - active.length),
+    compatibility_blockers: compatibilityBlockers,
     counts,
     queued: tickets.filter((ticket) => ticket.status === "queued").map((ticket) => ticket.id),
     dispatching: tickets.filter((ticket) => ticket.status === "dispatching").map((ticket) => ticket.id),
@@ -1441,4 +1538,73 @@ export function dispatchSnapshot(cwd: string, { capacity, host, now, env }: { ca
       })),
     terminal: tickets.filter((ticket) => TERMINAL_TICKET_STATUSES.has(ticket.status)).map((ticket) => ({ ticket_id: ticket.id, status: ticket.status, error: ticket.error || null })),
   };
+}
+
+/**
+ * Build capacity diagnostics for every valid root tree in the workspace.
+ *
+ * This is intentionally separate from dispatchSnapshot: general `baton
+ * status` is a workspace inventory command, while reservation and dispatch
+ * status are current-tree operations.  The inventory is grouped by the
+ * complete (host, session_uid) key and never computes a workspace-wide
+ * availability value.
+ */
+export function dispatchWorkspaceCapacitySnapshots(
+  cwd: string,
+  { host, now, env = process.env }: { host?: string; now?: TimeInput; env?: NodeJS.ProcessEnv } = {},
+) {
+  sessionUid(env);
+  const targetHost = host ? requireHost(host, env) : undefined;
+  const allTickets = listSpawns(cwd, env).map(normalizeSpawnTicket);
+  let config;
+  try {
+    config = loadConfig(cwd, { env });
+  } catch {
+    // A status inventory can still report adapter-derived capacity before
+    // project configuration is available.
+  }
+  const groups = new Map<string, { host: HostId; session_uid: string; tickets: SpawnTicket[] }>();
+  for (const ticket of allTickets) {
+    if (!/^[0-9a-f]{64}$/.test(ticket.session_uid)) continue;
+    let ticketHost: HostId;
+    try {
+      ticketHost = ticketTargetHost(ticket, env);
+    } catch {
+      continue;
+    }
+    if (targetHost && ticketHost !== targetHost) continue;
+    const key = `${ticketHost}\u0000${ticket.session_uid}`;
+    const group = groups.get(key) || { host: ticketHost, session_uid: ticket.session_uid, tickets: [] };
+    group.tickets.push(ticket);
+    groups.set(key, group);
+  }
+  const currentMs = instant(now).getTime();
+  return [...groups.values()].sort((a, b) => a.host.localeCompare(b.host) || a.session_uid.localeCompare(b.session_uid)).map((group) => {
+    const adapter = getCliAdapter(group.host, env);
+    const resolved = resolveAgentTreeCapacity({ host: adapter?.host, config, session: group.session_uid, env });
+    const active = group.tickets.filter(holdsHostSlot);
+    const counts: Partial<Record<TicketStatus, number>> = {};
+    for (const ticket of group.tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;
+    const progressDue = group.tickets.filter((ticket) => {
+      if (ticket.status !== "running" || ticket.coordination?.mode !== "checkpointed") return false;
+      const interval = Number(ticket.coordination.progress_interval_ms || 0);
+      const last = Date.parse(ticket.progress?.reported_at || ticket.started_at || ticket.updated_at || ticket.created_at || "");
+      return interval > 0 && Number.isFinite(last) && currentMs - last >= interval;
+    }).map((ticket) => ticket.id);
+    return {
+      host: group.host,
+      session_uid: group.session_uid,
+      capacity: resolved.capacity,
+      capacity_sources: resolved.capacity_sources,
+      active: active.length,
+      available: resolved.capacity == null ? null : Math.max(0, resolved.capacity - active.length),
+      counts,
+      tickets: group.tickets.map((ticket) => ticket.id),
+      queued: group.tickets.filter((ticket) => ticket.status === "queued").map((ticket) => ticket.id),
+      dispatching: group.tickets.filter((ticket) => ticket.status === "dispatching").map((ticket) => ticket.id),
+      running: group.tickets.filter((ticket) => ticket.status === "running").map((ticket) => ticket.id),
+      awaiting_release: group.tickets.filter((ticket) => TERMINAL_TICKET_STATUSES.has(ticket.status) && holdsHostSlot(ticket)).map((ticket) => ticket.id),
+      progress_due: progressDue,
+    };
+  });
 }

@@ -1,17 +1,16 @@
-import { effectiveMaxConcurrentForHost, loadConfig } from "../lib/config.js";
 import { parseHostId, resolveRuntimeHost, type HostId } from "../lib/hosts.js";
 import {
   bindAgent,
   deferDispatch,
   dispatchSnapshot,
   finishAgent,
-  persistedCapacity,
   releaseAgent,
   reportAgentProbe,
   reportAgentProgress,
   recoverDispatches,
   reserveNext,
 } from "../lib/dispatch.js";
+import { sessionUid } from "../lib/spawn.js";
 import type { WritableLike } from "../types.js";
 import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 
@@ -27,10 +26,17 @@ const USAGE = `usage:
   baton dispatch close TICKET --host HOST [--message MESSAGE] [--release] --json
   baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
   baton dispatch recover [--host HOST] [--stale-ms N] --json
-  baton dispatch status [--host HOST] [--capacity N] --json
+  baton dispatch status --host HOST [--capacity N] --json
 
-dispatch next remembers --capacity under ~/.baton/workspaces/<id>/runs/; later bind/complete/status/recover
-calls inherit it without repeating the flag.
+BATON_SESSION_ID is required for every capacity-sensitive operation.
+Capacity is per (host, session_uid) root-agent tree: the root is excluded,
+direct and nested descendants share one subagent pool, and capacity_sources in
+the snapshot reports host_limit/configured_policy/operation_limit provenance.
+--capacity is a non-persistent reduction for the current root-agent tree only;
+it cannot raise a known host limit. max_depth is a separate policy.
+Legacy dispatch-<host>.json values are inert rollback residue.
+Tree capacity never bypasses workspace-wide safety/locks or host/profile model
+availability/quota; native AGENT_LIMIT_REACHED is tree-local backpressure.
 recover --stale-ms applies only to an unbound dispatch reservation. A bound running agent is probed and resumed, never expired by age.
 `;
 
@@ -108,12 +114,13 @@ function print(stdout: WritableLike, value: unknown, json = true): void {
   else stdout.write(`${String(value)}\n`);
 }
 
-function capacity(cwd: string, env: NodeJS.ProcessEnv, value: string | boolean | undefined, host?: HostId): number {
-  if (value != null) return Number(value);
-  const remembered = persistedCapacity(cwd, host, env);
-  if (remembered != null) return remembered;
-  const config = loadConfig(cwd, { env });
-  return effectiveMaxConcurrentForHost(config, host, env);
+/**
+ * Keep the command override tree-local and non-persistent. The shared
+ * resolver applies it only as an additional reduction, records its provenance,
+ * and bounds it by any known native/adapter host limit.
+ */
+function capacity(_cwd: string, _env: NodeJS.ProcessEnv, value: string | boolean | undefined, _host?: HostId): number | undefined {
+  return value != null ? Number(value) : undefined;
 }
 
 function dispatchHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): HostId {
@@ -143,6 +150,9 @@ interface DispatchCommandOptions {
 }
 
 export async function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): Promise<number> {
+  // Establish the root tree scope before any reservation, refill, status, or
+  // ticket-targeted dispatch operation can inspect project state.
+  sessionUid(env);
   const sub = args[0] || "status";
   const rest = args.slice(1);
   validateFlags(rest);
@@ -278,7 +288,10 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
   }
 
   if (sub === "status") {
-    const host = stringFlag(flags, "host");
+    // A dispatch snapshot is always one current root-agent tree. Requiring a
+    // host here prevents the legacy workspace-wide aggregate shape from
+    // masquerading as tree capacity when no host is supplied.
+    const host = dispatchHost(flags, cwd, env);
     print(stdout, dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }), json);
     return 0;
   }

@@ -72,7 +72,7 @@ function makeFixture() {
   write(home, ".baton/config.toml", [
     "schema_version = 2",
     "[director]",
-    "max_concurrent = 4",
+    "max_concurrent = 3",
     "max_depth = 1",
     "[cli.codex]",
     "enabled = true",

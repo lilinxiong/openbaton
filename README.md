@@ -6,6 +6,10 @@ Baton is a CLI-neutral, manifest-driven scheduling and policy layer. It keeps
 the director conversation focused, chooses from the selected adapter's live
 catalog, and runs authorized work through native child execution.
 
+Subagent capacity belongs to one root-agent tree, identified by the hashed
+`BATON_SESSION_ID`. The root itself is excluded from the count; direct children,
+grandchildren, and deeper descendants share the same tree-local pool.
+
 The package can run standalone or consume a structured change plan when one is
 available. It requires Node.js 22.5 or newer.
 
@@ -73,7 +77,7 @@ Manifest schema `1` is intentionally small and exact:
     "destination": ".baton/skills/sample-adapter/SKILL.md"
   },
   "quota": {
-    "max_concurrent": 4,
+    "max_concurrent_subagents": 3,
     "max_depth": 1,
     "backpressure": "defer"
   }
@@ -82,9 +86,12 @@ Manifest schema `1` is intentionally small and exact:
 
 The manifest identifies the adapter, package, SDK version, catalog command and
 protocol, invocation signal, opaque native handle kind, runtime skill paths,
-and any limits reported by the adapter. Runtime-skill paths are package-relative
-and traversal-free; the catalog command may be a package path or an absolute
-executable. Duplicate ids or invalid fields stop discovery.
+and any limits reported by the adapter. `quota.max_concurrent_subagents` means
+the maximum number of active descendants in one root-agent tree, excluding the
+root; it is not a workspace, host-wide, process, model-list, or total-agent
+count. Runtime-skill paths are package-relative and traversal-free; the catalog
+command may be a package path or an absolute executable. Duplicate ids or
+invalid fields stop discovery.
 
 The catalog command returns one JSON object with the matching `adapter_id`, an
 optional version, and `models`. Each model preserves its exact `id` and any
@@ -100,7 +107,7 @@ to `~/.baton/config.toml`:
 
 ```toml
 [director]
-max_concurrent = 4
+max_concurrent = 3
 max_depth = 1
 
 [cli.sample-adapter]
@@ -109,6 +116,10 @@ runner = "<model-id>"
 longctx = "<model-id>"
 coding_models = ["<model-id>", "<another-model-id>"]
 ```
+
+`director.max_concurrent` is the configured per-root-tree policy limit for
+active subagents (excluding the root), not a workspace-wide pool. A known host
+limit always bounds it. `max_depth` is an independent descendant-depth policy.
 
 `runner` and `longctx` are routing labels. `coding_models` is an ordered
 allowlist and its order is the Coding priority. Automatic selection uses only
@@ -136,17 +147,30 @@ atomically, including rename endpoints, path-prefix overlap, and scopes owned
 by active tickets. Unknown scope or operation stops before mutation.
 
 At each scheduling and refill decision, Baton calculates the maximal safe ready
-frontier: all order-ready units with complete, pairwise-disjoint scopes that
-fit the adapter's physical capacity. It fills every available slot. Section
-order only breaks an otherwise equal choice.
+frontier for the current `(host, session_uid)` root-agent tree: all order-ready
+units with complete, pairwise-disjoint scopes that fit its effective subagent
+capacity. Direct and nested descendants consume one shared tree-local slot;
+the root does not. It fills every available slot, while another root tree's
+queued or active tickets are neither counted nor refilled. Section order only
+breaks an otherwise equal choice.
+
+The effective capacity is the minimum of each known source: the native/adapter
+`host_limit`, configured `configured_policy`, and an optional current-operation
+`operation_limit`. Dispatch snapshots expose the same value and provenance in
+`capacity_sources`, whose entries contain `kind`, `value`, and `applied`. An
+explicit `--capacity` only lowers the current tree and is never persisted;
+legacy `dispatch-<host>.json` values are inert rollback residue.
 
 ## Ticket identity and lifecycle
 
-Every ticket-producing command requires `BATON_SESSION_ID`. Baton hashes that
-value into `session_uid` and allocates a contiguous `session_ordinal` for each
-ticket in that session. Ticket ids contain the opaque prefix, session uid, and
-ordinal; ids are opaque data and are not route selectors. Preserve the
-`session_id`, `ticket_id`, and native execution handle in the identity handoff.
+Every ticket-producing and capacity-sensitive dispatch command requires
+`BATON_SESSION_ID`. Baton hashes that value into `session_uid`, the immutable
+root-agent-tree identity, and allocates a contiguous `session_ordinal` for each
+ticket in that session. Root and descendant tickets retain that same identity;
+a descendant, reconnect, or successor cannot mint a new session to obtain more
+capacity. Ticket ids contain the opaque prefix, session uid, and ordinal; ids
+are opaque data and are not route selectors. Preserve the `session_id`,
+`ticket_id`, and native execution handle in the identity handoff.
 
 The lifecycle is:
 
@@ -163,16 +187,18 @@ The lifecycle is:
 6. Release the ticket before refilling capacity.
 
 The handle kind is adapter-defined. Baton does not infer identity from text or
-replace a native handle with a local identifier. A capacity response defers the
-same reservation without consuming
-an attempt or changing its model.
+replace a native handle with a local identifier. A capacity response
+(`AGENT_LIMIT_REACHED`) defers the same reservation in its originating tree
+without consuming an attempt or changing its model, session identity, or
+another tree's state. A slot remains held from `dispatching` through bound
+running and terminal-awaiting-release until native release is confirmed.
 
 ## Quota exhaustion and successors
 
-An explicit quota-exhaustion result is recorded as availability evidence. For
-a write ticket whose pre-mutation baseline is unchanged, Baton may create an
-immutable successor from the next configured Coding priority. The successor
-receives a new per-session ordinal and Receipt, records
+An explicit host/profile model quota-exhaustion result is recorded as
+availability evidence across all root trees using that route. For a write
+ticket whose pre-mutation baseline is unchanged, Baton may create an immutable
+successor from the next configured Coding priority. The successor receives a new per-session ordinal and Receipt, records
 `successor_from_ticket_id` and `successor_reason`, and retains the originating
 session, adapter, scope, authorization, and quota lineage. It reruns catalog,
 option, capacity, and scope checks.
@@ -186,7 +212,9 @@ stop and report reconciliation instead of creating a successor.
 Read-only is the default. Write tickets carry a path/operation allowlist and a
 parent-owned repository observation. Workers do not perform Git operations. An
 explicit exclusive commit ticket over the parent-staged tree may create one
-commit; all other repository operations remain outside the worker.
+commit; all other repository operations remain outside the worker. Tree-local
+capacity never weakens workspace-wide path ownership, Git safety audits,
+activation/dispatch locks, or cross-tree write-conflict checks.
 
 Receipts, ticket state, catalogs, and installation records live under the
 user-global `~/.baton` directory. Worktree files remain the caller's files.
@@ -201,9 +229,18 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
-baton dispatch next --host <adapter-id> --capacity <n> --json
+baton dispatch next --host <adapter-id> [--capacity <n>] --json
+baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
 ```
+
+`dispatch status` is scoped to the current root tree and reports `host`,
+`session_uid`, `capacity`, `capacity_sources`, `active`, `available`, and its
+queue/lifecycle ticket lists. General `baton status` keeps workspace ticket
+inventory but groups capacity diagnostics under `capacity_trees`; it never
+publishes one aggregate workspace `available` value. Missing or mismatched tree
+identity, or an active record without a valid `session_uid`, fails closed with a
+compatibility diagnostic rather than rewriting ticket or Receipt history.
 
 For a release check, report SDK conformance, manifest discovery, package/build
 results, live catalog evidence, native execution-handle evidence, ticket and

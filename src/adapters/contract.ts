@@ -34,9 +34,18 @@ export interface CliModel {
   is_default: boolean;
 }
 
-/** Optional scheduling limits reported by the CLI discovery surface itself. */
+/**
+ * Optional scheduling limits reported by the CLI discovery surface itself.
+ *
+ * `max_concurrent_subagents` is the maximum number of simultaneously active
+ * descendants in one root-agent tree. The root agent is not included. This
+ * is deliberately not a total-agent, process, model, or workspace count.
+ *
+ * Adapter responses may use older spellings, but they are normalized to this
+ * public shape by `normalizeCliRuntimeCapabilities` before reaching callers.
+ */
 export interface CliRuntimeCapabilities {
-  max_concurrent?: number;
+  max_concurrent_subagents?: number;
   max_depth?: number;
 }
 
@@ -71,11 +80,11 @@ export interface CliHostMetadata {
   id: CliId;
   /** Skill path relative to the user's home directory. */
   skillPath: string;
-  /** Native host concurrency ceiling before environment overrides. */
+  /** Native per-root-tree subagent ceiling before environment overrides. */
   defaultMaxConcurrent: number;
   /** Optional environment variable used by the host to override its cap. */
   maxConcurrentEnv?: string;
-  /** Resolve the cap exactly as the host exposes it to Baton. */
+  /** Resolve the per-root-tree subagent cap exactly as the host exposes it to Baton. */
   maxConcurrent: (env?: NodeJS.ProcessEnv) => number;
   /** Return true when this host appears to be the current invoking runtime. */
   isInvoking?: (env?: NodeJS.ProcessEnv) => boolean;

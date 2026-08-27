@@ -267,7 +267,7 @@ describe("large streamed Git index safety", () => {
         const released = JSON.parse(result.text) as { ticket: Record<string, any>; snapshot: Record<string, any> };
         assert.ok(released.ticket.slot_released_at);
         assert.equal(released.snapshot.active, 0);
-        assert.equal(released.snapshot.available, 1);
+        assert.equal(released.snapshot.available, 2);
 
         gitWithInput(cwd, ["update-index", "--skip-worktree", "-z", "--stdin"], Buffer.from(`${fixture.virtualPath}\0`, "utf8"));
         assert.equal(fs.existsSync(path.join(cwd, "virtual")), false);
@@ -330,7 +330,7 @@ describe("large streamed Git index safety", () => {
         assert.deepEqual(completed.ticket.safety_verdict.violations, []);
         assert.ok(completed.ticket.slot_released_at);
         assert.equal(completed.snapshot.active, 0);
-        assert.equal(completed.snapshot.available, 1);
+        assert.equal(completed.snapshot.available, 2);
         assert.equal(fs.existsSync(path.join(cwd, "virtual")), false);
         assert.equal(fs.existsSync(spawnsDir(cwd, env)), true);
         assert.equal(fs.existsSync(receiptsDir(cwd, env)), true);

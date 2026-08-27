@@ -5,5 +5,5 @@
   "invocation": { "signal": "BETA_HOST" },
   "native": { "execution_handle_kind": "beta-session" },
   "runtime_skill": { "source": "runtime/SKILL.md", "destination": ".baton/skills/beta/SKILL.md" },
-  "quota": { "max_concurrent": 5, "backpressure": "queue" }
+  "quota": { "max_concurrent_subagents": 5, "backpressure": "queue" }
 }

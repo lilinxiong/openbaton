@@ -7,6 +7,22 @@ import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt, type Execut
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 import {
+  assertSessionScope,
+  sessionScope,
+  sessionUidFromEnv,
+  SessionScopeError,
+  type SessionScope,
+  type SessionUid,
+} from "./session-scope.js";
+export {
+  assertSessionScope,
+  sessionScope,
+  sessionUidFromEnv,
+  SessionScopeError,
+  type SessionScope,
+  type SessionUid,
+} from "./session-scope.js";
+import {
   buildWorkerPrompt,
   compileWorkUnit,
   coordinationFor,
@@ -218,6 +234,9 @@ export function writeSpawn(cwd: string, ticket: SpawnTicket, env?: NodeJS.Proces
   if (!isCurrentSpawnRecord(ticket)) {
     throw new Error("spawn ticket must be current and include session identity");
   }
+  // Persisting a lifecycle change is ticket-targeted: a later environment
+  // value must not be able to rewrite another root tree's immutable identity.
+  validateSpawnSessionScope(ticket, env);
   const dir = spawnsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${ticket.id}.json`);
@@ -231,10 +250,13 @@ export function writeSpawn(cwd: string, ticket: SpawnTicket, env?: NodeJS.Proces
   return ticket;
 }
 
+/** Validate the current caller before a ticket-targeted lifecycle mutation. */
+export function validateSpawnSessionScope(ticket: Pick<SpawnTicket, "session_uid">, env?: NodeJS.ProcessEnv): SessionScope {
+  return assertSessionScope(ticket.session_uid, env);
+}
+
 export function sessionUid(env?: NodeJS.ProcessEnv): string {
-  const id = String((env || process.env).BATON_SESSION_ID || "").trim();
-  if (!id) throw new Error("BATON_SESSION_ID is required");
-  return crypto.createHash("sha256").update(id).digest("hex");
+  return sessionUidFromEnv(env);
 }
 
 export function sessionTicketId(prefix: string, uid: string, ordinal: number): string {
@@ -308,7 +330,8 @@ export function buildSpawnTicket({
   targetHost = selection?.host || null,
   now = new Date(),
 }: BuildSpawnTicketOptions): SpawnTicket {
-  const uid = sessionUid(env);
+  const scope = sessionScope(env);
+  const uid = scope.session_uid;
   const id = requestedId || (cwd ? nextSpawnId(cwd, "spn", env) : "");
   const idMatch = id.match(/^(spn|os)-([0-9a-f]{64})-(\d+)$/);
   const sessionOrdinal = idMatch && idMatch[2] === uid ? Number(idMatch[3]) : 0;
@@ -409,6 +432,9 @@ export function planStandaloneSpawn({ description, prompt = null, cards, explici
 
 export function persistStandalonePlan(cwd: string, planned: StandalonePlan, env?: NodeJS.ProcessEnv): SpawnTicket {
   if (planned.director_local === true) throw new Error("ops dispatch unexpectedly stayed on the director");
+  // Validate before writing the Receipt so a cross-session caller leaves no
+  // partial lifecycle artifact behind.
+  validateSpawnSessionScope(planned.ticket, env);
   writeReceipt(cwd, planned.receipt, env);
   return writeSpawn(cwd, planned.ticket, env);
 }

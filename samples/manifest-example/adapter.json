@@ -20,7 +20,7 @@
     "destination": ".baton/skills/sample-adapter/SKILL.md"
   },
   "quota": {
-    "max_concurrent": 2,
+    "max_concurrent_subagents": 2,
     "max_depth": 1,
     "backpressure": "defer"
   }

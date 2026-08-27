@@ -14,7 +14,13 @@ native handle fields.
 - invocation signal and optional environment description;
 - `native.execution_handle_kind`;
 - runtime-skill source and destination;
-- reported concurrency, depth, and backpressure behavior.
+- reported per-root-tree subagent capacity, depth, and backpressure behavior.
+
+The canonical quota field is `quota.max_concurrent_subagents`. It means the
+maximum number of active descendants in one root-agent tree, excluding the
+root. Schema-1 compatibility spellings such as `max_concurrent` are normalized
+at discovery and must never be interpreted as a workspace-wide pool, process
+count, model-list count, or total-agent count.
 
 The adapter implements executable/version probing, the CLI-owned catalog,
 pagination and visibility semantics, duplicate detection, metadata
@@ -37,12 +43,16 @@ description in the shared first-line JSON envelope. Pass prompt and description
 unchanged to the adapter. Ticket ids and reservations are opaque and must not
 be parsed or regenerated.
 
-Native spawn returns an adapter-defined execution handle. The adapter hands
-Baton an identity record containing `session_id`, `ticket_id`, `native_handle`,
-and the adapter id. `BATON_SESSION_ID` is required; Baton derives
-`session_uid` and allocates a contiguous `session_ordinal` per session. A
-reconnect receives a new native handle while retaining ticket and quota
-lineage.
+The root conversation creates one opaque `BATON_SESSION_ID` before the first
+control-plane or ticket-producing call. Every descendant and control-plane
+call receives and forwards that exact value unchanged, including `spawn`,
+`apply`, reservation, bind, probe, complete, release, reconnect, and successor
+creation. No adapter or child may mint, derive, or replace it. Native spawn
+returns an adapter-defined execution handle. The adapter hands Baton an
+identity record containing `session_id`, `ticket_id`, `session_ordinal`,
+`native_handle`, and the adapter id. Baton derives `session_uid` and allocates
+a contiguous `session_ordinal` per session. A reconnect receives a new native
+handle while retaining the same session identity, ticket, and quota lineage.
 
 An explicit quota result may create an immutable successor after a clean
 pre-mutation baseline. The successor receives a new ticket id/ordinal and
@@ -55,6 +65,16 @@ The lifecycle is reserve → native spawn → identity handoff → activity-base
 wait → exactly one terminal result → release. Capacity backpressure returns the
 same reservation without consuming an attempt or changing its selected model.
 A polling interval is not a worker failure.
+
+Capacity-sensitive calls are scoped to `(host, session_uid)`. The root is not a
+subagent, while direct and nested descendants share one limit. The effective
+value is the minimum of known native/adapter `host_limit`, configured
+`configured_policy`, and an optional current-operation `operation_limit`;
+`capacity_sources` reports the `kind`, `value`, and `applied` provenance. A
+current `--capacity` override is non-persistent and cannot raise a known host
+limit. `max_depth` is independent. Legacy remembered `dispatch-<host>.json`
+values are inert rollback residue, and active records without a valid
+`session_uid` are compatibility blockers rather than implicitly assigned work.
 
 ## Profiles and routing
 
@@ -86,7 +106,10 @@ impact/dependency pass. Validate the complete proposal atomically before ticket
 creation, including rename endpoints and path-prefix conflicts. Fill the
 maximal safe ready frontier at each scheduling/refill decision; section order
 only breaks otherwise equal choices. An unknown scope or undeclared worker
-operation stops before mutation.
+operation stops before mutation. Tree-local capacity does not narrow the
+workspace-wide safety scan, repository audit, activation/dispatch locks, or
+cross-tree write-conflict checks. Host/profile route availability and durable
+model quota also remain shared across root trees.
 
 ## Package/update boundary
 

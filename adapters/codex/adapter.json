@@ -25,7 +25,7 @@
     "destination": ".codex/skills/baton/SKILL.md"
   },
   "quota": {
-    "max_concurrent": 4,
+    "max_concurrent_subagents": 3,
     "max_depth": 1,
     "backpressure": "defer"
   }

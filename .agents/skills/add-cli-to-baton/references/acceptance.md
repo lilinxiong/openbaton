@@ -19,12 +19,19 @@ repository evidence separate.
   the single `baton config --cli <target> --runner <model> --longctx <model>
   --coding-model <model> --enable --json` operation.
 - Matching and lifecycle tests prove allowlist-only selection, invalid model
-  rejection, reservation, Receipt, binding, terminal, release, identity
-  handoff, session-unique ticket ids, and host-mismatch rejection.
+  rejection, one root session identity preserved unchanged by every descendant
+  and control-plane call, reservation, Receipt, binding, terminal, release,
+  identity handoff, session-unique ticket ids, and host-mismatch rejection.
 - Quota tests prove capacity backpressure returns the same reservation without
   changing its model, while an exhaustion successor receives a new ticket
   ordinal and retains `successor_from_ticket_id`, session identity, host, scope,
   and quota lineage.
+- Capacity tests prove the root is excluded, direct and nested descendants share
+  one `(host, session_uid)` pool, separate roots are independent, and slots stay
+  occupied through terminal-awaiting-release. Reservation and dispatch status
+  must expose the same effective capacity and `capacity_sources` provenance;
+  general status groups trees and does not publish aggregate workspace
+  availability.
 - Negative tests prove missing profile, invalid authorization, unresolved
   classification, unknown scope/operation, path conflicts, rename conflicts,
   and path-prefix overlap create no ticket or native call.
@@ -35,9 +42,11 @@ repository evidence separate.
    it, queries its live catalog, and persists only its enabled profile.
 2. Select one exact catalog model and create a ticket with explicit host and
    complete read-only/write scope as applicable.
-3. Reserve it, call the adapter's native child API with the exact model and a
-   fresh context, immediately bind `session_id`, `ticket_id`, and the opaque
-   native handle, and wait on native activity.
+3. Reserve it using the root session identity, call the adapter's native child
+   API with the exact model and a fresh context, immediately bind the unchanged
+   `session_id`, `ticket_id`, and opaque native handle, and wait on native
+   activity. Verify each subsequent control-plane call preserves that
+   `session_id` unchanged.
 4. Record exactly one terminal result and release. Verify no queued, running, or
    awaiting-release ticket remains.
 5. Repeat with an invalid model and verify rejection without parent identity,
@@ -58,13 +67,24 @@ repository evidence separate.
    evidence, dependency order, accepted safety gates, deterministic outputs,
    and zero active leaks.
 
+8. Repeat the decisive dispatch checks with two independent root
+   `BATON_SESSION_ID` values on the same host/workspace. Fill one tree to its
+   per-tree subagent limit, verify the other still reserves independently, then
+   confirm release refills only the originating tree. Include at least one
+   nested descendant and verify that `max_depth` and host/profile quota are
+   reported as separate controls.
+
 ## Write scheduling and repository gates
 
 Before any write ticket, perform the read-only impact/dependency pass, record
 exact per-unit paths and operations (`write`, `create`, `delete`, `rename`,
 `chmod`), reject conflicts atomically, and fill every available slot from the
-maximal safe ready frontier. Section order is only a tie-breaker. An undeclared
-worker path stops before mutation.
+maximal safe ready frontier within the current root tree. Section order is only
+a tie-breaker. An undeclared worker path stops before mutation. Independent
+tree capacity does not weaken workspace-wide scope ownership, repository
+safety, activation/dispatch locks, or host/profile model availability/quota;
+keep `DISPATCH_LOCKED`, safety rejection, quota exhaustion, and
+`AGENT_LIMIT_REACHED` as distinct evidence classes.
 
 Run focused tests, `npm test`, `npm run build`, `npm pack --dry-run`, and format
 checks. Exercise the built package with an isolated temporary home. Audit the

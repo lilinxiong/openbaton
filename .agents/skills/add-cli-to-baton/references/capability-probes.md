@@ -17,10 +17,13 @@ fixtures.
 3. Call the actual native child-agent API. Prove a stable opaque execution
    handle, fresh context, exact valid model, invalid-model rejection, bounded
    completion, cancellation, release, and capacity/backpressure behavior.
-4. Require `BATON_SESSION_ID` and prove that the identity handoff binds
-   `session_id`, `ticket_id`, `session_ordinal`, and the native handle. On quota
-   exhaustion, prove that the immutable successor keeps the originating session,
-   host, scope, and quota lineage while receiving a new ordinal and Receipt.
+4. Create one root `BATON_SESSION_ID` before the first control-plane call and
+   prove that every descendant and control-plane call preserves it unchanged.
+   Prove that the identity handoff binds `session_id`, `ticket_id`,
+   `session_ordinal`, and the native handle. On quota exhaustion, prove that
+   the immutable successor keeps the originating session, host, scope, and
+   quota lineage while receiving a new ordinal and Receipt; no child or
+   reconnect may mint a replacement session id.
 5. In a disposable repository, verify working-directory, filesystem, index,
    reference, explicit scope, and cleanup semantics.
 6. Install the manifest package and runtime skill into an isolated home. Verify
@@ -38,6 +41,19 @@ fixtures.
 8. Keep quota cases outside the successful live inputs. One configured route
    must return `BLOCKED` on exhaustion without fallback; test successor lineage
    in a separate fixture that explicitly configures a second route.
+
+9. Record the host's native/adapter per-root-tree subagent limit and any
+   configured policy. Verify the root agent is excluded, descendants at every
+   depth count toward one `(host, session_uid)` pool, and a second root on the
+   same host is independent. Compare reservation and dispatch-status
+   `capacity_sources` to prove the effective minimum and its provenance; keep
+   `max_depth` separate from capacity.
+
+10. Verify that a terminal result does not return a slot before native release,
+    and that `AGENT_LIMIT_REACHED` defers only the originating tree's
+    reservation. Separately exercise workspace-wide write safety, activation or
+    dispatch lock contention, and host/profile quota exhaustion; none may be
+    relabeled as root-tree capacity.
 
 Use these outcomes: `READY_TO_INTEGRATE`, `CATALOG_ONLY`, `UNSUPPORTED`, or
 `BLOCKED`. A catalog without exact native child support is not executable

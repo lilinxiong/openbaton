@@ -155,10 +155,12 @@ interface CliProfileResult {
   runner: string | null;
   longctx: string | null;
   coding_models: string[];
-  max_concurrent: number;
+  /** Active descendants in one root-agent tree; the root is excluded. */
+  max_concurrent_subagents: number;
   max_depth: number;
-  max_concurrent_source: "cli" | "director";
+  max_concurrent_subagents_source: "adapter" | "director_policy";
   max_depth_source: "cli" | "director";
+  capacity_scope: "root_agent_tree";
   model_source: string;
   config: string;
 }
@@ -172,6 +174,7 @@ async function configureCliProfile(
     env,
     current,
     catalog,
+    hostLimit,
     ask,
     single,
   }: {
@@ -180,6 +183,7 @@ async function configureCliProfile(
     env: NodeJS.ProcessEnv;
     current: Config;
     catalog: CliModelCatalog;
+    hostLimit?: number;
     ask: () => SelectPrompt;
     single: boolean;
   },
@@ -244,8 +248,18 @@ async function configureCliProfile(
   }
 
   const capabilities = normalizeCliRuntimeCapabilities(catalog);
-  const maxConcurrent = capabilities?.max_concurrent;
+  // Adapter discovery normalizes legacy capability spellings to the public
+  // per-root-tree subagent field. Keep the persisted config key unchanged for
+  // schema compatibility; it is interpreted as the same subagent limit.
+  const maxConcurrent = capabilities?.max_concurrent_subagents;
   const maxDepth = capabilities?.max_depth;
+  const configuredMaxConcurrent = effectiveMaxConcurrentForHost(current, cli);
+  const knownAdapterLimit = [maxConcurrent, hostLimit]
+    .filter((value): value is number => value !== undefined)
+    .reduce((minimum, value) => Math.min(minimum, value), Number.POSITIVE_INFINITY);
+  const effectiveMaxConcurrent = Number.isFinite(knownAdapterLimit)
+    ? Math.min(configuredMaxConcurrent, knownAdapterLimit)
+    : configuredMaxConcurrent;
   current.cli[cli] = {
     enabled,
     runner,
@@ -260,10 +274,13 @@ async function configureCliProfile(
     runner: runner || null,
     longctx: longctx || null,
     coding_models: codingModels,
-    max_concurrent: effectiveMaxConcurrentForHost(current, cli),
+    max_concurrent_subagents: effectiveMaxConcurrent,
     max_depth: effectiveMaxDepthForHost(current, cli),
-    max_concurrent_source: maxConcurrent !== undefined ? "cli" : "director",
+    max_concurrent_subagents_source: (Number.isFinite(knownAdapterLimit) && configuredMaxConcurrent >= knownAdapterLimit)
+      ? "adapter"
+      : "director_policy",
     max_depth_source: maxDepth !== undefined ? "cli" : "director",
+    capacity_scope: "root_agent_tree",
     model_source: `${cli} catalog`,
     config: "",
   };
@@ -274,7 +291,7 @@ function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
   stdout.write(`  runner: ${result.runner || "(missing route blocks classified work)"}\n`);
   stdout.write(`  longctx: ${result.longctx || "(missing route blocks classified work)"}\n`);
   stdout.write(`  Coding priority: ${result.coding_models.length ? result.coding_models.join(" > ") : "(none)"}\n`);
-  stdout.write(`  max_concurrent: ${result.max_concurrent} (${result.max_concurrent_source})\n`);
+  stdout.write(`  max_concurrent_subagents: ${result.max_concurrent_subagents} (${result.max_concurrent_subagents_source}; root-agent tree, root excluded)\n`);
   stdout.write(`  max_depth: ${result.max_depth} (${result.max_depth_source})\n`);
 }
 
@@ -321,10 +338,12 @@ export async function runConfig(args: string[], {
   const results: CliProfileResult[] = [];
   for (let index = 0; index < clis.length; index += 1) {
     const cli = clis[index];
+    const selectedAdapter = discoverAdapter(cli);
     if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
-    const catalog = await discoverAdapter(cli).discoverModels({ cwd, env });
+    const catalog = await selectedAdapter.discoverModels({ cwd, env });
+    const hostLimit = (selectedAdapter as { host?: { defaultMaxConcurrent?: number } }).host?.defaultMaxConcurrent;
     results.push(await configureCliProfile(cli, args, {
-      cwd, stdout, env, current, catalog, ask, single,
+      cwd, stdout, env, current, catalog, hostLimit, ask, single,
     }));
   }
 
@@ -335,15 +354,17 @@ export async function runConfig(args: string[], {
     ? { ...results[0], config: file }
     : {
       profiles: results,
-      max_concurrent: current.director.max_concurrent,
+      max_concurrent_subagents: current.director.max_concurrent,
+      max_concurrent_subagents_source: "director_policy",
       max_depth: current.director.max_depth,
+      capacity_scope: "root_agent_tree",
       config: file,
     };
   if (args.includes("--json")) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   else {
     stdout.write(`\nwrote ${file}\n`);
     for (const result of results) writeProfile(stdout, result);
-    stdout.write(`  director limits: max_concurrent=${current.director.max_concurrent}, max_depth=${current.director.max_depth}\n`);
+    stdout.write(`  director policy (per root-agent tree): max_concurrent_subagents=${current.director.max_concurrent}, max_depth=${current.director.max_depth}\n`);
     stdout.write("  later routing: automatic; no model confirmation UI\n");
   }
   return 0;

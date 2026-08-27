@@ -34,7 +34,9 @@ declares:
 - the invocation signal used to identify the current runtime;
 - `native.execution_handle_kind`;
 - runtime-skill source and destination;
-- reported `max_concurrent`, `max_depth`, and backpressure semantics.
+- reported `quota.max_concurrent_subagents` (active descendants per root tree,
+  excluding the root), `max_depth`, and backpressure semantics. `max_depth` is
+  a depth policy, not a capacity count.
 
 The adapter's catalog is the sole source of model ids and optional reasoning,
 modality, and service-tier metadata. Preserve exact values and validate the
@@ -53,16 +55,26 @@ stops before mutation.
 
 At each dispatch or refill, calculate the maximal safe ready frontier: every
 order-ready unit whose scope is complete, pairwise disjoint, and within the
-selected adapter's physical capacity. Fill every available slot. Section order
-only breaks otherwise equivalent choices; it is not a reason to serialize.
+selected adapter's tree-local runtime capacity. Fill every available slot.
+Section order only breaks otherwise equivalent choices; it is not a reason to
+serialize. `director.max_concurrent` is a configured policy input, while any
+`planning_max_concurrent` value emitted by Apply or the director queue is
+legacy director planning metadata. Neither planning field is a runtime
+snapshot; runtime capacity comes from the current `(host, session_uid)`
+resolver.
 
 ## Ticket identity and lifecycle
 
-`BATON_SESSION_ID` is required for every ticket-producing command. Baton hashes
-that value into `session_uid` and assigns a contiguous `session_ordinal` within
-the session. A ticket id contains the opaque prefix, session uid, and ordinal;
-the id is data, not a routing signal. Keep `session_id`, `ticket_id`, and the
-adapter's native handle in the identity handoff.
+The root director creates one opaque `BATON_SESSION_ID` for the dispatch
+session before the first control-plane or ticket-producing call. It is
+immutable for that session: pass the exact same value to every descendant and
+every control-plane call (`spawn`/`apply`, `dispatch next`, `bind`, `probe`,
+`complete`, and `release`), including reconnects and quota successors. A
+descendant must not create, derive, or replace a session id. Baton hashes that
+value into `session_uid` and assigns a contiguous `session_ordinal` within the
+session. A ticket id contains the opaque prefix, session uid, and ordinal; the
+id is data, not a routing signal. Keep `session_id`, `ticket_id`,
+`session_ordinal`, and the adapter's native handle in every identity handoff.
 
 Use this lifecycle for every reserved ticket:
 
@@ -118,9 +130,17 @@ baton models refresh --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
-baton dispatch next --host <adapter-id> --capacity <n> --json
+baton dispatch next --host <adapter-id> [--capacity <n>] --json
+baton dispatch status --host <adapter-id> --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
 ```
+
+Capacity-sensitive JSON is deliberately breaking: dispatch snapshots are
+scoped to the current `(host, session_uid)` root-agent tree and expose
+`capacity`, `capacity_sources`, `active`, `available`, and that tree's queue.
+Workspace status keeps ticket inventory separately under `spawns` and groups
+runtime capacity under `capacity_trees`; it never exposes one aggregate
+workspace `available` value.
 
 Finish with separate evidence for SDK conformance, package/build checks,
 catalog discovery, native execution, ticket lifecycle, quota lineage, and the

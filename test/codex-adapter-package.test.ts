@@ -5,8 +5,9 @@ import path from "node:path";
 import { describe, it } from "bun:test";
 import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
+import { initProject } from "../src/commands/init.js";
 import { runHost } from "../src/commands/host.js";
-import { detectInvokingHosts } from "../src/lib/hosts.js";
+import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
   installBundledAdaptersAndRecord,
@@ -16,8 +17,11 @@ import {
   installManifestPath,
   readInstallManifest,
   writeInstallManifest,
+  directoryFingerprint,
 } from "../src/lib/install-manifest.js";
 import { buildUninstallPlan } from "../src/lib/uninstall.js";
+import { configPath, skillPath } from "../src/lib/paths.js";
+import { parseToml } from "../src/lib/toml.js";
 
 const repoRoot = process.cwd();
 const packageSource = path.join(repoRoot, "adapters", "codex");
@@ -62,6 +66,8 @@ describe("external Codex adapter package", () => {
     assert.deepEqual(manifests.map((manifest) => manifest.adapter.id), ["codex"]);
     assert.equal(manifests[0].catalog.command, "catalog.mjs");
     assert.equal(manifests[0].native.execution_handle_kind, "task_name");
+    assert.equal(manifests[0].quota.max_concurrent_subagents, 3);
+    assert.equal(getCliAdapter("codex", env).host.defaultMaxConcurrent, 3);
   });
 
   it("detects Codex from CODEX_THREAD_ID without sandbox or adapter-path signals", () => {
@@ -127,6 +133,36 @@ describe("external Codex adapter package", () => {
     assert.equal(result.updated.length, 0);
     assert.equal(result.conflicts.length, 0);
     assert.deepEqual(fs.readFileSync(manifestFile), before);
+  });
+
+  it("keeps bundled and isolated installed adapter/runtime artifacts synchronized", async () => {
+    const { cwd, env } = isolatedEnv();
+    await initProject(cwd, { env });
+
+    const installedPackage = adapterInstallDir("codex", env);
+    assert.equal(directoryFingerprint(installedPackage), directoryFingerprint(packageSource));
+
+    const sourceManifest = path.join(packageSource, "adapter.json");
+    const installedManifest = path.join(installedPackage, "adapter.json");
+    const sourceRuntimeSkill = path.join(packageSource, "runtime", "SKILL.md");
+    const installedRuntimeSkill = path.join(installedPackage, "runtime", "SKILL.md");
+    const installedHostSkill = hostSkillDest("codex", { cwd, env });
+    const installedSharedSkill = skillPath(cwd, { env });
+    const installedConfig = configPath(cwd, { env });
+    assert.deepEqual(fs.readFileSync(installedManifest), fs.readFileSync(sourceManifest));
+    assert.deepEqual(fs.readFileSync(installedRuntimeSkill), fs.readFileSync(sourceRuntimeSkill));
+    assert.deepEqual(fs.readFileSync(installedHostSkill), fs.readFileSync(sourceRuntimeSkill));
+    assert.deepEqual(fs.readFileSync(installedSharedSkill), fs.readFileSync(path.join(repoRoot, "SKILL.md")));
+    assert.deepEqual(
+      parseToml(fs.readFileSync(installedConfig, "utf8")),
+      parseToml(fs.readFileSync(path.join(repoRoot, "templates", "config.toml"), "utf8")),
+    );
+    const sourceManifestText = fs.readFileSync(sourceManifest, "utf8");
+    const sourceRuntimeText = fs.readFileSync(sourceRuntimeSkill, "utf8");
+    assert.match(sourceManifestText, /max_concurrent_subagents/);
+    assert.doesNotMatch(sourceManifestText, /"max_concurrent"\s*:/);
+    assert.match(sourceRuntimeText, /root agent tree/);
+    assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
   });
 
   it("plans safe host and clean removal of an owned adapter package", () => {

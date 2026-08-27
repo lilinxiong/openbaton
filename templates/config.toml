@@ -4,8 +4,13 @@ schema_version = 2
 # Baton stores only profiles explicitly selected by the user.
 
 [director]
-# Director limits. A selected [cli.<id>] may override either field when its
-# discovery response reports a value.
+# Director policy inputs. `max_concurrent` is the configured ceiling for one
+# (host, BATON_SESSION_ID) root-agent tree; it is not a host/workspace-global
+# pool. Apply and DispatchQueue expose this value only as the legacy
+# `planning_max_concurrent` planning metadata. Runtime dispatch capacity is
+# resolved separately from the host capability, policy, and operation limit,
+# and is reported by tree-local dispatch snapshots. A selected [cli.<id>] may
+# override either policy field when its discovery response reports a value.
 max_concurrent = 4
 max_depth = 1
 

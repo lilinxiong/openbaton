@@ -5,5 +5,5 @@
   "invocation": { "signal": "ALPHA_HOST" },
   "native": { "execution_handle_kind": "alpha-task" },
   "runtime_skill": { "source": "runtime/SKILL.md", "destination": ".baton/skills/alpha/SKILL.md" },
-  "quota": { "max_concurrent": 2, "max_depth": 3 }
+  "quota": { "max_concurrent_subagents": 2, "max_depth": 3 }
 }

@@ -15,6 +15,26 @@ function positiveInteger(value: unknown): number | undefined {
 }
 
 /**
+ * Capability names accepted at the adapter boundary. The first spelling is
+ * canonical; the remaining names are legacy discovery spellings and must not
+ * leak into the public `CliRuntimeCapabilities` shape.
+ */
+const MAX_CONCURRENT_SUBAGENT_KEYS = [
+  "max_concurrent_subagents",
+  "maxConcurrentSubagents",
+  "max_concurrent",
+  "maxConcurrent",
+] as const;
+
+function firstPositiveInteger(source: Record<string, unknown>, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = positiveInteger(source[key]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+/**
  * Read only explicit scheduling fields from a CLI response. The discovery
  * protocol may put them directly on the response or in a capabilities table.
  * Missing or invalid values stay unknown; Baton never fills them from adapter
@@ -23,24 +43,24 @@ function positiveInteger(value: unknown): number | undefined {
 export function normalizeCliRuntimeCapabilities(value: unknown): CliRuntimeCapabilities | undefined {
   const root = record(value);
   if (!root) return undefined;
-  const nested = record(root.capabilities)
-    || record(root.agentCapabilities)
-    || record(root.agent_capabilities);
-  const sources = nested ? [nested, root] : [root];
-  let maxConcurrent: number | undefined;
+  // Keep the established precedence (nested capability tables before direct
+  // response fields), while checking every known table rather than dropping
+  // a capability just because an earlier table only reports max_depth.
+  const sources = [
+    record(root.capabilities),
+    record(root.agentCapabilities),
+    record(root.agent_capabilities),
+    root,
+  ].filter((source): source is Record<string, unknown> => source !== null);
+  let maxConcurrentSubagents: number | undefined;
   let maxDepth: number | undefined;
   for (const source of sources) {
-    maxConcurrent ??= positiveInteger(
-      source.max_concurrent
-      ?? source.maxConcurrent
-      ?? source.maxConcurrentSubagents
-      ?? source.max_concurrent_subagents,
-    );
-    maxDepth ??= positiveInteger(source.max_depth ?? source.maxDepth);
+    maxConcurrentSubagents ??= firstPositiveInteger(source, MAX_CONCURRENT_SUBAGENT_KEYS);
+    maxDepth ??= firstPositiveInteger(source, ["max_depth", "maxDepth"]);
   }
-  if (maxConcurrent === undefined && maxDepth === undefined) return undefined;
+  if (maxConcurrentSubagents === undefined && maxDepth === undefined) return undefined;
   return {
-    ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
+    ...(maxConcurrentSubagents !== undefined ? { max_concurrent_subagents: maxConcurrentSubagents } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
 }

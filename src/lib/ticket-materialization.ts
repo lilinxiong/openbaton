@@ -48,7 +48,11 @@ function activeWriteScopes(cwd: string, env?: NodeJS.ProcessEnv): PendingWriteSc
     if (ticket.slot_released_at) continue;
     try {
       const receipt = readReceipt(cwd, ticket.receipt_id, env);
-      if ((ticket.mode === "write" || receipt.execution.mode === "write") && receipt.scope.write_allowlist.length) {
+      if (
+        (ticket.mode === "write" || ticket.mode === "commit-only"
+          || receipt.execution.mode === "write" || receipt.execution.mode === "commit-only")
+        && receipt.scope.write_allowlist.length
+      ) {
         scopes.push({ key: ticket.id, ticket_id: ticket.id, write_paths: receipt.scope.write_allowlist });
       }
     } catch {
@@ -120,9 +124,13 @@ export async function materializeStandalonePlanAsync(
     planned.ticket.mode = "write";
     planned.ticket.read_only = false;
     planned.ticket.receipt_id = planned.receipt.receipt_id;
-  } else if (planned.ticket.mode === "commit-only" && !planned.receipt.commit_baseline) {
-    const baseline = await captureCommit(cwd, safety);
-    applyCommitBaselineToPlan(planned, baseline);
+  } else if (planned.ticket.mode === "commit-only") {
+    const baseline = planned.receipt.commit_baseline || await captureCommit(cwd, safety);
+    // Commit-only staged paths are workspace-owned just like an explicit
+    // write allowlist. Capture first, then reject overlap before either
+    // immutable artifact is persisted.
+    assertWriteScopesAvailable(cwd, [{ key: planned.ticket.id, write_paths: baseline.staged_paths }], options.env);
+    if (!planned.receipt.commit_baseline) applyCommitBaselineToPlan(planned, baseline);
   }
 
   const receiptFile = path.join(receiptsDir(cwd, options.env), `${planned.receipt.receipt_id}.json`);

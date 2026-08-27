@@ -131,6 +131,8 @@ describe("configured mechanical operations", () => {
       assert.equal(multiSelects.length, 0);
       assert.match(out.text(), new RegExp(model));
       assert.match(out.text(), /no model confirmation UI/);
+      assert.match(out.text(), /max_concurrent_subagents: .*root-agent tree, root excluded/);
+      assert.doesNotMatch(out.text(), /\bmax_concurrent=/);
 
       const config = loadConfig(cwd, { env });
       assert.deepEqual(config.cli[ALPHA], {

@@ -82,11 +82,39 @@ conflicts, before ticket creation. Schedule the maximal safe ready frontier;
 section order only breaks otherwise equal choices. An undeclared worker path or
 operation stops before mutation and returns a scope decision.
 
-Every ticket-producing command requires `BATON_SESSION_ID`. Baton derives a
-`session_uid` and allocates a contiguous `session_ordinal` within that session.
-The adapter handoff must preserve `session_id`, `ticket_id`, and its opaque
-native execution handle. Do not infer identity from ticket text or require a
+The root target-CLI conversation creates one opaque `BATON_SESSION_ID` before
+the first control-plane or ticket-producing call. It passes the exact same
+value unchanged to every descendant and control-plane operation, including
+`spawn`/`apply`, reserve, bind, probe, complete, release, reconnect, and quota
+successor handling. No adapter, child, or reconnect may mint, derive, or
+replace the session id. Baton derives a `session_uid` and allocates a
+contiguous `session_ordinal` within that session. Every adapter handoff must
+preserve `session_id`, `ticket_id`, `session_ordinal`, and its opaque native
+execution handle. Do not infer identity from ticket text or require a
 provider-specific identity field.
+
+Capacity is scoped to the `(host, session_uid)` root-agent tree. The root agent
+is excluded from the subagent count; direct children, grandchildren, and
+deeper descendants all consume the same tree-local pool. A reservation holds a
+slot while `dispatching`, while its bound native execution is running, and
+after a terminal result until native release is confirmed. Native
+`AGENT_LIMIT_REACHED` is tree-local backpressure: defer the same reservation
+without changing its model, attempt, or session identity.
+
+Use one effective capacity meaning everywhere: active descendants in one root
+tree. Baton resolves the minimum of known `host_limit`, configured
+`configured_policy`, and an optional current-operation `operation_limit`; the
+`capacity_sources` output records each source's `kind`, `value`, and `applied`
+status. `--capacity` is a non-persistent reduction for the current tree, and
+`max_depth` remains a separate policy. Legacy `dispatch-<host>.json` values are
+inert rollback residue and must not drive scheduling.
+
+Tree capacity does not grant permission to bypass broader controls. Workspace
+path ownership, Git/repository safety, activation and dispatch locks, and
+host/profile model availability or quota retain their existing scopes across
+root trees. General status may inventory all workspace tickets, but capacity
+must be shown as separately grouped `(host, session_uid)` trees rather than one
+aggregate workspace pool.
 
 With the live acceptance profile containing one coding route, explicit quota
 exhaustion is `BLOCKED` and must not fall back. Exercise the immutable

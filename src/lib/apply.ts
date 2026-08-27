@@ -1,5 +1,7 @@
 /**
- * Apply = multi-model, uncapped, card-routed execution of OpenSpec tasks.
+ * Apply plans a multi-model, card-routed OpenSpec wave. Its queue metadata is
+ * director-owned planning state; actual execution is dispatched separately
+ * through the tree-local capacity snapshot.
  * OpenSpec owns the task list and status. baton owns who runs each unit.
  */
 import fs from "node:fs";
@@ -25,6 +27,7 @@ export type ApplyModelCard = ModelCard;
 
 export interface ApplyConfig {
   director: {
+    /** Configured policy input; Apply exposes it only as planning metadata. */
     max_concurrent: number;
   };
 }
@@ -63,7 +66,9 @@ export interface BlockedApplyTask {
 }
 
 export interface ApplyQueue {
-  max_concurrent: number;
+  /** Deliberately breaking planning-only shape; never a runtime capacity. */
+  scope: "director-planning";
+  planning_max_concurrent: number;
   running: number;
   queued: number;
 }
@@ -291,7 +296,12 @@ export async function applyChange({ cwd, change, cfg, cards, includeTask, select
     tickets: tickets.map((t) => t.id),
     director_local: local,
     blocked,
-    queue: { max_concurrent: cfg.director.max_concurrent, running: 0, queued: tickets.length },
+    queue: {
+      scope: "director-planning",
+      planning_max_concurrent: cfg.director.max_concurrent,
+      running: 0,
+      queued: tickets.length,
+    },
   };
   fs.mkdirSync(runsDir(cwd, env), { recursive: true });
   fs.writeFileSync(

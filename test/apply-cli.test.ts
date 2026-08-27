@@ -87,6 +87,16 @@ describe("baton apply orchestration", () => {
       const ticketFiles = fs.readdirSync(spawnsDir(cwd)).filter((name) => name.endsWith(".json"));
       assert.equal(ticketFiles.length, 2);
       assert.equal(body.reserved.length, 2);
+      // Apply's queue/planning path must consume the deliberately breaking
+      // tree-local dispatch snapshot contract, never a workspace max field.
+      assert.equal(body.snapshot.scope, undefined);
+      assert.equal(body.snapshot.host, "alpha");
+      assert.equal(typeof body.snapshot.session_uid, "string");
+      assert.equal(Array.isArray(body.snapshot.capacity_sources), true);
+      assert.equal(typeof body.snapshot.active, "number");
+      assert.equal(typeof body.snapshot.available, "number");
+      assert.equal(Object.hasOwn(body.snapshot, "max_concurrent"), false);
+      assert.equal(Object.hasOwn(body.snapshot, "planning_max_concurrent"), false);
       assert.deepEqual(body.reserved.map((item: { ticket_id: string }) => item.ticket_id), [testTicketId("os", 1), testTicketId("os", 2)]);
       for (const reserved of body.reserved) {
         assert.deepEqual(parseDispatchReservationEnvelope(reserved.prompt), reserved.reservation);

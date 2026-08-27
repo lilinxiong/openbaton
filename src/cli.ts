@@ -16,14 +16,13 @@ import {
 import {
   cliProfileForHost,
   configuredCodingModelsForHost,
-  effectiveMaxConcurrentForHost,
   effectiveMaxDepthForHost,
   loadConfig,
 } from "./lib/config.js";
 import { CardMatchError } from "./lib/cards.js";
-import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
+import { dispatchCompatibilityBlockers, dispatchWorkspaceCapacitySnapshots, reserveNext } from "./lib/dispatch.js";
 import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
-import { listSpawns, nextSpawnIds, planStandaloneSpawn, type StandalonePlan } from "./lib/spawn.js";
+import { listSpawns, nextSpawnIds, planStandaloneSpawn, sessionUid, type StandalonePlan } from "./lib/spawn.js";
 import { formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId } from "./lib/task-id.js";
 import { parseApplyUnitScopes, scopeRecord, DEFAULT_WRITE_OPERATIONS, WRITE_OPERATIONS, type ApplyUnitScope } from "./lib/apply-scope.js";
@@ -175,8 +174,9 @@ const HELP = `baton — CLI-neutral director for discovered adapters
 
 Standalone: cards + native spawn + mechanical ops + director context hygiene. Complete without OpenSpec.
 Together: OpenSpec owns breakdown/status; baton owns who runs each task and keeps
-the director context clean. Apply is multi-model, uncapped, card-routed execution
-of OpenSpec tasks, with conclusions written back. Not a thin adapter.
+the director context clean. Apply is multi-model, root-tree-capacity-bounded,
+card-routed execution of OpenSpec tasks, with conclusions written back. Not a
+thin adapter.
 The selected CLI owns model visibility; Baton routes only within the configured candidate set.
 Interactive init/config use arrow-key select; space toggles CLIs and ordered Coding models.
 
@@ -199,7 +199,7 @@ Usage:
   baton apply [change] [--host ${HOSTS}]  plan the ready OpenSpec wave (no tickets)
   baton apply [change] [--host ${HOSTS}] --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
                director-scoped dispatch of the order-ready subset; --dispatch without --unit is rejected
-  baton dispatch next --host HOST --capacity N --json
+  baton dispatch next --host HOST [--capacity N] --json
   baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
   baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found --json
@@ -209,7 +209,14 @@ Usage:
   baton dispatch fail|close TICKET --host HOST [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json
-  baton dispatch status --host HOST --json
+  baton dispatch status --host HOST [--capacity N] --json
+  dispatch capacity is per (host, BATON_SESSION_ID) root-agent tree: the root
+  is excluded, direct and nested descendants share one limit, and
+  capacity_sources reports host/policy/operation provenance; max_depth is separate
+  workspace safety/locks and host-profile model quota retain their broader scopes
+  Apply/queue planning metadata is separate from runtime capacity; status JSON
+  keeps workspace ticket inventory under spawns and tree capacity under
+  capacity_trees (there is no aggregate workspace available value)
   baton status [--host ${HOSTS}] [--json]  activation, Coding routes, queue + OpenSpec status
   baton help | --help | -h
   baton version | --version | -v
@@ -702,6 +709,7 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
 
 function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
   validateCommandArgs(args, { value: ["host"], boolean: ["json"], positional: "none" });
+  sessionUid(env);
   const flags = parseFlags(args);
   let cfg = null;
   try {
@@ -721,7 +729,11 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   const snapshot = readRouteSnapshot(cwd, { host, env });
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
   const selections = listSelectionProposals(cwd, env).filter((item) => !item.host || item.host === host);
-  const spawns = listSpawns(cwd, env).filter((s) => (s.target_host || s.dispatch_host || s.host || s.selection?.host) === host);
+  // General status keeps the complete workspace ticket inventory. Capacity
+  // itself is reported separately below, grouped by (host, session_uid).
+  const spawns = listSpawns(cwd, env);
+  const capacityTrees = dispatchWorkspaceCapacitySnapshots(cwd, { env });
+  const compatibilityBlockers = dispatchCompatibilityBlockers(cwd, env);
   const running = spawns.filter((s) => s.status === "running").length;
   const queued = spawns.filter((s) => s.status === "queued").length;
   const dispatching = spawns.filter((s) => s.status === "dispatching").length;
@@ -794,8 +806,9 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
       coding_dispatch_reason: codingDispatchReason,
       coding_models: codingAvailability,
       cards: { total: cards.length, executable: executableCards },
-      max_concurrent: effectiveMaxConcurrentForHost(cfg, host, env),
       max_depth: effectiveMaxDepthForHost(cfg, host),
+      capacity_trees: capacityTrees,
+      compatibility_blockers: compatibilityBlockers,
       cli_models: { executable: executableRoutes, snapshot: snapshot?.fingerprint || null },
       selections: {
         total: selections.length,
@@ -815,8 +828,21 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${executableCards} executable)\n`);
   stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
   stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
-  stdout.write(`  max_concurrent: ${effectiveMaxConcurrentForHost(cfg, host, env)} (queue beyond this; never refuse)\n`);
   stdout.write(`  max_depth: ${effectiveMaxDepthForHost(cfg, host)}\n`);
+  stdout.write("  capacity trees:\n");
+  stdout.write("    scope: per host + session_uid; root excluded; descendants share one pool\n");
+  for (const tree of capacityTrees) {
+    const sources = tree.capacity_sources.length
+      ? tree.capacity_sources.map((source) => `${source.kind}=${source.value}${source.applied ? "*" : ""}`).join(",")
+      : "unknown";
+    stdout.write(`    ${tree.host} session=${tree.session_uid} capacity=${tree.capacity ?? "unknown"} active=${tree.active} available=${tree.available ?? "unknown"} sources=${sources}\n`);
+  }
+  if (compatibilityBlockers.length) {
+    stdout.write("  compatibility blockers:\n");
+    for (const blocker of compatibilityBlockers) {
+      stdout.write(`    ${blocker.code} ${blocker.ticket_id || blocker.file} status=${blocker.status || "unknown"}: ${blocker.reason}\n`);
+    }
+  }
   stdout.write(`  CLI models: ${executableRoutes}${snapshot ? ` snapshot=${snapshot.fingerprint}` : " (run baton config)"}\n`);
   stdout.write(`  selections: ${selections.length}  pending ${selections.filter((item) => item.status === "pending_confirmation").length}  approved ${selections.filter((item) => item.status === "approved").length}\n`);
   stdout.write(`  spawns: ${spawns.length}  dispatching ${dispatching}  running ${running}  queued ${queued}  terminal ${terminal}\n`);
@@ -988,11 +1014,13 @@ async function maybeReserveQueuedSpawn(
   createdTickets: boolean,
 ): Promise<SpawnReservation | null> {
   if (!flagOn(flags, "dispatch") || !createdTickets) return null;
-  const cfg = loadConfig(cwd, { env });
+  // Use the same environment-derived tree identity as ticket creation before
+  // refilling the dispatch reservation.
+  sessionUid(env);
   const host = runtimeHost(flags, cwd, env);
   const capacityFlag = stringFlag(flags, "capacity");
   return await reserveNext(cwd, {
-    capacity: capacityFlag != null ? Number(capacityFlag) : (persistedCapacity(cwd, host, env) ?? effectiveMaxConcurrentForHost(cfg, host, env)),
+    capacity: capacityFlag != null ? Number(capacityFlag) : undefined,
     host,
     env,
   });

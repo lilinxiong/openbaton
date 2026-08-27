@@ -20,8 +20,14 @@ catalog       executable path, arguments, protocol, timeout
 invocation    runtime signal and optional environment description
 native        opaque execution_handle_kind
 runtime_skill package source and installed destination
-quota         max_concurrent, max_depth, backpressure
+quota         max_concurrent_subagents, max_depth, backpressure
 ```
+
+`quota.max_concurrent_subagents` is a per-root-agent-tree subagent limit. It
+counts active descendants and excludes the root agent; it is never a
+workspace-wide, host-wide, process, model-list, or total-agent count. Schema-1
+legacy spellings are normalized at the adapter boundary and do not change this
+meaning.
 
 Runtime-skill paths are relative to the package and traversal-free; the catalog
 command may be a package path or an absolute executable. Discovery validates
@@ -70,16 +76,31 @@ another and active scopes. Rename endpoints and path-prefix overlaps conflict.
 An unknown path, dependency, or operation prevents ticket creation.
 
 At each scheduling or refill decision, calculate the maximal safe ready
-frontier: every order-ready unit with a complete scope, pairwise-disjoint paths,
-and room under the adapter's physical capacity. Fill all available slots.
-Section order is only a stable tie-breaker among otherwise equal choices.
+frontier for the current `(host, session_uid)` root-agent tree: every
+order-ready unit with a complete scope, pairwise-disjoint paths, and room under
+its effective subagent capacity. Direct children, grandchildren, and deeper
+descendants share the same pool; the root is excluded. Fill all available
+slots in that tree, while another root tree's queued or active tickets are not
+counted or mutated. Section order is only a stable tie-breaker among otherwise
+equal choices.
+
+The effective capacity is resolved once as the minimum of known
+`host_limit`, `configured_policy`, and optional current-operation
+`operation_limit` sources. Reservation and dispatch status expose the same
+value with `capacity_sources` provenance (`kind`, `value`, `applied`). A
+`--capacity` override is current-tree-only and non-persistent; the legacy
+`dispatch-<host>.json` state is inert rollback residue. `max_depth` remains a
+separate descendant-depth policy.
 
 ## Identity and lifecycle
 
-`BATON_SESSION_ID` is mandatory for ticket creation. Baton hashes it into
-`session_uid` and allocates a contiguous `session_ordinal` per session. Ticket
-ids contain an opaque prefix, session uid, and ordinal. They are identifiers,
-not routing input.
+`BATON_SESSION_ID` is mandatory for ticket creation and capacity-sensitive
+dispatch operations. Baton hashes it into the immutable root-agent-tree key
+`session_uid` and allocates a contiguous `session_ordinal` per session. Root
+and descendant tickets retain the same key; a child, reconnect, or quota
+successor cannot mint a new session to escape the tree limit. Ticket ids
+contain an opaque prefix, session uid, and ordinal. They are identifiers, not
+routing input.
 
 The shared lifecycle is:
 
@@ -95,14 +116,18 @@ ticket + Receipt
 
 `native_handle` is opaque and its kind comes from the manifest. Baton does not
 require a universal field name, infer identity from ticket text, or synthesize a
-handle. A capacity response returns the same reservation to the queue without
-consuming an attempt or changing its selected model.
+handle. A native `AGENT_LIMIT_REACHED` response returns the same reservation to
+its originating tree queue without consuming an attempt or changing its model,
+session identity, or another tree's state. A slot is held from `dispatching`
+through bound running and terminal-awaiting-release until native release is
+confirmed.
 
 ## Quota successor policy
 
-An explicit quota-exhaustion result is recorded as availability evidence. For a
-write ticket, Baton verifies that the pre-mutation baseline is unchanged and
-then may create an immutable successor from the next configured coding route.
+An explicit host/profile model quota-exhaustion result is recorded as
+availability evidence across every root tree using that route. For a write
+ticket, Baton verifies that the pre-mutation baseline is unchanged and then may
+create an immutable successor from the next configured coding route.
 The successor gets a new session ordinal and Receipt, keeps the original
 session, adapter, host, scope, authorization, and quota lineage, and records
 `successor_from_ticket_id` plus `successor_reason`.
@@ -117,7 +142,18 @@ required.
 Read-only is the default. Write tickets carry a path/operation allowlist and a
 parent-owned repository observation. Workers do not perform Git operations. An
 explicit exclusive commit ticket over the parent-staged tree may create one
-commit and no other repository operation.
+commit and no other repository operation. Tree-local capacity does not narrow
+workspace-wide path ownership, Git safety audits, activation/dispatch locks, or
+cross-tree write-conflict checks; host/profile route availability and quota
+remain broader than a root tree.
+
+General `baton status` may inventory every workspace ticket, but reports
+capacity only as independent `capacity_trees` grouped by `(host, session_uid)`.
+It never exposes one aggregate workspace `available` value. A current-tree
+`baton dispatch status --host` reports `host`, `session_uid`, `capacity`,
+`capacity_sources`, `active`, `available`, and that tree's queue/lifecycle
+lists. Records that hold a slot without a valid tree identity are compatibility
+blockers and are not silently attributed or rewritten.
 
 Receipts, ticket state, catalog snapshots, and installation records are
 user-global under `~/.baton`; the caller owns worktree files. This architecture

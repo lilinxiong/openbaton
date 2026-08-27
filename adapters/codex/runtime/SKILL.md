@@ -42,11 +42,23 @@ prompt unchanged to the native Codex child API, immediately bind its returned
 exactly one terminal result, and release before refilling capacity. A capacity
 backpressure response defers the same reservation without changing its model.
 
-Every ticket-producing command requires `BATON_SESSION_ID`; the handoff keeps
-`session_id`, `ticket_id`, `session_ordinal`, and the native handle together.
-Explicit quota exhaustion may create an immutable successor only after a clean
-pre-mutation baseline and fresh hard checks; retain session, host, scope,
-authorization, and quota lineage while recording `successor_from_ticket_id`.
+The root Codex conversation creates one opaque `BATON_SESSION_ID` before its
+first control-plane call. Every descendant and every control-plane operation
+(`spawn`/`apply`, reserve, bind, probe, complete, and release) receives and
+forwards that exact value unchanged; no child or reconnect may mint or replace
+it. Every ticket-producing command therefore remains session-scoped, and the
+handoff keeps `session_id`, `ticket_id`, `session_ordinal`, and the native
+handle together. Explicit quota exhaustion may create an immutable successor
+only after a clean pre-mutation baseline and fresh hard checks; retain the
+same session identity, host, scope, authorization, and quota lineage while
+recording `successor_from_ticket_id`.
+
+The manifest's `quota.max_concurrent_subagents` is the maximum number of
+simultaneously active descendants in this root agent tree. It excludes the
+root conversation, includes direct and nested descendants together, and is
+strictly tree-local rather than a process, model, or historical-ticket count.
+A separate root conversation has its own tree-local capacity; shared workspace
+safety checks and host/profile quota checks still apply across trees.
 
 Do not expose a human model selector at runtime, silently substitute a model,
 or release/refill before terminal recording. Commit and publication remain

@@ -33,6 +33,16 @@ export interface AdapterCatalog {
   capabilities?: Record<string, unknown>;
 }
 
+/**
+ * Manifest quota contract. The concurrent value is a per-root-tree
+ * subagent limit and excludes the root agent itself.
+ */
+export interface AdapterManifestQuota {
+  max_concurrent_subagents?: number;
+  max_depth?: number;
+  backpressure?: string;
+}
+
 export interface AdapterManifest {
   schema: typeof ADAPTER_MANIFEST_SCHEMA;
   adapter: {
@@ -54,7 +64,7 @@ export interface AdapterManifest {
   };
   native: { execution_handle_kind: ExecutionHandleKind };
   runtime_skill: { source: string; destination: string };
-  quota: { max_concurrent?: number; max_depth?: number; backpressure?: string };
+  quota: AdapterManifestQuota;
 }
 
 export interface DiscoveredAdapter {
@@ -75,6 +85,40 @@ function stringField(value: unknown, label: string): string {
 }
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
   for (const key of Object.keys(value)) if (!keys.includes(key)) throw new Error(`ADAPTER_MANIFEST_INVALID: unknown ${label} field ${key}`);
+}
+
+const MAX_CONCURRENT_SUBAGENT_KEYS = [
+  "max_concurrent_subagents",
+  // Compatibility spellings accepted for schema 1 manifests. They are
+  // normalized immediately and never appear in the returned manifest.
+  "max_concurrent",
+  "maxConcurrentSubagents",
+  "maxConcurrent",
+] as const;
+
+/** Normalize the version-1 quota aliases into the unambiguous public field. */
+export function normalizeAdapterManifestQuota(value: unknown): AdapterManifestQuota {
+  const q = object(value, "quota");
+  exactKeys(q, [...MAX_CONCURRENT_SUBAGENT_KEYS, "max_depth", "backpressure"], "quota");
+
+  const supplied = MAX_CONCURRENT_SUBAGENT_KEYS.filter((key) => q[key] !== undefined);
+  for (const key of supplied) {
+    if (!Number.isInteger(q[key]) || Number(q[key]) < 1) {
+      throw new Error(`ADAPTER_MANIFEST_INVALID: quota.${key} must be a positive integer`);
+    }
+  }
+  const distinct = [...new Set(supplied.map((key) => Number(q[key])))];
+  if (distinct.length > 1) {
+    throw new Error("ADAPTER_MANIFEST_INVALID: quota concurrent subagent aliases conflict");
+  }
+  if (q.max_depth !== undefined && (!Number.isInteger(q.max_depth) || Number(q.max_depth) < 1)) {
+    throw new Error("ADAPTER_MANIFEST_INVALID: quota.max_depth must be a positive integer");
+  }
+  return {
+    ...(distinct.length ? { max_concurrent_subagents: distinct[0] } : {}),
+    ...(q.max_depth === undefined ? {} : { max_depth: q.max_depth as number }),
+    ...(q.backpressure === undefined ? {} : { backpressure: stringField(q.backpressure, "quota.backpressure") }),
+  };
 }
 
 export function validateAdapterManifest(value: unknown, directory: string): AdapterManifest {
@@ -100,10 +144,9 @@ export function validateAdapterManifest(value: unknown, directory: string): Adap
   const source = stringField(s.source, "runtime_skill.source");
   const destination = stringField(s.destination, "runtime_skill.destination");
   if (!RELATIVE(source) || !RELATIVE(destination)) throw new Error("ADAPTER_MANIFEST_INVALID: runtime skill paths must be relative and traversal-free");
-  const q = object(raw.quota, "quota"); exactKeys(q, ["max_concurrent", "max_depth", "backpressure"], "quota");
-  for (const k of ["max_concurrent", "max_depth"] as const) if (q[k] !== undefined && (!Number.isInteger(q[k]) || Number(q[k]) < 1)) throw new Error(`ADAPTER_MANIFEST_INVALID: quota.${k}`);
+  const quota = normalizeAdapterManifestQuota(raw.quota);
   if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) throw new Error("ADAPTER_MANIFEST_INVALID: adapter directory missing");
-  return { schema: 1, adapter: { id, display_name: stringField(a.display_name, "adapter.display_name"), package_name: stringField(a.package_name, "adapter.package_name"), package_version: stringField(a.package_version, "adapter.package_version"), sdk_version: sdk }, catalog: { command, args: c.args as string[], protocol, ...(c.timeout_ms === undefined ? {} : { timeout_ms: c.timeout_ms as number }) }, invocation: { signal: stringField(i.signal, "invocation.signal"), ...(i.environment === undefined ? {} : { environment: stringField(i.environment, "invocation.environment") }) }, native: { execution_handle_kind: stringField(n.execution_handle_kind, "native.execution_handle_kind") }, runtime_skill: { source, destination }, quota: { ...(q.max_concurrent === undefined ? {} : { max_concurrent: q.max_concurrent as number }), ...(q.max_depth === undefined ? {} : { max_depth: q.max_depth as number }), ...(q.backpressure === undefined ? {} : { backpressure: stringField(q.backpressure, "quota.backpressure") }) } };
+  return { schema: 1, adapter: { id, display_name: stringField(a.display_name, "adapter.display_name"), package_name: stringField(a.package_name, "adapter.package_name"), package_version: stringField(a.package_version, "adapter.package_version"), sdk_version: sdk }, catalog: { command, args: c.args as string[], protocol, ...(c.timeout_ms === undefined ? {} : { timeout_ms: c.timeout_ms as number }) }, invocation: { signal: stringField(i.signal, "invocation.signal"), ...(i.environment === undefined ? {} : { environment: stringField(i.environment, "invocation.environment") }) }, native: { execution_handle_kind: stringField(n.execution_handle_kind, "native.execution_handle_kind") }, runtime_skill: { source, destination }, quota };
 }
 
 function manifestDirectories(env: NodeJS.ProcessEnv): string[] {
