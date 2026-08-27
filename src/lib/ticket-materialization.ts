@@ -38,6 +38,10 @@ function activeWriteScopes(cwd: string, env?: NodeJS.ProcessEnv): PendingWriteSc
   const scopes: PendingWriteScope[] = [];
   for (const ticket of listSpawns(cwd, env)) {
     if (!ticket.receipt_id) continue;
+    if (
+      (ticket.status === "completed" || ticket.status === "errored" || ticket.status === "timed_out" || ticket.status === "closed")
+      && ticket.execution_handle === null
+    ) continue;
     // A terminal ticket still owns its path until the dispatch slot is
     // explicitly released. This closes the race between completion and the
     // next wave's materialization.
@@ -95,6 +99,10 @@ export async function materializeStandalonePlanAsync(
   options: TicketMaterializationOptions = {},
 ): Promise<SpawnTicket> {
   if (planned.director_local === true) throw new Error("ops dispatch unexpectedly stayed on the director");
+  // Validate session identity before constructing or persisting either
+  // immutable artifact. This is intentionally independent of receipt mode.
+  const sessionId = String((options.env || process.env).BATON_SESSION_ID || "").trim();
+  if (!sessionId) throw new Error("BATON_SESSION_ID is required");
   const safety = options.safety || {};
   const captureWrite = options.captureBaseline || ((root: string, input: AsyncSafetyOptions) => captureBaselineAsync(root, new Date(), input));
   const captureCommit = options.captureCommitBaseline || ((root: string, input: AsyncSafetyOptions) => captureCommitBaselineAsync(root, new Date(), input));

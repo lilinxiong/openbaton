@@ -7,13 +7,9 @@ import { describe, it } from "bun:test";
 import {
   CE_FSMONITOR_VALID,
   consumeGitIndexControl,
-  consumeLegacyGitIndexControl,
   createGitIndexControlParser,
   fingerprintGitIndexControlRecords,
   GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
-  LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
-  fingerprintLegacyGitIndexControlRecords,
-  verifyLegacyGitIndexControlChecksum,
   type GitIndexControlRecord,
 } from "../src/lib/git-index-control.ts";
 import crypto from "node:crypto";
@@ -107,62 +103,6 @@ describe("git ls-files --debug -z parser", () => {
       entryCount: (node as any).fingerprint.entryCount,
     });
     assert.deepEqual((node as any).verdict.violations, []);
-  });
-
-  it("documents the rollback boundary: a v2 checksum is not accepted as legacy", async () => {
-    const stream = ascii("path\0  size: 0\tflags: 1\n");
-    const v2 = fingerprintGitIndexControlRecords(await parse([stream]));
-    const legacy = await consumeLegacyGitIndexControl([stream]);
-    assert.notEqual(v2.checksum, legacy.checksum);
-    // An old runtime has no v2 marker and therefore selects its legacy wire
-    // format; keeping a v2 ticket active across rollback must fail closed.
-    assert.equal(verifyLegacyGitIndexControlChecksum(legacy, v2.checksum), false);
-  });
-
-  it("reproduces the pre-change algorithm-less Receipt checksum from a stream", async () => {
-    // Frozen output captured from the pre-v2 safety implementation. The
-    // expected digest is sha256(JSON.stringify(sorted pathname\\0flags)).
-    const fixture = ascii(
-      "zeta\0  size: 0\tflags: 1\n"
-      + "alpha\0  size: 0\tflags: 80000002\n"
-      + "alpha\0  size: 0\tflags: 3\n",
-    );
-    const expected = fingerprintLegacyGitIndexControlRecords([
-      { pathname: ascii("zeta"), maskedFlags: 1 },
-      { pathname: ascii("alpha"), maskedFlags: 2 },
-      { pathname: ascii("alpha"), maskedFlags: 3 },
-    ]);
-    assert.equal(expected.algorithm, LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM);
-    assert.deepEqual(await consumeLegacyGitIndexControl(oneByteChunks(fixture)), expected);
-    assert.equal(expected.checksum, "99564fcda136f5ea1fb270611d20954c6694f5cbdf4394a1dcb0b80e3da3cf17");
-  });
-
-  it("keeps fixed schema-v4 legacy Receipt verdict parity", async () => {
-    const receipt = {
-      schema_version: 4,
-      baseline: { index_control_checksum: "99564fcda136f5ea1fb270611d20954c6694f5cbdf4394a1dcb0b80e3da3cf17" },
-    };
-    // An absent marker selects legacy strictly; v2 or unknown markers do not
-    // enter this compatibility verifier.
-    assert.equal(receipt.baseline.index_control_checksum.length, 64);
-    const selected = "index_control_algorithm" in receipt.baseline
-      ? GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM
-      : LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
-    assert.equal(selected, LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM);
-    const unchanged = await consumeLegacyGitIndexControl([ascii(
-      "zeta\0  size: 0\tflags: 1\nalpha\0  size: 0\tflags: 80000002\nalpha\0  size: 0\tflags: 3\n",
-    )]);
-    assert.equal(verifyLegacyGitIndexControlChecksum(unchanged, receipt.baseline.index_control_checksum), true);
-    // Semantic flag changes reject exactly as the old index-control mutation;
-    // fsmonitor-only changes remain accepted.
-    const semantic = await consumeLegacyGitIndexControl([ascii(
-      "zeta\0  size: 0\tflags: 1\nalpha\0  size: 0\tflags: 4\nalpha\0  size: 0\tflags: 3\n",
-    )]);
-    assert.equal(verifyLegacyGitIndexControlChecksum(semantic, receipt.baseline.index_control_checksum), false);
-    const fsmonitor = await consumeLegacyGitIndexControl([ascii(
-      "zeta\0  size: 0\tflags: 80000001\nalpha\0  size: 0\tflags: 80000002\nalpha\0  size: 0\tflags: 3\n",
-    )]);
-    assert.equal(verifyLegacyGitIndexControlChecksum(fsmonitor, receipt.baseline.index_control_checksum), true);
   });
 
   it("frames empty and ordered multi-stage records deterministically", () => {

@@ -1,4 +1,0 @@
-schema: spec-driven
-context: |
-  This is a read-only incident-audit validation workspace.
-  Business input files must not be modified.

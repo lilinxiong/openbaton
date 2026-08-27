@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "adapter": {
+    "id": "sample-adapter",
+    "display_name": "Sample Adapter",
+    "package_name": "sample-adapter-package",
+    "package_version": "1.0.0",
+    "sdk_version": "1.0"
+  },
+  "catalog": {
+    "command": "catalog.js",
+    "args": [],
+    "protocol": "json",
+    "timeout_ms": 5000
+  },
+  "invocation": { "signal": "SAMPLE_ADAPTER_SESSION" },
+  "native": { "execution_handle_kind": "sample-native-task" },
+  "runtime_skill": {
+    "source": "runtime/SKILL.md",
+    "destination": ".baton/skills/sample-adapter/SKILL.md"
+  },
+  "quota": {
+    "max_concurrent": 2,
+    "max_depth": 1,
+    "backpressure": "defer"
+  }
+}

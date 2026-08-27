@@ -52,9 +52,8 @@ function capabilities(value: unknown): string[] | null {
 }
 
 /**
- * Parse the current structured contract only. Unknown keys and legacy aliases
- * are rejected so callers cannot silently fall back to prose or an older
- * wire shape.
+ * Parse the current structured contract only. Unknown keys and alternate wire
+ * shapes are rejected so callers cannot silently reinterpret prose input.
  */
 export function normalizeAgentTaskClassification(value: unknown): NormalizedAgentTaskClassification | null {
   if (typeof value === "string") {

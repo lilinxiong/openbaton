@@ -7,7 +7,7 @@ describe("Conversation-to-Goal promotion", () => {
     const result = promoteConversation([
       "目标是实现动态多 subagent director。",
       "按这个执行。",
-      "不要使用 cursor/claude route。",
+      "不要使用 provider-specific route。",
       "部署范围需要确认？",
     ].join("\n"));
     assert.equal(result.explicit.length, 1);

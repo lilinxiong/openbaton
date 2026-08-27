@@ -24,9 +24,6 @@ export const WORKSPACES_DIR = "workspaces";
  * neither inspect nor migrate it.
  */
 export const CURRENT_RUNTIME_NAMESPACE = "v2";
-export const CAPABILITIES_DIR = "capabilities";
-export const AA_DB_NAME = "artificial-analysis.sqlite3";
-export const AA_MANIFEST_NAME = "artificial-analysis.manifest.json";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const MODEL_AVAILABILITY_NAME = "model-availability.json";
 export const PROJECT_SETTINGS_NAME = "project-settings.toml";
@@ -98,18 +95,6 @@ export function selectionsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
 
 export function receiptsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), RECEIPTS_DIR);
-}
-
-export function capabilitiesCacheDir(_cwd: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(batonHomeDir(env), CACHE_DIR, CAPABILITIES_DIR);
-}
-
-export function artificialAnalysisDbPath(cwd: string): string {
-  return path.join(capabilitiesCacheDir(cwd), AA_DB_NAME);
-}
-
-export function artificialAnalysisManifestPath(cwd: string): string {
-  return path.join(capabilitiesCacheDir(cwd), AA_MANIFEST_NAME);
 }
 
 export function hostRouteSnapshotPath(_cwd: string, host: string, env?: NodeJS.ProcessEnv): string {

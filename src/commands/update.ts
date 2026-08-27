@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, skillPath, configPath, displayHomePath } from "../lib/paths.js";
-import { hasLegacyCodingModels, loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
+import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
 import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
-import { HOST_IDS } from "../lib/hosts.js";
-import { cleanupLegacyHook } from "../lib/legacy-hook-cleanup.js";
+import { hostIds } from "../lib/hosts.js";
+import { installBundledAdapters } from "../lib/adapter-install.js";
 
 export interface UpdateProjectOptions {
   forceSkill?: boolean;
@@ -29,6 +29,9 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
   const tmplRoot = packageRoot();
   const actions: string[] = [];
 
+  const adapters = installBundledAdapters(env);
+  actions.push(...adapters.installed, ...adapters.updated, ...adapters.kept, ...adapters.conflicts);
+
   const destSkill = skillPath(cwd, { env });
   const skillTmpl = path.join(tmplRoot, "SKILL.md");
   if (!fs.existsSync(destSkill) || forceSkill) {
@@ -39,7 +42,6 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
   const destConfig = configPath(cwd, { env });
   const tmpl = parseToml(fs.readFileSync(path.join(tmplRoot, "templates", "config.toml"), "utf8"));
   const defaults = normalizeConfig(tmpl);
-  const hasLegacyModels = hasLegacyCodingModels(cwd, { env });
   if (!fs.existsSync(destConfig)) {
     fs.copyFileSync(path.join(tmplRoot, "templates", "config.toml"), destConfig);
     actions.push(`wrote ${displayHomePath(destConfig, { cwd, env })} (was missing)`);
@@ -49,25 +51,15 @@ export function updateProject(cwd: string, options: UpdateProjectOptions = {}): 
       director: { ...defaults.director, ...current.director },
       cli: current.cli,
     });
-    if (hasLegacyModels) {
-      actions.push(`retained legacy model fields in ${displayHomePath(destConfig, { cwd, env })}; run baton config to migrate Coding models`);
-    } else {
-      saveConfig(cwd, merged, { env });
-      actions.push(`merged global director/CLI defaults into ${displayHomePath(destConfig, { cwd, env })} (models come from the selected CLI)`);
-    }
+    saveConfig(cwd, merged, { env });
+    actions.push(`merged global director/CLI defaults into ${displayHomePath(destConfig, { cwd, env })}`);
   }
 
   const current = loadConfig(cwd, { env });
-  // Do not rewrite a legacy model list merely because `baton update` ran.
-  // `baton config` is the explicit migration boundary.
-  if (!hasLegacyModels) saveConfig(cwd, current, { env });
+  saveConfig(cwd, current, { env });
   const hosts = refreshInstalledHostSkills(cwd, { env });
   actions.push(...hosts.actions);
-  for (const host of ["codex", "claude", "grok"] as const) {
-    const action = cleanupLegacyHook(host, env);
-    if (action !== "absent" && action !== "unchanged") actions.push(`${host} legacy hook cleanup: ${action}`);
-  }
-  writeInstallManifest(buildInstallManifest(cwd, HOST_IDS, env), env);
+  writeInstallManifest(buildInstallManifest(cwd, hostIds(env), env, adapters.ownership), env);
 
   return { actions };
 }

@@ -1,4 +1,4 @@
-import { HOST_IDS, resolveRuntimeHost, type HostId } from "../lib/hosts.js";
+import { hostIds, resolveRuntimeHost, type HostId } from "../lib/hosts.js";
 import {
   applyUninstallPlan,
   buildUninstallPlan,
@@ -30,7 +30,7 @@ function flagValue(args: string[], flag: string): string | null {
 function selectedHosts(args: string[], cwd: string, env: NodeJS.ProcessEnv, clean: boolean): HostId[] {
   const explicit = flagValue(args, "--host");
   if (clean && explicit) throw new Error("UNINSTALL_CLEAN_HOST_INVALID: --clean always removes recognized integrations for every host; omit --host");
-  if (clean) return [...HOST_IDS];
+  if (clean) return [...hostIds(env)];
   return [resolveRuntimeHost({ cwd, env, explicitHost: explicit })];
 }
 
@@ -64,6 +64,19 @@ function withGlobalHostLocks<T>(
 
 export async function runUninstall(args: string[], options: UninstallCommandOptions): Promise<number> {
   const env = options.env || process.env;
+  const valueFlags = new Set(["host"]);
+  const booleanFlags = new Set(["clean", "dry-run", "json", "yes"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) throw new Error(`unknown uninstall argument: ${arg}`);
+    const key = arg.slice(2);
+    if (!valueFlags.has(key) && !booleanFlags.has(key)) throw new Error(`unknown option: ${arg}`);
+    if (valueFlags.has(key)) {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      index += 1;
+    }
+  }
   const clean = args.includes("--clean");
   const dryRun = args.includes("--dry-run");
   const json = args.includes("--json");

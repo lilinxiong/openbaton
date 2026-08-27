@@ -5,19 +5,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { matchModelCard } from "./cards.js";
-import { sanitizeConclusion } from "./hygiene.js";
 import {
   OpenSpecChange,
-  OpenSpecConclusion,
   OpenSpecTask,
   loadTasksFromChangeDir,
   resolveChangeDir,
   listChangeNames,
-  writeTaskConclusion,
-  writeTaskConclusionByNumber,
   OpenSpecError,
 } from "./openspec.js";
-import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn } from "./spawn.js";
+import { buildSpawnTicket, nextSpawnId } from "./spawn.js";
 import { buildReadOnlyReceipt } from "./receipt.js";
 import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./ticket-materialization.js";
 import { runsDir } from "./paths.js";
@@ -82,14 +78,6 @@ export interface ApplyRun {
   queue: ApplyQueue;
 }
 
-export interface OpenSpecTicketBinding {
-  change_dir?: string;
-  tasks_path?: string;
-  line_index?: number;
-  number?: string;
-  section?: string;
-}
-
 export type OpenSpecTicket = SpawnTicket;
 
 export interface ApplyResult {
@@ -102,23 +90,6 @@ export interface ApplyResult {
   queue: ApplyQueue | null;
   error?: string;
   run?: ApplyRun;
-}
-
-export interface ConcludeSpawnResult {
-  ticket: OpenSpecTicket;
-  openspecWritten: boolean;
-}
-
-export type ApplyErrorCode = "HYGIENE" | "LIFECYCLE_REQUIRED";
-
-export class ApplyError extends Error {
-  readonly code: ApplyErrorCode;
-
-  constructor(message: string, code: ApplyErrorCode) {
-    super(message);
-    this.name = "ApplyError";
-    this.code = code;
-  }
 }
 
 interface PlanApplyInput {
@@ -156,23 +127,6 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === "string" ? code : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function openSpecWriteback(value: unknown): OpenSpecTicketBinding | null {
-  if (!isRecord(value)) return null;
-  const tasksPath = value.tasks_path;
-  const lineIndex = value.line_index;
-  const number = value.number;
-  if (typeof tasksPath !== "string") return null;
-  if (typeof number === "string" && number && !number.startsWith("line-")) {
-    return { tasks_path: tasksPath, number, line_index: typeof lineIndex === "number" ? lineIndex : undefined };
-  }
-  if (typeof lineIndex !== "number" || !Number.isInteger(lineIndex)) return null;
-  return { tasks_path: tasksPath, line_index: lineIndex };
 }
 
 export function resolveApplyChange(cwd: string, change?: string | null): string {
@@ -250,7 +204,7 @@ export async function applyChange({ cwd, change, cfg, cards, includeTask, select
       tickets: [],
       local: [],
       queue: null,
-      error: "every pending task is blocked on card match. No default model will be used.",
+      error: "every pending task is blocked on card match. No configured model will be selected.",
     };
   }
 
@@ -282,6 +236,8 @@ export async function applyChange({ cwd, change, cfg, cards, includeTask, select
     const id = nextSpawnId(cwd, "os", env);
     const ticket: OpenSpecTicket = buildSpawnTicket({
       id,
+      cwd,
+      env,
       description: unit.description,
       prompt: unit.prompt,
       modelId: unit.model_id,
@@ -344,39 +300,4 @@ export async function applyChange({ cwd, change, cfg, cards, includeTask, select
   );
 
   return { changeDir, tasksPath, units, blocked, tickets, local, queue: run.queue, run };
-}
-
-export function concludeSpawn(cwd: string, id: string, text: OpenSpecConclusion): ConcludeSpawnResult {
-  const clean = sanitizeConclusion(text);
-  if (clean.ok === false) {
-    throw new ApplyError(String(clean.error), "HYGIENE");
-  }
-  const ticket: OpenSpecTicket = readSpawn(cwd, id);
-  if (Number(ticket.schema_version || 1) >= 2) {
-    throw new ApplyError(
-      "schema v2+ tickets require an attached native execution handle; use the dispatch lifecycle after the native worker completes",
-      "LIFECYCLE_REQUIRED",
-    );
-  }
-  ticket.status = "done";
-  ticket.conclusion = clean.conclusion;
-  ticket.finished_at = new Date().toISOString();
-  writeSpawn(cwd, ticket);
-
-  let openspecWritten = false;
-  const writeback = openSpecWriteback(ticket.openspec);
-  if (writeback) {
-    const tasksPath = writeback.tasks_path;
-    if (fs.existsSync(tasksPath)) {
-      const current = fs.readFileSync(tasksPath, "utf8");
-      const updated = writeback.number
-        ? writeTaskConclusionByNumber(current, writeback.number, clean.conclusion)
-        : writeTaskConclusion(current, writeback.line_index!, clean.conclusion);
-      if (updated) {
-        fs.writeFileSync(tasksPath, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8");
-        openspecWritten = true;
-      }
-    }
-  }
-  return { ticket, openspecWritten };
 }

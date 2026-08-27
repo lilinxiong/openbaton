@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { packageRoot, hostHome, displayHomePath } from "./paths.js";
-import { listCliAdapters } from "../adapters/registry.js";
+import { hostHome, displayHomePath } from "./paths.js";
+import { listCliAdapters, runtimeSkillSource } from "../adapters/registry.js";
 import type { ConfigEnvOptions } from "./config.js";
 import type { CodedError } from "../types.js";
 
@@ -10,16 +10,18 @@ export { hostHome } from "./paths.js";
 export type HostId = ReturnType<typeof listCliAdapters>[number]["host"]["id"];
 
 /** Host ids are the ids declared by the registered CLI adapters. */
-export const HOST_IDS = listCliAdapters().map((adapter) => adapter.host.id) as readonly HostId[];
-
-export function isHostId(value: string): value is HostId {
-  return (HOST_IDS as readonly string[]).includes(value);
+export function hostIds(env: NodeJS.ProcessEnv = process.env): readonly HostId[] {
+  return listCliAdapters(env).map((adapter) => adapter.host.id) as HostId[];
 }
 
-export function parseHostId(value: string): HostId {
+export function isHostId(value: string, env: NodeJS.ProcessEnv = process.env): value is HostId {
+  return listCliAdapters(env).some((adapter) => adapter.host.id === value);
+}
+
+export function parseHostId(value: string, env: NodeJS.ProcessEnv = process.env): HostId {
   const host = String(value || "").trim().toLowerCase();
-  if (isHostId(host)) return host;
-  throw new Error(`invalid host: ${value || "<empty>"} (expected ${HOST_IDS.join("|")})`);
+  if (isHostId(host, env)) return host;
+  throw new Error(`invalid host: ${value || "<empty>"} (expected ${listCliAdapters(env).map((a) => a.id).join("|") || "none"})`);
 }
 
 export interface ResolveRuntimeHostOptions extends ConfigEnvOptions {
@@ -37,7 +39,7 @@ function hostRequiredError(): CodedError {
 
 /** Host ids that appear to be the current invoking runtime from environment signals. */
 export function detectInvokingHosts(env: NodeJS.ProcessEnv = process.env): HostId[] {
-  return listCliAdapters()
+  return listCliAdapters(env)
     .filter((adapter) => adapter.host.isInvoking?.(env))
     .map((adapter) => adapter.host.id);
 }
@@ -45,7 +47,7 @@ export function detectInvokingHosts(env: NodeJS.ProcessEnv = process.env): HostI
 /** Resolve the invoking host from BATON_HOST or a unique runtime signal. */
 export function detectInvokingHost(env: NodeJS.ProcessEnv = process.env): HostId | null {
   const explicit = String(env.BATON_HOST || "").trim().toLowerCase();
-  if (explicit) return parseHostId(explicit);
+  if (explicit) return parseHostId(explicit, env);
   const matches = detectInvokingHosts(env);
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
@@ -58,27 +60,13 @@ export function detectInvokingHost(env: NodeJS.ProcessEnv = process.env): HostId
 export function resolveRuntimeHost(options: ResolveRuntimeHostOptions): HostId {
   const env = options.env || process.env;
   const fromFlag = String(options.explicitHost || "").trim();
-  if (fromFlag) return parseHostId(fromFlag);
+  if (fromFlag) return parseHostId(fromFlag, env);
   const fromEnv = String(env.BATON_HOST || "").trim();
-  if (fromEnv) return parseHostId(fromEnv);
+  if (fromEnv) return parseHostId(fromEnv, env);
   const matches = detectInvokingHosts(env);
   if (matches.length === 1) return matches[0];
   throw hostRequiredError();
 }
-
-export function inferHostFromTickets(tickets: Array<{ target_host?: string | null; dispatch_host?: string | null; host?: string | null; selection?: { host?: string | null } | null }>): HostId | null {
-  const hosts = new Set<HostId>();
-  for (const ticket of tickets) {
-    const value = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host;
-    if (value) hosts.add(parseHostId(String(value)));
-  }
-  if (hosts.size === 1) return [...hosts][0];
-  return null;
-}
-
-export const HOST_SKILL_REL: Record<HostId, string> = Object.fromEntries(
-  listCliAdapters().map((adapter) => [adapter.host.id, adapter.host.skillPath]),
-) as Record<HostId, string>;
 
 export interface HostEnvOptions {
   cwd?: string;
@@ -107,14 +95,17 @@ export interface HostRefreshResult {
 }
 
 export function hostSkillDest(tool: HostId, options: HostEnvOptions = {}): string {
-  return path.join(hostHome(options.env), HOST_SKILL_REL[tool]);
+  const adapter = listCliAdapters(options.env).find((candidate) => candidate.id === tool);
+  if (!adapter) throw new Error(`invalid host: ${tool}`);
+  return path.join(hostHome(options.env), adapter.host.skillPath);
 }
 
-export function skillTemplatePath(tool: HostId): string {
-  const root = packageRoot();
-  const hostTmpl = path.join(root, "templates", "hosts", tool, "SKILL.md");
-  if (fs.existsSync(hostTmpl)) return hostTmpl;
-  return path.join(root, "SKILL.md");
+export function skillTemplatePath(tool: HostId, env: NodeJS.ProcessEnv = process.env): string {
+  const manifestSource = runtimeSkillSource(tool, env);
+  if (!fs.existsSync(manifestSource)) {
+    throw new Error(`ADAPTER_RUNTIME_SKILL_MISSING: ${manifestSource}`);
+  }
+  return manifestSource;
 }
 
 function shown(dest: string, options: HostEnvOptions): string {
@@ -139,22 +130,22 @@ function copySkill(
 
 export function installHostSkills(cwd: string, options: InstallHostSkillsOptions = {}): HostInstallResult {
   const { force = false, env } = options;
-  const hostTools: HostId[] = [...HOST_IDS];
+  const hostTools: HostId[] = [...hostIds(env)];
   const created: string[] = [];
   const skipped: string[] = [];
   for (const tool of hostTools) {
     const dest = hostSkillDest(tool, { cwd, env });
-    copySkill(skillTemplatePath(tool), dest, { force, cwd, env, created, skipped });
+    copySkill(skillTemplatePath(tool, env), dest, { force, cwd, env, created, skipped });
   }
   return { tools: hostTools, created, skipped };
 }
 
 export function refreshInstalledHostSkills(cwd: string, options: RefreshHostSkillsOptions = {}): HostRefreshResult {
   const actions: string[] = [];
-  for (const tool of HOST_IDS) {
+  for (const tool of hostIds(options.env)) {
     const dest = hostSkillDest(tool, { cwd, env: options.env });
     if (!fs.existsSync(dest)) continue;
-    fs.copyFileSync(skillTemplatePath(tool), dest);
+    fs.copyFileSync(skillTemplatePath(tool, options.env), dest);
     actions.push(`updated ${shown(dest, { cwd, env: options.env })}`);
   }
   return { actions };

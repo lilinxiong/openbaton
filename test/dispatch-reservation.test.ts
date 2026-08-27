@@ -13,7 +13,7 @@ const identity = {
   reservation_id: "4f29e230-95dc-48a6-b455-290ea93074dd",
   ticket_id: "zly-anything",
   attempt: 2,
-  host: "grok",
+  host: "alpha",
 } as const;
 
 describe("dispatch reservation envelope", () => {
@@ -33,7 +33,7 @@ describe("dispatch reservation envelope", () => {
     assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, reservation_id: "" } }), null);
     assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, reservation_id: ` ${identity.reservation_id}` } }), null);
     assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, ticket_id: `${identity.ticket_id} ` } }), null);
-    assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, host: "GROK" } }), null);
+    assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, host: "ALPHA" } }), null);
     assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, attempt: "2" } }), null);
     assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...identity, attempt: 0 } }), null);
     assert.equal(parseDispatchReservationEnvelope('{"baton_dispatch":'), null);

@@ -37,8 +37,8 @@ function fixture(): string {
   return cwd;
 }
 
-function createInternalTurnDiffRef(cwd: string, name = "worker"): void {
-  git(cwd, "update-ref", `refs/codex/turn-diffs/${name}`, "HEAD");
+function createInternalTurnDiffRef(cwd: string, runtime = "baton", name = "worker"): void {
+  git(cwd, "update-ref", `refs/${runtime}/turn-diffs/${name}`, "HEAD");
 }
 
 describe("parent shared-worktree safety gate", () => {
@@ -132,13 +132,30 @@ describe("parent shared-worktree safety gate", () => {
     assert.ok(verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
   });
 
-  it("ignores internal codex turn-diff refs when the repository state is otherwise unchanged", () => {
-    const cwd = fixture();
-    const baseline = captureBaseline(cwd);
-    createInternalTurnDiffRef(cwd);
-    const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
-    assert.equal(verdict.accepted, true);
-    assert.ok(!verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
+  it("ignores runtime turn-diff refs without ignoring similarly named Git refs", () => {
+    for (const runtime of ["baton", "alpha", "custom-runtime"]) {
+      const cwd = fixture();
+      const baseline = captureBaseline(cwd);
+      createInternalTurnDiffRef(cwd, runtime);
+      const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+      assert.equal(verdict.accepted, true, runtime);
+      assert.ok(!verdict.violations.some((item) => item.code === "E_REFS_MUTATION"), runtime);
+    }
+
+    for (const ref of [
+      "refs/heads/turn-diffs/branch",
+      "refs/tags/turn-diffs/tag",
+      "refs/remotes/turn-diffs/remote",
+      "refs/notes/turn-diffs/note",
+      "refs/custom/turn-diffs-extra/keep",
+    ]) {
+      const cwd = fixture();
+      const baseline = captureBaseline(cwd);
+      git(cwd, "update-ref", ref, "HEAD");
+      const verdict = auditWorktree(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+      assert.equal(verdict.accepted, false, ref);
+      assert.ok(verdict.violations.some((item) => item.code === "E_REFS_MUTATION"), ref);
+    }
   });
 
   it("allows incremental writes on a dirty allowlisted file and freezes unrelated dirt", () => {
@@ -253,12 +270,12 @@ describe("commit-only safety gate", () => {
     assert.ok(verdict.violations.some((item) => item.code === "E_INDEX_TREE_MUTATION"));
   });
 
-  it("ignores internal codex turn-diff refs before commit dispatch", () => {
+  it("ignores runtime turn-diff refs before commit dispatch", () => {
     const cwd = fixture();
     fs.appendFileSync(path.join(cwd, "allowed.txt"), "STAGED\n");
     git(cwd, "add", "allowed.txt");
     const baseline = captureCommitBaseline(cwd);
-    createInternalTurnDiffRef(cwd);
+    createInternalTurnDiffRef(cwd, "alpha");
     const verdict = auditPreparedCommit(cwd, baseline);
     assert.equal(verdict.accepted, true);
     assert.ok(!verdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
@@ -343,7 +360,7 @@ describe("commit-only safety gate", () => {
     fs.appendFileSync(path.join(cwd, "allowed.txt"), "STAGED\n");
     git(cwd, "add", "allowed.txt");
     const baseline = captureCommitBaseline(cwd);
-    const invalid = { ...baseline, staged_index_control_algorithm: "git-index-control-framed-sha256-v2" };
+    const invalid = { ...baseline, staged_index_control_entry_count: undefined };
     const verdict = auditPreparedCommit(cwd, invalid);
     assert.ok(verdict.violations.some((item) => item.code === "INDEX_CONTROL_BASELINE_INVALID"));
     assert.ok(!verdict.violations.some((item) => item.code === "E_INDEX_CONTROL_MUTATION"));
@@ -553,8 +570,8 @@ describe("stable asynchronous safety observations", () => {
     const seen: unknown[] = [];
     const baselineFacts = await collectGitSafetyFacts(cwd);
     const staleRuntimeOptions = {
-      legacyIndexControl: true,
-      indexControlAlgorithm: "legacy-json-sorted-v1",
+
+      indexControlAlgorithm: "git-index-control-framed-sha256-v2",
       collectFacts: async (_root: string, passOptions: { indexControlAlgorithm?: string }): Promise<GitSafetyFacts> => {
         seen.push(passOptions.indexControlAlgorithm);
         return baselineFacts;
@@ -574,8 +591,8 @@ describe("stable asynchronous safety observations", () => {
     const commitFacts = await collectGitSafetyFacts(cwd);
     seen.length = 0;
     const commitOptions = {
-      legacyIndexControl: true,
-      indexControlAlgorithm: "legacy-json-sorted-v1",
+
+      indexControlAlgorithm: "git-index-control-framed-sha256-v2",
       collectFacts: async (_root: string, passOptions: { indexControlAlgorithm?: string }): Promise<GitSafetyFacts> => {
         seen.push(passOptions.indexControlAlgorithm);
         return commitFacts;
@@ -590,7 +607,7 @@ describe("stable asynchronous safety observations", () => {
     assert.deepEqual(seen, ["git-index-control-framed-sha256-v2", "git-index-control-framed-sha256-v2"]);
   });
 
-  it("captures a v2 baseline and preserves worktree verdict parity with the legacy baseline", async () => {
+  it("captures a v2 baseline and preserves worktree verdict parity with the sync baseline", async () => {
     const cwd = fixture();
     const syncBaseline = captureBaseline(cwd);
     const asyncBaseline = await captureBaselineAsync(cwd, new Date("2026-01-01T00:00:00.000Z"));
@@ -601,6 +618,22 @@ describe("stable asynchronous safety observations", () => {
     assert.deepEqual(asyncBaseline.refs, syncBaseline.refs);
     const policy = { write_allowlist: [], allowed_operations: [] };
     assert.deepEqual(await auditWorktreeAsync(cwd, syncBaseline, policy), auditWorktree(cwd, syncBaseline, policy));
+  });
+
+  it("keeps sync and async snapshots aligned for runtime turn-diff refs", async () => {
+    const cwd = fixture();
+    const syncBaseline = captureBaseline(cwd);
+    const asyncBaseline = await captureBaselineAsync(cwd);
+    assert.deepEqual(asyncBaseline.refs, syncBaseline.refs);
+
+    createInternalTurnDiffRef(cwd, "alpha", "native");
+    const policy = { write_allowlist: [], allowed_operations: [] };
+    assert.equal(auditWorktree(cwd, syncBaseline, policy).accepted, true);
+    assert.equal((await auditWorktreeAsync(cwd, asyncBaseline, policy)).accepted, true);
+
+    git(cwd, "update-ref", "refs/tags/turn-diffs/should-be-audited", "HEAD");
+    assert.equal(auditWorktree(cwd, syncBaseline, policy).accepted, false);
+    assert.equal((await auditWorktreeAsync(cwd, asyncBaseline, policy)).accepted, false);
   });
 
   it("audits v2 commit baselines and keeps prepared/outcome semantics", async () => {
@@ -651,11 +684,11 @@ describe("stable asynchronous safety observations", () => {
     assert.deepEqual(Object.keys(verdict.commit ?? {}).sort(), ["id", "parent", "subject", "tree"]);
   });
 
-  it("selects legacy index verification and returns stable typed races", async () => {
+  it("uses v2 index verification and returns stable typed races", async () => {
     const cwd = fixture();
     const baseline = captureBaseline(cwd);
-    const legacyVerdict = await auditWorktreeAsync(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
-    assert.equal(legacyVerdict.accepted, true);
+    const v2Verdict = await auditWorktreeAsync(cwd, baseline, { write_allowlist: [], allowed_operations: [] });
+    assert.equal(v2Verdict.accepted, true);
 
     const facts = await collectGitSafetyFacts(cwd);
     const raced = deriveGitSafetyStabilityToken(facts);

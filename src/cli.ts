@@ -1,7 +1,6 @@
 import readline from "node:readline";
 import { initProject } from "./commands/init.js";
 import { updateProject } from "./commands/update.js";
-import { runCapabilities } from "./commands/capabilities.js";
 import { runDispatch } from "./commands/dispatch.js";
 import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
@@ -12,7 +11,6 @@ import { runUninstall } from "./commands/uninstall.js";
 import {
   approveRecommendedSelection,
   assertRecommendedSelectionAvailable,
-  runSelection,
   type SelectionApprovalOutput,
 } from "./commands/selection.js";
 import {
@@ -35,7 +33,6 @@ import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "
 import { type SafetyOperation } from "./lib/safety.js";
 import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./lib/ticket-materialization.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
-import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
 import { availabilityForRoute } from "./lib/model-availability.js";
 import { resolveActivation, withActivationLockAsync } from "./lib/activation.js";
@@ -46,7 +43,7 @@ import {
   selectionSourceFingerprint,
   type SelectionProposal,
 } from "./lib/selection.js";
-import { CLI_IDS, parseCliId } from "./adapters/registry.js";
+import { cliIds, parseCliId } from "./adapters/registry.js";
 import type { CliAdapterProvider, CliId } from "./adapters/contract.js";
 import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/prompt.js";
 import type { ModelCard } from "./types.js";
@@ -60,7 +57,6 @@ interface RunOptions {
   stdin?: NodeJS.ReadableStream | string;
   env?: NodeJS.ProcessEnv;
   adapterProvider?: CliAdapterProvider;
-  fetchImpl?: typeof fetch;
   prompt?: SelectPrompt;
 }
 
@@ -90,7 +86,7 @@ function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, host: ReturnType<typ
   if (!allowed.size) return [];
   const snapshot = readRouteSnapshot(cwd, { host, env });
   if (!snapshot || snapshot.cli !== host || !profile.enabled) return [];
-  return buildRouteCandidates(cwd, artificialAnalysisDbPath(cwd), { host, env })
+  return buildRouteCandidates(cwd, { host, env })
     .map((candidate) => candidate.card)
     .filter((card) => card.route_id && allowed.has(card.route_id));
 }
@@ -172,9 +168,9 @@ function validateClassificationContract(
 }
 
 /** Host list shown in usage text, derived from the adapter registry. */
-const HOSTS = CLI_IDS.join("|");
+const HOSTS = cliIds().join("|");
 
-const HELP = `baton — CLI-neutral director for ${CLI_IDS.join(", ")}
+const HELP = `baton — CLI-neutral director for discovered adapters
 既能独立，又能 1+1>2
 
 Standalone: cards + native spawn + mechanical ops + director context hygiene. Complete without OpenSpec.
@@ -186,10 +182,10 @@ Interactive init/config use arrow-key select; space toggles CLIs and ordered Cod
 
 Usage:
   baton init [--force] [--cli ${HOSTS}]  initialize Baton + host skills
-  baton update                        refresh host skills + global config defaults
+  baton update                        refresh shared runtime files and adapter packages
   baton models refresh|status|candidates [--host ${HOSTS}]  inspect/refresh one CLI model catalog
   baton models reset ROUTE --host ${HOSTS} [--json]           clear one durable quota decision
-  baton cards [--host ${HOSTS}] [--ranked|--unranked] [--provider ID] [--json]
+  baton cards [--host ${HOSTS}] [--provider ID] [--json]
   baton host detect [--json]               resolve invoking host from runtime signals
   baton config [--cli ${HOSTS}] [--runner MODEL|-] [--longctx MODEL|-]
                [--coding-model MODEL|all] [--enable|--disable]
@@ -203,16 +199,13 @@ Usage:
   baton apply [change] [--host ${HOSTS}]  plan the ready OpenSpec wave (no tickets)
   baton apply [change] [--host ${HOSTS}] --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
                director-scoped dispatch of the order-ready subset; --dispatch without --unit is rejected
-  baton capabilities refresh --provider aa --key-file PATH
-  baton capabilities status
-  baton capabilities show ROUTE [--profile PROFILE]
   baton dispatch next --host HOST --capacity N --json
-  baton dispatch bind TICKET [--agent-id ID] [--task-name CODEX_TASK_NAME] --host HOST --json
+  baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --host HOST --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
+  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" --json
   baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
-  baton dispatch release TICKET --host HOST --agent-id ID --json
+  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
   baton dispatch fail|close TICKET --host HOST [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json
@@ -229,7 +222,6 @@ export async function run(argv: string[], {
   stdin = process.stdin,
   env = process.env,
   adapterProvider,
-  fetchImpl,
   prompt,
 }: RunOptions = {}): Promise<number> {
   const streamStdin = typeof stdin === "string" ? process.stdin : stdin;
@@ -252,6 +244,7 @@ export async function run(argv: string[], {
       case "init":
         return await cmdInit(args, cwd, stdout, env, streamStdin, prompt, adapterProvider);
       case "update":
+        validateCommandArgs(args, { positional: "none" });
         return cmdUpdate(cwd, stdout, env);
       case "cards":
         return cmdCards(args, cwd, stdout, env);
@@ -274,17 +267,10 @@ export async function run(argv: string[], {
         return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
         return await cmdApply(args, cwd, stdout, env);
-      case "selection":
-        return runSelection(args, { cwd, stdout, cards: resolvedCards(cwd, env, runtimeHost(parseFlags(args), cwd, env)), env, host: runtimeHost(parseFlags(args), cwd, env) });
-      case "conclude":
-        throw new Error("LEGACY_CLI_SURFACE_REMOVED: use the host dispatch lifecycle to complete tickets");
-      case "capabilities":
-        return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
       case "dispatch":
         return await runDispatch(args, { cwd, stdout, env });
-      case "routes":
       case "models":
-        return await runRoutes(args, { cwd, stdout, env, adapterProvider, host: runtimeHost(parseFlags(args), cwd, env) });
+        return await runRoutes(args, { cwd, stdout, env, adapterProvider });
       case "host":
         return runHost(args, { cwd, stdout, env });
       case "conversation":
@@ -311,12 +297,15 @@ async function cmdInit(
   prompt?: SelectPrompt,
   adapterProvider?: CliAdapterProvider,
 ): Promise<number> {
+  validateCommandArgs(args, { value: ["cli"], boolean: ["force"], positional: "none" });
   const flags = parseFlags(args);
   const force = Boolean(flags.force) || args.includes("--force");
-  if (flags.tools) throw new Error(`--tools is not supported; baton init installs the ${CLI_IDS.join(", ")} host skills`);
   const cliFlag = stringFlag(flags, "cli");
   let clis: CliId[] | undefined;
-  if (cliFlag) clis = [parseCliId(cliFlag)];
+  // initProject installs bundled adapters before validating an explicit
+  // adapter, so a fresh home can use the same `--cli` form as an initialized
+  // home.  Resolve the id again after installation for output only.
+  if (cliFlag) clis = [cliFlag.trim().toLowerCase() as CliId];
   else if (prompt || isInteractiveIo(stdin, stdout)) {
     const ask = prompt || createTerminalPrompt({ stdin, stdout, env });
     let initial: CliId[] = [];
@@ -326,13 +315,14 @@ async function cmdInit(
     } catch { /* ambiguous runtime hosts: no preselection */ }
     clis = await ask.multiSelect({
       message: "Select CLI",
-      choices: cliPromptChoices(),
+      choices: cliPromptChoices(env),
       initial,
       required: true,
     });
     if (!clis.length) throw new Error("select at least one CLI");
   }
-  const result = await initProject(cwd, { force, cli: clis?.[0], env });
+  const result = await initProject(cwd, { force, cli: cliFlag, env });
+  if (cliFlag) clis = [parseCliId(cliFlag, env)];
   stdout.write(`initialized ${result.dir}\n`);
   for (const f of result.created) stdout.write(`  wrote ${f}\n`);
   for (const f of result.skipped) stdout.write(`  kept  ${f} (use --force to replace)\n`);
@@ -357,12 +347,10 @@ function cmdUpdate(cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): n
 }
 
 function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
-  if (args[0] === "add") throw new Error("cards add is not supported; configure exact CLI model ids with `baton config`");
+  validateCommandArgs(args, { value: ["host", "provider"], boolean: ["json"], positional: "none" });
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
   let models = resolvedCards(cwd, env, host);
-  if (flags.ranked) models = models.filter((card) => card.capability?.ranked);
-  if (flags.unranked) models = models.filter((card) => !card.capability?.ranked);
   const provider = stringFlag(flags, "provider");
   if (provider) models = models.filter((card) => card.provider === provider);
   if (flags.json) {
@@ -374,11 +362,12 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     return 0;
   }
   stdout.write(`cards: ${models.length}\n`);
-  for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""}${m.reasoning_effort ? ` @${m.reasoning_effort}` : ""}  [${m.executable ? (m.capability?.ranked ? "ranked" : "unranked") : "unavailable"}] — ${m.strengths}\n`);
+  for (const m of models) stdout.write(`  ${m.id}${m.route_id ? ` → ${m.route_id}` : ""}${m.reasoning_effort ? ` @${m.reasoning_effort}` : ""}  [${m.executable ? "available" : "unavailable"}] — ${m.strengths}\n`);
   return 0;
 }
 
 function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
+  validateCommandArgs(args, { value: ["host"], boolean: ["json"], positional: "allow" });
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) {
@@ -398,12 +387,11 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     else {
       stdout.write(`preferred: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
       for (const candidate of unit.candidates.filter((item) => item.selectable)) {
-        const aa = candidate.aa_scores;
         const quota = candidate.quota.status === "unknown"
           ? `unknown (${candidate.quota.reason})`
           : candidate.quota.windows.map((item) => `${item.label} remaining ${item.remaining_percent.toFixed(2)}%`).join("; ");
         stdout.write(`  candidate ${candidate.model_id}: ${candidate.strengths}\n`);
-        stdout.write(`    task score ${candidate.task_score ?? "unranked"}; AA intelligence=${aa.intelligence ?? "unknown"}, coding=${aa.coding ?? "unknown"}, agentic=${aa.agentic ?? "unknown"}; quota ${quota}; callable=yes\n`);
+        stdout.write(`    task score ${candidate.task_score ?? "none"}; catalog evidence=active CLI; quota ${quota}; callable=yes\n`);
       }
     }
     return 0;
@@ -417,6 +405,11 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
 }
 
 async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
+  validateCommandArgs(args, {
+    value: ["host", "unit", "classification", "operation", "unit-classification", "unit-operation", "write-path", "write-ops", "capacity"],
+    boolean: ["dispatch", "json", "read-only"],
+    positional: "allow",
+  });
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
   const activation = requireActivation(cwd, env, host);
@@ -426,15 +419,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const allCards = resolvedCards(cwd, env, host);
   const codingModels = codingModelsForHost(cwd, env, host);
   const hostEnabled = batonProfileEnabled(cwd, env, host);
-  const removedSpawnFlags = ["task-kind", "deliverable", "done-when"];
-  const removedSpawnFlag = removedSpawnFlags.find((key) => Object.hasOwn(flags, key));
-  if (removedSpawnFlag) throw new Error(`LEGACY_CLI_SURFACE_REMOVED: --${removedSpawnFlag} is not part of the structured spawn contract`);
-  const removedClassificationFlags = [
-    "execution", "execution-class", "kind", "class", "category", "task-class",
-    "mechanical", "long-context", "longctx", "operation-label", "action", "op",
-  ];
-  const removedClassificationFlag = removedClassificationFlags.find((key) => Object.hasOwn(flags, key));
-  if (removedClassificationFlag) throw new Error(`LEGACY_CLI_SURFACE_REMOVED: --${removedClassificationFlag} is not part of the structured classification contract`);
   const classificationFlag = parseClassificationFlags(flags);
   const unitClassifications = parseClassificationAssignments(multiFlag(flags, "unit-classification"), "--unit-classification");
   const unitOperations = parseOperationAssignments(multiFlag(flags, "unit-operation"), "--unit-operation");
@@ -447,9 +431,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const writePathsEarly = standaloneScopes.globalPaths;
   const writeOperationsEarly = standaloneScopes.globalOperations;
   validateClassificationContract(hostEnabled, classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
-  if (stringFlag(flags, "model")) {
-    throw new Error("MODEL_SELECTION_REMOVED: --model is not supported; configure cli.<id>.coding_models and let Baton route automatically");
-  }
   const explicitModel = null;
   if (unitDefinitions.length) {
     if (writePathsEarly.length && unitDefinitions.length > 1) {
@@ -618,14 +599,16 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
 }
 
 async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
+  validateCommandArgs(args, {
+    value: ["host", "unit", "write-path", "write-ops", "capacity"],
+    boolean: ["dispatch", "json", "read-only"],
+    positional: "single",
+  });
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
   const activation = requireActivation(cwd, env, host);
   if (!activation.effective_enabled) return activationBypass(stdout, activation, Boolean(flags.json));
   const change = firstPositionalArg(args);
-  if (multiFlag(flags, "route").length) {
-    throw new Error("MODEL_SELECTION_REMOVED: --route is not supported; configure cli.<id>.coding_models and let Baton route automatically");
-  }
   const cards = resolvedCards(cwd, env, host);
   const codingModels = codingModelsForHost(cwd, env, host);
   if (!detectOpenSpecRoot(cwd) && !change) {
@@ -718,6 +701,7 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
 }
 
 function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
+  validateCommandArgs(args, { value: ["host"], boolean: ["json"], positional: "none" });
   const flags = parseFlags(args);
   let cfg = null;
   try {
@@ -732,8 +716,7 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   }
   const host = runtimeHost(flags, cwd, env);
   const cards = resolvedCards(cwd, env, host);
-  const rankedCards = cards.filter((card) => card.executable && card.capability?.ranked).length;
-  const unrankedCards = cards.filter((card) => card.executable && !card.capability?.ranked).length;
+  const executableCards = cards.filter((card) => card.executable).length;
   const cliProfile = cliProfileForHost(cfg, host);
   const snapshot = readRouteSnapshot(cwd, { host, env });
   const executableRoutes = snapshot?.routes.filter((route) => !route.disabled).length || 0;
@@ -800,7 +783,6 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
     status: s.status,
     model_id: s.model_id,
     execution_handle: s.execution_handle ? formatExecutionHandle(s.execution_handle) : null,
-    agent_id: s.agent_id || null,
   }));
   if (flags.json) {
     stdout.write(`${JSON.stringify({
@@ -811,7 +793,7 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
       coding_dispatch_ready: codingDispatchReady,
       coding_dispatch_reason: codingDispatchReason,
       coding_models: codingAvailability,
-      cards: { total: cards.length, ranked: rankedCards, unranked: unrankedCards },
+      cards: { total: cards.length, executable: executableCards },
       max_concurrent: effectiveMaxConcurrentForHost(cfg, host, env),
       max_depth: effectiveMaxDepthForHost(cfg, host),
       cli_models: { executable: executableRoutes, snapshot: snapshot?.fingerprint || null },
@@ -830,7 +812,7 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   stdout.write(`  core dispatch: ${coreDispatchReady ? "ready" : "not-ready"} (${coreDispatchReason})\n`);
   stdout.write(`  Coding priority: ${cliProfile.coding_models.length ? cliProfile.coding_models.join(" > ") : "(none)"} (${codingDispatchReason})\n`);
   for (const route of codingAvailability) stdout.write(`    ${route.route_id}: ${route.status}; ${route.eligibility_code} (${route.eligibility_reason})${route.next_probe_at ? `; probe ${route.next_probe_at}` : ""}\n`);
-  stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${rankedCards} ranked, ${unrankedCards} unranked)\n`);
+  stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${executableCards} executable)\n`);
   stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
   stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
   stdout.write(`  max_concurrent: ${effectiveMaxConcurrentForHost(cfg, host, env)} (queue beyond this; never refuse)\n`);
@@ -840,10 +822,9 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   stdout.write(`  spawns: ${spawns.length}  dispatching ${dispatching}  running ${running}  queued ${queued}  terminal ${terminal}\n`);
   for (const s of spawns) {
     const extra = s.conclusion ? ` → ${s.conclusion}` : s.progress ? ` → ${s.progress.phase}: ${s.progress.summary}` : "";
-    const worker = s.agent_id ? ` agent=${s.agent_id}` : "";
     const kind = s.work_unit?.kind ? ` ${s.work_unit.kind}` : "";
     const handle = s.execution_handle ? ` execution_handle=${formatExecutionHandle(s.execution_handle)}` : "";
-    stdout.write(`    ${s.id}  ${s.status}${kind}  ${s.model_id || "director"}${worker}${handle}  ${s.description}${extra}\n`);
+    stdout.write(`    ${s.id}  ${s.status}${kind}  ${s.model_id || "director"}${handle}  ${s.description}${extra}\n`);
   }
   const os = readOpenSpecStatus(cwd);
   stdout.write(`  openspec (${os.source}): ${os.text}\n`);
@@ -862,7 +843,7 @@ function printAutomaticRecommendation(stdout: WritableLike, proposal: SelectionP
     const speed = candidate?.speed_optimized
       ? `; fast=${candidate.service_tier || "model"} via ${candidate.speed_signals.join("+")}`
       : "";
-    stdout.write(`  ${unit.key}: ${selected} (score=${candidate?.task_score ?? "fallback"}; effort=${unit.target_reasoning_effort}; context=${unit.estimated_context_tokens}${speed})\n`);
+    stdout.write(`  ${unit.key}: ${selected} (score=${candidate?.task_score ?? "none"}; effort=${unit.target_reasoning_effort}; context=${unit.estimated_context_tokens}${speed})\n`);
   }
   for (const ticket of output.tickets) stdout.write(`  ticket ${ticket.id} queued; dispatch remains host-owned\n`);
 }
@@ -882,6 +863,38 @@ function parseFlags(args: string[]): FlagMap {
     }
   }
   return flags;
+}
+
+type PositionalPolicy = "allow" | "single" | "none";
+
+/** Parse only the current command grammar; unknown options must reach the ordinary parser error. */
+function validateCommandArgs(
+  args: string[],
+  {
+    value = [],
+    boolean = [],
+    positional = "allow",
+  }: { value?: readonly string[]; boolean?: readonly string[]; positional?: PositionalPolicy },
+): void {
+  const valueFlags = new Set(value);
+  const booleanFlags = new Set(boolean);
+  let positionalCount = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) {
+      positionalCount += 1;
+      if (positional === "none") throw new Error(`unexpected argument: ${arg}`);
+      if (positional === "single" && positionalCount > 1) throw new Error(`unexpected argument: ${arg}`);
+      continue;
+    }
+    const key = arg.slice(2);
+    if (!key || (!valueFlags.has(key) && !booleanFlags.has(key))) throw new Error(`unknown option: ${arg}`);
+    if (valueFlags.has(key)) {
+      const next = args[index + 1];
+      if (next === undefined || next.startsWith("--")) throw new Error(`${arg} requires a value`);
+      index += 1;
+    }
+  }
 }
 
 interface ClassificationFlags {
@@ -1011,19 +1024,6 @@ function multiFlag(flags: FlagMap, key: string): string[] {
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
   return [];
-}
-
-function parseTaskRoutes(values: string[]): Map<string, string> {
-  const routes = new Map<string, string>();
-  for (const value of values) {
-    const index = value.indexOf("=");
-    const number = index > 0 ? value.slice(0, index).trim() : "";
-    const route = index > 0 ? value.slice(index + 1).trim() : "";
-    if (!number || !route) throw new Error("--route must use TASK=EXACT_ROUTE[@PROFILE]");
-    if (routes.has(number)) throw new Error(`duplicate --route assignment: ${number}`);
-    routes.set(number, route);
-  }
-  return routes;
 }
 
 function parseStandaloneUnits(values: string[]): Array<{ key: string; description: string }> {

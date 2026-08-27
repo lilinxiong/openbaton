@@ -1,154 +1,69 @@
-# Adapter acceptance
+# Adapter conformance and acceptance
 
-Acceptance must prove behavior, not merely the presence of new names or files. Keep static tests, build/package checks, live catalog evidence, native host evidence, and Baton end-to-end evidence separate in the final report.
+Acceptance proves the external package and manifest behavior, not names in
+Baton core. Keep automated, package, live catalog, native, ticket, and
+repository evidence separate.
 
-## Automated coverage
+## Automated conformance
 
-Add or extend tests for all applicable items.
+- Manifest fields validate, SDK versions negotiate, package discovery is
+  deterministic, and no core-specific branch is required.
+- Adapter tests cover executable resolution and version errors; sanitized live
+  catalog shapes; pagination, visibility, duplicate ids, empty and malformed
+  responses, timeout; exact ids and metadata; and adapter-owned discovery.
+- Init/config tests prove one selected profile, no unselected profiles, scoped
+  enablement, reported limits, live catalog choices, runtime-skill installation,
+  and interactive plus non-interactive paths.
+- Matching and lifecycle tests prove allowlist-only selection, invalid model
+  rejection, reservation, Receipt, binding, terminal, release, identity
+  handoff, session-unique ticket ids, and host-mismatch rejection.
+- Quota tests prove capacity backpressure returns the same reservation without
+  changing its model, while an exhaustion successor receives a new ticket
+  ordinal and retains `successor_from_ticket_id`, session identity, host, scope,
+  and quota lineage.
+- Negative tests prove missing profile, invalid authorization, unresolved
+  classification, unknown scope/operation, path conflicts, rename conflicts,
+  and path-prefix overlap create no ticket or native call.
 
-### Adapter and catalog
+## Native and ticket acceptance
 
-- every registered id has exactly one adapter and matching host metadata;
-- command resolution, explicit override priority, missing binary, and version behavior;
-- real target response shapes plus sanitized fixtures;
-- hidden models, pagination, duplicate ids, empty catalog, malformed data, timeout, command failure, authentication/prose rejection, and coded errors;
-- exact preservation of model ids and exposed effort/tier metadata without invented values;
-- the selected adapter's `discoverModels` method is the only model-discovery entry point.
+1. Install the manifest package in an isolated home. Confirm `baton init` lists
+   it, queries its live catalog, and persists only its enabled profile.
+2. Select one exact catalog model and create a ticket with explicit host and
+   complete read-only/write scope as applicable.
+3. Reserve it, call the adapter's native child API with the exact model and a
+   fresh context, immediately bind `session_id`, `ticket_id`, and the opaque
+   native handle, and wait on native activity.
+4. Record exactly one terminal result and release. Verify no queued, running, or
+   awaiting-release ticket remains.
+5. Repeat with an invalid model and verify rejection without parent identity,
+   model substitution, or quota reset. Exercise the immutable successor path
+   after an explicit quota result and a clean pre-mutation baseline.
 
-### Config, init, and installation
+## Write scheduling and repository gates
 
-- default config contains no CLI placeholders; selecting the target creates exactly one independent target profile;
-- CLI-reported max_concurrent/max_depth override the director fallbacks independently, while missing or invalid values remain omitted;
-- current-format serialization preserves selected host profiles without promising legacy migration;
-- target enable/disable is host-scoped and never falls back across hosts;
-- `baton init` interactive CLI selection includes the target and proceeds through its returned models;
-- `baton init --cli <target>` and `baton config --cli <target>` work in non-interactive flows;
-- target runner, longctx, and subagent allowlist validation uses only its own catalog;
-- init/update installs the target runtime skill at the verified path without overwriting unrelated user files;
-- help, status, package contents, and user documentation list the target where appropriate.
+Before any write ticket, perform the read-only impact/dependency pass, record
+exact per-unit paths and operations (`write`, `create`, `delete`, `rename`,
+`chmod`), reject conflicts atomically, and fill every available slot from the
+maximal safe ready frontier. Section order is only a tie-breaker. An undeclared
+worker path stops before mutation.
 
-### Matching, tickets, and lifecycle
+Run focused tests, `npm test`, `npm run build`, `npm pack --dry-run`, and format
+checks. Exercise the built package with an isolated temporary home. Audit the
+complete diff, changed-path allowlist, temporary repositories, and fixture
+content. Preserve unrelated changes and do not commit or publish unless asked.
 
-- automatic matching never selects outside the enabled target allowlist;
-- stale model, unsupported effort/tier, missing profile, and disabled profile fail closed;
-- proposal, ticket, Receipt, reservation, binding, terminal outcome, and release retain the immutable target host;
-- target identity handling uses its CLI-specific adapter and native execution handle (never a universal `agent_id` assumption);
-- reserve/bind/complete/release under a different host returns a host-mismatch failure;
-- concurrency/backpressure defers the same target ticket without consuming an attempt or switching models;
-- recovery and status do not leak or relabel target tickets;
-- target-specific write and Git semantics match the verified host behavior and existing Receipt rules.
+## Outcomes
 
-Prefer shared conformance assertions over duplicated target-only tests. Add target-specific fixtures and behavior tests only where its protocol differs. Avoid tests that merely regex-match documentation wording.
+- `PASS`: conformance, package, catalog, native, negative, lifecycle, quota,
+  leak, and repository gates pass.
+- `CATALOG_ONLY`: catalog works but exact native child support is absent; do not
+  expose executable support.
+- `UNSUPPORTED`: an intrinsic SDK capability is absent.
+- `BLOCKED`: an external prerequisite prevents a decisive probe; state the next
+  action.
+- `REVISE`: a repository-controlled failure must be fixed before completion.
 
-## Director/worker routing acceptance
-
-A new host is incomplete unless these gates pass. Keep the automated coverage above; this section is a completeness check on the runtime skill and shared guard.
-
-### Runtime skill completeness
-
-Inspect the installed target runtime Baton skill. It MUST state the shared routing boundary:
-
-- Discussion/read-only analysis stay on the director; enabled-host ordinary implementation, including tiny edits, delegates to native subagents.
-- Director-owned structured classification is authoritative; classified mechanical work never falls back to director execution when its route is empty or unusable.
-- OpenSpec only lightens orchestration; Baton persists tickets/Receipts, not a separate DAG.
-
-Omitting the table or substituting a host-specific exception is not `PASS`. Unit tests still must not merely regex-match documentation wording; this gate is an acceptance completeness check that the runtime skill contains the table, not a wording-regex unit test.
-
-The runtime skill must also preserve the shared scheduling and scope semantics:
-fill the maximal safe ready frontier at each scheduling/refill decision, use
-section order only as a tie-breaker, require standalone per-unit paths and
-operations, and atomically reject conflicting standalone/OpenSpec scopes before
-creating any ticket. Host-specific templates may change only the native protocol
-details, not these safety or concurrency rules.
-
-### Hookless hosts
-
-All hosts are hookless. Acceptance verifies that the director performs classification,
-reservation, native spawn, bind, lifecycle, and release explicitly through command
-boundaries, Receipts, execution handles, and Git audits. Runtime skills must not claim
-hook installation, trust, observation, or interception.
-
-### Automatic workflow contract
-
-Acceptance must also show that, after the selected profile is enabled and execution is authorized, the director passes a structured classification before dispatch. Baton persists tickets and Receipts, not a separate DAG. Discussion/read-only analysis stay director-local, while authorized implementation nodes use native children. Mechanical routing must use the structured class rather than matching a fixed operation-name list; operation labels remain audit metadata. Invalid/missing authorization, disabled host, or unresolved classification must fail closed. Commit/publish checks remain deterministic Receipt/Git capability gates.
-
-### Complete write-scope acceptance
-
-Acceptance must prove the write boundary before any write ticket is created or dispatched:
-
-- The director performs a read-only impact/dependency pass for each proposed write unit.
-- Each write unit records an exact, complete per-unit path set and allowed operations from `write`, `create`, `delete`, `rename`, and `chmod`; an implicit, wildcard, or partial scope is not complete. Standalone multi-unit requests must carry this scope and operation data separately for every unit; the one-unit `standalone` form uses the same shape. OpenSpec apply must carry the same data for every `--unit`.
-- Before ticket creation, the full standalone or OpenSpec proposal/dispatch invocation is validated atomically against itself and currently owned write scopes. Any unknown scope/operation or pairwise conflict rejects the entire invocation with zero tickets, reservations, Receipts, or native dispatches. Conflict detection includes rename source/destination paths and path-prefix overlaps; it must not defer the decision to a terminal Receipt audit.
-- At every scheduling and refill decision, the director computes the maximal safe ready frontier and fills every available host slot with units from it. Section order is only a stable tie-breaker among otherwise-safe frontier units; it is not a dependency and must not serialize an independent ready unit. Recompute after dependency completion and slot release. If capacity remains while an otherwise-ready unit is not selected, acceptance evidence names the concrete dependency or write-scope conflict; section order and FIFO position are not valid reasons.
-- Unknown impact, dependency, path, or operation leaves classification unresolved and creates no implementation ticket.
-- A worker that discovers an undeclared path or operation stops before mutation and returns a scope decision. It must not edit first or rely on terminal retry or audit to authorize the change.
-- Mechanical routing still follows the structured class, while operation labels remain opaque audit metadata and never select a route.
-
-Exercise the current write surfaces in the acceptance evidence, for example:
-
-```text
-baton spawn REQUEST --host HOST --classification implementation \
-  --write-path PATH --write-ops write,create,delete,rename,chmod
-baton apply CHANGE --host HOST --dispatch \
-  --unit ID --write-path PATH --unit ID --write-path PATH
-```
-
-## Repository gates
-
-Run focused tests while implementing, then run all repository-standard gates. At minimum for the current repository:
-
-```text
-npm test
-npm run build
-npm pack --dry-run
-```
-
-Also run the repository's diff/format check and inspect the exact changed-path allowlist. Exercise the locally built Baton executable with an isolated temporary home so testing does not overwrite the user's real `~/.baton` configuration, installed skills, cache, or tickets.
-
-Any pre-existing baseline failure must be reported separately. A regression caused by the adapter must be fixed before proceeding.
-
-## User-visible init/config acceptance
-
-Using an isolated home and the locally built package:
-
-1. Start interactive `baton init` and verify the target appears alongside existing hosts.
-2. Select the target and verify the next phase queries the target's real model source.
-3. Select runner, longctx, and subagent candidates from only that returned catalog, then enable the target.
-4. Verify the persisted `cli.<target>` profile without altering another host profile.
-5. Disable the target and prove an explicit target operation fails closed rather than using another host or a global default.
-6. Exercise the equivalent non-interactive init/config path.
-
-Fixtures may test prompt behavior, but final acceptance requires the locally built CLI and the live target catalog.
-
-## Native and Baton end-to-end acceptance
-
-Use the shortest harmless read-only task and one exact picker-visible model.
-
-1. Refresh or capture the target catalog and verify the exact model and selected options are present.
-2. Create and reserve a real Baton ticket explicitly targeting the new host.
-3. Call the target's native child-agent tool with the ticket's exact model and verified no-context-inheritance setting.
-4. Bind the returned stable child identity immediately.
-5. Wait for native completion; do not convert a polling interval into ticket failure.
-6. Record the exact terminal conclusion and release the ticket.
-7. Verify final status has no queued/running/awaiting-release leak for the acceptance ticket.
-8. Repeat the invalid-model negative check when post-registration plumbing could introduce inheritance or fallback.
-
-The native call proves current host/session/account callability only. Do not generalize that result to future versions.
-
-## Final repository audit
-
-- inspect `git status`, the complete diff, and changed paths;
-- preserve unrelated user changes;
-- verify no raw model response with credentials, account identifiers, tokens, or sensitive paths entered fixtures;
-- verify temporary homes and repositories did not alter the user's real configuration;
-- do not commit or push unless separately requested.
-
-## Terminal outcomes
-
-- `PASS`: every required automated, build/package, live catalog, native child-agent, init/config, Baton lifecycle, director/worker routing, leak, and repository audit gate passed.
-- `CATALOG_ONLY`: the target's catalog is usable but it lacks a qualifying native exact-model child agent; do not leave it registered as executable.
-- `UNSUPPORTED`: a required target capability is intrinsically unavailable; identify the failed gate and evidence.
-- `BLOCKED`: authentication, permission, installation, trust, quota, network, or another external condition prevents completion; state the exact next action.
-- `REVISE`: an intermediate implementation or test failure. Continue fixing; do not deliver this as the final result when the issue is repository-controlled.
-
-The final report should include: target/version, catalog source and visible count, native tool and exact-model result, context/lifecycle/workspace findings, changed paths, test/build/package results, live Baton ticket result, final leak and Git audit, and the terminal outcome.
+Report adapter/version, manifest and SDK versions, catalog source/count, native
+handle and session evidence, quota-successor evidence, changed paths, gate
+results, ticket lifecycle, leak audit, and outcome.

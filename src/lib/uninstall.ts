@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { legacyHookPath, removeLegacyHooks } from "./legacy-hook-cleanup.js";
 import {
   batonHomeDir,
   configPath,
@@ -12,26 +11,25 @@ import {
 } from "./paths.js";
 import {
   installManifestPath,
-  legacyOwnsSkill,
+  manifestOwnsDirectory,
   manifestOwnsFile,
   readInstallManifest,
   type InstallManifest,
 } from "./install-manifest.js";
-import { HOST_IDS, hostSkillDest, type HostId } from "./hosts.js";
+import { hostIds, hostSkillDest, type HostId } from "./hosts.js";
+import { adapterInstallDir } from "./adapter-install.js";
 
 export const UNINSTALL_ACTIVE_TICKETS = "UNINSTALL_ACTIVE_TICKETS";
 export const UNINSTALL_STATE_INVALID = "UNINSTALL_STATE_INVALID";
 export const UNINSTALL_CONFIRMATION_REQUIRED = "UNINSTALL_CONFIRMATION_REQUIRED";
 
-export type UninstallAction = "remove" | "update-entry" | "preserve" | "already-absent" | "conflict";
+export type UninstallAction = "remove" | "already-absent" | "conflict";
 
 export interface UninstallTarget {
   action: UninstallAction;
   path: string;
   host?: HostId;
   reason: string;
-  before?: string | null;
-  after?: string | null;
   expected_fingerprint?: string | null;
   expected_mode?: number | null;
   expected_kind?: "file" | "directory" | "absent";
@@ -71,10 +69,6 @@ function display(file: string, env?: NodeJS.ProcessEnv): string {
   return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? `~/${relative}` : file;
 }
 
-function jsonText(value: unknown): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
 function fingerprint(file: string): string | null {
   try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { return null; }
 }
@@ -110,49 +104,25 @@ function targetFile(file: string, base: UninstallTarget): UninstallTarget {
   return { ...base, expected_fingerprint, expected_mode, expected_kind: kind };
 }
 
-function readJsonObject(file: string): { value: Record<string, unknown>; text: string } | null {
-  if (!fs.existsSync(file)) return null;
-  const text = fs.readFileSync(file, "utf8");
-  const value = JSON.parse(text) as unknown;
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("top level must be an object");
-  return { value: value as Record<string, unknown>, text };
-}
-
-function hookTarget(host: HostId, cwd: string, env: NodeJS.ProcessEnv | undefined): string {
-  return legacyHookPath(host, env);
-}
-
-function removeHookEntry(host: HostId, cwd: string, env?: NodeJS.ProcessEnv): UninstallTarget {
-  const file = hookTarget(host, cwd, env);
-  const shown = display(file, env);
-  if (!fs.existsSync(file)) return targetFile(file, { action: "already-absent", host, reason: "hook file absent", path: shown });
-  let loaded: { value: Record<string, unknown>; text: string };
-  try {
-    loaded = readJsonObject(file) || (() => { throw new Error("hook file absent"); })();
-  } catch (error) {
-    return { action: "conflict", path: shown, host, reason: `hook file unreadable: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  try {
-    const result = removeLegacyHooks(host, loaded.value);
-    const after = jsonText(result.document);
-    if (result.action === "removed" && result.canDelete) {
-      return targetFile(file, { action: "remove", path: shown, host, reason: "canonical Baton-owned hook file", before: loaded.text, after: null });
-    }
-    if (after === loaded.text) return targetFile(file, { action: result.action === "conflict" ? "conflict" : "preserve", path: shown, host, reason: result.action === "conflict" ? "ambiguous hook ownership" : "no Baton-owned handler", before: loaded.text, after: loaded.text });
-    return targetFile(file, { action: "update-entry", path: shown, host, reason: "remove Baton-owned handlers and retain unrelated hooks", before: loaded.text, after });
-  } catch (error) {
-    return { action: "conflict", path: shown, host, reason: `ambiguous hook ownership: ${error instanceof Error ? error.message : String(error)}`, before: loaded.text };
-  }
-}
-
 function skillTarget(host: HostId | null, cwd: string, env: NodeJS.ProcessEnv | undefined, manifest: InstallManifest | null): UninstallTarget {
   const file = host ? hostSkillDest(host, { cwd, env }) : skillPath(cwd, { env });
   const shown = display(file, env);
   if (!fs.existsSync(file)) return targetFile(file, { action: "already-absent", path: shown, host: host || undefined, reason: "skill absent" });
-  const owned = manifestOwnsFile(manifest, file) || legacyOwnsSkill(host, file, cwd, env);
+  const owned = manifestOwnsFile(manifest, file);
   return targetFile(file, owned
-    ? { action: "remove", path: shown, host: host || undefined, reason: manifest ? "manifest fingerprint match" : "strong canonical legacy marker match" }
+    ? { action: "remove", path: shown, host: host || undefined, reason: "manifest fingerprint match" }
     : { action: "conflict", path: shown, host: host || undefined, reason: "skill was modified or ownership is ambiguous" });
+}
+
+function adapterTarget(adapter: string, env: NodeJS.ProcessEnv | undefined, manifest: InstallManifest | null): UninstallTarget {
+  const file = adapterInstallDir(adapter, env);
+  const shown = display(file, env);
+  if (!fs.existsSync(file)) {
+    return targetFile(file, { action: "already-absent", path: shown, reason: "adapter package absent" });
+  }
+  return targetFile(file, manifestOwnsDirectory(manifest, file)
+    ? { action: "remove", path: shown, reason: "adapter package fingerprint match" }
+    : { action: "conflict", path: shown, reason: "adapter package was modified or ownership is ambiguous" });
 }
 
 function stateInvalid(message: string): never {
@@ -217,13 +187,12 @@ function activeTickets(cwd: string, env: NodeJS.ProcessEnv | undefined, selected
   for (const name of names) {
     const workspace = path.join(root, name);
     requireDirectory(workspace, "workspace entry");
-    const runtimeRoots = [workspace, path.join(workspace, CURRENT_RUNTIME_NAMESPACE)];
-    for (const runtimeRoot of runtimeRoots) {
-      if (!fs.existsSync(runtimeRoot)) continue;
-      if (runtimeRoot !== workspace) requireDirectory(runtimeRoot, "workspace runtime");
-      scanJsonStateDirectory(path.join(runtimeRoot, "runs"), "runtime state");
-    }
-    const dirs = [path.join(workspace, "spawns"), path.join(workspace, CURRENT_RUNTIME_NAMESPACE, "spawns")];
+    // Only inspect the current runtime namespace. State written before the
+    // namespace was introduced is historical and must remain untouched.
+    const runtime = path.join(workspace, CURRENT_RUNTIME_NAMESPACE);
+    if (fs.existsSync(runtime)) requireDirectory(runtime, "workspace runtime");
+    scanJsonStateDirectory(path.join(runtime, "runs"), "runtime state");
+    const dirs = [path.join(runtime, "spawns")];
     for (const directory of dirs) {
       if (!fs.existsSync(directory)) continue;
       requireDirectory(directory, "spawn state");
@@ -241,10 +210,10 @@ function activeTickets(cwd: string, env: NodeJS.ProcessEnv | undefined, selected
         const selectionHost = selection && typeof selection === "object" && !Array.isArray(selection)
           ? String((selection as Record<string, unknown>).host || "").trim().toLowerCase()
           : "";
-        if (!status || !host || !id || !HOST_IDS.includes(host as HostId)
+        if (!status || !host || !id || !hostIds(env).includes(host as HostId)
           || (selection !== undefined && (!selection || typeof selection !== "object" || Array.isArray(selection)))
           || (selection && typeof selection === "object" && (selection as Record<string, unknown>).host !== undefined
-            && (!selectionHost || !HOST_IDS.includes(selectionHost as HostId) || selectionHost !== host))) {
+            && (!selectionHost || !hostIds(env).includes(selectionHost as HostId) || selectionHost !== host))) {
           throw coded(`dispatch ticket is malformed: ${file}`, UNINSTALL_STATE_INVALID);
         }
         if (ACTIVE_TICKET_STATUSES.has(status) && (clean || selectedSet.has(host as HostId))) found.push({ path: file, ticket_id: id, status, host });
@@ -256,11 +225,26 @@ function activeTickets(cwd: string, env: NodeJS.ProcessEnv | undefined, selected
 
 function addTarget(targets: UninstallTarget[], target: UninstallTarget): void { targets.push(target); }
 
+function addUniqueTarget(targets: UninstallTarget[], target: UninstallTarget): void {
+  if (!targets.some((item) => item.path === target.path)) targets.push(target);
+}
+
+/** Enumerate only current runtime namespaces; historical workspace siblings
+ * are deliberately left outside a clean uninstall's mutation set. */
+function currentRuntimeDirectories(home: string): string[] {
+  const root = path.join(home, WORKSPACES_DIR);
+  if (!fs.existsSync(root)) return [];
+  requireDirectory(root, "workspace state");
+  return directoryEntries(root)
+    .map((name) => path.join(root, name, CURRENT_RUNTIME_NAMESPACE))
+    .filter((directory) => fs.existsSync(directory));
+}
+
 /** Build a complete, serializable plan without mutating any file. */
 export function buildUninstallPlan(options: BuildUninstallPlanOptions): UninstallPlan {
   const env = options.env || process.env;
   const clean = options.clean === true;
-  const hosts = (clean ? [...HOST_IDS] : [...new Set(options.hosts || HOST_IDS)]) as HostId[];
+  const hosts = (clean ? [...hostIds(env)] : [...new Set(options.hosts || hostIds(env))]) as HostId[];
   const manifest = readInstallManifest(env);
   // Surgical host uninstall does not touch runtime state and must not be
   // blocked by an unrelated stale/corrupt workspace. Clean is the only mode
@@ -268,9 +252,16 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
   const active = clean ? activeTickets(options.cwd, env, hosts, clean) : [];
   if (clean && active.length && !options.dry_run) throw coded(`${UNINSTALL_ACTIVE_TICKETS}: ${active.map((item) => item.ticket_id).join(", ")}`, UNINSTALL_ACTIVE_TICKETS);
   const targets: UninstallTarget[] = [];
-  for (const host of clean ? HOST_IDS : hosts) {
-    addTarget(targets, removeHookEntry(host, options.cwd, env));
+  for (const host of clean ? hostIds(env) : hosts) {
     addTarget(targets, skillTarget(host, options.cwd, env, manifest));
+    const adapterPath = adapterInstallDir(host, env);
+    const ownedAdapter = manifest?.files.some((entry) => entry.kind === "adapter-package" && entry.adapter === host && entry.path === path.resolve(adapterPath));
+    if (ownedAdapter || fs.existsSync(adapterPath)) addUniqueTarget(targets, adapterTarget(host, env, manifest));
+  }
+  if (clean && manifest) {
+    for (const entry of manifest.files.filter((item) => item.kind === "adapter-package" && item.adapter)) {
+      addUniqueTarget(targets, adapterTarget(entry.adapter!, env, manifest));
+    }
   }
   // Default uninstall removes the selected host integration and the shared
   // Baton skill. Clean adds the remaining global/runtime ownership below.
@@ -281,7 +272,7 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
     for (const file of [configPath(options.cwd, { env }), installManifestPath(env)]) {
       addTarget(targets, targetFile(file, { action: fs.existsSync(file) ? "remove" : "already-absent", path: display(file, env), reason: "clean removes Baton-owned global file" }));
     }
-    for (const directory of [path.join(home, "cache"), path.join(home, "state"), path.join(home, WORKSPACES_DIR)]) {
+    for (const directory of [path.join(home, "cache"), path.join(home, "state"), ...currentRuntimeDirectories(home)]) {
       addTarget(targets, targetFile(directory, { action: fs.existsSync(directory) ? "remove" : "already-absent", path: display(directory, env), reason: "clean removes explicit Baton runtime directory" }));
     }
   }
@@ -293,24 +284,12 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
     targets,
     active_tickets: active,
     constraints: [
-      "preserve unrelated hooks/settings",
       "preserve modified or ambiguous skills",
       "never remove package-manager executable",
       "never recurse outside explicit Baton/host integration paths",
       ...(clean && active.length ? ["blocked by active dispatch tickets; no mutation is permitted"] : []),
     ],
   };
-}
-
-function atomicWrite(file: string, text: string, modeBits: number | null = null): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temporary, text, { encoding: "utf8", mode: modeBits ?? 0o600 });
-    if (modeBits !== null) fs.chmodSync(temporary, modeBits);
-    fs.renameSync(temporary, file);
-  }
-  finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
 function resolvePlanPath(target: UninstallTarget, env?: NodeJS.ProcessEnv): string {
@@ -325,7 +304,7 @@ function resolvePlanPath(target: UninstallTarget, env?: NodeJS.ProcessEnv): stri
 }
 
 function validateTarget(target: UninstallTarget, env?: NodeJS.ProcessEnv): void {
-  if (!["remove", "update-entry"].includes(target.action)) return;
+  if (target.action !== "remove") return;
   const file = resolvePlanPath(target, env);
   const exists = fs.existsSync(file);
   if (target.expected_kind === "absent") {
@@ -358,9 +337,6 @@ export function applyUninstallPlan(plan: UninstallPlan, options: ApplyUninstallP
         if (stat.isDirectory() && !stat.isSymbolicLink()) fs.rmSync(file, { recursive: true, force: true });
         else fs.unlinkSync(file);
       }
-    } else if (target.action === "update-entry" && target.after != null) {
-      const file = resolvePlanPath(target, options.env);
-      atomicWrite(file, target.after, target.expected_mode ?? null);
     }
   }
   return plan;

@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "bun:test";
 import { run } from "../src/cli.js";
-import { configureCodex } from "./configure.js";
-import { fakeEnv, withHome } from "./home.js";
+import { configureCli } from "./configure.js";
+import { fakeEnv, withHome, testTicketId } from "./home.js";
 import { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "../src/lib/git-index-control.js";
 import { runGitProcess } from "../src/lib/git-safety-process.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
@@ -153,10 +153,10 @@ describe("large streamed Git index safety", () => {
         const env = fakeEnv(home);
         let result = await batonCommand(cwd, env, ["init"]);
         assert.equal(result.code, 0, result.text);
-        configureCodex(cwd, env, [ROUTE]);
+        configureCli(cwd, env, "alpha", [ROUTE]);
         publishRouteSnapshot(cwd, { models: [{ id: "k3[1m]", provider: "kimi" }] }, new Date(), {
-          cli: "codex",
-          host: "codex",
+          cli: "alpha",
+          host: "alpha",
           env,
         });
 
@@ -164,7 +164,7 @@ describe("large streamed Git index safety", () => {
           "spawn",
           "exercise a large streamed Git index",
           "--host",
-          "codex",
+          "alpha",
           "--classification",
           "implementation",
           "--write-path",
@@ -175,9 +175,9 @@ describe("large streamed Git index safety", () => {
         ]);
         assert.equal(result.code, 0, result.text);
         const firstSpawn = JSON.parse(result.text) as { tickets: Array<{ id: string }> };
-        assert.equal(firstSpawn.tickets[0]?.id, "spn-0001");
+        assert.equal(firstSpawn.tickets[0]?.id, testTicketId("spn", 1));
 
-        const firstTicketFile = path.join(spawnsDir(cwd, env), "spn-0001.json");
+        const firstTicketFile = path.join(spawnsDir(cwd, env), `${testTicketId("spn", 1)}.json`);
         const firstTicket = readJson(firstTicketFile);
         const firstReceiptFile = path.join(receiptsDir(cwd, env), `${firstTicket.receipt_id}.json`);
         const firstReceipt = readJson(firstReceiptFile);
@@ -189,31 +189,31 @@ describe("large streamed Git index safety", () => {
         assert.equal(typeof firstReceipt.baseline.index_control_checksum, "string");
         assert.equal(firstReceipt.baseline.dirty_entries.length, 0);
 
-        result = await batonCommand(cwd, env, ["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"]);
+        result = await batonCommand(cwd, env, ["dispatch", "next", "--host", "alpha", "--capacity", "1", "--json"]);
         assert.equal(result.code, 0, result.text);
         const reserved = JSON.parse(result.text) as { reserved: Array<Record<string, any>> };
         assert.equal(reserved.reserved.length, 1);
-        assert.equal(reserved.reserved[0]?.ticket_id, "spn-0001");
+        assert.equal(reserved.reserved[0]?.ticket_id, testTicketId("spn", 1));
         assert.equal(typeof reserved.reserved[0]?.reservation?.reservation_id, "string");
         assert.equal(readJson(firstTicketFile).status, "dispatching");
 
         result = await batonCommand(cwd, env, [
           "dispatch",
           "bind",
-          "spn-0001",
+          testTicketId("spn", 1),
           "--host",
-          "codex",
-          "--task-name",
-          "large-index-worker-1",
+          "alpha",
+          "--execution-handle",
+          "alpha-task=large-index-worker-1",
           "--json",
         ]);
         assert.equal(result.code, 0, result.text);
         const bound = JSON.parse(result.text) as { ticket: Record<string, any> };
         assert.equal(bound.ticket.status, "running");
         assert.deepEqual(bound.ticket.execution_handle, {
-          kind: "task_name",
+          kind: "alpha-task",
           value: "large-index-worker-1",
-          source: "native-return",
+          source: "manual",
         });
 
         git(cwd, "update-index", "--no-skip-worktree", "--", fixture.virtualPath);
@@ -221,11 +221,11 @@ describe("large streamed Git index safety", () => {
         result = await batonCommand(cwd, env, [
           "dispatch",
           "complete",
-          "spn-0001",
+          testTicketId("spn", 1),
           "--host",
-          "codex",
-          "--task-name",
-          "large-index-worker-1",
+          "alpha",
+          "--execution-handle",
+          "alpha-task=large-index-worker-1",
           "--text",
           "must reject index control mutation",
           "--json",
@@ -238,30 +238,29 @@ describe("large streamed Git index safety", () => {
         assert.ok(rejected.ticket.safety_verdict.violations.some((item: { code: string }) => item.code === "E_INDEX_MUTATION"));
         assert.equal(rejected.ticket.conclusion, null);
 
-        result = await batonCommand(cwd, env, ["dispatch", "recover", "--host", "codex", "--json"]);
+        result = await batonCommand(cwd, env, ["dispatch", "recover", "--host", "alpha", "--json"]);
         assert.equal(result.code, 0, result.text);
         const recovery = JSON.parse(result.text) as { expired: string[]; resumable: unknown[]; needs_close: Array<Record<string, any>> };
         assert.deepEqual(recovery.expired, []);
         assert.deepEqual(recovery.resumable, []);
         assert.deepEqual(recovery.needs_close, [{
-          ticket_id: "spn-0001",
+          ticket_id: testTicketId("spn", 1),
           execution_handle: {
-            kind: "task_name",
+            kind: "alpha-task",
             value: "large-index-worker-1",
-            source: "native-return",
+            source: "manual",
           },
-          agent_id: null,
-          host: "codex",
+          host: "alpha",
         }]);
 
         result = await batonCommand(cwd, env, [
           "dispatch",
           "release",
-          "spn-0001",
+          testTicketId("spn", 1),
           "--host",
-          "codex",
-          "--task-name",
-          "large-index-worker-1",
+          "alpha",
+          "--execution-handle",
+          "alpha-task=large-index-worker-1",
           "--json",
         ]);
         assert.equal(result.code, 0, result.text);
@@ -278,7 +277,7 @@ describe("large streamed Git index safety", () => {
           "spawn",
           "complete an allowlisted large-index worktree change",
           "--host",
-          "codex",
+          "alpha",
           "--classification",
           "implementation",
           "--write-path",
@@ -289,25 +288,25 @@ describe("large streamed Git index safety", () => {
         ]);
         assert.equal(result.code, 0, result.text);
         const secondSpawn = JSON.parse(result.text) as { tickets: Array<{ id: string }> };
-        assert.equal(secondSpawn.tickets[0]?.id, "spn-0002");
-        const secondTicketFile = path.join(spawnsDir(cwd, env), "spn-0002.json");
+        assert.equal(secondSpawn.tickets[0]?.id, testTicketId("spn", 2));
+        const secondTicketFile = path.join(spawnsDir(cwd, env), `${testTicketId("spn", 2)}.json`);
         const secondTicket = readJson(secondTicketFile);
         const secondReceiptFile = path.join(receiptsDir(cwd, env), `${secondTicket.receipt_id}.json`);
         const secondReceipt = readJson(secondReceiptFile);
         assert.equal(secondReceipt.baseline.index_control_algorithm, GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM);
         assert.equal(secondReceipt.baseline.index_control_entry_count, fixture.entryCount);
 
-        result = await batonCommand(cwd, env, ["dispatch", "next", "--host", "codex", "--capacity", "1", "--json"]);
+        result = await batonCommand(cwd, env, ["dispatch", "next", "--host", "alpha", "--capacity", "1", "--json"]);
         assert.equal(result.code, 0, result.text);
-        assert.equal(JSON.parse(result.text).reserved[0]?.ticket_id, "spn-0002");
+        assert.equal(JSON.parse(result.text).reserved[0]?.ticket_id, testTicketId("spn", 2));
         result = await batonCommand(cwd, env, [
           "dispatch",
           "bind",
-          "spn-0002",
+          testTicketId("spn", 2),
           "--host",
-          "codex",
-          "--task-name",
-          "large-index-worker-2",
+          "alpha",
+          "--execution-handle",
+          "alpha-task=large-index-worker-2",
           "--json",
         ]);
         assert.equal(result.code, 0, result.text);
@@ -316,11 +315,9 @@ describe("large streamed Git index safety", () => {
         result = await batonCommand(cwd, env, [
           "dispatch",
           "complete",
-          "spn-0002",
+          testTicketId("spn", 2),
           "--host",
-          "codex",
-          "--task-name",
-          "large-index-worker-2",
+          "alpha",
           "--text",
           "allowlisted worktree change accepted",
           "--release",

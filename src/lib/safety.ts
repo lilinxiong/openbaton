@@ -2,13 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM, LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
+import { fingerprintGitIndexControlRecords, GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
 import {
   captureStableSafetyFacts,
   type GitSafetyFacts,
   type StableGitSafetyFacts,
   type StableGitSafetyFactsOptions,
 } from "./git-safety-facts.js";
+import { isRuntimeTurnDiffRef } from "./git-record-consumers.js";
 import { collectGitScalar, type GitProcessOptions } from "./git-safety-process.js";
 
 export type SafetyOperation = "write" | "create" | "delete" | "rename" | "chmod";
@@ -25,7 +26,7 @@ export interface GitBaseline {
   /** Semantic index-entry control flags; stat-cache bytes are deliberately omitted. */
   index_control_checksum: string;
   /** Optional version marker for the framed index-control fingerprint. */
-  index_control_algorithm?: string;
+  index_control_algorithm: string;
   /** Number of index-control records covered by the versioned fingerprint. */
   index_control_entry_count?: number;
   /** Complete refs and HEAD reflog captured for ordinary worker audits. */
@@ -47,7 +48,7 @@ export interface CommitBaseline {
   /** Semantic index-entry control flags; stat-cache bytes are deliberately omitted. */
   staged_index_control_checksum: string;
   /** Optional version marker for the framed index-control fingerprint. */
-  staged_index_control_algorithm?: string;
+  staged_index_control_algorithm: string;
   /** Number of index-control records covered by the versioned fingerprint. */
   staged_index_control_entry_count?: number;
   staged_paths: string[];
@@ -124,9 +125,8 @@ export type IndexControlBaselineErrorCode =
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 
 /**
- * Validate the optional versioned index-control metadata without changing the
- * legacy checksum semantics.  An entirely absent marker is an old baseline;
- * once any v2 field is present, all fields must be complete and canonical.
+ * Validate the current framed index-control metadata. Old baseline shapes are
+ * intentionally rejected so they cannot silently weaken an audit.
  */
 export function validateIndexControlBaselineMetadata(
   baseline: {
@@ -139,21 +139,10 @@ export function validateIndexControlBaselineMetadata(
   const algorithm = baseline.index_control_algorithm;
   const checksum = baseline.index_control_checksum;
   const entryCount = baseline.index_control_entry_count;
-  const hasAlgorithm = algorithm !== undefined;
-  const hasChecksum = checksum !== undefined;
-  const hasEntryCount = entryCount !== undefined;
-  // Legacy baselines have the old checksum but no marker or count. Keep that
-  // shape compatible, while still requiring its checksum to be canonical.
-  if (!hasAlgorithm && !hasEntryCount) {
-    return typeof checksum === "string" && HEX_SHA256.test(checksum)
-      ? null
-      : "INDEX_CONTROL_BASELINE_INVALID";
-  }
-  if (hasAlgorithm && typeof algorithm === "string" && algorithm !== GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM) {
+  if (algorithm !== GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM) {
     return "INDEX_CONTROL_ALGORITHM_UNSUPPORTED";
   }
-  if (!hasAlgorithm || typeof algorithm !== "string" || !hasChecksum || !hasEntryCount
-    || typeof checksum !== "string" || !HEX_SHA256.test(checksum)
+  if (typeof checksum !== "string" || !HEX_SHA256.test(checksum)
     || typeof entryCount !== "number" || !Number.isSafeInteger(entryCount) || entryCount < 0) {
     return "INDEX_CONTROL_BASELINE_INVALID";
   }
@@ -253,37 +242,39 @@ function stagedTree(repoRoot: string): string {
  * masked as a volatile cache bit.
  */
 function indexControlChecksum(repoRoot: string): string {
-  const output = git(repoRoot, ["ls-files", "--debug", "-z"]);
-  const entries: string[] = [];
+  const output = execFileSync("git", ["ls-files", "--debug", "-z"], { cwd: repoRoot }) as Buffer;
+  const entries: Array<{ pathname: Buffer; maskedFlags: number }> = [];
   let cursor = 0;
   while (cursor < output.length) {
-    const nul = output.indexOf("\0", cursor);
+    const nul = output.indexOf(0, cursor);
     if (nul < 0) break;
     const file = output.slice(cursor, nul);
     const tail = output.slice(nul + 1);
     // `--debug -z` NUL-terminates the pathname, then appends the debug block;
     // the next pathname starts immediately after the flags line.
-    const match = tail.match(/(?:^|\n)[^\n]*\bflags:[ \t]*([0-9A-Fa-f]+)[ \t]*(?:\n|$)/);
+    const match = tail.toString("ascii").match(/(?:^|\n)[^\n]*\bflags:[ \t]*([0-9A-Fa-f]+)[ \t]*(?:\n|$)/);
     if (!match) throw new Error(`git ls-files --debug omitted flags for ${file}`);
     // The fsmonitor-valid bit is a volatile cache hint, not a worker-visible
     // index mutation. Keep semantic controls (assume-unchanged,
     // skip-worktree, intent-to-add, and future non-cache bits) in the
     // fingerprint while masking only CE_FSMONITOR_VALID (0x80000000).
     const flags = Number.parseInt(match[1], 16) >>> 0;
-    entries.push(`${file}\0${flags & 0x7fffffff}`);
+    entries.push({ pathname: file, maskedFlags: flags & 0x7fffffff });
     cursor = nul + 1 + match.index + match[0].length;
   }
-  entries.sort();
-  return checksumValue(entries);
+  return fingerprintGitIndexControlRecords(entries).checksum;
 }
 
-const INTERNAL_REF_NAMESPACE = "refs/codex/turn-diffs/";
+function indexControlEntryCount(repoRoot: string): number {
+  const output = git(repoRoot, ["ls-files", "--debug", "-z"]);
+  return (output.match(/\0/g) || []).length;
+}
 
 function refsSnapshot(repoRoot: string): string[] {
   return git(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"])
     .split("\n")
     .filter(Boolean)
-    .filter((entry) => !entry.startsWith(INTERNAL_REF_NAMESPACE));
+    .filter((entry) => !isRuntimeTurnDiffRef(entry));
 }
 
 function headReflog(repoRoot: string): string[] {
@@ -345,6 +336,8 @@ export function captureBaseline(worktree: string, now: Date = new Date()): GitBa
     index_path: indexPath,
     index_tree: stagedTree(repoRoot),
     index_control_checksum: indexControlChecksum(repoRoot),
+    index_control_algorithm: GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
+    index_control_entry_count: indexControlEntryCount(repoRoot),
     refs,
     head_reflog_count: reflog.length,
     head_reflog_checksum: checksumValue(reflog),
@@ -373,28 +366,16 @@ function selectAuditIndexControlAlgorithm(baseline: {
   index_control_algorithm?: unknown;
   index_control_checksum?: unknown;
   index_control_entry_count?: unknown;
-}): typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM | typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM {
-  // Select legacy only after the complete legacy shape has been validated.
-  // Unknown or incomplete metadata must still use a known collector so the
-  // mapper can return the precise baseline violation rather than a collector
-  // configuration error.
-  if (!validateIndexControlBaselineMetadata(baseline)) {
-    return baseline.index_control_algorithm === undefined
-      ? LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM
-      : GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
-  }
-  // Unknown or incomplete metadata remains visible to indexControlBaselineViolation;
-  // v2 is merely the safe known parser used to finish the stable observation.
+}): typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM {
   return GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
 }
 
 function stableObservationOptions(
   options: AsyncSafetyOptions,
   purpose: "baseline" | "audit",
-  indexControlAlgorithm: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM | typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
+  indexControlAlgorithm: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
 ): StableGitSafetyFactsOptions {
-  // Pick fields explicitly so JavaScript callers cannot smuggle legacyIndexControl
-  // or an arbitrary algorithm into a new stable collection.
+  // Pick fields explicitly so callers cannot smuggle an arbitrary algorithm.
   return {
     purpose,
     spawn: options.spawn,
@@ -490,6 +471,8 @@ export function captureCommitBaseline(worktree: string, now: Date = new Date()):
     branch_ref: branchRef,
     staged_tree: git(repoRoot, ["write-tree"]).trim(),
     staged_index_control_checksum: indexControlChecksum(repoRoot),
+    staged_index_control_algorithm: GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
+    staged_index_control_entry_count: indexControlEntryCount(repoRoot),
     staged_paths: stagedPaths(repoRoot),
     refs,
     head_reflog_count: reflog.length,
@@ -602,8 +585,8 @@ function auditPreparedCommitFromFacts(root: string, facts: StableGitSafetyFacts,
   }
   if (facts.stagedTree !== baseline.staged_tree) commitViolation(violations, "E_INDEX_TREE_MUTATION", "staged tree changed after commit authorization");
   if (!metadataError && (facts.indexControl.checksum !== baseline.staged_index_control_checksum
-    || facts.indexControl.algorithm !== (baseline.staged_index_control_algorithm || "legacy-json-sorted-v1")
-    || (baseline.staged_index_control_entry_count !== undefined && facts.indexControl.entryCount !== baseline.staged_index_control_entry_count))) {
+    || facts.indexControl.algorithm !== baseline.staged_index_control_algorithm
+    || facts.indexControl.entryCount !== baseline.staged_index_control_entry_count)) {
     commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata changed after commit authorization");
   }
   if (!sameList(facts.stagedPaths, baseline.staged_paths)) commitViolation(violations, "E_STAGED_PATH_MUTATION", "staged paths changed after commit authorization");
@@ -736,8 +719,8 @@ function auditCommitOutcomeFromFacts(
   }
   if (facts.stagedTree !== baseline.staged_tree) commitViolation(violations, "E_INDEX_TREE_MUTATION", "index does not match the authorized committed tree");
   if (!metadataError && (facts.indexControl.checksum !== baseline.staged_index_control_checksum
-    || facts.indexControl.algorithm !== (baseline.staged_index_control_algorithm || "legacy-json-sorted-v1")
-    || (baseline.staged_index_control_entry_count !== undefined && facts.indexControl.entryCount !== baseline.staged_index_control_entry_count))) {
+    || facts.indexControl.algorithm !== baseline.staged_index_control_algorithm
+    || facts.indexControl.entryCount !== baseline.staged_index_control_entry_count)) {
     commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata does not match the authorized committed state");
   }
   if (facts.dirtyEntries.length) commitViolation(violations, "E_WORKTREE_MUTATION", "commit-only worker left tracked or untracked worktree changes");
@@ -817,6 +800,8 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   const currentFormat = typeof baseline.branch_ref === "string"
     && typeof baseline.index_tree === "string"
     && typeof baseline.index_control_checksum === "string"
+    && baseline.index_control_algorithm === GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM
+    && Number.isSafeInteger(baseline.index_control_entry_count)
     && Array.isArray(baseline.refs)
     && Number.isInteger(baseline.head_reflog_count)
     && typeof baseline.head_reflog_checksum === "string";
@@ -932,10 +917,10 @@ function auditWorktreeFromFacts(root: string, facts: StableGitSafetyFacts, basel
   if (currentFormat) {
     if (facts.stagedTree !== baseline.index_tree) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the staged Git index tree" });
     const index = indexMetadata(facts.indexControl);
-    const expectedAlgorithm = baseline.index_control_algorithm || "legacy-json-sorted-v1";
+    const expectedAlgorithm = baseline.index_control_algorithm;
     if (!metadataError && (index.checksum !== baseline.index_control_checksum
       || index.algorithm !== expectedAlgorithm
-      || (baseline.index_control_entry_count !== undefined && index.entryCount !== baseline.index_control_entry_count))) {
+      || index.entryCount !== baseline.index_control_entry_count)) {
       violations.push({ code: "E_INDEX_MUTATION", message: "worker changed Git index control metadata" });
     }
   }

@@ -7,9 +7,10 @@ import { emptyConfig, loadConfig, saveConfig } from "../src/lib/config.js";
 /** Inject a concrete selected-host adapter while keeping command tests off the live CLI. */
 export function adapterProviderFor(
   source: CliModelCatalog | ((cli: CliId) => CliModelCatalog),
+  env: NodeJS.ProcessEnv = process.env,
 ): CliAdapterProvider {
   return (cli) => ({
-    ...getCliAdapter(cli),
+    ...getCliAdapter(cli, env),
     discoverModels: async () => structuredClone(typeof source === "function" ? source(cli) : source),
   });
 }
@@ -29,13 +30,4 @@ export function configureCli(
     coding_models: [...new Set([...models, runner, longctx].filter(Boolean))],
   };
   saveConfig(cwd, config, { env });
-}
-
-export function configureCodex(
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-  models: string[],
-  options: { runner?: string; longctx?: string; enabled?: boolean } = {},
-): void {
-  configureCli(cwd, env, "codex", models, options);
 }

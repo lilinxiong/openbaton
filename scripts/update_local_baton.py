@@ -15,13 +15,14 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILT_CLI = REPO_ROOT / "dist" / "bin" / "baton.js"
 GLOBAL_SKILL = Path.home() / ".baton" / "SKILL.md"
+GLOBAL_ADAPTER_ROOT = Path.home() / ".baton" / "adapters"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Install dependencies, test and build this checkout, link it with Bun, "
-            "then refresh the local Baton skill and global config defaults."
+            "then refresh the local Baton skill and shared runtime files."
         )
     )
     parser.add_argument(
@@ -88,6 +89,32 @@ def verify_active_skill() -> None:
         )
 
 
+def bundled_adapter_ids() -> list[str]:
+    """Read adapter package ids from this checkout's manifest directories."""
+    root = REPO_ROOT / "adapters"
+    if not root.is_dir():
+        return []
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and (entry / "adapter.json").is_file()
+    )
+
+
+def verify_active_adapters() -> None:
+    """Ensure every bundled adapter package is present in the user namespace."""
+    missing = [
+        str(GLOBAL_ADAPTER_ROOT / adapter_id)
+        for adapter_id in bundled_adapter_ids()
+        if not (GLOBAL_ADAPTER_ROOT / adapter_id / "adapter.json").is_file()
+    ]
+    if missing:
+        raise RuntimeError(
+            "baton update completed without installing bundled adapter packages: "
+            + ", ".join(missing)
+        )
+
+
 def main() -> int:
     args = parse_args()
 
@@ -133,6 +160,8 @@ def main() -> int:
     run([baton, "update"], dry_run=False)
     verify_active_skill()
     print(f"  verified active global skill: {GLOBAL_SKILL}", flush=True)
+    verify_active_adapters()
+    print(f"  verified installed adapters: {GLOBAL_ADAPTER_ROOT}", flush=True)
     print(f"[{next_step + 1}/{total}] verify the linked CLI", flush=True)
     run([baton, "version"], dry_run=False)
 

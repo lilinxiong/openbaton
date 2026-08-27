@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "adapter": {
+    "id": "codex",
+    "display_name": "Codex",
+    "package_name": "@zhouliuya/openbaton-codex-adapter",
+    "package_version": "0.2.0",
+    "sdk_version": "1.0"
+  },
+  "catalog": {
+    "command": "catalog.mjs",
+    "args": [],
+    "protocol": "json",
+    "timeout_ms": 30000
+  },
+  "invocation": {
+    "signal": "CODEX_THREAD_ID",
+    "environment": "Codex Desktop thread runtime"
+  },
+  "native": {
+    "execution_handle_kind": "task_name"
+  },
+  "runtime_skill": {
+    "source": "runtime/SKILL.md",
+    "destination": ".codex/skills/baton/SKILL.md"
+  },
+  "quota": {
+    "max_concurrent": 4,
+    "max_depth": 1,
+    "backpressure": "defer"
+  }
+}

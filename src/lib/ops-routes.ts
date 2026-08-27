@@ -1,6 +1,5 @@
 import { taskCapabilityExclusion } from "./task-suitability.js";
 import { quotaForProvider } from "./provider-quotas.js";
-import { quotaPoolForCandidate } from "./quota-pools.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
 import type { OpsProfileId } from "./ops-config.js";
 import type { CliId } from "../adapters/contract.js";
@@ -38,16 +37,12 @@ function remainingFor(
   if (!snapshot) return { remaining_percent: null, quota_label: null, exhausted: false };
   const card = cardForRoute(cards, route.route_id);
   const quota = quotaForProvider(snapshot, route.provider || card?.provider);
-  const pool = quotaPoolForCandidate({
-    model_id: card?.id || route.route_id,
-    route_id: route.route_id,
-    provider: route.provider || card?.provider || null,
-    quota,
-  });
+  const values = quota.windows.map((item) => item.remaining_percent).filter(Number.isFinite);
+  const remaining = values.length ? Math.min(...values) : null;
   return {
-    remaining_percent: pool.remaining_percent,
-    quota_label: pool.label,
-    exhausted: pool.status === "exhausted",
+    remaining_percent: remaining,
+    quota_label: quota.provider,
+    exhausted: remaining === 0,
   };
 }
 

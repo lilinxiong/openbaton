@@ -4,11 +4,8 @@ import path from "node:path";
 import { collectGitScalar, GitSafetyError, runGitProcess, type GitProcessOptions } from "./git-safety-process.js";
 import {
   consumeGitIndexControlV2,
-  consumeLegacyGitIndexControl,
   GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
-  LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
   type GitIndexControlFingerprint,
-  type LegacyGitIndexControlFingerprint,
 } from "./git-index-control.js";
 import {
   consumeModeChangeSummary,
@@ -21,8 +18,6 @@ import {
   type ReflogSummary,
   type StatusRecord,
 } from "./git-record-consumers.js";
-
-const INTERNAL_REF_NAMESPACE = "refs/codex/turn-diffs/";
 
 export interface GitSafetyFacts {
   head: string;
@@ -39,7 +34,7 @@ export interface GitSafetyFacts {
   dirtyEntries: StatusRecord[];
   untrackedExists: boolean;
   modeChangedPaths: Set<string>;
-  indexControl: GitIndexControlFingerprint | LegacyGitIndexControlFingerprint;
+  indexControl: GitIndexControlFingerprint;
   /** Additional bounded facts needed by baseline/audit mapping. */
   indexPath?: string;
   gitOperation?: string | null;
@@ -55,7 +50,7 @@ export interface GitSafetyStabilityToken {
   refsDigest: string;
   reflog: ReflogSummary;
   stagedTree: string;
-  indexControl: GitIndexControlFingerprint | LegacyGitIndexControlFingerprint;
+  indexControl: GitIndexControlFingerprint;
 }
 
 export interface StableGitSafetyFacts extends GitSafetyFacts {
@@ -63,8 +58,7 @@ export interface StableGitSafetyFacts extends GitSafetyFacts {
 }
 
 export type GitSafetyFactsOptions = {
-  legacyIndexControl?: boolean;
-  indexControlAlgorithm?: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM | typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
+  indexControlAlgorithm?: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
   spawn?: GitProcessOptions["spawn"];
 };
 
@@ -82,7 +76,8 @@ type FactConsumer<T> = (chunks: AsyncIterable<Buffer>) => Promise<T>;
 
 type Ack = { resolve: () => void; reject: (error: unknown) => void };
 
-async function streamFact<T>(
+/** Low-level injectable streamed fact boundary used by safety collectors and tests. */
+export async function streamGitSafetyFact<T>(
   cwd: string,
   args: string[],
   consume: FactConsumer<T>,
@@ -152,9 +147,6 @@ async function streamFact<T>(
   }
 }
 
-/** Low-level injectable streamed fact boundary, useful for deterministic audits/tests. */
-export const streamGitSafetyFact = streamFact;
-
 async function optionalScalar(cwd: string, args: string[], spawn?: GitProcessOptions["spawn"]): Promise<string | null> {
   try { return await collectGitScalar({ cwd, args, spawn }); }
   catch (error) {
@@ -163,14 +155,10 @@ async function optionalScalar(cwd: string, args: string[], spawn?: GitProcessOpt
   }
 }
 
-function selectIndexControlAlgorithm(options: GitSafetyFactsOptions): typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM | typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM {
-  const selectedAlgorithm = options.indexControlAlgorithm
-    ?? (options.legacyIndexControl ? LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM : GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM);
-  if (selectedAlgorithm !== GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM && selectedAlgorithm !== LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM) {
+function selectIndexControlAlgorithm(options: GitSafetyFactsOptions): typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM {
+  const selectedAlgorithm = options.indexControlAlgorithm ?? GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
+  if (selectedAlgorithm !== GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM) {
     throw new TypeError(`Unsupported index control algorithm: ${String(selectedAlgorithm)}`);
-  }
-  if (options.indexControlAlgorithm && options.legacyIndexControl && options.indexControlAlgorithm !== LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM) {
-    throw new TypeError("legacyIndexControl conflicts with indexControlAlgorithm");
   }
   return selectedAlgorithm;
 }
@@ -215,16 +203,14 @@ async function collectStableToken(repoRoot: string, options: GitSafetyFactsOptio
   // guarantees fresh parser, hash, and accumulator state on every retry.
   const head = await collectGitScalar({ cwd: repoRoot, args: ["rev-parse", "HEAD"], spawn });
   const branchRef = await optionalScalar(repoRoot, ["symbolic-ref", "-q", "HEAD"], spawn);
-  const refs = await streamFact(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"],
-    (chunks) => consumeRefRecords(chunks, INTERNAL_REF_NAMESPACE), spawn);
-  const reflog = await streamFact(repoRoot, ["reflog", "show", "--format=%H%x00%gs", "HEAD"], consumeReflogSummary, spawn);
+  const refs = await streamGitSafetyFact(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"],
+    consumeRefRecords, spawn);
+  const reflog = await streamGitSafetyFact(repoRoot, ["reflog", "show", "--format=%H%x00%gs", "HEAD"], consumeReflogSummary, spawn);
   const stagedTree = await collectGitScalar({ cwd: repoRoot, args: ["write-tree"], spawn });
-  const indexControl = await streamFact<GitIndexControlFingerprint | LegacyGitIndexControlFingerprint>(
+  const indexControl = await streamGitSafetyFact<GitIndexControlFingerprint>(
     repoRoot,
     ["ls-files", "--debug", "-z"],
-    selectedAlgorithm === LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM
-      ? (chunks) => consumeLegacyGitIndexControl(chunks)
-      : (chunks) => consumeGitIndexControlV2(chunks),
+    (chunks) => consumeGitIndexControlV2(chunks),
     spawn,
   );
   return { head, branchRef: branchRef ?? "", refsDigest: refsDigest(refs), reflog, stagedTree, indexControl };
@@ -283,21 +269,19 @@ export async function collectGitSafetyFacts(
   const head = await collectGitScalar({ cwd: repoRoot, args: ["rev-parse", "HEAD"], spawn });
   const branch = await collectGitScalar({ cwd: repoRoot, args: ["branch", "--show-current"], spawn });
   const branchRef = await optionalScalar(repoRoot, ["symbolic-ref", "-q", "HEAD"], spawn);
-  const refs = await streamFact(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"],
-    (chunks) => consumeRefRecords(chunks, INTERNAL_REF_NAMESPACE), spawn);
-  const reflogWithFirst = await streamFact(repoRoot, ["reflog", "show", "--format=%H%x00%gs", "HEAD"], consumeReflogWithFirst, spawn);
+  const refs = await streamGitSafetyFact(repoRoot, ["for-each-ref", "--format=%(refname)%00%(objectname)", "refs"],
+    consumeRefRecords, spawn);
+  const reflogWithFirst = await streamGitSafetyFact(repoRoot, ["reflog", "show", "--format=%H%x00%gs", "HEAD"], consumeReflogWithFirst, spawn);
   const reflog = reflogWithFirst.summary;
   const stagedTree = await collectGitScalar({ cwd: repoRoot, args: ["write-tree"], spawn });
-  const stagedPaths = await streamFact(repoRoot, ["diff", "--cached", "--name-only", "-z"], consumeStagedPaths, spawn);
-  const dirtyEntries = await streamFact(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], consumePorcelainV1Z, spawn);
-  const untrackedExists = await streamFact(repoRoot, ["ls-files", "--others", "--exclude-standard", "-z"], consumeUntrackedExists, spawn);
-  const modeChangedPaths = await streamFact(repoRoot, ["diff", "--summary", "HEAD"], consumeModeChangeSummary, spawn);
-  const indexControl = await streamFact<GitIndexControlFingerprint | LegacyGitIndexControlFingerprint>(
+  const stagedPaths = await streamGitSafetyFact(repoRoot, ["diff", "--cached", "--name-only", "-z"], consumeStagedPaths, spawn);
+  const dirtyEntries = await streamGitSafetyFact(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], consumePorcelainV1Z, spawn);
+  const untrackedExists = await streamGitSafetyFact(repoRoot, ["ls-files", "--others", "--exclude-standard", "-z"], consumeUntrackedExists, spawn);
+  const modeChangedPaths = await streamGitSafetyFact(repoRoot, ["diff", "--summary", "HEAD"], consumeModeChangeSummary, spawn);
+  const indexControl = await streamGitSafetyFact<GitIndexControlFingerprint>(
     repoRoot,
     ["ls-files", "--debug", "-z"],
-    selectedAlgorithm === LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM
-      ? (chunks) => consumeLegacyGitIndexControl(chunks)
-      : (chunks) => consumeGitIndexControlV2(chunks),
+    (chunks) => consumeGitIndexControlV2(chunks),
     spawn,
   );
   const indexRelative = await collectGitScalar({ cwd: repoRoot, args: ["rev-parse", "--git-path", "index"], spawn });
@@ -310,10 +294,6 @@ export async function collectGitSafetyFacts(
     indexPath, gitOperation, commit, reflogFirst: reflogWithFirst.first, reflogPriorChecksum: reflogWithFirst.priorChecksum,
   };
 }
-
-/** Collect the six identity fields used by a stability check in a fresh pass. */
-export const collectGitSafetyStabilityToken = collectStableToken;
-export const collectSafetyStabilityToken = collectStableToken;
 
 function raceError(purpose: GitSafetyObservationPurpose): GitSafetyError {
   const code = purpose === "audit" ? "GIT_AUDIT_RACED" : "GIT_BASELINE_RACED";
@@ -342,11 +322,3 @@ export async function captureStableSafetyFacts(
   }
   throw raceError(purpose);
 }
-
-export const collectStableGitSafetyFacts = captureStableSafetyFacts;
-export const observeStableGitSafetyFacts = captureStableSafetyFacts;
-
-// Explicit aliases keep the boundary discoverable to callers migrating from
-// the synchronous safety implementation.
-export const captureGitSafetyFacts = collectGitSafetyFacts;
-export const collectSafetyFacts = collectGitSafetyFacts;

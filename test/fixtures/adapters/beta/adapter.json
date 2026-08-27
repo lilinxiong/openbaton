@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "adapter": { "id": "beta", "display_name": "Beta", "package_name": "fixture-beta", "package_version": "2.0.0", "sdk_version": "1.0" },
+  "catalog": { "command": "catalog.js", "args": [], "protocol": "json", "timeout_ms": 5000 },
+  "invocation": { "signal": "BETA_HOST" },
+  "native": { "execution_handle_kind": "beta-session" },
+  "runtime_skill": { "source": "runtime/SKILL.md", "destination": ".baton/skills/beta/SKILL.md" },
+  "quota": { "max_concurrent": 5, "backpressure": "queue" }
+}

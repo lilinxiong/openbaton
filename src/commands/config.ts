@@ -1,5 +1,5 @@
 import {
-  CLI_IDS,
+  cliIds,
   getCliAdapter,
 } from "../adapters/registry.js";
 import type {
@@ -25,7 +25,7 @@ import {
   type SelectPrompt,
 } from "../lib/prompt.js";
 import { publishRouteSnapshot } from "../lib/routes.js";
-import type { CodedError, WritableLike } from "../types.js";
+import type { WritableLike } from "../types.js";
 
 export interface ConfigCommandOptions {
   cwd: string;
@@ -50,6 +50,24 @@ function repeated(args: string[], name: string): string[] {
   return values;
 }
 
+/** Reject arguments outside the current config grammar before reading state. */
+function validateConfigArgs(args: string[]): void {
+  const valueFlags = new Set(["cli", "runner", "longctx", "coding-model"]);
+  const booleanFlags = new Set(["enable", "disable", "json"]);
+  const allowed = new Set([...valueFlags, ...booleanFlags]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) throw new Error(`unknown config argument: ${arg}`);
+    const key = arg.slice(2);
+    if (!allowed.has(key)) throw new Error(`unknown option: ${arg}`);
+    if (valueFlags.has(key)) {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      index += 1;
+    }
+  }
+}
+
 function lastFlag(args: string[], name: string): string | undefined {
   const values = repeated(args, name);
   return values.length ? values[values.length - 1].trim() : undefined;
@@ -60,9 +78,9 @@ function optionalModelFlag(args: string[], name: string): string | undefined {
   return value === "-" ? "" : value;
 }
 
-function parseCliChoice(value: string): CliId {
+function parseCliChoice(value: string, env: NodeJS.ProcessEnv = process.env): CliId {
   const text = value.trim().toLowerCase();
-  if ((CLI_IDS as readonly string[]).includes(text)) return text as CliId;
+  if (cliIds(env).includes(text)) return text as CliId;
   throw new Error(`invalid CLI choice: ${value}`);
 }
 
@@ -100,8 +118,8 @@ function parseModelSet(models: CliModel[], values: string[], label = "coding mod
   return chosen;
 }
 
-export function cliPromptChoices(): PromptChoice<CliId>[] {
-  return CLI_IDS.map((id) => ({ value: id, label: id }));
+export function cliPromptChoices(env: NodeJS.ProcessEnv = process.env): PromptChoice<CliId>[] {
+  return cliIds(env).map((id) => ({ value: id, label: id }));
 }
 
 function modelChoices(models: CliModel[]): PromptChoice<string>[] {
@@ -172,8 +190,6 @@ async function configureCliProfile(
     host: cli,
     env,
     engineVersion: catalog.version,
-    providerQuotas: [],
-    quotaRefreshError: null,
   });
 
   const existing = cliProfileForHost(current, cli);
@@ -267,21 +283,13 @@ export async function runConfig(args: string[], {
   stdout,
   stdin = process.stdin,
   env = process.env,
-  adapterProvider = getCliAdapter,
+  adapterProvider,
   prompt,
   clis: presetClis,
 }: ConfigCommandOptions): Promise<number> {
-  // Reject the removed spelling before loading or writing anything so a
-  // failed migration is always atomic from the user's perspective.
-  if (args.includes("--subagent-model")) {
-    const error = new Error("LEGACY_FLAG_REMOVED: use --coding-model; Coding models are an ordered priority list") as CodedError;
-    error.code = "LEGACY_FLAG_REMOVED";
-    throw error;
-  }
-  if (args[0] === "model-selection") {
-    throw new Error("MODEL_SELECTION_REMOVED: Baton now selects automatically from cli.<id>.coding_models; configure the candidate set with `baton config`");
-  }
+  validateConfigArgs(args);
   const current = structuredClone(loadConfig(cwd, { env }));
+  const discoverAdapter = adapterProvider || ((cli: CliId) => getCliAdapter(cli, env));
   const ask = (): SelectPrompt => requirePrompt(
     prompt, stdin, stdout, env,
     "--cli, --runner, --longctx, --coding-model, and --enable|--disable",
@@ -302,11 +310,11 @@ export async function runConfig(args: string[], {
     : flaggedCli === undefined
       ? await ask().multiSelect({
         message: "Select CLI",
-        choices: cliPromptChoices(),
+        choices: cliPromptChoices(env),
         initial: initialClis,
         required: true,
       })
-      : [parseCliChoice(flaggedCli)];
+      : [parseCliChoice(flaggedCli, env)];
   if (!clis.length) throw new Error("select at least one CLI");
 
   const single = clis.length === 1;
@@ -314,17 +322,12 @@ export async function runConfig(args: string[], {
   for (let index = 0; index < clis.length; index += 1) {
     const cli = clis[index];
     if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
-    const catalog = await adapterProvider(cli).discoverModels({ cwd, env });
+    const catalog = await discoverAdapter(cli).discoverModels({ cwd, env });
     results.push(await configureCliProfile(cli, args, {
       cwd, stdout, env, current, catalog, ask, single,
     }));
   }
 
-  // Persist only the selected profiles; do not write a global active CLI or
-  // rewrite director.max_concurrent to the last configured host's cap.
-  // Discovery, validation, and every prompt above operate on this in-memory
-  // copy. A multi-CLI failure therefore leaves the previous config bytes and
-  // legacy fields untouched. This is the sole config write for the command.
   const file = saveConfig(cwd, current, { env });
   for (const result of results) result.config = file;
 
@@ -340,7 +343,7 @@ export async function runConfig(args: string[], {
   else {
     stdout.write(`\nwrote ${file}\n`);
     for (const result of results) writeProfile(stdout, result);
-    stdout.write(`  director fallback: max_concurrent=${current.director.max_concurrent}, max_depth=${current.director.max_depth}\n`);
+    stdout.write(`  director limits: max_concurrent=${current.director.max_concurrent}, max_depth=${current.director.max_depth}\n`);
     stdout.write("  later routing: automatic; no model confirmation UI\n");
   }
   return 0;

@@ -1,157 +1,127 @@
 ---
 name: baton
-description: "Use this director automatically for approved Goal or multi-model execution, configured mechanical operations, and OpenSpec apply including /openspec-apply-change. Intercept those here; do not implement them in the director session. Baton has no runtime hooks; the director owns orchestration and safety. Skip ordinary discussion."
+description: "Use Baton for approved multi-unit execution and structured change application. Baton is a manifest-driven, CLI-neutral scheduler; keep discussion and read-only analysis in the director session."
 ---
 
-# baton
+# Baton runtime
 
-You are the director. Baton is a CLI-neutral scheduling and policy layer. Its registered CLI adapters are Codex, Grok, Cursor, and Claude Code; it does not use OpenCodex for model discovery, authentication, or execution.
+Baton is a scheduling and policy layer. External adapter packages describe a
+CLI, its catalog, native child execution surface, runtime skill, and capacity
+through the public SDK and `adapter.json` manifest. The runtime discovers those
+packages; this skill never names or assumes a built-in adapter.
 
-## Director/worker routing
+## Director and worker boundary
 
-Same table on every host. Do not invent a host-specific split.
+- Discussion and read-only analysis stay in the director session.
+- An authorized implementation request is classified before any ticket is
+  created and runs through the selected adapter's native child execution API.
+- A `mechanical` unit uses the configured `runner` route; a `long-context` unit
+  uses `longctx`. Operation labels are audit metadata, never route selectors.
+- Missing authorization, an unresolved classification, a missing adapter, or a
+  disabled profile stops before ticket creation. Do not infer a route from
+  prose or another adapter.
+- A structured change tool may provide decomposition and dependencies. Baton
+  schedules its ready units but does not create a second task graph.
 
-- **Director-owned classification is authoritative.** Discussion and read-only analysis stay on the director. When the selected `cli.<host>` profile is enabled, every ordinary implementation request—including tiny edits—must be delegated to that host's native subagent; do not apply a tiny-edit shortcut. A missing/disabled profile or unresolved classification fails closed. A classified mechanical unit never falls back to director execution when its configured route is empty or unusable.
-- **Declared classified work → native subagents.** Classified mechanical/long-context units, authorized implementation requests, and OpenSpec executable tasks on an enabled host go through Baton tickets and this host's native child-agent tool. The director MUST NOT implement those units in the parent session.
-- **OpenSpec only lightens orchestration.** OpenSpec supplies breakdown and status; it does not change who writes declared classified tasks. With or without OpenSpec, declared classified work still goes to native subagents. Do not rewrite OpenSpec apply skills; intercept execution from this Baton skill.
+## Adapter and catalog contract
 
-## Automatic workflow contract
+The selected adapter is discovered from `~/.baton/adapters/<id>/adapter.json`
+or the directories in `BATON_ADAPTER_PATHS`. A manifest has schema `1` and
+declares:
 
-The loaded Baton workflow becomes executable only when the selected `cli.<host>` profile is enabled and the user has authorized execution. Model auto-approval is not a second user decision. Before creating any native ticket, the director MUST classify every executable request and pass the structured classification to Baton. Baton persists the resulting tickets and Receipts; it does not invent or own a separate DAG. Operation labels are audit metadata; they are never a fixed action-name routing table.
+- `adapter.id`, display metadata, package/version, and SDK version;
+- the catalog executable, arguments, protocol, and timeout;
+- the invocation signal used to identify the current runtime;
+- `native.execution_handle_kind`;
+- runtime-skill source and destination;
+- reported `max_concurrent`, `max_depth`, and backpressure semantics.
 
-- Discussion and read-only analysis remain director-owned, even when a CLI profile is enabled.
-- Authorized implementation nodes go to native subagents. Mechanical nodes use the configured `runner` route while retaining their operation label only as audit metadata. Commit/publish authority remains the deterministic Receipt/Git capability gate.
-- A node is ready only after every dependency is terminal. At every scheduling and refill decision, the director MUST calculate the current host's maximal safe ready frontier: the largest set of ready units that can safely coexist under the host capacity and complete, pairwise-disjoint write scopes. Fill every available slot with as many units from that frontier as possible. Dependency completion and write-scope conflicts are the only reasons to serialize otherwise-ready units; section order is only a stable tie-breaker within the frontier and MUST NOT impose serialization.
-- Missing authorization, a disabled/missing selected profile, invalid director/OpenSpec ordering data, or an unresolved classification fails closed to the director. Never infer a dependency, borrow another host, or dispatch an implementation unit from prose alone.
+The adapter's catalog is the sole source of model ids and optional reasoning,
+modality, and service-tier metadata. Preserve exact values and validate the
+selected id and options again at dispatch. Baton does not invent catalog rows,
+aliases, or execution options. `runner`, `longctx`, and the ordered
+`coding_models` list are labels and policy data; they do not assert capabilities.
 
-### Write-scope readiness
+## Scope and scheduling
 
-Before creating or dispatching any write ticket, the director MUST perform a read-only impact/dependency pass for that unit. The pass must resolve the unit's affected dependencies and record a complete, exact per-unit write-path set together with its allowed operations. Every path is explicit; allowed operations are one or more of `write`, `create`, `delete`, `rename`, and `chmod`. An unknown impact, dependency, path, or operation keeps the classification unresolved, so no implementation ticket is created or dispatched.
+Before creating a write ticket, perform a read-only impact/dependency pass and
+record an exact path set and allowed operations for every unit. Operations are
+`write`, `create`, `delete`, `rename`, and `chmod`. Validate all units in one
+atomic decision, including rename endpoints, path-prefix overlaps, and scopes
+already owned by active tickets. An unknown path, dependency, or operation
+stops before mutation.
 
-Parallel dispatch is permitted only when every participating unit has a complete scope and the write sets are pairwise disjoint, including rename source/destination paths and path-prefix overlaps. The director MUST recompute this maximal safe ready frontier whenever a dependency becomes terminal or a running slot is released, and immediately refill every newly available slot. If an otherwise-ready unit remains queued or must be serialized while a slot is available, report the concrete blocking dependency or write-scope conflict (including the conflicting paths); section order and FIFO position are not reasons. If a worker discovers an undeclared path or operation, it MUST stop before mutation and return a scope decision to the director. It must never edit first and rely on a terminal retry or audit to authorize the change. Mechanical routing still uses the structured execution class; operation labels remain opaque audit metadata and never choose the route.
+At each dispatch or refill, calculate the maximal safe ready frontier: every
+order-ready unit whose scope is complete, pairwise disjoint, and within the
+selected adapter's physical capacity. Fill every available slot. Section order
+only breaks otherwise equivalent choices; it is not a reason to serialize.
 
-Ordinary discussion and diagnosis that need neither delegation nor a configured mechanical route stay on the director. For approved multi-agent execution, create immutable tickets, dispatch them through the current host's native subagent tool, and wait for their conclusions. If another execution skill is explicitly requested, preserve it as workflow owner only; when this host's `cli.<id>.enabled` is true, executable work still goes through Baton.
+## Ticket identity and lifecycle
 
-## Director preflight (all hosts; no runtime hooks)
+`BATON_SESSION_ID` is required for every ticket-producing command. Baton hashes
+that value into `session_uid` and assigns a contiguous `session_ordinal` within
+the session. A ticket id contains the opaque prefix, session uid, and ordinal;
+the id is data, not a routing signal. Keep `session_id`, `ticket_id`, and the
+adapter's native handle in the identity handoff.
 
-- Before any mutation or native-agent call, the director resolves the host, classification, dependencies, exact write paths, and allowed operations. Baton has no runtime hooks, hook installation, hook trust, or hook observation surface.
-- Ticket presence and lifecycle are enforced through explicit director/CLI orchestration, immutable Receipts, native execution handles, worker path allowlists, and the parent Git audit. Reserve a Baton ticket, native-spawn the exact worker, and bind the returned execution handle before the worker uses tools.
-- Every native spawn for a reserved ticket MUST pass the returned `prompt` unchanged and, when supported, the returned `description` unchanged. The reservation envelope is dispatch audit data, not a hook instruction. Native execution handles are used for attach/liveness/release; they do not depend on lifecycle hooks.
+Use this lifecycle for every reserved ticket:
 
-### Activation and cleanup
+1. Create the ticket and immutable Receipt with `baton spawn` or scoped
+   `baton apply`.
+2. Reserve it with `baton dispatch next` or the combined dispatch form.
+3. Pass the reservation's exact prompt and description unchanged to the
+   adapter's native child API, with the exact selected model and supported
+   options. Request a fresh child context.
+4. Immediately bind the returned opaque native execution handle together with
+   the session and ticket identity.
+5. Wait on native activity, record concise progress when useful, and record one
+   terminal result.
+6. Release the ticket and only then refill capacity.
 
-Activation and cleanup are explicit director/CLI operations. Baton does not
-install, trust, rewrite, or observe runtime hooks. OpenSpec apply is owned by the
-director workflow: it reads the task graph, creates scoped tickets, dispatches
-native subagents, and records conclusions. Baton persists tickets and Receipts
-and applies command-boundary checks; it does not classify or dispatch through a
-hook callback.
+The adapter may expose any handle kind. Do not infer identity from ticket text
+or replace a handle with a newly generated identifier. A capacity response defers
+the same reservation without consuming
+an attempt or changing its model.
 
-`baton uninstall --dry-run` reports only the selected host's integration files;
-state is preserved. `baton uninstall --clean --dry-run` additionally lists the
-complete Baton footprint and active-ticket constraints. `--clean --yes` removes
-the complete Baton footprint only after active reserved/dispatching/running
-tickets are drained; it does not cancel work and retains the package executable.
+## Quota successors
 
-## Native identity adapters
+When the adapter reports explicit quota exhaustion, Baton first persists the
+availability fact and checks that a write ticket's pre-mutation baseline is
+unchanged. It may then create an immutable successor ticket from the next
+configured coding priority. The successor has a new per-session ordinal and
+Receipt, records `successor_from_ticket_id` and `successor_reason`, and retains
+the originating `session_uid`, host, scope, authorization, and quota lineage.
+It reruns model, effort, capacity, and scope checks. The original ticket is
+never rewritten to carry a different model, and quota is never reset. If
+mutation has started or reconciliation fails, stop and report the required
+reconciliation instead of creating a successor.
 
-Native child APIs do not share one identity field. Baton uses each host's native execution handle for attach, liveness, and release; Codex `task_name` is the execution handle, not a `SubagentStart` prerequisite. Do not infer identity from a ticket prefix or use a unique-ticket fallback.
+## Safety boundary
 
-## Model and configuration contract
+Read-only is the default. Write tickets carry an exact path and operation
+allowlist and a parent-owned repository observation. Workers do not perform
+Git operations. The sole commit exception is an explicitly authorized,
+exclusive commit ticket over the parent-staged tree; it may create one commit
+and no other repository operation.
 
-1. **The selected CLI owns visibility.** baton config first selects a CLI. For Codex, Baton calls the public app-server model/list method with hidden models excluded. For Grok, Baton runs `grok models` and stores exactly the listed picker-visible ids (JSON stdout if Grok emits it; otherwise the Available models listing). For Cursor, Baton runs `cursor-agent models` and stores exactly the listed picker-visible ids (JSON stdout if cursor-agent emits it; otherwise the Available models listing). For Claude Code, Baton issues the SDK control-protocol `list_models` request and stores each row's `resolvedModel` wire id, excluding the deferred `default` alias row and any row marked `disabled`; `claude models` prose is not a catalog. Never invent ids from login or prose lines. Never obtain or augment this list from OpenCodex, a hard-coded catalog, a session-tool prose snapshot, or Artificial Analysis. Never execute work via `grok -p`, `cursor-agent -p`, or `claude -p`.
+Do not dispatch a ticket without its Receipt, exact model, session identity,
+scope, and reservation. Do not inherit the parent model, choose outside the
+enabled adapter profile, or refill before release. A polling interval is not a
+worker failure; terminal state comes from the native execution handle.
 
-2. **Configuration is per CLI and user-global.** Store only selected `cli.<id>` profiles in ~/.baton/config.toml; never create placeholders for unselected CLIs. A selected profile owns its enabled flag, runner label, longctx label, and ordered `coding_models` allowlist. Store optional max_concurrent/max_depth values only when that CLI's discovery response explicitly reports them; each missing field uses the corresponding director fallback. There is no global default CLI.
-   - An explicit `--host codex|grok|cursor|claude` resolves only that host's profile; multiple profiles may be enabled at once. Host resolution also accepts `BATON_HOST` or a unique runtime invoking-host signal; otherwise fail closed with `HOST_REQUIRED`.
-   - A missing or disabled requested host fails closed. Baton never substitutes another enabled host.
-   - runner and longctx are routing labels only. They do not claim speed, context-window size, or any other capability.
-   - Configured runner and longctx values are independent labels and are never inserted into `coding_models`.
-   - A disabled CLI profile contributes no candidates.
+## Useful command shapes
 
-3. **Picker visibility and host execution are separate evidence.** Any model returned by the selected CLI must appear in configuration, including gpt-5.4-mini and gpt-5.3-codex-spark when Codex returns them. Never mark a returned model unsupported merely because a host tool description omitted it. At dispatch, validate that the model and selected reasoning effort are still in the captured CLI catalog. An actual host-native rejection is execution evidence for that exact attempt; record and report it without inventing a replacement inside the ticket.
+```text
+baton init
+baton config --cli <adapter-id> --enable
+baton models refresh --host <adapter-id>
+baton match "<work description>" --host <adapter-id>
+baton spawn "<request>" --host <adapter-id> --classification <class>
+baton apply <change> --host <adapter-id>
+baton dispatch next --host <adapter-id> --capacity <n> --json
+baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
+```
 
-4. **No human model selector.** After configuration, Baton always chooses from the ordered `coding_models` set. --model, --route, baton config model-selection, selector rendering, and model-confirmation flows are not supported. Keep the automatic decision auditable in the proposal, ticket, and Receipt.
-
-5. **Automatic matching.** For each work unit, use the CLI description and supported reasoning efforts, then optional local capability evidence and recent route health. Match:
-   - the model to task shape;
-   - a supported reasoning effort to task complexity;
-   - fast/speed preference from CLI-provided model descriptions or speed/service-tier metadata.
-   Missing Artificial Analysis data means unranked evidence, not an unusable model. Never select outside the configured allowlist or invent an effort or speed parameter the CLI did not expose.
-
-6. **Structured mechanical classification.** The director supplies the execution class (`mechanical` or `long-context`) before routing. Baton selects the configured `runner` or `longctx` label from that class; the operation label is retained only as audit metadata and never selects a profile. An empty or unusable configured route fails closed for a classified unit. Mechanical workers are executors: run the director-specified operation and return a short conclusion; do not infer a command from prose, explore, or run extra tools. Commit-only requires an explicit commit capability in the structured classification plus the deterministic Receipt/Git gate; an operation label such as `git-commit` alone is not authority.
-
-   Standalone proposals use one canonical multi-unit shape. A request without
-   `--unit` is represented as the `standalone` unit; do not emit or consume a
-   separate single-request payload. Classification accepts only the documented
-   structured values and fields; compatibility aliases and prose inference are
-   not part of the contract.
-
-7. **Immutable ticket routing.** A ticket contains one exact model and optional supported effort. Missing config, a disabled CLI profile, a stale/absent model, or an absent effort blocks that ticket; it is never changed in place, across hosts, or silently switched to another model. After explicit quota evidence and a clean pre-mutation baseline, dispatch may create an auditable immutable successor using the next configured Coding priority and rerun all hard gates. If mutation has begun, successor creation requires reconciliation rather than an automatic retry.
-
-## Execution contract
-
-8. **Concrete tickets before native dispatch.** Approved automatic decisions create queued tickets plus immutable Delegation Receipts. Compact dispatch applies to every reserved ticket: runner ops, longctx ops, and ordinary `coding_models` units. Prefer `baton spawn ... --dispatch --json` so enqueue and reserve are one call; use `baton dispatch next --host HOST --json` only for already-queued work. Then call the native subagent tool: Codex `spawn_agent`, Grok `spawn_subagent`, Cursor `Task`, Claude Code the `Agent` tool. Pass the returned reservation-bearing prompt unchanged on every CLI, and the returned description unchanged whenever the tool exposes it. Pass the exact model and only host-supported effort/service-tier values; Claude Code pins the exact id in an agent definition's `model:` frontmatter. Codex's native `task_name` is the execution handle used for attach/liveness/release; no `SubagentStart` identity chain is required. The Baton CLI itself never claims it can call host tools and never shells out to a coding CLI print mode.
-
-9. **Read-only by default.** Writes require an explicit path/operation allowlist and a parent Git safety audit. Ordinary workers never mutate Git. The only exception is an exclusive commit-only Receipt: the parent stages and freezes the exact tree first, and the worker may perform exactly one git commit. It may not edit, add, amend, switch, branch, merge, rebase, cherry-pick, revert, tag, stash, clean, or push.
-
-10. **Flat, host-bounded concurrency.** Children cannot spawn children. Queue unlimited logical work and respect the host's current physical capacity. AgentLimitReached is backpressure: defer the same reservation without consuming an attempt or switching models.
-
-11. **Activity-driven lifecycle.** Concrete workers return concise conclusions; checkpointed deliberative workers may also return compact phase/result/next-step/blocker state. Persist host probes separately from business progress. Native completion is the activity signal. Probe only while the agent is still running, or to record exact not_found. A wait timeout is polling cadence, not ticket timeout. Finish with complete/fail/timeout/close plus `--release` before refilling capacity. Do not add probe or close round-trips after a native terminal result.
-
-12. **OpenSpec remains optional.** When present, consume its tasks/status and write conclusions back. Do not reimplement its workflow and do not rewrite `tasks.md` structure. Without it, baton spawn remains complete. When the invoking host profile is enabled and the user applies an OpenSpec change (including `/openspec-apply-change`), intercept execution as: plan with `baton apply <change> --host HOST --json`; filter the order-ready frontier in this director session (`--write-path` or `--read-only`); calculate the current host's maximal safe ready frontier and fill available capacity, using section order only as a stable tie-breaker; then one `baton apply <change> --host HOST --dispatch --json --unit ID --write-path PATH --unit ID --write-path PATH` (or `--read-only`). Never call `--dispatch` without per-unit scope. Native-spawn every reserved ticket from that call in the same turn, bind immediately, and report a concrete dependency or write-scope reason for any otherwise-ready unit that is serialized. When a slot frees, immediately recompute the frontier and refill every available slot with the same dependency and write-scope predicates. Dependencies and write-scope conflicts are the only serialization reasons; section order must not serialize independent ready units.
-
-13. **State stays user-global.** Shared cache lives under ~/.baton/cache, including
-host-keyed `cli-models-<host>.json` snapshots and model-availability state;
-workspace runtime lives under ~/.baton/workspaces/<canonical-root-sha256>. Never
-create project-local Baton state.
-
-## Host runtime protocol
-
-This loop is the same for runner ops, longctx ops, and ordinary `coding_models` tickets.
-
-1. Run `baton config --cli HOST` once or whenever that host's picker surface changes.
-2. Create tickets with `baton spawn ... --dispatch --json` or one scoped `baton apply ... --dispatch --unit ID --write-path PATH --unit ID --write-path PATH`. Plan apply first; the director calculates the current host's maximal safe ready frontier, fills available capacity, and uses section order only as a stable tie-breaker. Use `baton dispatch next --host HOST --json` only for already-queued work.
-3. For each reserved ticket, native-spawn with the returned model and unchanged prompt, the unchanged returned description when supported, optional effort, and optional service_tier when the host exposes them, fork_context=false. Do not strip, move, or recreate the first-line reservation envelope. Mechanical prompts are one-shot: execute the director-supplied operation (for an explicitly capability-authorized commit-only ticket: staged diff → one message → one commit). Codex binds `--task-name`; Grok, Cursor, and Claude bind their native `--agent-id`. Bind immediately with the host-specific form.
-4. Wait on native completion for the requested host. Probe only while still running, or to record exact `not_found`.
-5. `baton dispatch complete TICKET --host HOST --text "..." --release --json` (or fail/timeout/close with `--host HOST --release`). Refill from that host's FIFO.
-
-## Commands
-
-    baton config --cli codex|grok|cursor|claude [--runner MODEL|-] [--longctx MODEL|-]
-                 [--coding-model MODEL|all] [--guard-mode enforce|off] [--enable|--disable]
-    baton enable|disable all|curproject --host HOST [--json]
-    baton models refresh|status|candidates [--host codex|grok|cursor|claude]
-    baton models reset ROUTE --host codex|grok|cursor|claude [--json]
-    baton cards [--ranked|--unranked] [--json]
-    baton match <text> [--host codex|grok|cursor|claude]
-    baton spawn <request> [--host codex|grok|cursor|claude] [--unit KEY=BUSINESS_TASK ...]
-                 [--classification CLASS] [--operation LABEL]
-                 [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...] [--dispatch]
-    baton spawn REQUEST --host HOST --classification implementation
-                 --write-path PATH --write-ops write,create,delete,rename,chmod
-    baton apply [change] [--host codex|grok|cursor|claude]
-    baton apply [change] [--host HOST] --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
-    baton dispatch next --host HOST --capacity N --json
-    baton dispatch bind TICKET --task-name CODEX_TASK_NAME --host codex --json
-    baton dispatch bind TICKET --agent-id ID --host HOST --json                 # other hosts
-    baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED --observed-capacity N --json
-    baton dispatch probe TICKET --host HOST --agent-id ID --state pending_init|running|interrupted|shutdown|not_found --json
-    baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" --json
-    baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
-    baton dispatch fail|timeout|close TICKET --host HOST [--release] --json
-    baton dispatch release TICKET --host HOST --agent-id ID --json
-    baton dispatch recover --host HOST --json
-    baton dispatch status --host HOST --json
-    baton status [--host codex|grok|cursor|claude] [--json]
-    baton uninstall [--host HOST] [--dry-run]
-    baton uninstall --clean --yes
-
-## Red lines
-
-- Do not consult OpenCodex for model discovery, auth, quota, or execution.
-- Do not add hard-coded model-family bans or infer unsupported status from a host tool's documentation.
-- Do not show a runtime model selector or ask the user to confirm Baton's automatic model choice.
-- Do not use a model outside the enabled CLI allowlist, invent an effort/speed flag, inherit the parent model, or silently fall back.
-- Do not dispatch without an immutable Receipt, bypass write/Git safety, treat polling timeouts as worker failure, or refill before release.
-- Do not `git commit` in the director session for a classified unit. Commit-only requires an explicit commit capability and the staged Receipt/Git gate; an operation label alone is not authority. A classified mechanical unit with an empty or unusable route fails closed.
-- Do not reimplement OpenSpec or dump worker tool output into the front conversation.
+Finish with separate evidence for SDK conformance, package/build checks,
+catalog discovery, native execution, ticket lifecycle, quota lineage, and the
+exact changed-path audit.

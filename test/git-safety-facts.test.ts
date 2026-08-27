@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { describe, it } from "bun:test";
 import { collectGitSafetyFacts, streamGitSafetyFact } from "../src/lib/git-safety-facts.ts";
-import { consumeNulRecords } from "../src/lib/git-record-consumers.ts";
+import { consumeNulRecords, consumeRefRecords } from "../src/lib/git-record-consumers.ts";
 
 function fakeSpawn(chunks: AsyncIterable<Buffer> | Iterable<Buffer>, state: { killed: boolean; produced: number; closed?: boolean; exitCode?: number }) {
   return (() => {
@@ -38,10 +38,22 @@ describe("streamed Git safety facts", () => {
     assert.ok(facts.indexControl.entryCount >= 0);
   });
 
-  it("retains the legacy index-control contract when explicitly selected", async () => {
-    const facts = await collectGitSafetyFacts(process.cwd(), { legacyIndexControl: true });
-    assert.equal(facts.indexControl.algorithm, "legacy-json-sorted-v1");
-    assert.ok(facts.indexControl.entryCount >= 0);
+  it("filters runtime turn-diff refs while retaining standard and unrelated refs", async () => {
+    const source = Buffer.from(
+      "refs/alpha/turn-diffs/native\0aaa\n"
+      + "refs/baton/turn-diffs/worker\0bbb\n"
+      + "refs/heads/turn-diffs/branch\0ccc\n"
+      + "refs/tags/release\0ddd\n"
+      + "refs/custom/turn-diffs-extra/keep\0eee\n",
+    );
+    async function* split(): AsyncGenerator<Buffer> {
+      for (let index = 0; index < source.length; index += 1) yield source.subarray(index, index + 1);
+    }
+    assert.deepEqual(await consumeRefRecords(split()), [
+      "refs/heads/turn-diffs/branch\0ccc",
+      "refs/tags/release\0ddd",
+      "refs/custom/turn-diffs-extra/keep\0eee",
+    ]);
   });
 
   it("does not let a producer outrun a blocked consumer", async () => {

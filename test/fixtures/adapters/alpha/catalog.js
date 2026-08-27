@@ -1,0 +1,2 @@
+#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ adapter_id: "alpha", version: "alpha-fixture-1", capabilities: { exact: true }, models: [{ id: "alpha-model", display_name: "Alpha Model", description: "fixture", reasoning_efforts: [{ id: "low", description: "low" }, { id: "medium", description: "medium" }, { id: "high", description: "high" }], default_reasoning_effort: "medium", is_default: true }] }));

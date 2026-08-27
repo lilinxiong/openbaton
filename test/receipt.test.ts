@@ -27,7 +27,7 @@ describe("Delegation Receipt", () => {
     assert.equal(receipt.execution.mode, "read-only");
     assert.deepEqual(receipt.scope.write_allowlist, []);
     assert.deepEqual(receipt.scope.allowed_operations, ["read"]);
-    assert.equal(receipt.retry.fallback, "none");
+    assert.deepEqual(receipt.retry, { max_attempts: 1 });
     assert.equal(receipt.git_policy.staging_owner, "parent");
     assert.equal(receipt.git_policy.worker_may_commit, false);
   });
@@ -41,7 +41,7 @@ describe("Delegation Receipt", () => {
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     writeReceipt(cwd, receipt);
     const changed = structuredClone(receipt);
-    changed.route.route_id = "xai/grok-4.6";
+      changed.route.route_id = "other/model-4.6";
     assert.throws(() => writeReceipt(cwd, changed), (error) => error instanceof ReceiptError && error.code === "RECEIPT_IMMUTABLE");
   }));
 
@@ -59,6 +59,8 @@ describe("Delegation Receipt", () => {
         branch_ref: "refs/heads/main",
         staged_tree: "b".repeat(40),
         staged_index_control_checksum: "c".repeat(64),
+        staged_index_control_algorithm: "git-index-control-framed-sha256-v2",
+        staged_index_control_entry_count: 2,
         staged_paths: ["README.md", "src/index.ts"],
         refs: [`refs/heads/main\0${"a".repeat(40)}`],
         head_reflog_count: 1,
@@ -77,8 +79,8 @@ describe("Delegation Receipt", () => {
     assert.equal(receipt.commit_baseline?.staged_tree, "b".repeat(40));
   });
 
-  it("accepts legacy metadata-less baselines and rejects incomplete or unknown v2 metadata", () => {
-    assert.equal(validateIndexControlBaselineMetadata({ index_control_checksum: "a".repeat(64) }), null);
+  it("requires complete current v2 baseline metadata", () => {
+    assert.equal(validateIndexControlBaselineMetadata({ index_control_checksum: "a".repeat(64) }), "INDEX_CONTROL_ALGORITHM_UNSUPPORTED");
     const valid = {
       index_control_algorithm: "git-index-control-framed-sha256-v2",
       index_control_checksum: "a".repeat(64),
@@ -87,7 +89,7 @@ describe("Delegation Receipt", () => {
     assert.equal(validateIndexControlBaselineMetadata(valid), null);
     assert.equal(validateIndexControlBaselineMetadata({ ...valid, index_control_algorithm: "future-v3" }), "INDEX_CONTROL_ALGORITHM_UNSUPPORTED");
     assert.equal(validateIndexControlBaselineMetadata({ ...valid, index_control_entry_count: -1 }), "INDEX_CONTROL_BASELINE_INVALID");
-    assert.equal(validateIndexControlBaselineMetadata({ index_control_entry_count: 1 }), "INDEX_CONTROL_BASELINE_INVALID");
+    assert.equal(validateIndexControlBaselineMetadata({ index_control_entry_count: 1 }), "INDEX_CONTROL_ALGORITHM_UNSUPPORTED");
     assert.equal(validateIndexControlBaselineMetadata({ ...valid, index_control_checksum: "A".repeat(64) }), "INDEX_CONTROL_BASELINE_INVALID");
   });
 
@@ -95,15 +97,19 @@ describe("Delegation Receipt", () => {
     const base = buildReadOnlyReceipt({ ticketId: "spn-0003", card: { id: "k3", strengths: "", route_id: "kimi/k3[1m]" } });
     const writeBaseline = {
       repo_root: "/repo", head: "a".repeat(40), branch: "main", branch_ref: "refs/heads/main",
-      index_path: "/repo/.git/index", index_tree: "b".repeat(40), index_control_checksum: "c".repeat(64),
+      index_path: "/repo/.git/index", index_tree: "b".repeat(40), index_control_checksum: "c".repeat(64), index_control_algorithm: "git-index-control-framed-sha256-v2", index_control_entry_count: 0,
       staged_paths: [], refs: [], head_reflog_count: 0, head_reflog_checksum: "d".repeat(64), dirty_entries: [], dirty_checksums: {}, captured_at: "2026-08-21T00:00:00.000Z",
     };
-    const commitBaseline = { repo_root: "/repo", head: "a".repeat(40), branch: "main", branch_ref: "refs/heads/main", staged_tree: "b".repeat(40), staged_index_control_checksum: "c".repeat(64), staged_paths: ["x"], refs: [], head_reflog_count: 1, head_reflog_checksum: "d".repeat(64), captured_at: "2026-08-21T00:00:00.000Z" };
+    const commitBaseline = { repo_root: "/repo", head: "a".repeat(40), branch: "main", branch_ref: "refs/heads/main", staged_tree: "b".repeat(40), staged_index_control_checksum: "c".repeat(64), staged_index_control_algorithm: "git-index-control-framed-sha256-v2", staged_index_control_entry_count: 1, staged_paths: ["x"], refs: [], head_reflog_count: 1, head_reflog_checksum: "d".repeat(64), captured_at: "2026-08-21T00:00:00.000Z" };
     assert.throws(() => buildWriteReceipt({ base, baseline: { ...writeBaseline, index_control_algorithm: "future" }, writeAllowlist: ["x"], allowedOperations: ["write"] }), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_ALGORITHM_UNSUPPORTED");
-    assert.throws(() => buildCommitReceipt({ base, baseline: { ...commitBaseline, staged_index_control_algorithm: "git-index-control-framed-sha256-v2" } }), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_BASELINE_INVALID");
+    assert.throws(() => buildCommitReceipt({ base, baseline: { ...commitBaseline, staged_index_control_entry_count: undefined } as any }), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_BASELINE_INVALID");
     const malformed = structuredClone(base) as any;
-    malformed.execution.mode = "write"; malformed.baseline = { ...writeBaseline, index_control_entry_count: 1 }; malformed.scope.write_allowlist = ["x"];
-    assert.throws(() => writeReceipt("/tmp/baton-receipt-boundary", malformed), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_BASELINE_INVALID");
+    malformed.execution.mode = "write"; malformed.baseline = { ...writeBaseline, index_control_checksum: undefined }; malformed.scope.write_allowlist = ["x"];
+    const boundary = fs.mkdtempSync(path.join(os.tmpdir(), "baton-receipt-boundary-"));
+    assert.throws(() => writeReceipt(boundary, malformed), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_BASELINE_INVALID");
+    const obsolete = structuredClone(base) as any;
+    obsolete.receipt_id = "rcpt-obsolete"; obsolete.execution.mode = "write"; obsolete.baseline = { ...writeBaseline }; delete obsolete.baseline.index_control_algorithm; delete obsolete.baseline.index_control_entry_count; obsolete.scope.write_allowlist = ["x"];
+    assert.throws(() => writeReceipt(boundary, obsolete), (error) => error instanceof ReceiptError);
     const disk = fs.mkdtempSync(path.join(os.tmpdir(), "baton-receipt-read-") );
     fs.mkdirSync(receiptsDir(disk), { recursive: true });
     const persistedWrite = structuredClone(base) as any;
@@ -111,7 +117,7 @@ describe("Delegation Receipt", () => {
     fs.writeFileSync(path.join(receiptsDir(disk), `${persistedWrite.receipt_id}.json`), JSON.stringify(persistedWrite));
     assert.throws(() => readReceipt(disk, persistedWrite.receipt_id), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_ALGORITHM_UNSUPPORTED");
     const persistedCommit = structuredClone(base) as any;
-    persistedCommit.receipt_id = "rcpt-invalid-commit"; persistedCommit.execution.mode = "commit-only"; persistedCommit.commit_baseline = { ...commitBaseline, staged_index_control_entry_count: 1 }; persistedCommit.baseline = null;
+    persistedCommit.receipt_id = "rcpt-invalid-commit"; persistedCommit.execution.mode = "commit-only"; persistedCommit.commit_baseline = { ...commitBaseline, staged_index_control_entry_count: undefined }; persistedCommit.baseline = null;
     fs.writeFileSync(path.join(receiptsDir(disk), `${persistedCommit.receipt_id}.json`), JSON.stringify(persistedCommit));
     assert.throws(() => readReceipt(disk, persistedCommit.receipt_id), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_BASELINE_INVALID");
   }));

@@ -1,207 +1,125 @@
-# Baton dynamic director architecture
+# Baton architecture
 
-## Decision
+## Boundary
 
-Baton is a CLI-neutral scheduling and policy layer. It does not own provider authentication or a universal model registry. Each CLI adapter owns its model-discovery boundary.
+Baton is a CLI-neutral scheduler and policy layer. External adapter packages
+are the integration boundary: each package owns executable discovery, its live
+catalog, native child execution, and adapter-specific lifecycle behavior. Baton
+discovers packages from manifests and operates on the normalized public SDK;
+core code does not contain a catalog or adapter-specific protocol branch.
 
-Adapters:
+## Manifest discovery
 
-- Codex obtains models from the public app-server model/list method with includeHidden=false. This is the picker-facing surface Codex exposes to clients.
-- Grok obtains models from `grok models`. Official grok prints a text listing; JSON stdout is accepted if present. Login and prose lines are not model ids. `grok models --json` is not part of the official CLI.
+The runtime scans `BATON_ADAPTER_PATHS` when set, otherwise
+`~/.baton/adapters/`. Each directory contains an `adapter.json` with schema
+`1`. The manifest declares:
 
-Baton persists the returned model ids and any display, reasoning-effort, or speed/service-tier metadata the CLI actually reported, without augmenting the catalog from OpenCodex or hard-coded lists. Grok's text listing currently reports ids only.
+```text
+adapter       stable id, display metadata, package/version, SDK version
+catalog       executable path, arguments, protocol, timeout
+invocation    runtime signal and optional environment description
+native        opaque execution_handle_kind
+runtime_skill package source and installed destination
+quota         max_concurrent, max_depth, backpressure
+```
 
-## Configuration model
+Runtime-skill paths are relative to the package and traversal-free; the catalog
+command may be a package path or an absolute executable. Discovery validates
+exact fields, SDK major version, protocol, package directory, and duplicate ids.
 
-    director
-    ├── max_concurrent   (fallback)
-    └── max_depth        (fallback)
-    cli
-    └── <selected id>
-        ├── enabled
-        ├── runner       (label only)
-        ├── longctx      (label only)
-        ├── coding_models
-        ├── max_concurrent?  (only when CLI-reported)
-        └── max_depth?       (only when CLI-reported)
+The catalog command returns JSON containing the matching `adapter_id`, an
+optional version, and a `models` array. The adapter preserves each model's id,
+display metadata, visibility, reasoning options, modalities, speed/service
+tiers, defaults, and other declared fields. Missing optional values remain
+unknown; Baton never constructs catalog rows or execution options.
 
-runner and longctx are labels, not capability assertions. The ordered coding_models list is the complete configured Coding priority for that CLI. Configured labels remain independent and are not automatically inserted. Disabled profiles contribute no routes.
-Unselected CLIs have no placeholder profile. Each missing scheduling limit falls
-back independently to the director value; adapter guesses do not become
-CLI-reported configuration.
+## Configuration flow
 
-## Data flow
+```text
+baton init
+  -> discover manifests
+  -> select one adapter
+  -> query that adapter's catalog
+  -> persist one cli.<id> profile and catalog snapshot
 
-    baton config
-      -> choose CLI
-      -> CLI adapter model discovery
-      -> display exact picker-visible models
-      -> choose labels + subagent allowlist + enabled
-      -> persist the selected profile, explicit CLI-reported limits, and CLI catalog snapshot
+baton spawn/apply
+  -> resolve the selected adapter
+  -> classify and scope units in the director
+  -> choose from the enabled coding_models order
+  -> validate model/options against the catalog
+  -> create a Receipt and ticket
+  -> reserve and hand off to native execution
+```
 
-    baton spawn/apply
-      -> resolve the invoking host and load only its enabled profile
-      -> run the read-only director impact/dependency pass for write units
-      -> require complete per-unit write paths and allowed operations before ticket creation
-      -> intersect configured ids with saved CLI catalog
-      -> create model@effort cards from CLI-supported efforts
-      -> score task/model/effort/speed automatically
-      -> persist an exact service tier only when the selected CLI exposed it and the task requests speed
-      -> create approved audit proposal, ticket, and Receipt
-      -> host-native dispatch (Codex spawn_agent / Grok spawn_subagent)
+Only explicitly selected profiles are written. `runner`, `longctx`, and the
+ordered `coding_models` list are policy labels; the adapter catalog remains the
+authority for model ids and supported options. Execution stops when an adapter,
+profile, model, option, authorization, or classification is not usable.
 
-There is no runtime human model selector. Explicit model or route flags and the former model-selection toggle are rejected.
+## Director and scheduling
 
-Standalone syntax carries one director classification/operation for the request
-or per-unit overrides when decomposing a request. For multiple units, scope and
-operations follow each `--unit`; the global flags remain the one-unit form:
+The director owns discussion, read-only analysis, classification, dependency
+ordering, authorization, and repository scope. Native child execution is the
+worker boundary. A `mechanical` class selects `runner`; a `long-context` class
+selects `longctx`; operation labels are retained only as audit metadata.
 
-    baton spawn REQUEST [--classification CLASS] [--operation LABEL]
-      [--unit KEY=TEXT ...]
-      [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
-      [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
+Before any write ticket, the director performs a read-only impact/dependency
+pass and records exact paths with allowed operations from `write`, `create`,
+`delete`, `rename`, and `chmod`. All units are validated atomically against one
+another and active scopes. Rename endpoints and path-prefix overlaps conflict.
+An unknown path, dependency, or operation prevents ticket creation.
 
-    baton spawn REQUEST --unit "db=update schema" \
-      --write-path db/schema.sql --write-ops write,create \
-      --unit "api=update endpoint" --write-path src/api.ts --write-ops write
+At each scheduling or refill decision, calculate the maximal safe ready
+frontier: every order-ready unit with a complete scope, pairwise-disjoint paths,
+and room under the adapter's physical capacity. Fill all available slots.
+Section order is only a stable tie-breaker among otherwise equal choices.
 
-Every standalone request is persisted in the same multi-unit proposal shape;
-without `--unit`, the request becomes the single `standalone` unit. Classification
-values are exact structured values. No operation or request prose is inferred.
+## Identity and lifecycle
 
-An enabled host rejects missing or conflicting classifications before creating
-a ticket. `mechanical` always selects `runner`; `long-context` selects
-`longctx`; operation labels are audit metadata. Empty or unusable class routes
-fail closed, including when a write path is present.
+`BATON_SESSION_ID` is mandatory for ticket creation. Baton hashes it into
+`session_uid` and allocates a contiguous `session_ordinal` per session. Ticket
+ids contain an opaque prefix, session uid, and ordinal. They are identifiers,
+not routing input.
 
-## Visibility versus execution
+The shared lifecycle is:
 
-A model returned by the selected CLI is picker-visible and therefore configurable. For Codex this includes gpt-5.4-mini and gpt-5.3-codex-spark whenever they occur in model/list.
+```text
+ticket + Receipt
+  -> reservation
+  -> adapter native spawn
+  -> identity handoff { session_id, ticket_id, native_handle, adapter_id }
+  -> activity-based wait
+  -> one terminal result
+  -> release
+```
 
-Tool documentation is not execution proof and cannot remove a picker-visible model. Dispatch validates the exact model, effort, and any selected service tier against the saved catalog. Codex `spawn_agent` and its namespaced collaboration variants can pass model, effort, and tier; the returned `task_name` is the native execution handle for attach/liveness/release, while `agent_id` is optional diagnostics. Grok `spawn_subagent` takes an exact `model` and independent context; if a ticket has effort or tier that the installed Grok tool cannot express, that option is unavailable rather than silently claimed. Omitting Grok `model` inherits the parent model and is forbidden. A native host rejection is recorded as route-health evidence for that exact attempt; the ticket is not rewritten in place.
+`native_handle` is opaque and its kind comes from the manifest. Baton does not
+require a universal field name, infer identity from ticket text, or synthesize a
+handle. A capacity response returns the same reservation to the queue without
+consuming an attempt or changing its selected model.
 
-## Automatic policy
+## Quota successor policy
 
-Selection is deterministic within the configured allowlist:
+An explicit quota-exhaustion result is recorded as availability evidence. For a
+write ticket, Baton verifies that the pre-mutation baseline is unchanged and
+then may create an immutable successor from the next configured coding route.
+The successor gets a new session ordinal and Receipt, keeps the original
+session, adapter, host, scope, authorization, and quota lineage, and records
+`successor_from_ticket_id` plus `successor_reason`.
 
-1. task affinity from the CLI model description and optional local capability evidence;
-2. supported reasoning effort fitted to task complexity;
-3. fast preference from CLI descriptions and speed or service-tier metadata;
-4. current quota and health evidence when available;
-5. stable id for the final tie.
+The original ticket remains immutable. The successor reruns catalog, option,
+capacity, and scope checks; quota is not reset. If mutation has begun or the
+baseline cannot be reconciled, no successor is created and reconciliation is
+required.
 
-Unranked capability evidence is allowed. Missing third-party benchmark data does not override the selected CLI's model surface or the user's configured allowlist.
+## Repository safety
 
-## Automatic workflow contract
+Read-only is the default. Write tickets carry a path/operation allowlist and a
+parent-owned repository observation. Workers do not perform Git operations. An
+explicit exclusive commit ticket over the parent-staged tree may create one
+commit and no other repository operation.
 
-An enabled selected CLI profile and an explicit user execution authorization are prerequisites for native implementation work. The director classifies every executable request and passes that structured classification to Baton before dispatch. Baton persists the resulting tickets and Receipts; it does not invent or own a separate task DAG.
-
-Discussion and read-only analysis remain on the director. Authorized implementation nodes are dispatched through the selected host's native child-agent tool. Mechanical classification chooses `runner` (and `long-context` chooses `longctx`); its operation label is retained for audit only and is not a fixed action-name routing key. Empty or unusable classified routes fail closed rather than executing on the director. Commit/publish remain deterministic Receipt/Git capabilities. Missing authorization, a disabled host profile, or unresolved classification fail closed.
-
-The decomposition and ordering graph belongs to the director workflow or OpenSpec; it is not a new Baton-persisted DAG runtime. When OpenSpec is present, its task/status graph remains authoritative. Baton persists only the resulting host-scoped tickets and Receipts and applies write-set/capacity checks without rewriting `tasks.md`.
-
-## Write-scope readiness
-
-Before creating or dispatching any write ticket, the director performs a read-only impact/dependency pass for the unit. The pass must produce a complete, exact per-unit write-path set and the allowed operations for those paths. Paths are explicit; allowed operations are `write`, `create`, `delete`, `rename`, and `chmod`. Unknown impact, dependency, path, or operation keeps classification unresolved and creates no implementation ticket.
-
-Before any ticket is created, standalone and OpenSpec multi-unit proposals are
-validated atomically against one another and already-owned write scopes. Each
-unit carries an exact write-path set and allowed operations (`write`, `create`,
-`delete`, `rename`, or `chmod`). An unknown scope or operation, or any pairwise
-conflict, rejects the complete invocation with no partial ticket, reservation,
-Receipt, or native dispatch. Rename source and destination paths and path-prefix
-overlaps are conflicts.
-
-At every scheduling and refill decision, the director computes and fills the
-maximal safe ready frontier: all order-ready units with complete, pairwise
-disjoint scopes that fit the selected host capacity. Recompute it after a
-dependency becomes terminal or a running slot is released. Section order is
-only a stable tie-breaker within the frontier; it is not a dependency and must
-not serialize an independent ready unit. A worker that discovers an undeclared
-path or operation stops before mutation and returns a scope decision to the
-director; it never edits first and relies on terminal retry or audit for
-authorization. Mechanical routing remains class-based, and operation labels are
-opaque audit metadata rather than route selectors.
-
-## Streaming Git safety contract
-
-Write and commit-only ticket materialization, reservation, and terminal audit use
-one safety-owned asynchronous Git process boundary. Commands whose output size is
-unknown are streamed with concurrent stdout/stderr drains, backpressure, bounded
-stderr diagnostics, abort/signal propagation, and child reaping. The consumer must
-reach a complete valid end state before its facts are used; partial output is never
-a baseline. These commands do not use Node/Bun aggregate `maxBuffer`, so valid
-streams above the former 1 MiB limit, including an opt-in stream above 128 MiB,
-remain valid when the compact facts fit in memory. Scalar commands have a separate
-explicit small-output contract and report an overflow rather than being buffered
-as a general snapshot. The streaming layer retains only facts needed by a Receipt
-or verdict, not verbose Git diagnostic text.
-
-The safety transaction keeps activation and dispatch ownership across the complete
-asynchronous observation. It captures the required facts, obtains a fresh
-stability token for HEAD, branch, refs, reflog summary, staged tree, and index
-controls, and retries the entire observation once if the token changes. A second
-mismatch is `GIT_BASELINE_RACED` for baseline creation or `GIT_AUDIT_RACED` for an
-audit. Locks are released in `finally` on success, failure, or interruption; no
-Receipt, spawn, or successful terminal verdict is persisted from a failed or
-mixed-time observation.
-
-### Versioned index-control metadata
-
-Every new schema-v4 write Receipt carries the immutable baseline fields
-`index_control_algorithm`, `index_control_checksum`, and
-`index_control_entry_count`. Commit-only Receipts carry the corresponding
-`staged_index_control_algorithm`, `staged_index_control_checksum`, and
-`staged_index_control_entry_count`. New baselines select
-`git-index-control-framed-sha256-v2`: canonical Git index order, raw pathname
-bytes, an unambiguous length-prefixed frame, semantic control flags after masking
-only `CE_FSMONITOR_VALID` (`0x80000000`), and a terminal entry count. The staged
-tree remains a separate content/mode fingerprint. Raw bytes and framing make the
-result independent of text decoding, runtime, delimiter-like pathnames, and chunk
-boundaries; parser memory is bounded by one record.
-
-### Structured failures and forward compatibility
-
-Collection and metadata failures use one structured safety-failure contract
-instead of prose-only diagnostics. The `GIT_*` collection codes below are
-`GitSafetyError` codes; the `INDEX_CONTROL_*` codes are separate Receipt/index
-metadata validation codes and must not be treated as `GitSafetyError` values:
-
-- `GIT_SAFETY_COMMAND_FAILED` covers spawn, non-zero exit, signal termination, and
-  child-stream errors.
-- `GIT_SAFETY_SCALAR_LIMIT` means a scalar command violated its explicit output
-  contract.
-- `GIT_SAFETY_STREAM_MALFORMED` means a streamed record was malformed or
-  truncated.
-- `INDEX_CONTROL_ALGORITHM_UNSUPPORTED` means a Receipt names an unknown
-  fingerprint algorithm (metadata validation).
-- `INDEX_CONTROL_BASELINE_INVALID` means a known v2 baseline is incomplete or its
-  checksum or count is invalid (metadata validation).
-- `GIT_BASELINE_RACED` and `GIT_AUDIT_RACED` distinguish a persistent repository
-  race after one complete retry from an ordinary scope mutation.
-
-Receipt schema v4 and public ticket syntax stay unchanged. A pre-existing
-algorithm-less Receipt is explicitly verified as `legacy-json-sorted-v1`: Baton
-streams the input but retains the compact pathname/masked-flag records needed to
-reproduce the historical sort, JSON serialization, and SHA-256 checksum. New
-Receipts always use v2. Unknown or incomplete metadata fails closed; no algorithm
-guessing or silent fallback is allowed. This is forward compatibility: a new
-runtime can finish old tickets without rewriting immutable Receipts, but an old
-runtime cannot safely audit a v2 baseline.
-
-Runtime rollback is therefore a safety boundary. Before replacing the runtime with
-an older version, the director must drain every active v2 write and commit-only
-ticket until it reaches a terminal state (explicitly closing it when appropriate)
-and is then released. Rollback while one of those tickets is active, bypassing
-the check, and rewriting a Receipt are all unsupported.
-
-## Safety and lifecycle invariants
-
-- No parent-model inheritance, in-place model change, cross-host fallback, or invented effort or speed fields. Explicit quota exhaustion may create an immutable, auditable successor after a clean pre-mutation baseline; successors rerun all hard gates.
-- Tickets are immutable model assignments with Delegation Receipts.
-- Depth is one; physical concurrency is host-bounded and logical work queues FIFO.
-- AgentLimitReached defers the same ticket without changing its model.
-- Polling timeout is not worker timeout; exact not_found evidence is required.
-- Writes are allowlisted and parent-audited. Each write Receipt carries exact paths and allowed operations; only an exclusive parent-staged commit-only Receipt can authorize one Git commit.
-- Active v2 write and commit-only tickets are a runtime rollout boundary: each must reach a terminal state (explicitly closed when appropriate) and then be released before rollback to an older Baton runtime.
-- Baton state is user-global under ~/.baton; OpenSpec remains optional and is not reimplemented.
+Receipts, ticket state, catalog snapshots, and installation records are
+user-global under `~/.baton`; the caller owns worktree files. This architecture
+keeps adapter-specific behavior at the package boundary while the director
+remains deterministic and auditable.

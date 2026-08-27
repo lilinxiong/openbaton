@@ -168,15 +168,39 @@ export async function consumePorcelainV1Z(
   return entries;
 }
 
+const GIT_RESERVED_REF_NAMESPACES = new Set([
+  "bisect",
+  "heads",
+  "notes",
+  "remotes",
+  "replace",
+  "rewritten",
+  "stash",
+  "tags",
+  "worktree",
+]);
+const RUNTIME_TURN_DIFF_REF = /^refs\/([^/]+)\/turn-diffs\//;
+
+/**
+ * Return whether a complete `for-each-ref` record belongs to a runtime's
+ * private turn-diff namespace. Git's well-known ref namespaces stay audited,
+ * even when a user happens to create a nested `turn-diffs` ref there.
+ */
+export function isRuntimeTurnDiffRef(value: string): boolean {
+  const match = RUNTIME_TURN_DIFF_REF.exec(value);
+  return match !== null && !GIT_RESERVED_REF_NAMESPACES.has(match[1]);
+}
+
 /** Consume `for-each-ref --format=%(refname)%00%(objectname)` compactly. */
 export async function consumeRefRecords(
   chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
-  excludedPrefix = "refs/codex/turn-diffs/",
+  excludedPrefix?: string,
 ): Promise<string[]> {
   const refs: string[] = [];
   await consumeLineRecords(chunks, (record) => {
     const value = record.toString("utf8");
-    if (value && !value.startsWith(excludedPrefix)) refs.push(value);
+    const excluded = excludedPrefix === undefined ? isRuntimeTurnDiffRef(value) : value.startsWith(excludedPrefix);
+    if (value && !excluded) refs.push(value);
   });
   return refs;
 }
@@ -231,8 +255,3 @@ export async function consumeModeChangeSummary(
   });
   return paths;
 }
-
-// Fact-oriented aliases make the contracts discoverable without exposing the
-// lower-level framing implementation to safety callers.
-export const consumeRefs = consumeRefRecords;
-export const consumeStagedPathRecords = consumeStagedPaths;

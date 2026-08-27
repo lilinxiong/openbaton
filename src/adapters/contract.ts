@@ -5,8 +5,8 @@ import { spawn } from "node:child_process";
  * list; keeping the id type here lets each adapter implement the contract
  * without importing the registry back into itself.
  */
-export const REGISTERED_CLI_IDS = ["codex", "grok", "cursor", "claude"] as const;
-export type CliId = (typeof REGISTERED_CLI_IDS)[number];
+/** Adapter ids are supplied by validated manifests at runtime. */
+export type CliId = string;
 
 export interface CliReasoningEffort {
   id: string;
@@ -45,17 +45,16 @@ export interface CliRuntimeCapabilities {
  * deliberately separate from host lifecycle metadata: some hosts return a
  * usable task handle while never exposing a child-agent diagnostic id.
  */
-export type NativeExecutionHandleKind = "task_name" | "agent_id" | "session_id" | "task_id" | "opaque";
+export type NativeExecutionHandleKind = string;
 
 export interface CliModelCatalog {
   cli: CliId;
+  /** Manifest protocol identity, retained alongside the cli identifier. */
+  adapter_id?: string;
   version: string | null;
   models: CliModel[];
-  /** Missing values are unknown and must fall back to director defaults. */
+  /** Missing values remain unknown; the director applies its generic limits. */
   capabilities?: CliRuntimeCapabilities;
-  /** Flat aliases accepted from adapter implementations. */
-  max_concurrent?: number;
-  max_depth?: number;
 }
 
 export interface DiscoverCliModelsOptions {

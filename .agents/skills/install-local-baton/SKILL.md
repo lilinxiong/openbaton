@@ -1,108 +1,82 @@
 ---
 name: install-local-baton
-description: Install or update Baton from an OpenBaton source checkout onto the local machine. Use after cloning this repository, when the user asks to install Baton locally, set up a dev checkout, link the repo to PATH, refresh skills and config from the checkout, or update an existing local Baton to match the latest repository build. Triggers include install local baton, setup baton, bun link, update local baton, 安装 baton, 更新 baton.
+description: Install or update Baton from an OpenBaton source checkout onto the local machine. Use after cloning this repository, when the user asks to install Baton locally, set up a development checkout, link the repo to PATH, refresh shared runtime files, or update an existing local Baton.
 ---
 
 # Install or update local Baton
 
-Link this OpenBaton checkout to the machine, build it, and refresh the user's global Baton files (`~/.baton` and host runtime skills) from the repository. Baton is hookless.
-
-Fresh clone and existing install use the same path: build, `bun link`, then `baton update`.
+Link this OpenBaton checkout, build it, and refresh the user's global Baton
+files under `~/.baton`. A source checkout and an existing installation use the
+same sequence: build, `bun link`, then `baton update`.
 
 ## Preconditions
 
-1. Confirm the working tree is the OpenBaton repository root (`package.json` name is `@zhouliuya/openbaton`).
-2. Require **Node.js 22.5+** and **Bun** on `PATH`. If either is missing, stop and tell the user how to install them.
-3. Require **python3** to run the repository installer script.
+1. Confirm the working directory is the repository root and that
+   `package.json` identifies the OpenBaton package.
+2. Require Node.js 22.5 or newer and Bun on `PATH`.
+3. Require `python3` for the repository installer.
 
-Do not modify unrelated user files, git config, credentials, or `~/.baton` model selections beyond what `baton init` / `baton update` normally write.
+Do not modify unrelated files, credentials, Git configuration, or adapter
+profiles beyond the files normally refreshed by `baton update`.
 
-## Detect current state
+## Inspect the current installation
 
-Before changing anything, record:
+Record before changing anything:
 
-- `node -v`
-- `bun --version`
-- whether `baton` is already on `PATH` (`command -v baton`) and its resolved path
-- if present, `baton version`
-- whether `~/.baton/config.toml` exists
+- `node -v` and `bun --version`;
+- whether `baton` is on `PATH` and its resolved path;
+- `baton version`, when available;
+- whether `~/.baton/config.toml` exists;
+- whether shared or adapter runtime skills are already installed.
 
-Use this only to choose the completion message (`installed` vs `updated`). Do not branch into a different install mechanism.
+Use this only to report whether the result is an installation or an update.
 
-## Run the repository installer
+## Run the installer
 
-From the repository root, run:
+From the repository root:
 
 ```bash
 python3 scripts/update_local_baton.py
 ```
 
-This script:
-
-1. `bun install --frozen-lockfile`
-2. `bun run test`
-3. `bun run build`
-4. `bun link` so global `baton` points at this checkout's `dist/bin/baton.js`
-5. `baton update` to refresh global skills, config defaults, and host runtime skills
-6. `baton version` as a smoke check
-
-If the user explicitly asks for a faster dev loop and accepts skipping verification, rerun with:
+The script installs the lockfile dependencies, runs checks, builds the package,
+links `baton`, runs `baton update`, and performs a version smoke check. If the
+user explicitly accepts omitted tests, the faster form is:
 
 ```bash
 python3 scripts/update_local_baton.py --skip-tests
 ```
 
-Use `--dry-run` only to show planned commands; do not treat it as completion.
+Use `--dry-run` only to display commands. If a step fails, fix the concrete
+repository-local issue and retry once. Do not replace a source checkout with a
+different installation mechanism.
 
-If the script fails:
+## Initialize adapters
 
-- Read the stderr message and fix the concrete blocker (missing tool, failed test, build error, or `baton` not resolving to this checkout after `bun link`).
-- Retry once after fixing repository-local issues.
-- Do not fall back to `npm install -g @zhouliuya/openbaton`; this skill is for **source checkout** development, not the published package.
-
-## First-time initialization
-
-`baton update` refreshes files that already exist; it does not install host runtime skills on a completely fresh machine.
-
-After the installer succeeds, if **either** is true:
-
-- `~/.baton/config.toml` was missing before the run, or
-- no host runtime skill files exist yet under the user's home (for example `~/.codex/skills/baton/SKILL.md`, `~/.cursor/skills/baton/SKILL.md`, or the Grok equivalent),
-
-run once:
+`baton update` refreshes files that already exist. On a new machine, run:
 
 ```bash
 baton init
 ```
 
-If the invoking host is known and the user has not configured Baton yet, suggest the matching non-interactive bootstrap when appropriate, for example:
+Then select and enable an adapter from its manifest:
 
 ```bash
-baton init --cli cursor
-baton config --cli cursor --enable
+baton config --cli <adapter-id> --enable
 ```
 
-Do not run interactive `baton config` unless the user asks.
+Do not run interactive configuration unless the user asks. Adapter catalog and
+profile choices remain user-owned.
 
 ## Verify and report
 
-Confirm all of the following:
+Confirm that:
 
-- `command -v baton` resolves to this checkout's built CLI (`dist/bin/baton.js` under the repo root)
-- `baton version` succeeds
-- `baton update` output shows refreshed global files
+- `command -v baton` resolves to this checkout's `dist/bin/baton.js`;
+- `baton version` succeeds;
+- `baton update` reports refreshed shared files;
+- no unrelated adapter profile or user file changed.
 
-Report a short summary:
-
-- **installed** or **updated**
-- repository path
-- linked `baton` command path
-- version string
-- whether `baton init` ran
-- next step for the user: run `baton config` (or `baton models refresh`) if models are not configured yet
-
-## Red lines
-
-- Do not commit, push, or edit unrelated repository code while installing.
-- Do not overwrite the user's CLI model allowlists or enabled-host choices except through normal `baton update` default merging.
-- Do not claim success if `baton` on `PATH` still points at a different installation than this checkout.
+Report installed or updated, repository path, linked command path, version,
+whether `baton init` ran, and the next configuration command. Do not commit or
+publish as part of installation.

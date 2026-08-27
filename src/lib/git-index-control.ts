@@ -14,8 +14,6 @@ export interface GitIndexControlRecord {
 
 /** Stable wire-format identifier for index-control fingerprints. */
 export const GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM = "git-index-control-framed-sha256-v2";
-/** Identifier for the checksum emitted by the pre-v2 safety runtime. */
-export const LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM = "legacy-json-sorted-v1";
 const FINGERPRINT_DOMAIN = Buffer.from(`${GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM}\0`, "ascii");
 const FINGERPRINT_TERMINAL = Buffer.from("git-index-control-entry-count\0", "ascii");
 
@@ -23,64 +21,6 @@ export interface GitIndexControlFingerprint {
   algorithm: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
   checksum: string;
   entryCount: number;
-}
-
-export interface LegacyGitIndexControlFingerprint {
-  algorithm: typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
-  checksum: string;
-  entryCount: number;
-}
-
-function fingerprintLegacyEntries(entries: string[]): LegacyGitIndexControlFingerprint {
-  entries.sort();
-  const checksum = crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex");
-  return { algorithm: LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM, checksum, entryCount: entries.length };
-}
-
-/**
- * Reproduce the algorithm-less Receipt checksum exactly.  The old runtime
- * decoded `ls-files --debug -z` as UTF-8, formed `pathname\\0<decimal flags>`
- * strings, sorted with JavaScript's default string ordering, then hashed the
- * JSON array.  Keep this compatibility path separate from v2: it is only for
- * auditing existing Receipts and intentionally retains the compact sorted
- * records required by that historical format.
- */
-export function fingerprintLegacyGitIndexControlRecords(
-  records: Iterable<Pick<GitIndexControlRecord, "pathname" | "maskedFlags">>,
-): LegacyGitIndexControlFingerprint {
-  const entries: string[] = [];
-  for (const record of records) {
-    if (!Buffer.isBuffer(record.pathname)) throw new TypeError("pathname must be a Buffer");
-    if (!Number.isInteger(record.maskedFlags)
-      || record.maskedFlags < 0
-      || record.maskedFlags > 0xffffffff) {
-      throw new RangeError("maskedFlags must be an unsigned 32-bit integer");
-    }
-    // The pre-v2 representation used an actual NUL separator inside each
-    // decoded compact string (not the two-character escape sequence).
-    entries.push(`${record.pathname.toString("utf8")}\0${record.maskedFlags >>> 0}`);
-  }
-  return fingerprintLegacyEntries(entries);
-}
-
-/** Compare a legacy stream result with an algorithm-less Receipt checksum. */
-export function verifyLegacyGitIndexControlChecksum(
-  fingerprint: LegacyGitIndexControlFingerprint,
-  expectedChecksum: string,
-): boolean {
-  return fingerprint.algorithm === LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM
-    && fingerprint.checksum === expectedChecksum;
-}
-
-/** Stream a parsed Git output while reproducing an algorithm-less Receipt. */
-export async function consumeLegacyGitIndexControl(
-  chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
-): Promise<LegacyGitIndexControlFingerprint> {
-  const entries: string[] = [];
-  await consumeGitIndexControl(chunks, (record) => {
-    entries.push(`${record.pathname.toString("utf8")}\0${record.maskedFlags >>> 0}`);
-  });
-  return fingerprintLegacyEntries(entries);
 }
 
 /**
@@ -325,5 +265,3 @@ export async function consumeGitIndexControl(
 }
 
 // Names tied to the Git command make the parser easy to discover at callers.
-export const createLsFilesDebugZParser = createGitIndexControlParser;
-export const consumeLsFilesDebugZ = consumeGitIndexControl;

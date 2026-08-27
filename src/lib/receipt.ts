@@ -10,7 +10,7 @@ export type ExecutionMode = "read-only" | "write" | "commit-only";
 
 export interface DelegationReceipt {
   schema_version: 4;
-  /** Host profile that owns this receipt. Old receipts may omit it. */
+  /** Host profile that owns this receipt; local-only receipts may omit it. */
   host?: string;
   receipt_id: string;
   ticket_id: string;
@@ -34,7 +34,6 @@ export interface DelegationReceipt {
   };
   retry: {
     max_attempts: number;
-    fallback: "none";
   };
   git_policy: {
     worker_may_stage: false;
@@ -89,7 +88,7 @@ export function buildReadOnlyReceipt({
     },
     execution: { mode: "read-only", fork_context: false, max_depth: 1 },
     scope: { write_allowlist: [], allowed_operations: ["read"], side_effects: [] },
-    retry: { max_attempts: attempts, fallback: "none" },
+    retry: { max_attempts: attempts },
     git_policy: {
       worker_may_stage: false,
       worker_may_commit: false,
@@ -172,6 +171,17 @@ function receiptPath(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): s
 }
 
 function validateReceiptBaselines(receipt: DelegationReceipt): void {
+  if (!receipt || typeof receipt !== "object" || receipt.schema_version !== 4
+    || typeof receipt.receipt_id !== "string" || typeof receipt.ticket_id !== "string"
+    || typeof receipt.issued_at !== "string" || !receipt.route || !receipt.execution
+    || !receipt.scope || !receipt.retry || !receipt.git_policy
+    || !Array.isArray(receipt.scope.write_allowlist)
+    || !Array.isArray(receipt.scope.allowed_operations)
+    || !Array.isArray(receipt.scope.side_effects)
+    || !Number.isSafeInteger(receipt.retry.max_attempts) || receipt.retry.max_attempts < 1
+    || Object.keys(receipt.retry).length !== 1) {
+    throw new ReceiptError("Receipt schema is invalid", "RECEIPT_SCHEMA_INVALID");
+  }
   const baselineError = receipt.baseline
     ? validateIndexControlBaselineMetadata(receipt.baseline)
     : receipt.commit_baseline
@@ -182,6 +192,15 @@ function validateReceiptBaselines(receipt: DelegationReceipt): void {
       }, "staged_index_control")
       : null;
   if (baselineError) throw new ReceiptError("Receipt index-control metadata is invalid", baselineError);
+  if (receipt.execution.mode === "read-only" && (receipt.baseline !== null || receipt.commit_baseline !== null)) {
+    throw new ReceiptError("read-only Receipt must not carry a baseline", "RECEIPT_SCHEMA_INVALID");
+  }
+  if (receipt.execution.mode === "write" && (!receipt.baseline || receipt.commit_baseline !== null)) {
+    throw new ReceiptError("write Receipt must carry only a Git baseline", "RECEIPT_SCHEMA_INVALID");
+  }
+  if (receipt.execution.mode === "commit-only" && (!receipt.commit_baseline || receipt.baseline !== null)) {
+    throw new ReceiptError("commit-only Receipt must carry only a commit baseline", "RECEIPT_SCHEMA_INVALID");
+  }
 }
 
 export function writeReceipt(cwd: string, receipt: DelegationReceipt, env?: NodeJS.ProcessEnv): DelegationReceipt {

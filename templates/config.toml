@@ -1,24 +1,22 @@
 # baton director config
 schema_version = 2
-# Each CLI owns its picker-visible model catalog and any scheduling limits it
-# explicitly reports. Baton stores only selected profiles.
+# Each adapter owns its live model catalog and any scheduling limits it reports.
+# Baton stores only profiles explicitly selected by the user.
 
 [director]
-# Fallback limits. A selected [cli.<id>] may override either field only when
-# that CLI's discovery response reports a real value.
+# Director limits. A selected [cli.<id>] may override either field when its
+# discovery response reports a value.
 max_concurrent = 4
 max_depth = 1
 
-# baton init/config writes only CLI profiles the user selected. Within a
-# profile, max_concurrent/max_depth are omitted when the CLI did not report
-# them, so the director values above remain effective.
+# init/config writes only profiles the user selected. Within a profile,
+# max_concurrent/max_depth are omitted when the adapter did not report them.
 
 # Execution classification is supplied by the director workflow contract.
-# Operation labels are audit metadata and are never serialized as a routing
-# table. Model labels live under selected CLI profiles.
+# Operation labels are audit metadata, never a routing table.
 
-# A selected [cli.<host>] profile also stores:
+# A selected [cli.<id>] profile also stores:
 # enabled = true
-# runner = "gpt-5.6-luna"
-# longctx = "gpt-5.6-luna"
-# coding_models = ["gpt-5.3-codex-spark", "gpt-5.6-luna"] # ordered priority
+# runner = "<model-id>"
+# longctx = "<model-id>"
+# coding_models = ["<model-id>"] # ordered priority

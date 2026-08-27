@@ -99,7 +99,7 @@ export function recordRouteHealth(cwd: string, options: RecordRouteHealthOptions
   const record: RouteHealthRecord = {
     route_id: routeId,
     profile: String(options.profile || "").trim(),
-    host: String(options.host || "codex").trim() || "codex",
+    host: String(options.host || "").trim(),
     task_shape: taskShape(options.taskText),
     status: healthy ? "healthy" : "degraded",
     terminal_status: options.terminalStatus,
@@ -122,7 +122,7 @@ export function isCardAutoEligible(
   cwd: string,
   card: ModelCard,
   taskText: string,
-  { host = "codex", now = new Date(), env }: { host?: string; now?: Date; env?: NodeJS.ProcessEnv } = {},
+  { host, now = new Date(), env }: { host?: string; now?: Date; env?: NodeJS.ProcessEnv } = {},
 ): boolean {
   if (!card.route_id) return false;
   const shape = taskShape(taskText);
@@ -136,6 +136,6 @@ export function isCardAutoEligible(
   return !record.cooldown_until || Date.parse(record.cooldown_until) <= now.getTime();
 }
 
-export function cardsForAutomaticSelection(cwd: string, cards: ModelCard[], taskText: string, host = "codex", env?: NodeJS.ProcessEnv): ModelCard[] {
+export function cardsForAutomaticSelection(cwd: string, cards: ModelCard[], taskText: string, host: string, env?: NodeJS.ProcessEnv): ModelCard[] {
   return cards.filter((card) => isCardAutoEligible(cwd, card, taskText, { host, env }));
 }

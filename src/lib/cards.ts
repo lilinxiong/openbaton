@@ -3,7 +3,7 @@
  * No parent-session inheritance and no model outside that allowlist.
  */
 
-import type { CardCapabilityEvidence, ModelCard } from "../types.js";
+import type { ModelCard } from "../types.js";
 
 interface CardMatchExtras {
   code?: string;
@@ -46,8 +46,6 @@ export function scoreCard(text: unknown, card: ModelCard): number {
     const p = phrase.trim().toLowerCase();
     if (p.length >= 4 && hay.includes(p)) score += 4;
   }
-  const capability = card.capability;
-  if (capability?.ranked) score += scoreCapability(text, capability);
   return score;
 }
 
@@ -71,41 +69,26 @@ export function classifyTask(text: unknown): TaskDimensions {
   };
 }
 
-function scoreCapability(text: unknown, capability: CardCapabilityEvidence): number {
-  const task = classifyTask(text);
-  const total = task.coding + task.agentic + task.intelligence + task.cost + task.speed;
-  if (total === 0) return 0;
-  const relative = capability.relative || {};
-  const metric = (value: number | null, rank: number | undefined) => rank ?? (value == null ? 0 : Math.max(0, Math.min(1, value / 100)));
-  const score =
-    task.coding * metric(capability.coding_index, relative.coding) +
-    task.agentic * metric(capability.agentic_index, relative.agentic) +
-    task.intelligence * metric(capability.intelligence_index, relative.intelligence) +
-    task.cost * (relative.cost_efficiency || 0) +
-    task.speed * (((relative.throughput || 0) + (relative.latency || 0)) / 2);
-  return Math.round(score * 100);
-}
-
 /**
  * Pick exactly one configured card. Ties are resolved deterministically so
  * runtime routing never opens a human model selector.
  */
 export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: string; score: number; card: ModelCard } {
-  const ranked = rankModelCards(text, cards);
-  const eligible = ranked.map((item) => item.card);
+  const ordered = orderModelCards(text, cards);
+  const eligible = ordered.map((item) => item.card);
   if (eligible.length === 0) {
     throw new CardMatchError(
       "no enabled CLI Coding models are configured. Run `baton config`.",
       { code: "NO_CARDS" },
     );
   }
-  const best = ranked[0];
+  const best = ordered[0];
   if (!best) throw new CardMatchError("no configured CLI model matched", { code: "NO_CARD_MATCH" });
   return { model_id: best.card.id, score: best.score, card: best.card };
 }
 
 /** Deterministic automatic ordering over the configured candidate set. */
-export function rankModelCards(text: unknown, cards: ModelCard[]): Array<{ card: ModelCard; score: number }> {
+export function orderModelCards(text: unknown, cards: ModelCard[]): Array<{ card: ModelCard; score: number }> {
   return (cards || [])
     .filter((card) => card.executable !== false)
     .map((card) => ({ card, score: scoreCard(text, card) }))

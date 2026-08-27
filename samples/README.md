@@ -1,155 +1,61 @@
-# Baton automatic-routing samples
+# Adapter manifest sample
 
-These samples validate the same read-only incident audit through two paths, with no runtime model picker or confirmation step:
+`manifest-example/` is a small external adapter package. It demonstrates the
+public SDK boundary without embedding a real CLI, account, or model catalog.
+Baton discovers the package from `adapter.json`; the package supplies
+the catalog command and a runtime skill.
 
-- `standalone`: the workspace has no `openspec/`; the director derives five bounded units from an ordinary request.
-- `openspec`: the workspace contains a strict-valid OpenSpec change with five stable tasks; Baton consumes those tasks and writes conclusions back by task number.
-
-Both paths fan out five independent tickets at once (four concrete evidence lanes plus one deliberative priority lane). None waits for another worker. That parallel dispatch is the speed case versus one sequential parent agent. Token use is a separate question: five workers still pay five contexts.
-
-Neither request names Baton, subagents, dispatch, models, routes, or OpenSpec. If delegation only happens after adding such words, automatic triggering has failed.
-
-## Prerequisites
-
-From the OpenBaton checkout:
+## Inspect the package
 
 ```bash
-bun run test
-bun run build
-bun link
-baton update
-baton config
-baton models
-baton cards
+sed -n '1,240p' samples/manifest-example/adapter.json
+sed -n '1,240p' samples/manifest-example/runtime/SKILL.md
 ```
 
-`baton config` must enable the invoking CLI profile, assign optional `runner` and `longctx` labels, and choose the models subagents may call. The catalog shown by the command comes directly from that CLI's own model source; Baton does not obtain or augment it from OpenCodex. `runner` and `longctx` are labels only and do not assert model context-window capabilities.
+The manifest covers the SDK schema, stable adapter id, package metadata,
+catalog command/protocol, invocation signal, opaque native execution-handle
+kind, runtime-skill paths, and quota/backpressure facts. The catalog command
+returns a normalized JSON response with one adapter id and exact model
+metadata.
 
-When running from Codex, configure `[cli.codex]`. From Cursor, configure `[cli.cursor]`. From Grok, configure `[cli.grok]`. Verification resolves the invoking host dynamically from runtime signals, `BATON_HOST`, or `--host`; there is no configured default CLI.
+## Isolated discovery
 
-`bun link` is required only when testing this source checkout. A normally installed package already provides `baton` on `PATH`.
-
-## Automatic routing contract
-
-The ordinary business request is decomposed once. Baton records an auditable proposal and immediately chooses a model, reasoning effort, and available speed signal from the enabled CLI candidate set. It then creates tickets without rendering a selector or waiting for user confirmation.
-
-Every automatic choice must satisfy all of the following:
-
-- the exact base model was returned by the invoking CLI catalog and is present in that host's enabled `coding_models`;
-- when the catalog reports reasoning efforts or service tiers, the chosen values must come from that model's catalog entry;
-- `confirmed_by=baton-recommendation` and `changed_by_user=false` are persisted as audit evidence;
-- a zero benchmark score, score tie, or missing Artificial Analysis record does not open a manual-choice flow;
-- no hard-coded family ban removes a configured model that the invoking CLI returned and the user enabled.
-
-## Standalone path
+Build the checkout first, then point discovery at the sample package:
 
 ```bash
-bun samples/bootstrap.mjs standalone
+npm run build
+BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
+  baton init
+BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
+  baton config --cli sample-adapter --enable
+BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
+  baton models refresh --host sample-adapter
 ```
 
-Use the printed workspace in the current host task and pass the printed request to the trigger unchanged. After it finishes:
+Use a temporary home for a repeatable run:
 
 ```bash
-bun samples/verify.mjs <workspace> standalone
+sample_home="$(mktemp -d)"
+HOME="$sample_home" BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
+  baton config --cli sample-adapter --enable
 ```
 
-The verifier resolves the invoking host automatically. Override with `BATON_HOST=cursor` or `bun samples/verify.mjs --host cursor <workspace> standalone` when needed.
+The result should contain only the selected `cli.sample-adapter` profile and
+the catalog returned by its own command. No core source change is needed to
+add another adapter.
 
-Expected properties:
+## Acceptance shape
 
-- no `openspec/` exists;
-- one five-unit proposal is automatically approved and creates five standalone tickets;
-- every ticket uses the proposal's recommended model and carries immutable automatic-selection evidence;
-- four tickets are `concrete/terminal-only` and one is `deliberative/checkpointed`;
-- the five tickets are reserved together and may run in parallel; none is blocked on another unit's conclusion;
-- the deliberative ticket reports at least one progress checkpoint;
-- all tickets have a real agent id, one attempt, terminal completion, close, and slot release;
-- no workspace file changes.
+An adapter release is ready when it passes SDK conformance, isolated package
+checks, manifest discovery, live catalog checks, exact native child execution,
+invalid-model rejection, ticket lifecycle, and cleanup audits. The native
+identity handoff must include `session_id`, `ticket_id`, `session_uid`,
+`session_ordinal`, and the adapter's opaque execution handle.
 
-## OpenSpec path
+On explicit quota exhaustion, a clean write baseline permits an immutable
+successor with a new per-session ordinal and Receipt. It records
+`successor_from_ticket_id` and `successor_reason`, retains host/scope/session
+and quota lineage, and reruns all routing checks. The original ticket remains
+unchanged.
 
-```bash
-bun samples/bootstrap.mjs openspec
-```
-
-Use the printed workspace in the current Codex task and pass the printed request to the trigger unchanged. After it finishes:
-
-```bash
-bun samples/verify.mjs <workspace> openspec
-```
-
-Expected properties:
-
-- five tickets use `source=openspec` and stable task numbers `1.1` through `2.1`;
-- one five-unit proposal is automatically approved without a selector;
-- completion checks each task and adds one child `conclusion:` line;
-- `openspec validate incident-audit --strict` passes;
-- only `openspec/changes/incident-audit/tasks.md` changes in the workspace;
-- the same lifecycle and automatic-routing assertions as the standalone path pass.
-
-## Paired gate
-
-After running both fresh workspaces, verify that each request independently used the automatic recommendation path:
-
-```bash
-bun samples/verify-bundle.mjs <standalone-workspace> <openspec-workspace>
-```
-
-Business answers are listed in [EXPECTED.md](EXPECTED.md). Read them after the run, not before asking Codex to perform the audit.
-
-## Codex activation smoke (no verifier changes)
-
-This optional smoke example exercises the host contract in an existing workspace;
-it does not change either sample verifier. Run the exact standalone commands from
-the trusted director, then restore activation:
-
-```bash
-baton disable curproject --host codex
-baton status --host codex --json # idle: bypass, neutral_bypass=true
-baton enable curproject --host codex
-baton status --host codex --json # director/CLI state is evaluated explicitly
-```
-
-If a `reserved`, `dispatching`, or `running` ticket exists, status must show
-`draining` until terminal release. Invalid activation/lifecycle state must fail
-closed. Baton has no runtime hooks; the director owns activation, orchestration,
-and the safety boundary.
-
-## Probe E2E path (post-adapter coding)
-
-Use after `/add-cli-to-baton` to verify parallel implement tasks, serial integration, and OpenSpec apply in an isolated git worktree.
-
-The fixed template lives in `samples/probe-e2e/` (including its embedded `openspec/` tree). It is **not** stored in the repo-root `openspec/` directory, which is gitignored.
-
-```bash
-bun samples/bootstrap-probe.mjs --host cursor --worktree ../openbaton-probe-cursor
-```
-
-Open a fresh chat in the printed worktree and run:
-
-```text
-/openspec-apply-change probe-e2e
-```
-
-Pass `REQUEST.txt` unchanged. After apply:
-
-```bash
-bun samples/verify-probe.mjs --host cursor ../openbaton-probe-cursor
-```
-
-Expected properties:
-
-- change `probe-e2e` with three tasks: `1.1`, `1.2` parallel, then `2.1` serial;
-- workers create `src/utils/format.js`, `src/utils/validate.js`, and `src/index.js`;
-- `bun verify-local.mjs` exits zero;
-- OpenSpec strict validation passes;
-- Baton tickets use automatic recommendation evidence and release without leak.
-
-Cleanup after PASS:
-
-```bash
-git worktree remove ../openbaton-probe-cursor
-git branch -D probe/cursor-e2e
-```
-
-Orchestration skill: `/verify-cli-baton-e2e <target>`.
+See [EXPECTED.md](EXPECTED.md) for the concise acceptance checklist.

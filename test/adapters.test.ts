@@ -1,111 +1,30 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  CLI_ADAPTERS,
-  CLI_IDS,
-  getCliAdapter,
-  listCliAdapters,
-} from "../src/adapters/index.js";
-import {
-  cliProfileForHost,
-  configuredCodingModelsForHost,
-  emptyConfig,
-  enabledForHost,
-  hostMaxConcurrent,
-  normalizeConfig,
-} from "../src/lib/config.js";
-import { HOST_IDS, HOST_SKILL_REL } from "../src/lib/hosts.js";
+import { discoverAdapterManifests } from "../src/adapters/sdk.js";
+import { getCliAdapter, listCliAdapters } from "../src/adapters/registry.js";
+import { fixtureAdapterEnv, FIXTURE_ALPHA, FIXTURE_BETA } from "./home.js";
 
-describe("CLI adapter contract and registry", () => {
-  it("keeps one adapter contract for every registered CLI", () => {
-    assert.deepEqual(CLI_IDS, ["codex", "grok", "cursor", "claude"]);
-    assert.strictEqual(listCliAdapters(), CLI_ADAPTERS);
-
-    for (const adapter of CLI_ADAPTERS) {
-      assert.equal(adapter.id, adapter.host.id);
-      assert.ok(adapter.host.skillPath.endsWith("SKILL.md"));
-      assert.ok(["task_name", "agent_id", "session_id", "task_id", "opaque"].includes(adapter.host.executionHandleKind));
-      assert.equal(typeof adapter.resolveCommand, "function");
-      assert.equal(typeof adapter.discoverModels, "function");
-      assert.strictEqual(getCliAdapter(adapter.id), adapter);
-    }
+describe("manifest adapter registry", () => {
+  it("discovers alpha/beta deterministically", () => {
+    const env = fixtureAdapterEnv();
+    assert.deepEqual(discoverAdapterManifests(env).map((m) => m.adapter.id), ["alpha", "beta"]);
+    const adapters = listCliAdapters(env);
+    assert.deepEqual(adapters.map((a) => a.id), ["alpha", "beta"]);
+    assert.equal(adapters[0].host.executionHandleKind, "alpha-task");
+    assert.equal(adapters[1].host.defaultMaxConcurrent, 5);
+    assert.strictEqual(getCliAdapter("alpha", env).id, "alpha");
   });
-
-  it("derives host metadata from the same registry", () => {
-    assert.deepEqual(HOST_IDS, CLI_ADAPTERS.map((adapter) => adapter.host.id));
-    assert.deepEqual(
-      HOST_SKILL_REL,
-      Object.fromEntries(CLI_ADAPTERS.map((adapter) => [adapter.host.id, adapter.host.skillPath])),
-    );
-    assert.equal(hostMaxConcurrent("codex"), 4);
-    assert.equal(hostMaxConcurrent("grok", { GROK_MAX_CONCURRENT_SUBAGENTS: "5" }), 5);
-    assert.equal(hostMaxConcurrent("grok", { GROK_MAX_CONCURRENT_SUBAGENTS: "not-a-number" }), 8);
-    assert.equal(hostMaxConcurrent("cursor"), 4);
-    assert.equal(hostMaxConcurrent("cursor", { CURSOR_MAX_CONCURRENT_SUBAGENTS: "3" }), 3);
-    assert.equal(hostMaxConcurrent("claude", {}), 20);
-    assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "3" }), 3);
-    assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "0" }), 20);
-    assert.equal(hostMaxConcurrent("claude", { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "nope" }), 20);
-    assert.equal(getCliAdapter("codex").host.executionHandleKind, "task_name");
-    assert.equal(getCliAdapter("claude").host.executionHandleKind, "agent_id");
-    assert.equal(getCliAdapter("grok").host.executionHandleKind, "agent_id");
-    assert.equal(getCliAdapter("cursor").host.executionHandleKind, "agent_id");
+  it("rejects duplicate and malformed manifests", () => {
+    assert.throws(() => discoverAdapterManifests({ ...fixtureAdapterEnv(), BATON_ADAPTER_PATHS: [FIXTURE_ALPHA, FIXTURE_ALPHA].join(":" ) }), /ADAPTER_DUPLICATE/);
+    assert.throws(() => discoverAdapterManifests({ ...fixtureAdapterEnv(), BATON_ADAPTER_PATHS: FIXTURE_BETA + "/missing" }), /ADAPTER_MANIFEST_INVALID/);
   });
-
-  it("keeps unconfigured adapters absent and resolves missing profiles as disabled", () => {
-    const empty = emptyConfig();
-    assert.deepEqual(Object.keys(empty.cli), []);
-    assert.deepEqual(cliProfileForHost(empty, "codex"), {
-      enabled: false,
-      runner: "",
-      longctx: "",
-      coding_models: [],
-    });
-
-    const unselected = normalizeConfig({
-      ops: {
-        runner: { route: "legacy-runner" },
-        longctx: { route: "legacy-longctx" },
-      },
-      cli: {
-        active: "grok",
-        grok: { enabled: true, runner: "grok-4.5", coding_models: ["grok-4.5"] },
-      },
-    });
-    assert.equal(Object.hasOwn(unselected.cli, "active"), false);
-    assert.equal(unselected.cli.grok.enabled, true);
-    assert.equal(unselected.cli.grok.longctx, "");
-    assert.equal(unselected.cli.codex, undefined);
-    assert.equal(unselected.cli.claude, undefined);
-    assert.equal(cliProfileForHost(unselected, "claude").enabled, false);
-  });
-
-  it("keeps a Claude profile independent of the Codex and Grok profiles", () => {
-    const config = normalizeConfig({
-      cli: {
-        active: "codex",
-        codex: { enabled: true, runner: "gpt-5.4", coding_models: ["gpt-5.4"] },
-        grok: { enabled: true, runner: "grok-4.5", coding_models: ["grok-4.5"] },
-        claude: { enabled: false, runner: "", longctx: "", coding_models: [] },
-      },
-    });
-    assert.equal(Object.hasOwn(config.cli, "active"), false);
-    // A disabled host must fail closed rather than borrow another profile.
-    assert.deepEqual(configuredCodingModelsForHost(config, "claude"), []);
-    assert.equal(enabledForHost(config, "claude"), false);
-    assert.deepEqual(cliProfileForHost(config, "claude").coding_models, []);
-    assert.deepEqual(configuredCodingModelsForHost(config, "codex"), ["gpt-5.4"]);
-
-    const enabled = normalizeConfig({
-      cli: {
-        active: "codex",
-        codex: { enabled: true, runner: "gpt-5.4", coding_models: ["gpt-5.4"] },
-        claude: { enabled: true, runner: "claude-sonnet-5", longctx: "claude-opus-5[1m]", coding_models: ["claude-sonnet-5", "claude-opus-5[1m]"] },
-      },
-    });
-    assert.equal(Object.hasOwn(enabled.cli, "active"), false);
-    assert.deepEqual(configuredCodingModelsForHost(enabled, "claude"), ["claude-sonnet-5", "claude-opus-5[1m]"]);
-    // Enabling Claude must not alter another host's profile.
-    assert.deepEqual(configuredCodingModelsForHost(enabled, "codex"), ["gpt-5.4"]);
+  it("runs catalogs independently with exact metadata", async () => {
+    const env = fixtureAdapterEnv();
+    const alpha = await getCliAdapter("alpha", env).discoverModels({ env });
+    const beta = await getCliAdapter("beta", env).discoverModels({ env });
+    assert.equal(alpha.adapter_id, "alpha");
+    assert.equal(alpha.models[0].id, "alpha-model");
+    assert.equal(beta.adapter_id, "beta");
+    assert.equal(beta.models[0].service_tiers[0].id, "standard");
   });
 });

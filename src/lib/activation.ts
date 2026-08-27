@@ -54,9 +54,9 @@ function invalid(message: string, code = "ACTIVATION_INVALID"): Error {
   return error;
 }
 
-function hostValue(host: string | undefined): CliId {
+function hostValue(host: string | undefined, env: NodeJS.ProcessEnv = process.env): CliId {
   try {
-    return parseCliId(String(host || ""));
+    return parseCliId(String(host || ""), env);
   } catch {
     throw invalid(`invalid activation host: ${host || "<empty>"}`, "HOST_REQUIRED");
   }
@@ -99,7 +99,7 @@ function projectEnabled(cwd: string, host: CliId, env?: NodeJS.ProcessEnv): bool
 }
 
 export function resolveActivation(cwd: string, { env = process.env, host }: ActivationOptions = {}): ActivationState {
-  const selectedHost = hostValue(host);
+  const selectedHost = hostValue(host, env);
   const projectPath = projectSettingsPath(cwd, env);
   try {
     const global = globalEnabled(selectedHost, env);
@@ -162,9 +162,6 @@ function writeGlobalEnabled(cwd: string, host: CliId, enabled: boolean, env?: No
   if (!cli || !profile || typeof profile.enabled !== "boolean") {
     throw invalid(`global activation profile is missing or malformed for ${host}`);
   }
-  // Activation is not the config-schema migration boundary. Mutate only the
-  // requested raw field so a legacy subagent_models array survives unchanged
-  // until a successful `baton config` explicitly writes coding_models.
   profile.enabled = enabled;
   cli[host] = profile;
   raw.cli = cli;
@@ -217,7 +214,7 @@ export function listDrainingTickets(
   host: string,
   { scope = "all", env = process.env }: { scope?: ActivationScope; env?: NodeJS.ProcessEnv } = {},
 ): DrainingTicket[] {
-  const selectedHost = hostValue(host);
+  const selectedHost = hostValue(host, env);
   if (scope === "curproject") {
     return scanSpawnDirectory(spawnsDir(cwd, env), path.basename(path.dirname(path.dirname(spawnsDir(cwd, env)))), selectedHost);
   }
@@ -343,7 +340,15 @@ export function runActivation(args: string[], { cwd, stdout, env = process.env }
   if ((action !== "enable" && action !== "disable") || (scope !== "all" && scope !== "curproject")) {
     throw invalid("usage: baton enable|disable all|curproject --host HOST [--json]", "ACTIVATION_USAGE");
   }
-  const host = hostValue(flagValue(args, "--host"));
+  for (let index = 2; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") continue;
+    if (arg !== "--host") throw invalid(`unknown option: ${arg}`, "ACTIVATION_USAGE");
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) throw invalid("--host requires a value", "ACTIVATION_USAGE");
+    index += 1;
+  }
+  const host = hostValue(flagValue(args, "--host"), env);
   const json = args.includes("--json");
   const result = withActivationLock(cwd, env, () => {
     const before = resolveActivation(cwd, { host, env });

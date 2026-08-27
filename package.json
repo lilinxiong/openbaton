@@ -1,10 +1,16 @@
 {
   "name": "@zhouliuya/openbaton",
   "version": "0.2.0",
-  "description": "CLI-neutral director for Codex, Grok, Cursor, and Claude Code: automatic model routing, native subagents, mechanical ops, and a clean main context. Standalone; OpenSpec optional.",
+  "description": "Manifest-driven, CLI-neutral scheduler with a public adapter SDK, native execution lifecycle, and scoped ticket orchestration.",
   "type": "module",
   "bin": {
     "baton": "dist/bin/baton.js"
+  },
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./adapters": "./dist/src/adapters/sdk.js",
+    "./adapters/sdk": "./dist/src/adapters/sdk.js",
+    "./package.json": "./package.json"
   },
   "engines": {
     "node": ">=22.5"
@@ -26,15 +32,13 @@
     "build": "npm run clean && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/bin/baton.js',0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && bun test --timeout 30000 test/*.test.ts",
-    "compare-ops": "bun scripts/compare-mechanical-ops.ts",
-    "compare-samples": "bun scripts/compare-samples.ts",
     "baton": "bun bin/baton.ts",
     "prepack": "npm run build"
   },
   "files": [
+    "adapters",
     "dist",
-    "data",
-    "docs/data-sources",
+    "docs",
     "samples",
     "templates",
     "SKILL.md",
@@ -46,8 +50,10 @@
     "baton",
     "openbaton",
     "director",
-    "openspec",
-    "multi-model"
+    "adapter-sdk",
+    "scheduling",
+    "native-execution",
+    "task-orchestration"
   ],
   "license": "MIT",
   "dependencies": {},

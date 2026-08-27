@@ -143,11 +143,11 @@ describe("incremental Git record consumers", () => {
   it("matches refs filtering while excluding only the internal namespace", async () => {
     const source = bytes(
       "refs/heads/main\0abc123\n"
-      + "refs/codex/turn-diffs/turn-1\0def456\n"
+      + "refs/baton/turn-diffs/turn-1\0def456\n"
       + "refs/tags/release\0fedcba\n"
-      + "refs/codex/turn-diffs-extra/keep\0123456\n",
+      + "refs/baton/turn-diffs-extra/keep\0123456\n",
     );
-    const expected = source.toString("utf8").split("\n").filter(Boolean).filter((entry) => !entry.startsWith("refs/codex/turn-diffs/"));
+    const expected = source.toString("utf8").split("\n").filter(Boolean).filter((entry) => !entry.startsWith("refs/baton/turn-diffs/"));
     await forEachSplit(source, async (chunks) => {
       assert.deepEqual(await consumeRefRecords(chunks), expected);
     });

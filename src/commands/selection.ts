@@ -1,5 +1,4 @@
 import { loadConfig } from "../lib/config.js";
-import { parseHostId } from "../lib/hosts.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
@@ -11,14 +10,12 @@ import { type SafetyOperation } from "../lib/safety.js";
 import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "../lib/ticket-materialization.js";
 import { loadTasksFromChangeDir } from "../lib/openspec.js";
 import {
-  readSelectionProposal,
   selectionSourceFingerprint,
   writeSelectionProposal,
   type SelectionCandidate,
   type SelectionProposal,
 } from "../lib/selection.js";
-import type { SelectionQuotaPool } from "../lib/quota-pools.js";
-import type { ModelCard, ModelSelectionApproval, WritableLike } from "../types.js";
+import type { ModelCard, ModelSelectionApproval } from "../types.js";
 
 interface ApprovalContext {
   confirmation_id: string;
@@ -339,97 +336,4 @@ export async function approveRecommendedSelection({
     ? await approveStandalone(cwd, proposal, cards, env)
     : await approveOpenSpec(cwd, proposal, cards, env);
   return finalizeSelectionApproval(cwd, proposal, result, env);
-}
-
-export function runSelection(args: string[], {
-  cwd,
-  stdout,
-  host,
-  env,
-}: {
-  cwd: string;
-  stdout: WritableLike;
-  cards: ModelCard[];
-  env?: NodeJS.ProcessEnv;
-  host?: string;
-}): number {
-  const sub = args[0] || "show";
-  if (sub !== "show") {
-    throw new Error("MODEL_SELECTION_REMOVED: selector rendering and model approval are not supported; Baton routes automatically from cli.<id>.coding_models");
-  }
-  const id = args[1];
-  if (!id) throw new Error("usage: baton selection show PROPOSAL [--json]");
-  const proposal = readSelectionProposal(cwd, id, env);
-  if (host && proposal.host && parseHostId(host) !== parseHostId(proposal.host)) {
-    throw new Error(`HOST_MISMATCH: selection ${id} belongs to ${proposal.host}, not ${host}`);
-  }
-  if (args.includes("--json")) stdout.write(`${JSON.stringify(proposal, null, 2)}\n`);
-  else printSelectionProposal(stdout, proposal);
-  return 0;
-}
-
-function quotaText(pool: SelectionQuotaPool): string {
-  if (pool.status === "unknown") return `unknown (${pool.reason}; observed ${pool.observed_at})`;
-  if (pool.status === "exhausted") return "quota exhausted; candidates unavailable";
-  return pool.windows.map((item) => `${item.label} remaining ${item.remaining_percent.toFixed(2)}%${item.resets_at ? ` reset ${item.resets_at}` : ""}`).join("; ");
-}
-
-function tableCell(value: unknown): string {
-  return String(value ?? "").replaceAll("|", "\\|").replaceAll(/\r?\n/g, "<br>");
-}
-
-function tableRow(values: unknown[]): string {
-  return `| ${values.map(tableCell).join(" | ")} |\n`;
-}
-
-function metric(value: number | null): string {
-  return value == null ? "unknown" : String(value);
-}
-
-function evidenceText(candidate: SelectionCandidate): string {
-  if (!candidate.reference_only) return candidate.ranked ? "exact" : "unranked";
-  const source = candidate.reference_route_id
-    ? `${candidate.reference_route_id}@${candidate.reference_profile || "base"}`
-    : "unknown source";
-  return `reference only: ${candidate.reference_reasons.join("+")}; source=${source}; AA=${candidate.aa_slug || "unknown"}`;
-}
-
-function printCandidateTable(stdout: WritableLike, proposal: SelectionProposal, unit: SelectionProposal["units"][number]): void {
-  stdout.write("  candidates:\n");
-  for (const pool of proposal.quota_pools) {
-    const candidates = unit.candidates.filter((candidate) => candidate.quota_pool_id === pool.id && candidate.selectable);
-    if (!candidates.length) continue;
-    stdout.write(`\n  ${pool.label} [${pool.status}] — ${quotaText(pool)}\n\n`);
-    stdout.write(tableRow(["Candidate", "Recommended", "Effort", "Fast/tier", "Evidence", "Task score", "Strengths", "Callability"]));
-    stdout.write(tableRow(["---", "---", "---", "---", "---", "---:", "---", "---"]));
-    for (const candidate of candidates) {
-      stdout.write(tableRow([
-        candidate.model_id,
-        candidate.model_id === unit.recommended_model_id ? "yes" : "",
-        candidate.effective_reasoning_effort || "unknown",
-        candidate.speed_signals.length ? `${candidate.service_tier || "model"} via ${candidate.speed_signals.join("+")}` : "no",
-        evidenceText(candidate),
-        candidate.task_score ?? "unranked",
-        candidate.strengths,
-        `${candidate.selection_code}: ${candidate.selection_reason}`,
-      ]));
-    }
-  }
-}
-
-export function printSelectionProposal(stdout: WritableLike, proposal: SelectionProposal): void {
-  stdout.write(`automatic routing proposal ${proposal.id} [${proposal.status}]\n`);
-  stdout.write(`  CLI model catalog: ${proposal.catalog_fingerprint}\n`);
-  for (const unit of proposal.units) {
-    stdout.write(`\n${unit.key}: ${unit.description}\n`);
-    if (unit.director_local) {
-      stdout.write("  director-local\n");
-      continue;
-    }
-    stdout.write(`  selected recommendation: ${unit.recommended_model_id || "none"} (${unit.recommendation_reason})\n`);
-    stdout.write(`  target effort: ${unit.target_reasoning_effort} (${unit.complexity_reason})\n`);
-    stdout.write(`  estimated context: ${unit.estimated_context_tokens} tokens (${unit.context_estimate_reason})\n`);
-    printCandidateTable(stdout, proposal, unit);
-  }
-  stdout.write("\nThis command is audit-only. Baton does not expose a runtime model selector or approval action.\n");
 }

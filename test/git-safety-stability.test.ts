@@ -68,7 +68,7 @@ describe("stable Git safety observations", () => {
         case "reflog.count": raced.reflog.count += 1; break;
         case "reflog.checksum": raced.reflog.checksum = "f".repeat(64); break;
         case "stagedTree": raced.stagedTree = "f".repeat(40); break;
-        case "indexControl.algorithm": raced.indexControl.algorithm = "legacy-json-sorted-v1"; break;
+        case "indexControl.algorithm": raced.indexControl.algorithm = "obsolete-v1"; break;
         case "indexControl.checksum": raced.indexControl.checksum = "f".repeat(64); break;
         case "indexControl.entryCount": raced.indexControl.entryCount += 1; break;
       }

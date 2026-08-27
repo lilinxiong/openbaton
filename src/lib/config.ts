@@ -4,23 +4,11 @@ import path from "node:path";
 import type { CodedError, UnknownRecord } from "../types.js";
 import { parseToml, stringifyToml } from "./toml.js";
 import { configPath } from "./paths.js";
-import {
-  CLI_IDS,
-  getCliAdapter,
-  listCliAdapters,
-  type CliId,
-} from "../adapters/registry.js";
+import type { CliId } from "../adapters/registry.js";
 
 export const DEFAULT_MAX_CONCURRENT = 4;
-export const GROK_HOST_MAX_CONCURRENT = getCliAdapter("grok").host.defaultMaxConcurrent;
 export const DEFAULT_MAX_DEPTH = 1;
 export const CONFIG_SCHEMA_VERSION = 2;
-
-/** Adapter-declared host fact retained for diagnostics. */
-export function hostMaxConcurrent(cli: CliId, env: NodeJS.ProcessEnv = process.env): number {
-  const adapter = listCliAdapters().find((candidate) => candidate.id === cli);
-  return adapter ? adapter.host.maxConcurrent(env) : DEFAULT_MAX_CONCURRENT;
-}
 
 export interface DirectorSettings {
   max_concurrent: number;
@@ -33,7 +21,7 @@ export interface CliProfileSettings {
   longctx: string;
   /** Ordered Coding routes. Array order is the user's priority. */
   coding_models: string[];
-  /** CLI-reported values. Missing fields inherit the director fallback. */
+  /** CLI-reported values. Missing fields inherit director limits. */
   max_concurrent?: number;
   max_depth?: number;
 }
@@ -104,12 +92,7 @@ function normalizeCliProfile(value: unknown): CliProfileSettings {
   const profile = isUnknownRecord(value) ? value : {};
   const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
   const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
-  // The legacy field is intentionally read only at this persistence boundary.
-  // Once both fields exist, the current field is authoritative even when it is
-  // an empty array (an explicit user choice).
-  const codingModels = Object.hasOwn(profile, "coding_models")
-    ? stringList(profile.coding_models)
-    : stringList(profile.subagent_models);
+  const codingModels = stringList(profile.coding_models);
   const maxConcurrent = positiveInteger(profile.max_concurrent);
   const maxDepth = positiveInteger(profile.max_depth);
   return {
@@ -124,8 +107,6 @@ function normalizeCliProfile(value: unknown): CliProfileSettings {
 
 /**
  * Patch one raw host profile without normalizing the rest of the document.
- * Init/update use this for non-model fields while legacy model keys remain;
- * `baton config` stays the only boundary that emits `coding_models` globally.
  */
 export function patchRawCliProfile(
   cwd: string,
@@ -155,27 +136,13 @@ export function patchRawCliProfile(
   return file;
 }
 
-/**
- * Inspect raw config only to protect the legacy migration boundary. Ordinary
- * init/update must not rewrite this field; a successful `baton config` save is
- * the only operation that emits coding_models in its place.
- */
-export function hasLegacyCodingModels(cwd: string, options: ConfigEnvOptions = {}): boolean {
-  const file = configPath(cwd, { env: options.env });
-  if (!fs.existsSync(file)) return false;
-  const parsed = parseToml(fs.readFileSync(file, "utf8"));
-  const cli = isUnknownRecord(parsed.cli) ? parsed.cli : {};
-  return Object.values(cli).some((value) =>
-    isUnknownRecord(value) && Object.hasOwn(value, "subagent_models"));
-}
 
 function normalizeCli(value: unknown): CliSettings {
   const cli = isUnknownRecord(value) ? value : {};
   const profiles = {} as CliProfiles;
-  for (const adapter of listCliAdapters()) {
-    const rawProfile = cli[adapter.id];
+  for (const [id, rawProfile] of Object.entries(cli)) {
     if (!isUnknownRecord(rawProfile)) continue;
-    profiles[adapter.id] = normalizeCliProfile(rawProfile);
+    profiles[id] = normalizeCliProfile(rawProfile);
   }
   return profiles;
 }
@@ -185,29 +152,16 @@ export function cliProfileForHost(config: Pick<Config, "cli">, host: CliId): Cli
   return config.cli[host] || emptyCliProfile();
 }
 
-export function resolveCliHost(host: string): CliId {
-  const value = String(host || "").trim().toLowerCase();
-  if (!(CLI_IDS as readonly string[]).includes(value)) {
-    throw new Error(`invalid host: ${host || "<empty>"} (expected ${CLI_IDS.join("|")})`);
-  }
-  return value as CliId;
-}
-
 export function configuredCodingModelsForHost(config: Pick<Config, "cli">, host: CliId): string[] {
   const profile = cliProfileForHost(config, host);
   return profile.enabled ? [...profile.coding_models] : [];
 }
 
-export function enabledForHost(config: Pick<Config, "cli">, host: CliId): boolean {
-  return cliProfileForHost(config, host).enabled;
-}
-
 function serializeConfig(cfg: Config): UnknownRecord {
   const profiles: UnknownRecord = {};
-  for (const adapter of listCliAdapters()) {
-    const profile = cfg.cli[adapter.id];
+  for (const [id, profile] of Object.entries(cfg.cli)) {
     if (!profile) continue;
-    profiles[adapter.id] = {
+    profiles[id] = {
       enabled: profile.enabled,
       runner: profile.runner,
       longctx: profile.longctx,
@@ -258,11 +212,7 @@ export function saveConfig(cwd: string, cfg: unknown, options: ConfigEnvOptions 
   return file;
 }
 
-export function effectiveMaxConcurrent(cfg: Config): number {
-  return cfg.director.max_concurrent;
-}
-
-/** Use a CLI-reported override when present, otherwise the director fallback. */
+/** Use a CLI-reported override when present, otherwise director limits. */
 export function effectiveMaxConcurrentForHost(
   cfg: Config,
   host?: CliId,
@@ -272,7 +222,7 @@ export function effectiveMaxConcurrentForHost(
   return cfg.cli[host]?.max_concurrent ?? cfg.director.max_concurrent;
 }
 
-/** Host-specific depth when reported, otherwise the director fallback. */
+/** Host-specific depth when reported, otherwise director limits. */
 export function effectiveMaxDepthForHost(cfg: Config, host?: CliId): number {
   if (!host) return cfg.director.max_depth;
   return cfg.cli[host]?.max_depth ?? cfg.director.max_depth;

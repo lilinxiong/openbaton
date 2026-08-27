@@ -2,14 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
 import { installHostSkills, type HostId } from "../lib/hosts.js";
-import type { CliId } from "../adapters/contract.js";
-import { hasLegacyCodingModels, loadConfig, patchRawCliProfile, saveConfig } from "../lib/config.js";
+import { parseCliId, type CliId } from "../adapters/registry.js";
+import { loadConfig, saveConfig } from "../lib/config.js";
 import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
-import { cleanupLegacyHook } from "../lib/legacy-hook-cleanup.js";
+import { installBundledAdapters } from "../lib/adapter-install.js";
 
 export interface InitProjectOptions {
   force?: boolean;
-  cli?: CliId;
+  /** Optional adapter selected for profile initialization. Validated after
+   * bundled adapters have landed in the user's adapter namespace. */
+  cli?: CliId | string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -26,6 +28,13 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const created: string[] = [];
   const skipped: string[] = [];
   fs.mkdirSync(dir, { recursive: true });
+
+  // Adapter packages are part of the Baton distribution but are installed in
+  // the user's adapter namespace before host discovery resolves their hosts.
+  const adapters = installBundledAdapters(env);
+  created.push(...adapters.installed, ...adapters.updated);
+  skipped.push(...adapters.kept, ...adapters.conflicts);
+  const selectedCli = cli === undefined ? undefined : parseCliId(cli, env);
 
   const tmplRoot = packageRoot();
   const configTmpl = path.join(tmplRoot, "templates", "config.toml");
@@ -48,14 +57,13 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
     skipped.push(displayHomePath(destSkill, { cwd, env }));
   }
 
-  const hasLegacyModels = hasLegacyCodingModels(cwd, { env });
   const cfg = loadConfig(cwd, { env });
-  if (cli) {
+  if (selectedCli) {
     // Initializing a named host creates exactly that selected profile. Keep
     // any previously selected labels/limits, but never synthesize profiles
     // for the other registered CLIs or fill limits from host defaults.
-    const existing = cfg.cli[cli];
-    cfg.cli[cli] = {
+    const existing = cfg.cli[selectedCli];
+    cfg.cli[selectedCli] = {
       enabled: true,
       runner: existing?.runner || "",
       longctx: existing?.longctx || "",
@@ -64,30 +72,15 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
       ...(existing?.max_depth !== undefined ? { max_depth: existing.max_depth } : {}),
     };
   }
-  // An ordinary init must not silently perform the Coding model migration.
+  // An ordinary init must not silently rewrite the Coding model profile.
   // A selected host is an explicit config operation and may persist the
   // normalized profile; a fresh/forced config is also necessarily new.
-  if (!configExisted || (!hasLegacyModels && cli)) saveConfig(cwd, cfg, { env });
-  else if (hasLegacyModels && cli) {
-    const existed = Boolean(loadConfig(cwd, { env }).cli[cli]);
-    patchRawCliProfile(cwd, cli, existed
-      ? { enabled: true }
-      : {
-        enabled: true,
-        runner: "",
-        longctx: "",
-        coding_models: [],
-      }, { env });
-  }
+  if (!configExisted || selectedCli) saveConfig(cwd, cfg, { env });
 
   const hosts = installHostSkills(cwd, { force, env });
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
-  for (const host of ["codex", "claude", "grok"] as const) {
-    const action = cleanupLegacyHook(host, env);
-    if (action === "removed" || action === "updated") created.push(`${host} legacy hook cleanup: ${action}`);
-  }
-  writeInstallManifest(buildInstallManifest(cwd, hosts.tools, env), env);
+  writeInstallManifest(buildInstallManifest(cwd, hosts.tools, env, adapters.ownership), env);
 
   return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools };
 }

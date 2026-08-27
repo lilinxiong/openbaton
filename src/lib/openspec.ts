@@ -206,7 +206,7 @@ export function listChangeNames(cwd: string): string[] {
 }
 
 /**
- * Prefer the OpenSpec CLI for status. Fall back to artifact presence only.
+ * Use the OpenSpec CLI when available; otherwise report the local artifacts.
  * Never pretend baton is the status source of truth.
  */
 export function readOpenSpecStatus(

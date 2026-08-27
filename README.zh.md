@@ -1,373 +1,186 @@
 # baton
 
-<p align="center"><img src="assets/logo.png" width="160" alt="baton"></p>
+Baton 是 CLI 中立、由 manifest 驱动的调度与策略层。它让 director 对话
+保持清晰，从所选 adapter 的实时目录中自动选择模型，并通过原生子执行
+接口运行已授权的工作。
 
-面向 Codex、Grok、Cursor 与 Claude Code 的 CLI 中立 director：一个前台对话，自动选择模型与推理强度，使用原生 subagent，配置机械 ops，并保持主上下文干净。
+软件包需要 Node.js 22.5 或更高版本：
 
-Baton 可以独立工作；存在 OpenSpec 时也可以消费它的任务。
+```bash
+npm install -g @zhouliuya/openbaton
+baton init
+baton config --cli <adapter-id> --enable
+```
 
-    npm install -g @zhouliuya/openbaton
-    baton init
-    baton config
+## 源码 checkout
 
-需要 Node.js 22.5+。
-
-English: [README.md](README.md)
-
-## 从源码 checkout 安装
-
-Clone 本仓库后，把 checkout 链接到本机，并用仓库最新内容刷新全局 Baton 文件：
+在源码目录执行以下脚本，可以安装依赖、运行检查、构建、链接 `baton`，
+并刷新共享运行时文件：
 
 ```bash
 python3 scripts/update_local_baton.py
 ```
 
-脚本会安装依赖、跑测试、构建、执行 `bun link`，再运行 `baton update`，让全局 `baton` 指向本 checkout 的 `dist/bin/baton.js`。
-
-首次安装时，脚本成功后还需要初始化一次：
+只有明确接受省略检查时才使用 `--skip-tests`。源码目录中的日常命令为：
 
 ```bash
+bun install
+bun run baton -- <command> ...
+```
+
+## Public Adapter SDK
+
+Baton core 不内置目录。外部 adapter 软件包放在
+`~/.baton/adapters/<adapter-id>/`，或通过 `BATON_ADAPTER_PATHS` 指定目录，
+由其中的 `adapter.json` 被发现。adapter 负责可执行文件解析、实时模型
+目录、原生子执行和自身生命周期；Baton 只消费 SDK 的规范化结果。
+
+软件包从以下入口导出 SDK：
+
+```text
+@zhouliuya/openbaton/adapters
+@zhouliuya/openbaton/adapters/sdk
+```
+
+### Manifest
+
+manifest schema 为 `1`，字段固定且可审计：
+
+```json
+{
+  "schema": 1,
+  "adapter": {
+    "id": "sample-adapter",
+    "display_name": "Sample Adapter",
+    "package_name": "sample-adapter-package",
+    "package_version": "1.0.0",
+    "sdk_version": "1.0"
+  },
+  "catalog": {
+    "command": "catalog.js",
+    "args": [],
+    "protocol": "json",
+    "timeout_ms": 15000
+  },
+  "invocation": { "signal": "SAMPLE_ADAPTER_SESSION" },
+  "native": { "execution_handle_kind": "sample-native-task" },
+  "runtime_skill": {
+    "source": "runtime/SKILL.md",
+    "destination": ".baton/skills/sample-adapter/SKILL.md"
+  },
+  "quota": {
+    "max_concurrent": 4,
+    "max_depth": 1,
+    "backpressure": "defer"
+  }
+}
+```
+
+manifest 声明 adapter 标识、显示信息、软件包和 SDK 版本、目录命令与
+协议、调用环境信号、不透明的原生 handle 类型、运行时 skill 路径，以及
+adapter 报告的并发、深度和背压事实。路径必须是软件包内相对路径且不能
+越界；字段无效或 id 重复时停止发现。
+
+目录命令返回一个包含相同 `adapter_id`、可选版本和 `models` 数组的 JSON
+对象。每个模型的 `id`、显示名、描述、可见性、推理强度、模态、速度层、
+服务层和默认值都按原样保留；缺失的可选字段保持未知。Baton 不补造目录
+条目或执行选项。
+
+## 配置与自动路由
+
+`baton init` 发现 manifest，`baton config --cli <id>` 查询该 adapter 的
+实时目录。只有明确选择的 profile 会写入 `~/.baton/config.toml`：
+
+```toml
+[director]
+max_concurrent = 4
+max_depth = 1
+
+[cli.sample-adapter]
+enabled = true
+runner = "<model-id>"
+longctx = "<model-id>"
+coding_models = ["<model-id>", "<another-model-id>"]
+```
+
+`runner` 与 `longctx` 是路由标签；`coding_models` 是有序 allowlist，数组
+顺序就是 Coding 优先级。自动选择只使用该 allowlist、当前目录、任务形状、
+adapter 支持的推理选项、服务层信息、路由健康和容量事实。选择结果会写入
+proposal、ticket 与 Receipt，并在 dispatch 时再次按目录校验。
+
+执行阶段没有交互式模型选择。adapter、模型、推理选项、服务层、授权或
+分类无效时，在原生执行前停止；Baton 不越过启用的 profile，也不凭空添加
+模型选项。
+
+## Director、scope 与调度
+
+讨论和只读分析留在 director。已授权的实现单元与分类后的机械单元使用所
+选 adapter 的原生子执行接口。director 提供结构化执行类别；operation label
+只作为审计信息。
+
+创建写入 ticket 前，director 先做只读影响面与依赖分析，为每个 unit 记录
+精确路径和允许操作：`write`、`create`、`delete`、`rename`、`chmod`。Baton
+会在一次原子决策中校验全部 unit，包括 rename 两端、路径前缀重叠和已被活跃
+ticket 占用的 scope。未知 scope 或操作会在修改前停止。
+
+每次调度或补充容量时，Baton 计算 maximal safe ready frontier：所有依赖已就
+绪、scope 完整且两两不冲突、并且适合当前 adapter 物理容量的 unit。所有可用
+槽位都应填满；section 顺序只用于相同条件下的稳定排序。
+
+## Ticket 身份与生命周期
+
+所有会产生 ticket 的命令都要求 `BATON_SESSION_ID`。Baton 将其哈希为
+`session_uid`，并在该 session 内分配连续的 `session_ordinal`。ticket id
+包含不透明前缀、session uid 和 ordinal；id 是数据，不是路由信号。身份交接
+必须同时保留 `session_id`、`ticket_id` 和 adapter 返回的原生 execution handle。
+
+每张 ticket 都遵循以下流程：
+
+1. 用 `baton spawn` 或带 scope 的 `baton apply` 创建 ticket 与不可变 Receipt。
+2. reserve，取得精确 prompt、description、模型、选项、scope 和 reservation。
+3. 以新上下文调用 adapter 的原生子执行接口，并传入精确选择结果。
+4. 立即把不透明的原生 execution handle 与 session、ticket 身份绑定。
+5. 根据原生 activity 等待，按需记录简短进度，并记录一次 terminal result。
+6. release 后再补充容量。
+
+handle 类型由 adapter 定义。Baton 不从文本推断身份，也不把原生 handle 换成自行
+生成的标识。容量不足时保留同一 reservation、模型
+和 attempt，等槽位释放后继续。
+
+## 配额耗尽与 successor
+
+adapter 明确报告配额耗尽后，Baton 先保存可用性事实，并确认写入 ticket 的修改
+前 baseline 未变化。满足条件时，可从下一项 Coding 优先级创建不可变 successor。
+successor 获取该 session 的新 ordinal 和新 Receipt，记录
+`successor_from_ticket_id`、`successor_reason`，并保留原 session、adapter、
+scope、授权和配额 lineage；随后重新执行目录、选项、容量和 scope 校验。
+
+原 ticket 不会被改写成另一模型，配额也不会重置。若已经发生修改或 baseline
+无法核对，则停止并报告需要人工处理的 reconciliation，不创建 successor。
+
+## 仓库安全
+
+只读是默认模式。写入 ticket 携带路径/操作 allowlist 与由 parent 负责的仓库
+观察结果；worker 不执行 Git 操作。只有显式授权、独占、针对 parent 已暂存树的
+commit ticket 可以创建一次 commit，其余仓库操作都不属于 worker。
+
+Receipt、ticket 状态、目录快照和安装记录位于用户级 `~/.baton`；工作区文件
+仍由调用方负责。
+
+## 常用命令
+
+```text
 baton init
-baton config
+baton config --cli <adapter-id> --enable
+baton models refresh --host <adapter-id>
+baton models status --host <adapter-id>
+baton match "<work description>" --host <adapter-id>
+baton spawn "<request>" --host <adapter-id> --classification <class>
+baton apply <change> --host <adapter-id>
+baton dispatch next --host <adapter-id> --capacity <n> --json
+baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
 ```
 
-本地已有 Baton 时，同样运行该脚本即可按仓库最新代码重建并更新 skills 与配置默认值。Baton 不安装也不依赖运行时 hooks。
-
-若接受跳过测试、加快开发迭代：
-
-```bash
-python3 scripts/update_local_baton.py --skip-tests
-```
-
-在 Cursor 中也可以 clone 后直接运行 `install-local-baton` skill，流程相同。
-
-未 link 时，在 checkout 内日常命令：`bun install && bun run baton -- COMMAND`。
-
-## 这次改造
-
-Baton 不再绑定 OpenCodex。模型发现归 CLI adapter；当前实现的是 Codex、Grok、Cursor 与 Claude Code adapter：
-
-1. baton config 先让用户选择要配置的 CLI。
-2. 选择 Codex 后，Baton 启动 codex app-server，调用排除隐藏模型的 model/list。选择 Grok 后，Baton 运行 `grok models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。选择 Cursor 后，Baton 运行 `cursor-agent models`，只保留列出的 id（若 CLI 打出 JSON 就解析 JSON，否则解析 Available models 列表，忽略登录/散文行）。选择 Claude Code 后，Baton 通过 SDK 控制协议发出 `list_models` 请求，只保留每一行的 `resolvedModel` wire id；延迟解析的 `default` 别名行与 host 标记为不可选的行都会被排除。`claude models` 输出的是散文，不是目录。
-3. 所选 CLI picker 返回什么，配置界面就完整显示什么。
-4. 用户设置可选的 runner、longctx 标签，选择允许 subagent 调用的模型，并决定是否启用这个 CLI 配置。
-5. 之后 Baton 只在这个候选集合内自动匹配，不再出现运行时模型选择器，也不需要用户确认模型。
-
-Baton 从不通过 `grok -p`、`cursor-agent -p` 或 `claude -p` 执行任务。dispatch host id 为 `codex`、`grok`、`cursor` 或 `claude`。
-
-Claude Code 的原生 `Agent` 工具只接受模型别名，因此 Baton 把每张 ticket 的精确模型写进 agent 定义的 `model:` frontmatter，再用 `subagent_type` 选中它。该 host 的并发上限为 20 个子 agent（可用 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` 覆盖）。
-
-Baton 不查询 OpenCodex，不把硬编码目录拼进来，也不会因为某个 host tool 的说明里少了一个模型，就把它判为不支持。
-
-## 配置结构
-
-用户全局的 ~/.baton/config.toml 始终保留 director 兜底值，并且只保存 init/config
-时实际选择过的 CLI profile：
-
-    [director]
-    max_concurrent = 4
-    max_depth = 1
-
-`max_concurrent` 与 `max_depth` 分别兜底。CLI discovery 响应明确返回哪个值，
-Baton 才把哪个字段写入所选的 `[cli.<id>]`，该 host 使用这个真实返回值；未返回的
-字段不写入，继续使用 `[director]`。适配器默认值或环境变量不会伪装成 CLI 返回值落盘。
-
-    [cli.codex]
-    enabled = true
-    runner = "gpt-5.4-mini"
-    longctx = "gpt-5.5"
-    coding_models = [
-      "gpt-5.6-luna",
-      "gpt-5.4-mini",
-      "gpt-5.3-codex-spark",
-    ]
-
-runner、longctx 只是标签，不声明模型一定快、一定有长上下文，或一定具备某种 capability。两者看到的是同一份所选 CLI 返回的模型列表。
-
-`coding_models` 是明确的有序多选，数组顺序就是 Coding 优先级。runner 和
-longctx 是独立标签，不会自动插入或重排 Coding 数组。CLI 配置关闭时不提供候选。
-未选择的 CLI 不会在文件中生成占位 table。
-
-Guard 模式按 host 明确配置：单个 CLI 使用 `--guard-mode enforce|off`。
-Baton 没有运行时 hook 层。director 负责分类、依赖排序、原生 subagent 编排以及
-Receipt/Git 安全边界；host 集成只负责配置和 dispatch，不安装、不信任、也不使用
-任何 host hook 作为执行信号。
-
-也可以非交互配置：
-
-    baton config \
-      --cli codex|grok|cursor|claude \
-      --runner gpt-5.4-mini \
-      --longctx gpt-5.5 \
-      --coding-model gpt-5.3-codex-spark \
-      --coding-model gpt-5.6-luna \
-      --coding-model gpt-5.4-mini \
-      --guard-mode enforce \
-      --enable
-
-所选 CLI 的 picker 列表变化后，运行 baton models refresh。
-
-## Mini 与 Spark
-
-只要 Codex 的 model/list 返回 gpt-5.4-mini 或 gpt-5.3-codex-spark，Baton
-就会把它们展示出来，并允许写入 `coding_models`。
-
-迁移说明：旧安装可能含有 `subagent_models`。它只会在 schema 迁移边界被
-读取，并按原顺序写入 `coding_models`，之后不再写回旧字段。已移除的
-`--subagent-model` 会明确返回 `LEGACY_FLAG_REMOVED`，请改用重复的
-`--coding-model`。
-
-这里区分四层证据：
-
-- picker 可见：这个模型可以配置；
-- 进入 allowlist：Baton 可以自动选它；
-- dispatch：再次校验模型及 reasoning effort 仍存在于保存的 CLI catalog；
-- host-native 真正拒绝：这才是该次执行失败的证据。
-
-Baton 没有硬编码模型系列禁令。不能只因为某个 tool schema 或帮助文本没列 Mini/Spark，就提前标成 unsupported。
-
-## 自动匹配
-
-baton spawn 和 baton apply 不再让用户选模型。完成 host、effort、上下文、
-可用性和 activation 等硬门槛后，简单 implementation 选择第一个 eligible 的
-`coding_models`；复杂任务也严格沿配置顺序继续尝试。不会按 score 重排，选择
-原因和跳过路由诊断都会记录。Baton 自动决定：
-
-- 根据 work unit 和 CLI 模型描述选择已配置模型；
-- 根据任务复杂度，从 CLI 返回的 reasoning effort 中选择一个；
-- 任务强调快速时，结合 CLI 描述以及 speed/service-tier 元数据匹配 fast 模型或精确 service tier；
-- 使用可选的本地 capability 数据和近期 route health 做进一步排序。
-
-Artificial Analysis 数据只是可选证据。没有 benchmark 时保持 unranked，但不会因此排除一个 Codex 已返回且用户已配置的模型。
-
-显式 --model、--route、baton config model-selection、selector render 和用户模型确认都已移除。自动决策仍会写入 proposal、ticket 和 Delegation Receipt，便于审计。
-
-Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没返回的 effort 或 fast 参数，也不会原地改 ticket 或跨 host 静默换模型。只有明确 quota 证据且 mutation 尚未开始、baseline 仍干净时，才按后续 Coding 优先级创建可审计的 immutable successor，并重新执行全部硬门槛。
-
-## Director/worker 路由
-
-讨论和只读分析留在 director。所选 CLI profile 启用后，所有普通实现请求（包括很小的改动）都必须交给该 host 的原生 subagent，不能使用 tiny-edit 例外。profile 缺失/关闭或分类未决时必须 fail closed。已分类的机械工作在 route 为空或不可用时也不能退回 director 执行。OpenSpec 只减轻编排负担，不改变谁来写可执行任务；所有 host 使用同一规则。
-
-## 自动工作流契约
-
-只有在所选 CLI profile 已启用、且用户明确授权执行时，工作流才允许产生原生实现任务。director 必须先给每个可执行请求分类，并把结构化分类交给 Baton；Baton 只持久化由此产生的 ticket 和 Receipt，不另造或接管 DAG。讨论与只读分析留在 director；获得授权的实现节点交给当前 host 的原生 subagent。`mechanical` 分类走 `runner`（`long-context` 走 `longctx`），operation label 只作审计元数据，不得退化成固定 action 名匹配；commit/publish 仍由确定性的 Receipt/Git capability 门禁决定。缺少授权、profile 被关闭或分类未决时必须 fail closed。
-
-每次调度和补位时，Baton 都必须填满 maximal safe ready frontier：当前所有依赖已满足、范围完整、且能在所选 host 容量内安全共存的 ready unit。section 顺序只在这个 frontier 内作为稳定 tie-breaker，不是 dependency，不能让独立 ready unit 串行。只有依赖尚未完成或写入范围冲突，才可以让容量空置或串行化本来已 ready 的 unit。
-
-## 写入范围就绪条件
-
-创建或 dispatch 任何写 ticket 之前，director 必须先对该单元做一次只读的影响/依赖梳理。梳理结果必须解析受影响的依赖，并记录完整、精确的单元级写入路径集合及允许的操作。路径必须逐项明确；允许的操作只能来自 `write`、`create`、`delete`、`rename`、`chmod`。影响、依赖、路径或操作只要未知，分类就保持未决，不创建也不 dispatch implementation ticket。
-
-standalone 多单元请求必须为每个 unit 独立携带完整、精确的写入路径集合和允许操作；单 unit 的 `standalone` 形式也使用同一套 unit 级结构。OpenSpec apply 对每个 `--unit` 使用同样的 scope/operation 数据。Baton 在创建任何 ticket 前，以原子方式针对本次调用和当前已占用的写范围校验整份 proposal/dispatch：scope/operation 未知，或任意两组写范围冲突，就拒绝整个调用，不得产生部分 ticket、reservation、Receipt 或 native dispatch。rename 源/目标路径以及路径前缀重叠都算冲突。
-
-每次依赖完成或运行中的 slot 释放后，director 都必须重新计算 maximal safe ready frontier，并填满新可用的 slot。worker 如果发现未声明的路径或操作，必须在 mutation 前停止并返回 scope decision 给 director；不能先编辑，再依赖终态 retry 或 audit 追认。机械路由仍由结构化分类决定，operation label 只是 opaque 审计元数据，不能选择 route。
-
-## 执行生命周期
-
-Baton CLI 负责 ticket 与生命周期状态；只有所选 host（Codex、Grok、Cursor 或 Claude Code）调用原生 subagent 工具。
-
-1. baton spawn 或 baton apply 创建已自动路由的 ticket 和不可变 Receipt。
-2. host 用 baton dispatch next 预留任务。
-3. host 调用原生 subagent 工具（Codex `spawn_agent`、Grok `spawn_subagent`、Cursor `Task` 或 Claude Code `Agent`），原样传回 dispatch 返回的 `prompt`，工具支持时也原样传 `description`，并传精确模型；仅在 host 工具能表达时才传 reasoning effort 和 service tier。首行 JSON envelope 是 dispatch 审计数据，ticket id 不按前缀分类。Codex 的 `task_name` 是 attach/liveness/release 使用的 native execution handle，`agent_id` 仅是可选诊断字段。Grok 必须传 `spawn_subagent.model`，省略会继承 parent 模型。若 host 无法表达某个已选项，必须报告该执行选项不可用，不能静默声称已启用。
-4. host 绑定 agent id，记录活动和进度，并只写一个终态。
-5. host 关闭原生 agent，执行 dispatch release 后再从 FIFO 补位。
-
-逻辑任务不封顶；物理并发遵守当前 host 上限。AgentLimitReached 只把同一 ticket 延后，不消耗 attempt，也不换模型。轮询 timeout 不是 worker 失败；只有对应的原生 execution handle 被 probe 为 not_found 后，ticket 才能 timeout。
-
-默认只读。写任务必须带不可变路径和操作 allowlist，并通过 parent Git safety gate。已有的未提交改动会记入 baseline，worker 可以在 allowlist 上增量，不能改无关脏文件。唯一的 Git 例外是独占 commit-only ticket：它只消费 parent 已精确 staged 的 tree，允许创建一个受审计 commit，不能 stage、amend、切分支、rebase、tag 或 push。
-
-standalone 写入必须明确给出路径和操作：
-
-    baton spawn "实现迁移" --host HOST --classification implementation \
-      --write-path src/migration.ts --write-ops write,create
-
-standalone 多单元必须逐个 unit 声明 scope 和 operations。`--unit` 会选择后续
-的 `--write-path` 与 `--write-ops`；也可以使用等价的 `KEY=VALUE` assignment：
-
-    baton spawn "实现两项迁移" --host HOST --classification implementation \
-      --unit "db=更新 schema" --write-path db/schema.sql --write-ops write,create \
-      --unit "api=更新 endpoint" --write-path src/api.ts --write-ops write
-
-OpenSpec dispatch 前必须给每个 unit 声明 scope 和 operations；完整且互不相交的
-unit 填满 safe ready frontier，section 顺序只作 tie-breaker：
-
-    baton apply CHANGE --host HOST --dispatch \
-      --unit 1.1 --write-path src/migration.ts --write-ops write,create \
-      --unit 1.2 --write-path src/config.ts --write-ops write
-
-## Git safety snapshot 与 runtime 兼容边界
-
-写入和 commit-only ticket 都使用 fail-closed 的 Git safety snapshot。所有
-大小未知的 Git 输出都走 streaming：stdout 与 stderr 并行 drain，遵守
-backpressure，并在 Baton 接受事实前回收 child。该路径不使用 Node 或 Bun 的
-聚合 `maxBuffer`，所以合法输出超过原先 1 MiB 边界甚至超过 128 MiB 时，也不
-会仅因总大小而失败。Baton 只保留 Receipt 或 verdict 真正需要的紧凑事实；声明
-为小 scalar 的命令仍有明确的小上限，超过上限会报错，不能把 scalar 输出降级
-成 snapshot。partial、malformed、truncated、被中断或失败的 stream 都会丢弃，
-不能成为有效 baseline。
-
-Receipt schema v4 与公开 CLI syntax 不变。新的 write baseline 会记录：
-
-    index_control_algorithm = "git-index-control-framed-sha256-v2"
-    index_control_checksum = "<sha256>"
-    index_control_entry_count = <number>
-
-commit-only baseline 使用对应的 `staged_index_control_*` 字段。v2 fingerprint
-按 Git index 的 canonical 顺序，对每条记录编码原始 pathname bytes、pathname
-长度，以及仅屏蔽 Git 易变的 fsmonitor-valid bit（`0x80000000`）之后的语义
-control flags，最后追加 entry count。staged-tree fingerprint 仍然独立保存。
-因此 Node 与 Bun 的结果一致，parser 的额外内存只随单条最大记录增长，不随完整
-`ls-files --debug -z` 输出增长。
-
-采集与元数据失败共用一个结构化 safety-failure contract，并保持稳定含义。
-其中 `GIT_*` 采集码属于 `GitSafetyError`；`INDEX_CONTROL_*` 是独立的
-Receipt/index 元数据校验码，不属于 `GitSafetyError`：
-
-- `GIT_SAFETY_COMMAND_FAILED`：Git 无法 spawn、非零退出、被 signal 终止，或
-  stream 消费阶段出错。
-- `GIT_SAFETY_SCALAR_LIMIT`：声明为小 scalar 的命令超过明确的 scalar 契约。
-- `GIT_SAFETY_STREAM_MALFORMED`：stream record malformed 或 truncated，包括
-  index entry 没有提供终止 flags 字段。
-- `INDEX_CONTROL_ALGORITHM_UNSUPPORTED`：Receipt 指定了 Baton 不支持的算法。
-- `INDEX_CONTROL_BASELINE_INVALID`：v2 元数据不完整，或 checksum/entry count
-  无效。
-- `GIT_BASELINE_RACED` 与 `GIT_AUDIT_RACED`：完整 safety observation 在采集
-  期间发生变化，完成一次整体验证重试后仍未稳定。
-
-采集失败发生在新 Receipt 或 worker 持久化之前，因此不会留下成功的 Receipt 或
-spawn。terminal audit 只有在 stable observation 成功后才能记录成功 verdict。
-已有的 public safety verdict mapping 保持不变；采集失败不能伪装成
-write-scope mutation。
-
-没有算法字段的旧 schema-v4 Receipt 按 `legacy-json-sorted-v1` 解释。新 runtime
-仍以 streaming 方式读取 Git，但只保留复现既有 sort、JSON 与 SHA-256 checksum
-所需的 pathname 和 masked-flag 紧凑记录。新 Receipt 一律使用 v2。未知算法、缺少
-v2 必填字段、checksum 无效或 entry count 不一致都必须 fail closed；Baton 不猜测，
-也不静默 fallback。因此新 runtime 可以完成旧 runtime 创建的 ticket，而旧 runtime
-不能安全审计 v2 Receipt；既有 immutable Receipt 不需要重写。
-
-将 Baton runtime 回滚到旧版本前，必须 drain 所有 active v2 write 与 commit-only
-ticket：每张 ticket 都要先进入 terminal（适用时显式 close），然后 release，再进行 rollback。
-不能跨越 active v2 ticket 回滚、绕过 safety check，或改写 Receipt 来迎合旧 runtime。
-
-## 机械 ops
-
-director 提供结构化执行分类，Baton 据此选择 `runner` 或 `longctx`；operation label 只保留作审计，不能选择 profile。分类机械工作遇到空/不可用 route 时必须 fail closed。机械 worker 只执行 director 指定的 operation，不从 prose 推断命令，也不探索。commit-only 还必须有显式 commit capability 和 Receipt/Git 门禁；单独的 `operation = "git-commit"` 不具备权限。
-
-Benchmark：同一条本地命令，走 Baton ticket（spawn、bind、跑命令、complete/release）vs 不用 Baton（直接跑）。不拉起 host 模型。默认在本仓库跑，跳过 `git commit`；`--fixture` 用临时仓库并包含 commit。
-
-    bun scripts/compare-mechanical-ops.ts
-    bun scripts/compare-mechanical-ops.ts --fixture
-    bun scripts/compare-mechanical-ops.ts --json
-
-本仓库，2026-08-22。`cli=grok` `ok=true`。6 张票一次打开：**221 毫秒**。
-
-`test` 在本仓库是 `bun run test`：类型检查再加整包单测，所以**命令本身大约 12 秒**，跟用不用 Baton 无关。
-
-用 Baton vs 不用。**Baton 外壳**是绑定 + 收尾（Baton 真正多出来的）。**命令两次之差**是同一条命令测了两遍，不是 Baton：
-
-| 任务 | 走哪条路 | 不用 Baton（毫秒） | 走 Baton 时的命令（毫秒） | Baton 外壳（毫秒） | 命令两次之差（毫秒） |
-| --- | --- | ---: | ---: | ---: | ---: |
-| 测试 | runner/test | 12292.3 | 13318.2 | 50.8 | 1025.9 |
-| 构建 | runner/build | 188.9 | 203.0 | 55.1 | 14.1 |
-| 类型检查 | runner/typecheck | 96.7 | 111.0 | 61.5 | 14.3 |
-| 搜索 | longctx/search | 5.7 | 5.8 | 53.9 | 0.1 |
-| git 摘要 | longctx/git-summarize | 7.3 | 8.0 | 51.8 | 0.7 |
-| 普通任务 | subagent | 29.8 | 31.8 | 52.0 | 2.0 |
-| 提交 | 跳过 | — | — | — | — |
-
-各阶段（毫秒）：
-
-| 任务 | 绑定（毫秒） | 跑命令（毫秒） | 收尾（毫秒） |
-| --- | ---: | ---: | ---: |
-| 测试 | 18.7 | 13318.2 | 32.1 |
-| 构建 | 18.2 | 203.0 | 36.9 |
-| 类型检查 | 24.7 | 111.0 | 36.8 |
-| 搜索 | 19.6 | 5.8 | 34.3 |
-| git 摘要 | 19.7 | 8.0 | 32.1 |
-| 普通任务 | 20.4 | 31.8 | 31.6 |
-
-Baton 每条大约多 **50–62 毫秒**，外加开票一次 **221 毫秒**。要更新数字，重新跑脚本。
-
-## Sample 事故审计
-
-同一冻结事故请求，2026-08-22。五个 unit 彼此独立。Grok 默认留在 **grok-4.6** 上，**没有** spawn（若开了且省略 `model`，子会话继承 4.6）。Baton 是五个 **grok-4.5** 并行。
-
-| sample | Grok 4.6 默认（秒） | Grok 4.6 串行、不开 spawn（秒） | Baton，五个 Grok 4.5 并行（秒） |
-| --- | ---: | ---: | ---: |
-| standalone | 490.6 | 57.9 | 18.3 |
-| openspec | 608.2 | 100.0 | 26.0 |
-
-Token 来自各 session 的 `end_turn.usage`（不是账单页）。Baton 一列只计五个 grok-4.5 worker。
-
-| sample | Grok 4.6 默认（token） | Grok 4.6 串行（token） | Baton，五个 Grok 4.5（token） |
-| --- | ---: | ---: | ---: |
-| standalone | 1,497,407 | 37,439 | 144,056 |
-| openspec | 1,791,283 | 224,853 | 198,195 |
-
-峰值上下文：默认 grok-4.6 约 11–12 万 token；Baton 每个 grok-4.5 worker 约 1.1–1.3 万。
-
-## OpenSpec 与状态
-
-OpenSpec 可选。存在时它负责任务拆解与状态，Baton 负责路由 ready task，并按稳定 task number（未编号任务则按校验后的源行）写回结论。不存在时，baton spawn 仍完整可用。
-
-Baton 不创建项目内运行时目录：
-
-- ~/.baton/config.toml：director 与各 CLI 配置
-- ~/.baton/cache/cli-models-<host>.json：按 host 隔离的 catalog snapshot
-- ~/.baton/state/model-availability.json：持久化的 host/account 路由可用性
-- ~/.baton/cache/capabilities/：可选本地 capability 证据
-- ~/.baton/workspaces/CANONICAL-ROOT-SHA256/：ticket、Receipt、selection、lock 和生命周期状态
-
-## 命令
-
-    baton init [--force] [--cli codex|grok|cursor|claude]
-    baton update
-    baton config [--cli codex|grok|cursor|claude] [--runner MODEL|-] [--longctx MODEL|-]
-                 [--coding-model MODEL|all] [--guard-mode enforce|off] [--enable|--disable]
-    baton enable|disable all|curproject --host HOST [--json]
-    baton models refresh|status|candidates
-    baton models reset ROUTE --host HOST [--json]
-    baton cards [--ranked|--unranked] [--json]
-    baton match "快速修复 flaky auth tests" --host HOST
-    baton spawn "实现迁移" [--unit KEY=TEXT ...]
-                 [--classification CLASS] [--operation LABEL]
-                 [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
-                 [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
-    baton apply [change]
-    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH [--write-ops OPS] --unit ID --write-path PATH [--write-ops OPS]|--read-only
-    baton dispatch next --host HOST --capacity N --json
-    baton dispatch bind TICKET --task-name CODEX_TASK_NAME --host codex --json
-    baton dispatch bind TICKET --agent-id ID --host HOST --json  # 其他 host
-    baton dispatch defer TICKET --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-    baton dispatch probe TICKET --task-name CODEX_TASK_NAME --host codex --state pending_init|running|interrupted|shutdown|not_found --json
-    baton dispatch progress TICKET --phase PHASE --text "short status" --json
-    baton dispatch complete TICKET --text "short conclusion" --json
-    baton dispatch fail|timeout|close TICKET --json
-    baton dispatch release TICKET --host HOST --task-name CODEX_TASK_NAME --json
-    baton dispatch recover|status --json
-    baton status [--host HOST] [--json]
-    baton uninstall [--host HOST] [--dry-run]
-    baton uninstall --clean --yes
-
-`all` 只修改当前 CLI host 的全局开关；`curproject` 只修改当前 canonical
-workspace 与该 host。activation、ticket lifecycle 与安全边界由 director 和
-Baton CLI 在命令边界显式评估。Baton 没有运行时 hook、hook posture、观测、信任
-或重写步骤；native execution handle、不可变 Receipt、write allowlist 与父级
-Git audit 才是编排和校验依据。
-
-显式 quota/remaining=0 会跨项目和窗口持久记忆；普通 429、网络错误和 timeout
-只进入临时 route health。已知 reset 时间用于 probe，未知 reset 使用有界退避，
-同一路由同时只有一个 probe lease。在 host 尚未暴露稳定账号身份时，状态使用文档化的
-opaque `host-profile` scope。可用
-`baton models reset ROUTE --host HOST` 精确 reset 单一路由。uninstall 默认
-只清理指定 host 的集成文件并保留全部 Baton state，`--dry-run` 先展示边界；`--clean --yes` 会清理所有 host 的已识别集成和
-Baton 状态，但有 active ticket draining 时拒绝，package executable 保留。
-
-Standalone 统一使用一种 proposal：没有 `--unit` 时，请求会保存为
-`standalone` 单元。分类字段和值是严格契约；operation 只作审计元数据，不能
-从 operation 或请求 prose 推断路由。
-
-## License
-
-MIT
+发布检查应分别报告 SDK conformance、manifest 发现、构建与打包、实时目录、
+原生 execution handle、ticket 与 quota lineage、清理结果，以及精确 changed-path
+审计。

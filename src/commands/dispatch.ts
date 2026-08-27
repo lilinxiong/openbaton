@@ -17,15 +17,15 @@ import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 
 const USAGE = `usage:
   baton dispatch next --host HOST [--capacity N] [--limit N] --json
-  baton dispatch bind TICKET [--agent-id HOST_AGENT_ID] [--task-name CODEX_TASK_NAME] --host HOST --json
+  baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --host HOST [--execution-handle KIND=VALUE|--agent-id ID|--task-name NAME] --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
+  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
   baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
   baton dispatch fail TICKET --host HOST --code CODE --message MESSAGE [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--message MESSAGE] [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch close TICKET --host HOST [--message MESSAGE] [--release] --json
-  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE|--task-name NAME|--agent-id ID] --json
+  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
   baton dispatch recover [--host HOST] [--stale-ms N] --json
   baton dispatch status [--host HOST] [--capacity N] --json
 
@@ -51,6 +51,26 @@ function parseFlags(args: string[]): FlagMap {
   return flags;
 }
 
+function validateFlags(args: string[]): void {
+  const values = new Set([
+    "host", "capacity", "limit", "execution-handle", "code", "message", "observed-capacity",
+    "state", "activity", "phase", "text", "next", "blocker", "remaining-percent", "reset-at",
+    "probe-sequence", "stale-ms",
+  ]);
+  const booleans = new Set(["json", "needs-input", "release"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    if (!values.has(key) && !booleans.has(key)) throw new Error(`unknown option: ${arg}`);
+    if (values.has(key)) {
+      const next = args[index + 1];
+      if (next === undefined || next.startsWith("--")) throw new Error(`${arg} requires a value`);
+      index += 1;
+    }
+  }
+}
+
 function positional(args: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < args.length; i += 1) {
@@ -67,9 +87,9 @@ function stringFlag(flags: FlagMap, key: string): string | undefined {
 }
 
 function executionHandleFlag(flags: FlagMap): { kind: NativeExecutionHandleKind; value: string; source: "manual" } | undefined {
-  const raw = stringFlag(flags, "execution-handle") || stringFlag(flags, "handle");
-  let kind = stringFlag(flags, "execution-handle-kind") || stringFlag(flags, "handle-kind");
-  let value = stringFlag(flags, "execution-handle-value") || stringFlag(flags, "handle-value");
+  const raw = stringFlag(flags, "execution-handle");
+  let kind: string | undefined;
+  let value: string | undefined;
   if (raw) {
     const separator = raw.indexOf("=") >= 0 ? raw.indexOf("=") : raw.indexOf(":");
     if (separator <= 0 || separator === raw.length - 1) throw new Error(USAGE.trim());
@@ -77,7 +97,7 @@ function executionHandleFlag(flags: FlagMap): { kind: NativeExecutionHandleKind;
     value ||= raw.slice(separator + 1);
   }
   if (!kind && !value) return undefined;
-  if (!kind || !value || !["task_name", "agent_id", "session_id", "task_id", "opaque"].includes(kind)) {
+  if (!kind || !value || !/^[a-z][a-z0-9._-]*$/.test(kind)) {
     throw new Error(USAGE.trim());
   }
   return { kind: kind as NativeExecutionHandleKind, value, source: "manual" };
@@ -110,8 +130,6 @@ async function finishAndMaybeRelease(
   const ticket = await finishAgent(cwd, id, { ...options, env: options.env || process.env, ...(host ? { host } : {}) });
   if (!flags.release) return ticket;
   return releaseAgent(cwd, id, {
-    agentId: stringFlag(flags, "agent-id"),
-    taskName: stringFlag(flags, "task-name"),
     executionHandle: executionHandleFlag(flags),
     env: options.env || process.env,
     ...(host ? { host } : {}),
@@ -127,8 +145,14 @@ interface DispatchCommandOptions {
 export async function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): Promise<number> {
   const sub = args[0] || "status";
   const rest = args.slice(1);
+  validateFlags(rest);
   const flags = parseFlags(rest);
   const values = positional(rest);
+  if (["next", "recover", "status"].includes(sub)) {
+    if (values.length) throw new Error(`unexpected argument: ${values[0]}`);
+  } else if (["bind", "defer", "probe", "progress", "complete", "fail", "timeout", "close", "release"].includes(sub)) {
+    if (values.length !== 1) throw new Error(USAGE.trim());
+  }
   const json = Boolean(flags.json);
 
   if (sub === "next") {
@@ -148,8 +172,7 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
     if (!id) throw new Error(USAGE.trim());
     const host = dispatchHost(flags, cwd, env);
     const ticket = bindAgent(cwd, id, {
-      agentId: stringFlag(flags, "agent-id"),
-      taskName: stringFlag(flags, "task-name"),
+      executionHandle: executionHandleFlag(flags),
       host,
       env,
     });
@@ -168,27 +191,23 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       env,
     });
     const host = stringFlag(flags, "host");
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host, env }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
     return 0;
   }
 
   if (sub === "probe") {
     const id = values[0];
-    const agentId = stringFlag(flags, "agent-id");
-    const taskName = stringFlag(flags, "task-name");
     const executionHandle = executionHandleFlag(flags);
     const state = stringFlag(flags, "state");
-    if (!id || (!agentId && !taskName && !executionHandle) || !state) throw new Error(USAGE.trim());
+    if (!id || !executionHandle || !state) throw new Error(USAGE.trim());
     const ticket = reportAgentProbe(cwd, id, {
-      agentId,
-      taskName,
       executionHandle,
       state: state as Parameters<typeof reportAgentProbe>[2]["state"],
       activity: (stringFlag(flags, "activity") || "status") as Parameters<typeof reportAgentProbe>[2]["activity"],
       host: stringFlag(flags, "host"),
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -206,7 +225,7 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       host: stringFlag(flags, "host"),
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -214,7 +233,7 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
     const ticket = await finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")!, env });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -234,7 +253,7 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       probeSequence: timeoutProbeSequence ? Number(timeoutProbeSequence) : null,
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -243,26 +262,24 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
     if (!id) throw new Error(USAGE.trim());
     const host = stringFlag(flags, "host");
     const ticket = releaseAgent(cwd, id, {
-      agentId: stringFlag(flags, "agent-id"),
-      taskName: stringFlag(flags, "task-name"),
       executionHandle: executionHandleFlag(flags),
       env,
       ...(host ? { host } : {}),
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host, env }) }, json);
+    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
     return 0;
   }
 
   if (sub === "recover") {
     const host = stringFlag(flags, "host");
     const recovered = recoverDispatches(cwd, { staleMs: flags["stale-ms"] == null ? 60_000 : Number(flags["stale-ms"]), host, env });
-    print(stdout, { ...recovered, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host, env }) }, json);
+    print(stdout, { ...recovered, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
     return 0;
   }
 
   if (sub === "status") {
     const host = stringFlag(flags, "host");
-    print(stdout, dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host) : undefined), host, env }), json);
+    print(stdout, dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }), json);
     return 0;
   }
 

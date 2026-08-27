@@ -34,14 +34,14 @@ describe("terminal select prompts", () => {
     const pending = tty.prompt.select({
       message: "Select CLI",
       choices: [
-        { value: "codex", label: "codex" },
-        { value: "grok", label: "grok" },
+        { value: "alpha", label: "alpha" },
+        { value: "beta", label: "beta" },
       ],
     });
     tty.stdin.write("\x1b[B");
     tty.stdin.write("\r");
-    assert.equal(await pending, "grok");
-    assert.match(visibleNow(tty.text()), /✔ Select CLI grok/);
+    assert.equal(await pending, "beta");
+    assert.match(visibleNow(tty.text()), /✔ Select CLI beta/);
   });
 
   it("multi-selects models with space and a", async () => {
@@ -49,16 +49,16 @@ describe("terminal select prompts", () => {
     const pending = tty.prompt.multiSelect({
       message: "Select models callable by subagents",
       choices: [
-        { value: "grok-4.5", label: "Grok 4.5 (grok-4.5)" },
-        { value: "grok-4.6", label: "Grok 4.6 (grok-4.6)" },
-        { value: "grok-3", label: "Grok 3 (grok-3)" },
+        { value: "alpha-4.5", label: "Alpha 4.5 (alpha-4.5)" },
+        { value: "alpha-4.6", label: "Alpha 4.6 (alpha-4.6)" },
+        { value: "alpha-3", label: "Alpha 3 (alpha-3)" },
       ],
     });
     tty.stdin.write(" ");
     tty.stdin.write("\x1b[B");
     tty.stdin.write(" ");
     tty.stdin.write("\r");
-    assert.deepEqual(await pending, ["grok-4.5", "grok-4.6"]);
+    assert.deepEqual(await pending, ["alpha-4.5", "alpha-4.6"]);
 
     const all = fakeTty();
     const allPending = all.prompt.multiSelect({
@@ -78,22 +78,22 @@ describe("terminal select prompts", () => {
     const pending = tty.prompt.multiSelect({
       message: "Select CLI",
       choices: [
-        { value: "codex", label: "codex" },
-        { value: "grok", label: "grok" },
+        { value: "alpha", label: "alpha" },
+        { value: "beta", label: "beta" },
       ],
       required: true,
     });
     tty.stdin.write("\r");
     tty.stdin.write(" ");
     tty.stdin.write("\r");
-    assert.deepEqual(await pending, ["codex"]);
+    assert.deepEqual(await pending, ["alpha"]);
   });
 
   it("cancels on ctrl+c", async () => {
     const tty = fakeTty();
     const pending = tty.prompt.select({
       message: "Select CLI",
-      choices: [{ value: "codex", label: "codex" }],
+      choices: [{ value: "alpha", label: "alpha" }],
     });
     tty.stdin.write("\x03");
     await assert.rejects(pending, /cancelled/);
@@ -106,17 +106,17 @@ describe("terminal select prompts", () => {
     const first = tty.prompt.select({
       message: "Select CLI",
       choices: [
-        { value: "codex", label: "codex" },
-        { value: "grok", label: "grok" },
+        { value: "alpha", label: "alpha" },
+        { value: "beta", label: "beta" },
       ],
     });
     tty.stdin.write("\r");
-    assert.equal(await first, "codex");
+    assert.equal(await first, "alpha");
     assert.equal(tty.stdin.isPaused(), true);
     assert.equal((tty.stdin as NodeJS.ReadStream).isRaw, false);
 
     const second = tty.prompt.select({
-      message: "Enable this grok configuration?",
+      message: "Enable this beta configuration?",
       choices: [
         { value: true, label: "yes" },
         { value: false, label: "no" },
@@ -133,7 +133,7 @@ describe("terminal select prompts", () => {
     assert.equal(isInteractiveIo(stdin, stdout), false);
     const prompt = createTerminalPrompt({ stdin, stdout });
     return assert.rejects(
-      prompt.select({ message: "Select CLI", choices: [{ value: "codex", label: "codex" }] }),
+      prompt.select({ message: "Select CLI", choices: [{ value: "alpha", label: "alpha" }] }),
       /interactive prompts require a TTY/,
     );
   });

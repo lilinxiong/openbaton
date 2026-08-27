@@ -5,15 +5,26 @@ import { classifyTask, scoreCard } from "./cards.js";
 import { quotaForProvider, type ProviderQuotaDisclosure } from "./provider-quotas.js";
 import { selectionsDir } from "./paths.js";
 import { readRouteSnapshot, type RouteSnapshot } from "./routes.js";
-import {
-  buildSelectionQuotaPools,
-  quotaPoolForCandidate,
-  type QuotaPoolStatus,
-  type SelectionQuotaPool,
-} from "./quota-pools.js";
+export type QuotaPoolStatus = "available" | "unknown" | "exhausted";
+export interface SelectionQuotaPool {
+  id: string; provider: string; label: string; status: QuotaPoolStatus;
+  selectable: boolean; remaining_percent: number | null; source: string | null;
+  observed_at: string; reason: string | null;
+  windows: import("./provider-quotas.js").QuotaWindow[]; model_ids: string[];
+}
+type QuotaCandidate = { model_id: string; route_id?: string; provider: string | null; quota: ProviderQuotaDisclosure };
+function quotaPoolForCandidate(candidate: QuotaCandidate): SelectionQuotaPool {
+  const values = candidate.quota.windows.map((item) => item.remaining_percent).filter(Number.isFinite);
+  const remaining = values.length ? Math.min(...values) : null;
+  const status: QuotaPoolStatus = remaining === 0 ? "exhausted" : remaining == null ? "unknown" : "available";
+  return { id: candidate.model_id, provider: candidate.provider || "unknown", label: candidate.provider || "unknown",
+    status, selectable: status !== "exhausted", remaining_percent: remaining, source: candidate.quota.source,
+    observed_at: candidate.quota.observed_at, reason: status === "unknown" ? candidate.quota.reason : null,
+    windows: candidate.quota.windows, model_ids: [candidate.model_id] };
+}
 import { taskCapabilityExclusion, type TaskCapabilityExclusion } from "./task-suitability.js";
 import { availabilityForRoute } from "./model-availability.js";
-import type { CardCapabilityEvidence, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
+import type { ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 
 export type SelectionProposalStatus = "pending_confirmation" | "approved";
 
@@ -32,24 +43,9 @@ export interface SelectionCandidate {
   selection_code: "AVAILABLE" | "QUOTA_POOL_EXHAUSTED" | "DURABLE_QUOTA_EXHAUSTED" | "CONTEXT_WINDOW_INSUFFICIENT" | "REASONING_EFFORT_UNSUPPORTED";
   selection_reason: string;
   automatic_eligible: boolean;
-  ranked: boolean;
-  reference_only: boolean;
-  reference_reasons: string[];
-  reference_route_id: string | null;
-  reference_profile: string | null;
-  aa_slug: string | null;
   task_score: number | null;
   strengths: string;
   positioning: string[];
-  aa_scores: {
-    intelligence: number | null;
-    coding: number | null;
-    agentic: number | null;
-    cost_per_task: number | null;
-    output_tokens_per_second: number | null;
-    time_to_first_answer_seconds: number | null;
-  };
-  aa_data: CardCapabilityEvidence["aa_data"] | null;
   quota: ProviderQuotaDisclosure;
   quota_pool_id: string;
   quota_pool_label: string;
@@ -70,7 +66,7 @@ export interface SelectionUnit {
   recommended_model_id: string | null;
   requested_model_id: string | null;
   default_model_id: string | null;
-  recommendation_reason: "UNIQUE_HIGHEST_TASK_SCORE" | "DETERMINISTIC_TOP_SCORE_TIEBREAK" | "GENERAL_CAPABILITY_FALLBACK" | "AMBIGUOUS_TOP_SCORE" | "NO_POSITIVE_TASK_SCORE" | "NO_SELECTABLE_RANKED_CANDIDATE" | "CODING_PRIORITY" | "CODING_MODELS_EXHAUSTED" | "DIRECTOR_LOCAL";
+  recommendation_reason: "CODING_PRIORITY" | "CODING_MODELS_EXHAUSTED" | "DIRECTOR_LOCAL";
   target_reasoning_effort: "low" | "medium" | "high" | "xhigh" | "max";
   complexity_reason: "simple" | "standard" | "complex" | "very-complex";
   estimated_context_tokens: number;
@@ -124,17 +120,6 @@ function scopedSourceFingerprint(host: string | undefined, sourceFingerprint: st
   return host ? selectionSourceFingerprint({ host, source_fingerprint: sourceFingerprint }) : sourceFingerprint;
 }
 
-function evidenceScores(capability?: CardCapabilityEvidence) {
-  return {
-    intelligence: capability?.intelligence_index ?? null,
-    coding: capability?.coding_index ?? null,
-    agentic: capability?.agentic_index ?? null,
-    cost_per_task: capability?.cost_per_task ?? null,
-    output_tokens_per_second: capability?.output_tokens_per_second ?? null,
-    time_to_first_answer_seconds: capability?.time_to_first_answer_seconds ?? null,
-  };
-}
-
 function candidateFor(
   cwd: string,
   prompt: string,
@@ -169,16 +154,6 @@ function candidateFor(
   // pre-authorize a probe lease.
   const durableExhausted = availability.status !== "available" && !probeClaimed;
   const selectable = quotaPool.selectable && !contextInsufficient && !durableExhausted;
-  const ranked = card.capability?.ranked === true;
-  const referenceOnly = card.capability?.reference_only === true;
-  const referenceReasons = card.capability?.reference_reasons || [];
-  const deterministicVariantReference = referenceOnly
-    && referenceReasons.length > 0
-    && referenceReasons.every((reason) => [
-      "BASE_PROFILE_REFERENCE",
-      "DEFAULT_PROFILE_REFERENCE",
-      "SERVING_VARIANT_BASE_MODEL_REFERENCE",
-    ].includes(reason));
   const wantsSpeed = classifyTask(prompt).speed > 0;
   const speedSignals: SelectionCandidate["speed_signals"] = [];
   const routeNamedFast = /(?:^|[-_.:/])(?:fast|highspeed|high-speed)(?:$|[-_.:/])/i.test(card.route_id);
@@ -196,7 +171,7 @@ function candidateFor(
     route_id: card.route_id,
     reasoning_effort: card.reasoning_effort || null,
     reasoning_effort_configurable: route.reasoning_efforts.length > 0,
-    effective_reasoning_effort: card.reasoning_effort || route.default_reasoning_effort || card.capability?.reference_profile || null,
+    effective_reasoning_effort: card.reasoning_effort || route.default_reasoning_effort || null,
     context_window: route.context_window,
     service_tier: serviceTier,
     speed_optimized: speedSignals.length > 0,
@@ -220,17 +195,9 @@ function candidateFor(
           ? "due-route probe is available for the eventual reservation"
         : "model/reasoning effort was returned by the active CLI",
     automatic_eligible: selectable && automaticIds.has(card.id),
-    ranked,
-    reference_only: referenceOnly,
-    reference_reasons: referenceReasons,
-    reference_route_id: card.capability?.reference_route_id ?? null,
-    reference_profile: card.capability?.reference_profile ?? null,
-    aa_slug: card.capability?.aa_slug ?? null,
     task_score: scoreCard(prompt, card),
     strengths: card.strengths,
     positioning: card.positioning || [],
-    aa_scores: evidenceScores(card.capability),
-    aa_data: card.capability?.aa_data || null,
     quota,
     quota_pool_id: quotaPool.id,
     quota_pool_label: quotaPool.label,
@@ -290,20 +257,6 @@ export function estimateTaskContext(text: unknown): TaskContextEstimate {
   return { tokens: 262_144, reason: "standard" };
 }
 
-function compareNullableDescending(left: number | null, right: number | null): number {
-  if (left == null && right == null) return 0;
-  if (left == null) return 1;
-  if (right == null) return -1;
-  return right - left;
-}
-
-function compareNullableAscending(left: number | null, right: number | null): number {
-  if (left == null && right == null) return 0;
-  if (left == null) return 1;
-  if (right == null) return -1;
-  return left - right;
-}
-
 const EFFORT_RANK: Record<string, number> = {
   none: 0,
   minimal: 1,
@@ -318,25 +271,6 @@ const EFFORT_RANK: Record<string, number> = {
 function normalizedEffort(value: string | null | undefined): string | null {
   const effort = String(value || "").trim().toLowerCase();
   return Object.hasOwn(EFFORT_RANK, effort) ? effort : null;
-}
-
-function inferEffectiveReasoningEfforts(candidates: SelectionCandidate[]): void {
-  const byAaSlug = new Map<string, Set<string>>();
-  for (const candidate of candidates) {
-    if (!candidate.aa_slug) continue;
-    const effort = normalizedEffort(candidate.effective_reasoning_effort);
-    if (!effort) continue;
-    const values = byAaSlug.get(candidate.aa_slug) || new Set<string>();
-    values.add(effort);
-    byAaSlug.set(candidate.aa_slug, values);
-  }
-  for (const candidate of candidates) {
-    if (normalizedEffort(candidate.effective_reasoning_effort)
-      || candidate.reasoning_effort_configurable
-      || !candidate.aa_slug) continue;
-    const values = byAaSlug.get(candidate.aa_slug);
-    if (values?.size === 1) candidate.effective_reasoning_effort = [...values][0];
-  }
 }
 
 function compareEffortFit(left: string | null, right: string | null, target: SelectionUnit["target_reasoning_effort"]): number {
@@ -354,11 +288,9 @@ function compareEffortFit(left: string | null, right: string | null, target: Sel
 }
 
 /**
- * Reasoning effort is a per-model execution setting, not a separate model
- * competing on benchmark score. Keep all CLI-returned profiles visible for
- * audit, but let automatic routing compare exactly one best-fit profile per
- * route. This also prevents a benchmarked implicit/default profile from
- * defeating the task's requested low/high/max level.
+ * Reasoning effort is a per-model execution setting, not a separate model.
+ * Keep all CLI-returned profiles visible for audit, but let automatic routing
+ * compare exactly one best-fit profile per route.
  */
 function restrictAutomaticEffortCandidates(
   candidates: SelectionCandidate[],
@@ -395,7 +327,7 @@ function restrictAutomaticEffortCandidates(
   }
 }
 
-/** Stable, evidence-backed ordering when task scores do not identify one winner. */
+/** Stable catalog-backed ordering when task text does not identify one winner. */
 function compareContextFit(left: number | null, right: number | null, target: number): number {
   const fit = (window: number | null) => {
     if (window == null) return { rank: 0, distance: Number.POSITIVE_INFINITY };
@@ -414,10 +346,6 @@ function recommendationTieBreak(
   estimatedContextTokens: number,
 ): number {
   const quotaRank: Record<QuotaPoolStatus, number> = { available: 2, unknown: 1, exhausted: 0 };
-  const leftCapability = [left.aa_scores.coding, left.aa_scores.agentic, left.aa_scores.intelligence]
-    .reduce<number>((sum, value) => sum + (value ?? 0), 0);
-  const rightCapability = [right.aa_scores.coding, right.aa_scores.agentic, right.aa_scores.intelligence]
-    .reduce<number>((sum, value) => sum + (value ?? 0), 0);
   return compareEffortFit(left.effective_reasoning_effort, right.effective_reasoning_effort, targetEffort)
     // When the CLI exposes explicit efforts, persist the chosen level instead
     // of relying on an implicit model default with the same effective rank.
@@ -425,11 +353,8 @@ function recommendationTieBreak(
     || compareContextFit(left.context_window, right.context_window, estimatedContextTokens)
     || Number(right.speed_optimized) - Number(left.speed_optimized)
     || quotaRank[right.quota_pool_status] - quotaRank[left.quota_pool_status]
-    || compareNullableDescending(left.quota_pool_remaining_percent, right.quota_pool_remaining_percent)
-    || rightCapability - leftCapability
-    || compareNullableAscending(left.aa_scores.cost_per_task, right.aa_scores.cost_per_task)
-    || compareNullableDescending(left.aa_scores.output_tokens_per_second, right.aa_scores.output_tokens_per_second)
-    || compareNullableAscending(left.aa_scores.time_to_first_answer_seconds, right.aa_scores.time_to_first_answer_seconds)
+    || (right.quota_pool_remaining_percent ?? -1) - (left.quota_pool_remaining_percent ?? -1)
+    || (right.task_score ?? -1) - (left.task_score ?? -1)
     || left.model_id.localeCompare(right.model_id);
 }
 
@@ -454,11 +379,11 @@ export function buildSelectionUnit({
   description: string;
   prompt: string;
   cards: ModelCard[];
-  automaticCards?: ModelCard[];
+  automaticCards: ModelCard[];
   requestedModelId?: string | null;
   directorLocal?: boolean;
   /** Ordered base route ids from cli.<host>.coding_models. */
-  codingModels?: string[];
+  codingModels: string[];
   /** At most one due route may be enabled by a real spawn/apply probe lease. */
   probeRouteIds?: string[];
   env?: NodeJS.ProcessEnv;
@@ -484,52 +409,31 @@ export function buildSelectionUnit({
     .map(taskCapabilityExclusion)
     .filter((item): item is TaskCapabilityExclusion => item !== null);
   const excludedIds = new Set(taskExclusions.map((item) => item.model_id));
-  // An explicitly supplied empty array is an intentional zero-candidate
-  // Coding configuration; only an omitted argument means general selection.
-  const configured = codingModels !== undefined ? new Set(codingModels) : null;
+  const configured = new Set(codingModels);
   const eligibleCards = cards.filter((card) => !excludedIds.has(card.id)
-    && (!configured || configured.has(card.route_id || card.id) || configured.has(card.id)));
-  const automaticIds = new Set((automaticCards || cards).map((card) => card.id));
-  const selectedHost = String(host || snapshot.cli || "codex");
+    && (configured.has(card.route_id || card.id) || configured.has(card.id)));
+  const automaticIds = new Set(automaticCards.map((card) => card.id));
+  const selectedHost = String(host || snapshot.cli || "");
+  if (!selectedHost) throw new Error("HOST_REQUIRED: model selection must name its runtime host");
   const claimedProbeRoutes = new Set(probeRouteIds);
   const candidates = eligibleCards
     .map((card) => candidateFor(cwd, prompt, card, snapshot, automaticIds, selectedHost, contextEstimate.tokens, claimedProbeRoutes, env))
     .filter((item): item is SelectionCandidate => item !== null);
-  const priority = codingModels !== undefined
-    ? new Map(codingModels.map((routeId, index) => [routeId, index]))
-    : null;
-  inferEffectiveReasoningEfforts(candidates);
+  const priority = new Map(codingModels.map((routeId, index) => [routeId, index]));
   restrictAutomaticEffortCandidates(candidates, complexityEstimate.effort);
   candidates.sort((a, b) => {
-    if (priority) {
-      return (priority.get(a.route_id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(b.route_id) ?? Number.MAX_SAFE_INTEGER)
-        || Number(b.selectable) - Number(a.selectable)
-        || recommendationTieBreak(a, b, complexityEstimate.effort, contextEstimate.tokens);
-    }
-    return Number(b.selectable) - Number(a.selectable)
-      || Number(b.automatic_eligible) - Number(a.automatic_eligible)
-      || (b.task_score ?? -1) - (a.task_score ?? -1)
+    return (priority.get(a.route_id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(b.route_id) ?? Number.MAX_SAFE_INTEGER)
+      || Number(b.selectable) - Number(a.selectable)
       || recommendationTieBreak(a, b, complexityEstimate.effort, contextEstimate.tokens);
   });
   const automatic = candidates.filter((item) => item.automatic_eligible);
-  const priorityOrdered = priority
-    ? automatic.slice().sort((left, right) =>
-      (priority.get(left.route_id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(right.route_id) ?? Number.MAX_SAFE_INTEGER)
-      || recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens))
-    : null;
-  const ranked = automatic.filter((item) => (item.task_score || 0) > 0);
-  const topScore = ranked[0]?.task_score ?? null;
-  const top = topScore == null ? [] : ranked
-    .filter((item) => item.task_score === topScore)
-    .sort((left, right) => recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
-  const fallback = automatic.slice().sort((left, right) => recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
-  const recommended = priorityOrdered?.[0]?.model_id || top[0]?.model_id || fallback[0]?.model_id || null;
+  const priorityOrdered = automatic.slice().sort((left, right) =>
+    (priority.get(left.route_id) ?? Number.MAX_SAFE_INTEGER) - (priority.get(right.route_id) ?? Number.MAX_SAFE_INTEGER)
+    || recommendationTieBreak(left, right, complexityEstimate.effort, contextEstimate.tokens));
+  const recommended = priorityOrdered[0]?.model_id || null;
   let reason: SelectionUnit["recommendation_reason"];
-  if (!automatic.length) reason = codingModels !== undefined ? "CODING_MODELS_EXHAUSTED" : "NO_SELECTABLE_RANKED_CANDIDATE";
-  else if (priority) reason = "CODING_PRIORITY";
-  else if (!ranked.length) reason = "GENERAL_CAPABILITY_FALLBACK";
-  else if (top.length > 1) reason = "DETERMINISTIC_TOP_SCORE_TIEBREAK";
-  else reason = "UNIQUE_HIGHEST_TASK_SCORE";
+  if (!automatic.length) reason = "CODING_MODELS_EXHAUSTED";
+  else reason = "CODING_PRIORITY";
 
   if (requestedModelId) {
     const requested = candidates.find((item) => item.model_id === requestedModelId);
@@ -573,7 +477,7 @@ function proposalQuotaPools(units: SelectionUnit[]): SelectionQuotaPool[] {
       if (!candidates.has(candidate.model_id)) candidates.set(candidate.model_id, candidate);
     }
   }
-  return buildSelectionQuotaPools([...candidates.values()]);
+  return [...candidates.values()].map((candidate) => quotaPoolForCandidate(candidate)).sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function nextProposalId(cwd: string, env?: NodeJS.ProcessEnv): string {
@@ -656,7 +560,7 @@ export function readSelectionProposal(cwd: string, id: string, env?: NodeJS.Proc
   if (!fs.existsSync(file)) throw new Error(`selection proposal not found: ${id}`);
   const value = JSON.parse(fs.readFileSync(file, "utf8")) as SelectionProposal;
   if (value.schema_version !== 2) {
-    throw new Error(`SELECTION_PROPOSAL_STALE: schema ${value.schema_version} predates CLI-owned model selection; create a new proposal`);
+    throw new Error(`SELECTION_PROPOSAL_SCHEMA_UNSUPPORTED: ${value.schema_version}; create a new proposal`);
   }
   if (value.source === "standalone" && (value.payload?.source_shape !== "multi-unit-v1" || !Array.isArray(value.payload?.units))) {
     throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: standalone proposals must use the multi-unit shape");

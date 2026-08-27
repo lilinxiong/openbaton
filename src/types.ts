@@ -17,7 +17,6 @@ export interface ModelCard {
   default_service_tier?: string | null;
   is_default?: boolean;
   positioning?: string[];
-  capability?: CardCapabilityEvidence;
 }
 
 export interface ModelSelectionApproval {
@@ -41,41 +40,6 @@ export interface ModelSelectionApproval {
   ops_profile?: "runner" | "longctx";
   /** Opaque operation label retained for audit; never used for routing. */
   ops_operation?: string;
-}
-
-export interface CardCapabilityEvidence {
-  source: "artificial-analysis";
-  ranked: boolean;
-  unranked: boolean;
-  reason: string | null;
-  reference_only?: boolean;
-  reference_reasons?: string[];
-  reference_route_id?: string;
-  reference_profile?: string;
-  aa_slug?: string;
-  aa_name?: string;
-  mapping_route_id?: string;
-  mapping_source?: string;
-  intelligence_index: number | null;
-  coding_index: number | null;
-  agentic_index: number | null;
-  cost_per_task: number | null;
-  output_tokens_per_second: number | null;
-  time_to_first_answer_seconds: number | null;
-  aa_data?: {
-    evaluations: Record<string, number | null>;
-    pricing: Record<string, number | null>;
-    performance: Record<string, number | null>;
-    cost: Record<string, number | null>;
-  };
-  relative?: {
-    intelligence?: number;
-    coding?: number;
-    agentic?: number;
-    cost_efficiency?: number;
-    throughput?: number;
-    latency?: number;
-  };
 }
 
 export type UnknownRecord = Record<string, unknown>;

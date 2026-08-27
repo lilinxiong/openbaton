@@ -184,5 +184,3 @@ export async function collectGitScalar(options: GitScalarOptions): Promise<strin
   const value = output.toString("utf8");
   return options.trimTrailingNewline === false ? value : value.replace(/\r?\n$/, "");
 }
-
-export const streamGitProcess = runGitProcess;

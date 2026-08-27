@@ -42,9 +42,9 @@ export interface TicketProgress {
 export type AgentProbeState = "pending_init" | "running" | "interrupted" | "shutdown" | "not_found";
 export type AgentProbeActivity = "status" | "output" | "heartbeat";
 
-export type ExecutionHandleSource = "native-return" | "legacy" | "manual";
+export type ExecutionHandleSource = "native-return" | "manual";
 
-/** Host-neutral native child handle. It is not a hook identity. */
+/** Host-neutral native child handle. */
 export interface NativeExecutionHandle {
   kind: NativeExecutionHandleKind;
   value: string;
@@ -55,8 +55,7 @@ export interface NativeExecutionHandle {
 export interface TicketLiveness {
   sequence: number;
   execution_handle: NativeExecutionHandle;
-  /** Optional diagnostic retained for hosts that expose an agent id. */
-  agent_id?: string | null;
+  /** Host-reported lifecycle state for the bound opaque handle. */
   state: AgentProbeState;
   activity: AgentProbeActivity;
   observed_at: string;
@@ -65,6 +64,8 @@ export interface TicketLiveness {
 export interface SpawnTicket extends UnknownRecord {
   schema_version: number;
   id: string;
+  session_uid: string;
+  session_ordinal: number;
   description: string;
   prompt: string;
   work_unit: WorkUnitContract;
@@ -87,7 +88,6 @@ export interface SpawnTicket extends UnknownRecord {
   /** Opaque identity for one dispatch attempt. It is unrelated to the ticket id format. */
   reservation_id?: string;
   /** Optional host diagnostic. Dispatch lifecycle is keyed by execution_handle. */
-  agent_id?: string | null;
   execution_handle: NativeExecutionHandle | null;
   host: string | null;
   /** Requested runtime host captured before dispatch; unlike `host`, this is
@@ -106,9 +106,9 @@ export interface SpawnTicket extends UnknownRecord {
   finished_at?: string;
   slot_released_at?: string;
   safety_verdict?: UnknownRecord;
-  fallback_from_ticket_id?: string;
-  fallback_reason?: string;
-  fallback_successor_id?: string;
+  successor_from_ticket_id?: string;
+  successor_reason?: string;
+  successor_id?: string;
   quota_diagnostic?: UnknownRecord;
   /** Routing constraints captured by selection when available; successors may not relax them. */
   routing_requirements?: {
@@ -123,7 +123,9 @@ export function listSpawns(cwd: string, env?: NodeJS.ProcessEnv): SpawnTicket[] 
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => normalizeSpawnTicket(JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"))))
+    .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) as unknown)
+    .filter(isCurrentSpawnRecord)
+    .map((value) => normalizeSpawnTicket(value))
     .sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 
@@ -134,21 +136,7 @@ function stringValue(value: unknown): string | null {
 }
 
 function isHandleKind(value: unknown): value is NativeExecutionHandleKind {
-  return value === "task_name" || value === "agent_id" || value === "session_id"
-    || value === "task_id" || value === "opaque";
-}
-
-function legacyTaskName(value: Record<string, unknown>): string | null {
-  const direct = stringValue(value.task_name) || stringValue(value.taskName);
-  if (direct) return direct;
-  const history = Array.isArray(value.history) ? value.history : [];
-  for (const item of [...history].reverse()) {
-    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
-    const entry = item as Record<string, unknown>;
-    const taskName = stringValue(entry.task_name) || stringValue(entry.taskName);
-    if (taskName) return taskName;
-  }
-  return null;
+  return typeof value === "string" && /^[a-z][a-z0-9._-]*$/.test(value);
 }
 
 function normalizeExecutionHandle(value: unknown): NativeExecutionHandle | null {
@@ -156,16 +144,16 @@ function normalizeExecutionHandle(value: unknown): NativeExecutionHandle | null 
   const item = value as Record<string, unknown>;
   const handle = stringValue(item.value);
   if (!handle || !isHandleKind(item.kind)) return null;
-  const source = item.source === "native-return" || item.source === "legacy" || item.source === "manual"
+  const source = item.source === "native-return" || item.source === "manual"
     ? item.source
-    : "legacy";
+    : null;
+  if (!source) return null;
   return { kind: item.kind, value: handle, source };
 }
 
 /**
- * Normalize a current or schema-7 ticket without writing it. Schema-7
- * `agent_id` and historical Codex `task_name` metadata are conservative
- * fallback handles; no guessed handle is created from a ticket id.
+ * Normalize a current ticket without writing it. Historical records are not
+ * migrated and execution handles are accepted only from native/manual APIs.
  */
 export function normalizeSpawnTicket(value: unknown): SpawnTicket {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -173,21 +161,10 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
   }
   const ticket = structuredClone(value) as SpawnTicket & Record<string, unknown>;
   const existing = normalizeExecutionHandle(ticket.execution_handle);
-  const agentId = stringValue(ticket.agent_id);
-  const taskName = legacyTaskName(ticket);
-  const host = stringValue(ticket.target_host) || stringValue(ticket.dispatch_host) || stringValue(ticket.host);
-  const fallback = existing
-    || (host === "codex" && taskName ? { kind: "task_name" as const, value: taskName, source: "legacy" as const } : null)
-    || (agentId ? { kind: "agent_id" as const, value: agentId, source: "legacy" as const } : null);
-  const schema = Number(ticket.schema_version);
-  ticket.schema_version = schema === 8 || schema === 7 ? 8 : schema;
-  ticket.execution_handle = fallback;
-  if (!Object.hasOwn(ticket, "agent_id")) ticket.agent_id = null;
+  ticket.execution_handle = existing;
   if (ticket.liveness && typeof ticket.liveness === "object" && !Array.isArray(ticket.liveness)) {
     const live = ticket.liveness as unknown as Record<string, unknown>;
-    const liveHandle = normalizeExecutionHandle(live.execution_handle)
-      || fallback
-      || (stringValue(live.agent_id) ? { kind: "agent_id" as const, value: stringValue(live.agent_id)!, source: "legacy" as const } : null);
+    const liveHandle = normalizeExecutionHandle(live.execution_handle);
     if (liveHandle) {
       ticket.liveness = {
         ...ticket.liveness,
@@ -198,6 +175,28 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
   return ticket;
 }
 
+function isCurrentSpawnRecord(value: unknown): value is SpawnTicket {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  const validHandle = (handle: unknown): boolean => {
+    if (handle === null || handle === undefined) return true;
+    if (typeof handle !== "object" || Array.isArray(handle)) return false;
+    const h = handle as Record<string, unknown>;
+    return isHandleKind(h.kind) && typeof h.value === "string" && Boolean(h.value.trim())
+      && (h.source === "native-return" || h.source === "manual");
+  };
+  const liveness = v.liveness;
+  return v.schema_version === 8 && typeof v.id === "string"
+    && typeof v.session_uid === "string" && Number.isInteger(v.session_ordinal)
+    && v.work_unit !== null && typeof v.work_unit === "object"
+    && v.coordination !== null && typeof v.coordination === "object"
+    && Object.hasOwn(v, "progress") && Object.hasOwn(v, "liveness")
+    && Object.hasOwn(v, "selection") && Object.hasOwn(v, "service_tier")
+    && validHandle(v.execution_handle)
+    && (liveness === null || (typeof liveness === "object" && !Array.isArray(liveness)
+      && validHandle((liveness as Record<string, unknown>).execution_handle)));
+}
+
 export function readSpawn(cwd: string, id: string, env?: NodeJS.ProcessEnv): SpawnTicket {
   const file = path.join(spawnsDir(cwd, env), `${id}.json`);
   if (!fs.existsSync(file)) {
@@ -205,11 +204,20 @@ export function readSpawn(cwd: string, id: string, env?: NodeJS.ProcessEnv): Spa
     err.code = "SPAWN_NOT_FOUND";
     throw err;
   }
-  return normalizeSpawnTicket(JSON.parse(fs.readFileSync(file, "utf8")));
+  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+  if (!isCurrentSpawnRecord(raw)) {
+    const err = new Error(`spawn is not a current-format ticket: ${id}`) as CodedError;
+    err.code = "TICKET_FORMAT_UNSUPPORTED";
+    throw err;
+  }
+  return normalizeSpawnTicket(raw);
 }
 
 export function writeSpawn(cwd: string, ticket: SpawnTicket, env?: NodeJS.ProcessEnv): SpawnTicket {
   ticket = normalizeSpawnTicket(ticket);
+  if (!isCurrentSpawnRecord(ticket)) {
+    throw new Error("spawn ticket must be current and include session identity");
+  }
   const dir = spawnsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${ticket.id}.json`);
@@ -223,14 +231,33 @@ export function writeSpawn(cwd: string, ticket: SpawnTicket, env?: NodeJS.Proces
   return ticket;
 }
 
+export function sessionUid(env?: NodeJS.ProcessEnv): string {
+  const id = String((env || process.env).BATON_SESSION_ID || "").trim();
+  if (!id) throw new Error("BATON_SESSION_ID is required");
+  return crypto.createHash("sha256").update(id).digest("hex");
+}
+
+export function sessionTicketId(prefix: string, uid: string, ordinal: number): string {
+  if (!/^(?:spn|os)$/.test(prefix) || !/^[0-9a-f]{64}$/.test(uid) || !Number.isInteger(ordinal) || ordinal < 1) {
+    throw new Error("invalid session ticket identity");
+  }
+  return `${prefix}-${uid}-${String(ordinal).padStart(4, "0")}`;
+}
+
 export function nextSpawnId(cwd: string, prefix = "spn", env?: NodeJS.ProcessEnv): string {
+  if (!/^(?:spn|os)$/.test(prefix)) throw new Error("invalid session ticket prefix");
+  const uid = sessionUid(env);
   const existing = listSpawns(cwd, env);
   let max = 0;
   for (const s of existing) {
-    const m = String(s.id).match(new RegExp(`^${prefix}-(\\d+)$`));
-    if (m) max = Math.max(max, Number(m[1]));
+    // Standalone and OpenSpec tickets share one session ordinal namespace.
+    // Scope discovery to the exact current session uid so another session's
+    // history can never consume an ordinal for this invocation.
+    const m = String(s.id).match(/^(spn|os)-([0-9a-f]{64})-(\d+)$/);
+    if (!m || m[2] !== uid || s.session_uid !== uid) continue;
+    max = Math.max(max, Number(m[3]));
   }
-  return `${prefix}-${String(max + 1).padStart(4, "0")}`;
+  return sessionTicketId(prefix, uid, max + 1);
 }
 
 /** Reserve a deterministic contiguous id range before a multi-unit wave is persisted. */
@@ -243,7 +270,9 @@ export function nextSpawnIds(cwd: string, prefix = "spn", count = 1, env?: NodeJ
 }
 
 interface BuildSpawnTicketOptions {
-  id: string;
+  id?: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
   description: string;
   prompt: string;
   modelId: string;
@@ -261,7 +290,9 @@ interface BuildSpawnTicketOptions {
 }
 
 export function buildSpawnTicket({
-  id,
+  id: requestedId,
+  cwd,
+  env,
   description,
   prompt,
   modelId,
@@ -277,12 +308,20 @@ export function buildSpawnTicket({
   targetHost = selection?.host || null,
   now = new Date(),
 }: BuildSpawnTicketOptions): SpawnTicket {
+  const uid = sessionUid(env);
+  const id = requestedId || (cwd ? nextSpawnId(cwd, "spn", env) : "");
+  const idMatch = id.match(/^(spn|os)-([0-9a-f]{64})-(\d+)$/);
+  const sessionOrdinal = idMatch && idMatch[2] === uid ? Number(idMatch[3]) : 0;
+  const canonicalId = idMatch && sessionOrdinal > 0 ? sessionTicketId(idMatch[1], idMatch[2], sessionOrdinal) : null;
+  if (!sessionOrdinal || canonicalId !== id) throw new Error("ticket id must use the current session uid and padded ordinal");
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
   const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
   const coordination = coordinationFor(workUnit);
   return {
     schema_version: 8,
     id,
+    session_uid: uid,
+    session_ordinal: sessionOrdinal,
     description,
     prompt: buildWorkerPrompt(prompt, workUnit, coordination),
     work_unit: workUnit,
@@ -302,7 +341,6 @@ export function buildSpawnTicket({
     status: "queued",
     attempt: 0,
     max_attempts: 1,
-    agent_id: null,
     execution_handle: null,
     host: null,
     ...(targetHost ? { target_host: targetHost } : {}),
@@ -348,6 +386,8 @@ export function planStandaloneSpawn({ description, prompt = null, cards, explici
   const id = requestedId || nextSpawnId(cwd, "spn", env);
   const ticket = buildSpawnTicket({
     id,
+    cwd,
+    env,
     description,
     prompt: prompt || description,
     modelId: card.id,
