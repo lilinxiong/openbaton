@@ -109,9 +109,13 @@ describe("baton apply waves", () => {
         assert.equal(ticket.mode, "write");
         assert.equal(ticket.read_only, false);
         assert.equal(ticket.work_unit.kind, "concrete");
+        assert.equal(typeof ticket.routing_requirements?.required_reasoning_effort, "string");
+        assert.equal(typeof ticket.routing_requirements?.estimated_context_tokens, "number");
         const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"));
         assert.equal(receipt.execution.mode, "write");
         assert.ok(receipt.scope.write_allowlist.length);
+        assert.equal(receipt.baseline.index_control_algorithm, "git-index-control-framed-sha256-v2");
+        assert.equal(typeof receipt.baseline.index_control_entry_count, "number");
       }
     });
   });

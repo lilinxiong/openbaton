@@ -68,7 +68,7 @@ function ticket(cwd: string, host: HostId, id = `spn-${host}`) {
 }
 
 describe("host-scoped profiles", () => {
-  it("emits the same opaque reservation envelope for every registered CLI", () => {
+  it("emits the same opaque reservation envelope for every registered CLI", async () => {
     const cwd = project();
     for (const host of HOST_IDS) {
       const route = `${host}/model`;
@@ -79,7 +79,7 @@ describe("host-scoped profiles", () => {
       saveConfig(cwd, config);
       const planned = ticket(cwd, host, `zly-${host}`);
 
-      const result = reserveNext(cwd, { capacity: 1, host });
+      const result = await reserveNext(cwd, { capacity: 1, host });
       assert.equal(result.reserved.length, 1);
       const [reserved] = result.reserved;
       assert.equal(reserved.ticket_id, planned.id);
@@ -89,7 +89,7 @@ describe("host-scoped profiles", () => {
     }
   });
 
-  it("keeps enabled Codex and Grok profiles independent without a global default CLI", () => {
+  it("keeps enabled Codex and Grok profiles independent without a global default CLI", async () => {
     const cwd = project();
     const config = loadConfig(cwd);
     assert.equal(Object.hasOwn(config.cli, "active"), false);
@@ -98,7 +98,7 @@ describe("host-scoped profiles", () => {
     assert.deepEqual(cliProfileForHost(config, "grok").coding_models, ["grok-model"]);
   });
 
-  it("isolates current host-keyed route snapshots", () => {
+  it("isolates current host-keyed route snapshots", async () => {
     const cwd = project();
     publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
     publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
@@ -107,7 +107,7 @@ describe("host-scoped profiles", () => {
     assert.equal(readRouteSnapshot(cwd, { host: "codex" })?.routes[0]?.route_id, "codex/model");
   });
 
-  it("rejects a disabled host without falling back to the other enabled host", () => {
+  it("rejects a disabled host without falling back to the other enabled host", async () => {
     const cwd = project();
     publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
     publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
@@ -115,24 +115,24 @@ describe("host-scoped profiles", () => {
     config.cli.codex.enabled = false;
     saveConfig(cwd, config);
     ticket(cwd, "codex");
-    assert.throws(
-      () => reserveNext(cwd, { capacity: 1, host: "codex" }),
+    assert.rejects(
+      async () => await reserveNext(cwd, { capacity: 1, host: "codex" }),
       (error: unknown) => (error as { code?: string }).code === "ACTIVATION_DISABLED"
         || (error as { code?: string }).code === "CLI_CONFIG_DISABLED",
     );
   });
 
-  it("rejects explicit reservation/bind host mismatch before dispatch", () => {
+  it("rejects explicit reservation/bind host mismatch before dispatch", async () => {
     const cwd = project();
     publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
     publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
     ticket(cwd, "codex");
-    const result = reserveNext(cwd, { capacity: 1, host: "grok" });
+    const result = await reserveNext(cwd, { capacity: 1, host: "grok" });
     assert.equal(result.reserved.length, 0);
     assert.equal(result.blocked[0]?.code, "HOST_MISMATCH");
   });
 
-  it("does not read legacy ops routes or synthesize an unselected profile", () => {
+  it("does not read legacy ops routes or synthesize an unselected profile", async () => {
     const config = normalizeConfig({
       ops: { runner: { route: "legacy-runner" }, longctx: { route: "legacy-longctx" } },
       cli: { active: "codex" },
@@ -148,21 +148,21 @@ describe("host-scoped profiles", () => {
     });
   });
 
-  it("persists capacity separately for each host", () => {
+  it("persists capacity separately for each host", async () => {
     const cwd = project();
     publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
     publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
     ticket(cwd, "codex", "spn-codex");
     ticket(cwd, "grok", "spn-grok");
-    reserveNext(cwd, { capacity: 2, host: "codex" });
-    reserveNext(cwd, { capacity: 5, host: "grok" });
+    await reserveNext(cwd, { capacity: 2, host: "codex" });
+    await reserveNext(cwd, { capacity: 5, host: "grok" });
     assert.equal(persistedCapacity(cwd, "codex"), 2);
     assert.equal(persistedCapacity(cwd, "grok"), 5);
     assert.ok(fs.existsSync(hostDispatchStatePath(cwd, "codex", process.env)));
     assert.ok(fs.existsSync(path.join(spawnsDir(cwd), "spn-codex.json")));
   });
 
-  it("keeps commit-only exclusivity global while ordinary capacity stays host-scoped", () => {
+  it("keeps commit-only exclusivity global while ordinary capacity stays host-scoped", async () => {
     const cwd = project();
     publishRouteSnapshot(cwd, { models: [{ id: "codex/model", namespaced: "codex/model" }] }, new Date(), { cli: "codex", host: "codex" });
     publishRouteSnapshot(cwd, { models: [{ id: "grok/model", namespaced: "grok/model" }] }, new Date(), { cli: "grok", host: "grok" });
@@ -174,7 +174,7 @@ describe("host-scoped profiles", () => {
     commit.host = "codex";
     writeSpawn(cwd, commit);
     const ordinary = ticket(cwd, "grok", "spn-grok");
-    const result = reserveNext(cwd, { capacity: 1, host: "grok" });
+    const result = await reserveNext(cwd, { capacity: 1, host: "grok" });
     assert.deepEqual(result.reserved, []);
     assert.deepEqual(result.blocked, []);
     assert.equal(JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${ordinary.id}.json`), "utf8")).status, "queued");
@@ -188,7 +188,7 @@ describe("Claude Code host tickets", () => {
     publishRouteSnapshot(cwd, { models: [{ id: "claude/model", namespaced: "claude/model" }] }, new Date(), { cli: "claude", host: "claude" });
   }
 
-  it("reserves its own ticket and retains the immutable host", () => {
+  it("reserves its own ticket and retains the immutable host", async () => {
     const cwd = project();
     snapshots(cwd);
     // Allow the exact route this ticket carries, so reservation can succeed.
@@ -196,7 +196,7 @@ describe("Claude Code host tickets", () => {
     config.cli.claude.coding_models = ["claude/model"];
     saveConfig(cwd, config);
     const planned = ticket(cwd, "claude", "spn-claude-ok");
-    const result = reserveNext(cwd, { capacity: 1, host: "claude" });
+    const result = await reserveNext(cwd, { capacity: 1, host: "claude" });
     assert.equal(result.reserved.length, 1);
     assert.equal(result.reserved[0].ticket_id, planned.id);
     const stored = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${planned.id}.json`), "utf8"));
@@ -205,12 +205,12 @@ describe("Claude Code host tickets", () => {
     assert.equal(stored.target_host, "claude");
   });
 
-  it("returns a host mismatch instead of letting another host consume the ticket", () => {
+  it("returns a host mismatch instead of letting another host consume the ticket", async () => {
     const cwd = project();
     snapshots(cwd);
     const planned = ticket(cwd, "claude", "spn-claude-foreign");
     for (const host of ["codex", "grok"] as const) {
-      const result = reserveNext(cwd, { capacity: 1, host });
+      const result = await reserveNext(cwd, { capacity: 1, host });
       assert.equal(result.reserved.length, 0);
       assert.equal(result.blocked[0]?.code, "HOST_MISMATCH");
     }
@@ -220,33 +220,33 @@ describe("Claude Code host tickets", () => {
     );
   });
 
-  it("fails closed when its own profile is disabled rather than borrowing another", () => {
+  it("fails closed when its own profile is disabled rather than borrowing another", async () => {
     const cwd = project();
     snapshots(cwd);
     const config = loadConfig(cwd);
     config.cli.claude.enabled = false;
     saveConfig(cwd, config);
     ticket(cwd, "claude", "spn-claude-disabled");
-    assert.throws(
-      () => reserveNext(cwd, { capacity: 1, host: "claude" }),
+    assert.rejects(
+      async () => await reserveNext(cwd, { capacity: 1, host: "claude" }),
       (error: unknown) => (error as { code?: string }).code === "ACTIVATION_DISABLED"
         || (error as { code?: string }).code === "CLI_CONFIG_DISABLED",
     );
   });
 
-  it("persists its capacity separately from the other hosts", () => {
+  it("persists its capacity separately from the other hosts", async () => {
     const cwd = project();
     snapshots(cwd);
     ticket(cwd, "codex", "spn-codex-cap");
     ticket(cwd, "claude", "spn-claude-cap");
-    reserveNext(cwd, { capacity: 2, host: "codex" });
-    reserveNext(cwd, { capacity: 20, host: "claude" });
+    await reserveNext(cwd, { capacity: 2, host: "codex" });
+    await reserveNext(cwd, { capacity: 20, host: "claude" });
     assert.equal(persistedCapacity(cwd, "codex"), 2);
     assert.equal(persistedCapacity(cwd, "claude"), 20);
     assert.ok(fs.existsSync(hostDispatchStatePath(cwd, "claude", process.env)));
   });
 
-  it("defers a queued ticket at capacity without changing its model", () => {
+  it("defers a queued ticket at capacity without changing its model", async () => {
     const cwd = project();
     snapshots(cwd);
     const config = loadConfig(cwd);
@@ -259,7 +259,7 @@ describe("Claude Code host tickets", () => {
     writeSpawn(cwd, running);
     const queued = ticket(cwd, "claude", "spn-claude-queued");
     // Capacity is already consumed by the running child.
-    const result = reserveNext(cwd, { capacity: 1, host: "claude" });
+    const result = await reserveNext(cwd, { capacity: 1, host: "claude" });
     assert.equal(result.reserved.length, 0);
     const stored = JSON.parse(fs.readFileSync(path.join(spawnsDir(cwd), `${queued.id}.json`), "utf8"));
     assert.equal(stored.status, "queued");

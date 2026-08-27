@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { receiptsDir } from "./paths.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
-import type { CommitBaseline, GitBaseline, SafetyOperation } from "./safety.js";
+import { validateIndexControlBaselineMetadata, type CommitBaseline, type GitBaseline, type SafetyOperation } from "./safety.js";
 
 export type ReceiptOperation = "read" | "commit" | SafetyOperation;
 export type ExecutionMode = "read-only" | "write" | "commit-only";
@@ -116,6 +116,8 @@ export function buildWriteReceipt({
 }): DelegationReceipt {
   if (!writeAllowlist.length) throw new ReceiptError("write Receipt requires a non-empty allowlist", "WRITE_ALLOWLIST_REQUIRED");
   if (!allowedOperations.length) throw new ReceiptError("write Receipt requires allowed operations", "WRITE_OPERATIONS_REQUIRED");
+  const baselineError = validateIndexControlBaselineMetadata(baseline);
+  if (baselineError) throw new ReceiptError("write baseline index-control metadata is invalid", baselineError);
   return {
     ...structuredClone(base),
     execution: { ...base.execution, mode: "write" },
@@ -136,6 +138,12 @@ export function buildCommitReceipt({
   base: DelegationReceipt;
   baseline: CommitBaseline;
 }): DelegationReceipt {
+  const baselineError = validateIndexControlBaselineMetadata({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  }, "staged_index_control");
+  if (baselineError) throw new ReceiptError("commit baseline index-control metadata is invalid", baselineError);
   if (!baseline.staged_paths.length) {
     throw new ReceiptError("commit-only Receipt requires staged paths", "STAGED_DIFF_REQUIRED");
   }
@@ -163,7 +171,21 @@ function receiptPath(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): s
   return path.join(receiptsDir(cwd, env), `${receiptId}.json`);
 }
 
+function validateReceiptBaselines(receipt: DelegationReceipt): void {
+  const baselineError = receipt.baseline
+    ? validateIndexControlBaselineMetadata(receipt.baseline)
+    : receipt.commit_baseline
+      ? validateIndexControlBaselineMetadata({
+        index_control_algorithm: receipt.commit_baseline.staged_index_control_algorithm,
+        index_control_checksum: receipt.commit_baseline.staged_index_control_checksum,
+        index_control_entry_count: receipt.commit_baseline.staged_index_control_entry_count,
+      }, "staged_index_control")
+      : null;
+  if (baselineError) throw new ReceiptError("Receipt index-control metadata is invalid", baselineError);
+}
+
 export function writeReceipt(cwd: string, receipt: DelegationReceipt, env?: NodeJS.ProcessEnv): DelegationReceipt {
+  validateReceiptBaselines(receipt);
   const dir = receiptsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
   const file = receiptPath(cwd, receipt.receipt_id, env);
@@ -185,5 +207,7 @@ export function writeReceipt(cwd: string, receipt: DelegationReceipt, env?: Node
 export function readReceipt(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): DelegationReceipt {
   const file = receiptPath(cwd, receiptId, env);
   if (!fs.existsSync(file)) throw new ReceiptError(`receipt not found: ${receiptId}`, "RECEIPT_NOT_FOUND");
-  return JSON.parse(fs.readFileSync(file, "utf8")) as DelegationReceipt;
+  const receipt = JSON.parse(fs.readFileSync(file, "utf8")) as DelegationReceipt;
+  validateReceiptBaselines(receipt);
+  return receipt;
 }

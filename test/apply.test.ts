@@ -14,14 +14,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtureTasks = path.join(here, "fixtures/openspec/changes/demo/tasks.md");
 
 describe("applyChange", () => {
-  it("does not stop at the 9th pending task — every pending gets a ticket or is blocked", () => {
-    withHome(() => {
+  it("does not stop at the 9th pending task — every pending gets a ticket or is blocked", async () => {
+    await withHome(async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-"));
     fs.mkdirSync(path.join(cwd, "openspec", "changes", "demo"), { recursive: true });
     fs.copyFileSync(fixtureTasks, path.join(cwd, "openspec", "changes", "demo", "tasks.md"));
     initProject(cwd);
     const cfg = loadConfig(cwd);
-    const result = applyChange({ cwd, change: "demo", cfg, cards: [] });
+    const result = await applyChange({ cwd, change: "demo", cfg, cards: [] });
     const pending = parseTasks(fs.readFileSync(fixtureTasks, "utf8")).filter((t) => t.status === "pending");
     assert.ok(pending.length >= 10);
     const handled = result.tickets.length + result.local.length + result.blocked.length;

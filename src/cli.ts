@@ -26,16 +26,17 @@ import {
 import { CardMatchError } from "./lib/cards.js";
 import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
 import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
-import { listSpawns, persistStandalonePlan, planStandaloneSpawn, type StandalonePlan } from "./lib/spawn.js";
+import { listSpawns, planStandaloneSpawn } from "./lib/spawn.js";
 import { formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId, planApplyWaves } from "./lib/apply-waves.js";
 import { parseApplyUnitScopes, scopeRecord } from "./lib/apply-scope.js";
 import { APPLY_WRITE_CONFLICT, findBatchWriteConflicts, findInFlightWriteConflicts } from "./lib/apply-batch.js";
-import { authorizeCommitOpsPlan, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
+import { authorizeCommitOpsPlanAsync, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
 import { normalizeAgentTaskClassification } from "./lib/ops-task.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
-import { buildWriteReceipt, readReceipt } from "./lib/receipt.js";
-import { captureBaseline, type SafetyOperation } from "./lib/safety.js";
+import { readReceipt } from "./lib/receipt.js";
+import { type SafetyOperation } from "./lib/safety.js";
+import { materializeStandalonePlanAsync } from "./lib/ticket-materialization.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
@@ -44,7 +45,7 @@ import { codexHooksStatus } from "./lib/codex-hooks.js";
 import { claudeHooksStatus } from "./lib/claude-hooks.js";
 import { grokHooksStatus } from "./lib/grok-hooks.js";
 import { latestHookObservation } from "./lib/hook-observation.js";
-import { resolveActivation, resolveEffectiveHookPosture, withActivationLock } from "./lib/activation.js";
+import { resolveActivation, resolveEffectiveHookPosture, withActivationLockAsync } from "./lib/activation.js";
 import {
   buildSelectionUnit,
   createSelectionProposal,
@@ -345,7 +346,7 @@ export async function run(argv: string[], {
       case "capabilities":
         return await runCapabilities(args, { cwd, stdout, env, fetchImpl: fetchImpl || globalThis.fetch });
       case "dispatch":
-        return runDispatch(args, { cwd, stdout, env });
+        return await runDispatch(args, { cwd, stdout, env });
       case "routes":
       case "models":
         return await runRoutes(args, { cwd, stdout, env, adapterProvider, host: runtimeHost(parseFlags(args), cwd, env) });
@@ -605,12 +606,17 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
           forceDelegate: true,
           env,
         });
-        if (!writePathsEarly.length && ops.commit_only === true) planned = authorizeCommitOpsPlan(cwd, planned);
-        planned = materializeStandaloneWriteScope(cwd, planned, writePathsEarly, writeOperationsEarly);
-        const ticket = withActivationLock(cwd, env, () => {
+        if (planned.director_local === true) throw new Error(`ops dispatch unexpectedly stayed on the director: ${item.key}`);
+        const delegated = planned;
+        const ticket = await withActivationLockAsync(cwd, env, async () => {
           const current = requireActivation(cwd, env, host);
           if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
-          return persistStandalonePlan(cwd, planned, env);
+          if (!writePathsEarly.length && ops.commit_only === true) await authorizeCommitOpsPlanAsync(cwd, delegated);
+          await materializeStandalonePlanAsync(cwd, delegated, {
+            env,
+            ...(writePathsEarly.length ? { writeAllowlist: writePathsEarly, allowedOperations: writeOperationsEarly } : {}),
+          });
+          return delegated.ticket;
         }, { host, scope: "both" });
         dispatched.push({ key: item.key, operation: ops.operation || null, profile: ops.profile, ticket });
         continue;
@@ -653,13 +659,13 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       payload: source,
       env,
     }) : null;
-    const approval = proposal ? withActivationLock(cwd, env, () => {
+    const approval = proposal ? await withActivationLockAsync(cwd, env, async () => {
       const current = requireActivation(cwd, env, host);
       if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
-      return approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
+      return await approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
     }, { host, scope: "both" }) : null;
     const createdTickets = dispatched.length > 0 || Boolean(approval?.tickets.length);
-    const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
+    const reservation = await maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
     if (flags.json) {
       const handled = dispatched.length || local.length || skipped.length;
       const payload = proposal && !handled
@@ -801,13 +807,13 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     },
     env,
   });
-  const approval = withActivationLock(cwd, env, () => {
+  const approval = await withActivationLockAsync(cwd, env, async () => {
     const current = requireActivation(cwd, env, host);
     if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
-    return approveRecommendedSelection({ cwd, proposal, cards, env });
+    return await approveRecommendedSelection({ cwd, proposal, cards, env });
   }, { host, scope: "both" });
   const createdTickets = Boolean(approval?.tickets.length);
-  const reservation = maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
+  const reservation = await maybeReserveQueuedSpawn(cwd, env, flags, createdTickets);
   if (flags.json) {
     stdout.write(`${JSON.stringify(withReservation({ selection_mode: "baton-recommendation", ...approval, ...wavePayload }, reservation), null, 2)}\n`);
   } else {
@@ -997,25 +1003,6 @@ function printAutomaticRecommendation(stdout: WritableLike, proposal: SelectionP
   for (const ticket of output.tickets) stdout.write(`  ticket ${ticket.id} queued; dispatch remains host-owned\n`);
 }
 
-function materializeStandaloneWriteScope(
-  cwd: string,
-  planned: StandalonePlan,
-  writePaths: string[],
-  writeOperations: SafetyOperation[],
-): StandalonePlan {
-  if (planned.director_local === true || !writePaths.length) return planned;
-  planned.receipt = buildWriteReceipt({
-    base: planned.receipt,
-    baseline: captureBaseline(cwd),
-    writeAllowlist: writePaths,
-    allowedOperations: writeOperations,
-  });
-  planned.ticket.mode = "write";
-  planned.ticket.read_only = false;
-  planned.ticket.receipt_id = planned.receipt.receipt_id;
-  return planned;
-}
-
 function parseFlags(args: string[]): FlagMap {
   const flags: FlagMap = {};
   for (let i = 0; i < args.length; i += 1) {
@@ -1115,19 +1102,19 @@ function flagOn(flags: FlagMap, key: string): boolean {
   return false;
 }
 
-type SpawnReservation = ReturnType<typeof reserveNext>;
+type SpawnReservation = Awaited<ReturnType<typeof reserveNext>>;
 
-function maybeReserveQueuedSpawn(
+async function maybeReserveQueuedSpawn(
   cwd: string,
   env: NodeJS.ProcessEnv,
   flags: FlagMap,
   createdTickets: boolean,
-): SpawnReservation | null {
+): Promise<SpawnReservation | null> {
   if (!flagOn(flags, "dispatch") || !createdTickets) return null;
   const cfg = loadConfig(cwd, { env });
   const host = runtimeHost(flags, cwd, env);
   const capacityFlag = stringFlag(flags, "capacity");
-  return reserveNext(cwd, {
+  return await reserveNext(cwd, {
     capacity: capacityFlag != null ? Number(capacityFlag) : (persistedCapacity(cwd, host, env) ?? effectiveMaxConcurrentForHost(cfg, host, env)),
     host,
     env,

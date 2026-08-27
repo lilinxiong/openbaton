@@ -437,6 +437,8 @@ describe("per-CLI configuration and ops labels", () => {
       assert.equal(receipt.execution.mode, "write");
       assert.deepEqual(receipt.scope.write_allowlist, ["dist/**"]);
       assert.deepEqual(receipt.scope.allowed_operations, ["write", "create", "delete"]);
+      assert.equal(receipt.baseline.index_control_algorithm, "git-index-control-framed-sha256-v2");
+      assert.equal(typeof receipt.baseline.index_control_entry_count, "number");
     });
   });
 

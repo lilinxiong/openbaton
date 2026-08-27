@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +13,7 @@ import {
   readSelectionProposal,
   selectionSourceFingerprint,
 } from "../src/lib/selection.js";
-import { artificialAnalysisDbPath, modelAvailabilityPath } from "../src/lib/paths.js";
+import { artificialAnalysisDbPath, modelAvailabilityPath, receiptsDir } from "../src/lib/paths.js";
 import { availabilityForRoute, readModelAvailability } from "../src/lib/model-availability.js";
 import { configureCodex } from "./configure.js";
 import { withHome, fakeEnv } from "./home.js";
@@ -227,6 +228,22 @@ describe("automatic configured-model selection", () => {
       assert.equal(result.approvals[0].confirmed_by, "baton-recommendation");
       assert.equal(result.approvals[0].service_tier, null);
       assert.equal(result.tickets[0].service_tier, null);
+
+      execFileSync("git", ["init", "-q"], { cwd });
+      execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd });
+      execFileSync("git", ["config", "user.name", "Selection Test"], { cwd });
+      fs.writeFileSync(path.join(cwd, "seed.txt"), "seed\n");
+      execFileSync("git", ["add", "seed.txt"], { cwd });
+      execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd });
+      const writeOut = capture();
+      assert.equal(await run(["spawn", "implement a scoped coding fix", "--host", "codex", "--classification", "implementation", "--write-path", "src/cli.ts", "--json"], {
+        cwd, env, stdout: writeOut, stderr: writeOut,
+      }), 0, writeOut.text());
+      const writeResult = JSON.parse(writeOut.text());
+      const writeTicket = writeResult.tickets[0];
+      const writeReceipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${writeTicket.receipt_id}.json`), "utf8"));
+      assert.equal(writeReceipt.baseline.index_control_algorithm, "git-index-control-framed-sha256-v2");
+      assert.equal(typeof writeReceipt.baseline.index_control_entry_count, "number");
 
       const audit = capture();
       assert.equal(await run(["selection", "show", result.proposal_id, "--host", "codex", "--json"], {

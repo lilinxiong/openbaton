@@ -11,7 +11,7 @@ import {
 import { findOpsRouteChoice, listOpsRouteChoices } from "./ops-routes.js";
 import { readRouteSnapshot } from "./routes.js";
 import { buildCommitReceipt } from "./receipt.js";
-import { captureCommitBaseline } from "./safety.js";
+import { captureCommitBaseline, captureCommitBaselineAsync, type AsyncSafetyOptions, type CommitBaseline } from "./safety.js";
 import type { StandalonePlan } from "./spawn.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 import type { HostId } from "./hosts.js";
@@ -271,9 +271,8 @@ function resolveOpsProfileDispatch(
   };
 }
 
-export function authorizeCommitOpsPlan(cwd: string, planned: StandalonePlan): StandalonePlan {
+export function applyCommitBaselineToPlan(planned: StandalonePlan, baseline: CommitBaseline): StandalonePlan {
   if (planned.director_local === true) throw new Error("commit-only ops dispatch unexpectedly stayed on the director");
-  const baseline = captureCommitBaseline(cwd);
   planned.ticket.mode = "commit-only";
   planned.ticket.read_only = false;
   planned.ticket.prompt = [
@@ -291,5 +290,21 @@ export function authorizeCommitOpsPlan(cwd: string, planned: StandalonePlan): St
     "Return only the commit id, subject, and concise verification evidence.",
   ].join("\n");
   planned.receipt = buildCommitReceipt({ base: planned.receipt, baseline });
+  planned.ticket.receipt_id = planned.receipt.receipt_id;
   return planned;
+}
+
+export function authorizeCommitOpsPlan(cwd: string, planned: StandalonePlan): StandalonePlan {
+  return applyCommitBaselineToPlan(planned, captureCommitBaseline(cwd));
+}
+
+/** Promise-based commit authorization. Baseline capture is stable and fully
+ * drained before the plan can reach Receipt/spawn materialization. */
+export async function authorizeCommitOpsPlanAsync(
+  cwd: string,
+  planned: StandalonePlan,
+  options: AsyncSafetyOptions = {},
+): Promise<StandalonePlan> {
+  if (planned.director_local === true) throw new Error("commit-only ops dispatch unexpectedly stayed on the director");
+  return applyCommitBaselineToPlan(planned, await captureCommitBaselineAsync(cwd, new Date(), options));
 }

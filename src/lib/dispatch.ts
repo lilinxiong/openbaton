@@ -18,7 +18,7 @@ import { getCliAdapter } from "../adapters/index.js";
 import type { UnknownRecord } from "../types.js";
 import { dispatchLockPath, hostDispatchStatePath, workspaceId } from "./paths.js";
 import { readReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
-import { auditCommitOutcome, auditPreparedCommit, auditWorktree, type SafetyOperation } from "./safety.js";
+import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, type AsyncSafetyOptions, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
@@ -38,7 +38,7 @@ import {
   resolveNativeWorkerIdentity,
 } from "./host-identity.js";
 import { clearHostGuardBindingsForTicketAttempt } from "./host-guard.js";
-import { withActivationLock, resolveActivation } from "./activation.js";
+import { withActivationLock, withActivationLockAsync, resolveActivation, type ActivationLockOptions } from "./activation.js";
 import { clearGuardClaims, issueGuardClaim, issueGuardContinuationClaim, readGuardClaimState } from "./guard-claims.js";
 import { codexHooksStatus } from "./codex-hooks.js";
 import {
@@ -48,6 +48,7 @@ import {
   markRouteAvailable,
   markRouteExhausted,
 } from "./model-availability.js";
+import { withOwnedLock, withOwnedLockAsync, type OwnedLock, type OwnedLockOptions } from "./owned-lock.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
@@ -178,25 +179,50 @@ function lockPath(cwd: string): string {
   return dispatchLockPath(cwd);
 }
 
+function dispatchLockError(error: unknown): never {
+  if (error instanceof Error && "code" in error && error.code === "LOCK_BUSY") {
+    throw new DispatchError("another dispatcher holds the project lock", "DISPATCH_LOCKED");
+  }
+  throw error;
+}
+
+export type DispatchLockOptions = Omit<OwnedLockOptions, "operation">;
+type ReserveActivationLockOptions = Omit<ActivationLockOptions, "host" | "scope" | "operation">;
+
+/** Serialize a synchronous dispatch operation using the shared owned-lock primitive. */
+export function withDispatchLock<T>(cwd: string, fn: () => T, options: DispatchLockOptions = {}): T {
+  let acquired = false;
+  try {
+    return withOwnedLock(lockPath(cwd), () => {
+      acquired = true;
+      return fn();
+    }, { ...options, operation: "dispatch" });
+  } catch (error) {
+    if (acquired) throw error;
+    return dispatchLockError(error);
+  }
+}
+
+/** Await-safe dispatch transaction; ownership and lease refresh span all awaited work. */
+export async function withDispatchLockAsync<T>(
+  cwd: string,
+  fn: (lock: OwnedLock) => Promise<T>,
+  options: DispatchLockOptions = {},
+): Promise<T> {
+  let acquired = false;
+  try {
+    return await withOwnedLockAsync(lockPath(cwd), (lock) => {
+      acquired = true;
+      return fn(lock);
+    }, { ...options, operation: "dispatch" });
+  } catch (error) {
+    if (acquired) throw error;
+    return dispatchLockError(error);
+  }
+}
+
 function withLock<T>(cwd: string, fn: () => T): T {
-  const file = lockPath(cwd);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  let handle: number | undefined;
-  try {
-    handle = fs.openSync(file, "wx", 0o600);
-    fs.writeFileSync(handle, `${JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() })}\n`);
-  } catch (error: unknown) {
-    if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new DispatchError("another dispatcher holds the project lock", "DISPATCH_LOCKED");
-    throw error;
-  }
-  try {
-    return fn();
-  } finally {
-    if (handle !== undefined) {
-      try { fs.closeSync(handle); } catch {}
-    }
-    try { fs.unlinkSync(file); } catch {}
-  }
+  return withDispatchLock(cwd, fn);
 }
 
 function capacityValue(capacity: unknown): number {
@@ -359,7 +385,7 @@ function receiptModeMatches(ticket: SpawnTicket, receipt: DelegationReceipt): bo
     && JSON.stringify(receipt.scope.write_allowlist) === JSON.stringify(receipt.commit_baseline!.staged_paths);
 }
 
-function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host: HostId, env: NodeJS.ProcessEnv = process.env): { ticket_id: string; code: string; message: string } | null {
+async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host: HostId, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}): Promise<{ ticket_id: string; code: string; message: string } | null> {
   let code = null;
   let message = null;
   let capturedHost: HostId | null = null;
@@ -443,8 +469,9 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host
     code = "RECEIPT_REQUIRED";
     message = `ticket ${ticket.id} has no Delegation Receipt`;
   } else if (!code) {
+    let receipt: DelegationReceipt;
     try {
-      const receipt = readReceipt(cwd, ticket.receipt_id, env);
+      receipt = readReceipt(cwd, ticket.receipt_id, env);
       const expectedReceiptHost = ticket.target_host || ticket.dispatch_host || ticket.host;
       if (receipt.ticket_id !== ticket.id
         || (expectedReceiptHost ? receipt.host !== expectedReceiptHost : Boolean(receipt.host && receipt.host !== host))
@@ -456,16 +483,16 @@ function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host
         code = "RECEIPT_MISMATCH";
         message = `ticket ${ticket.id} does not match its Delegation Receipt`;
       }
-      if (!code && ticket.mode === "commit-only") {
-        const verdict = auditPreparedCommit(cwd, receipt.commit_baseline!);
-        if (!verdict.accepted) {
-          code = "COMMIT_BASELINE_STALE";
-          message = verdict.violations.map((item) => item.code).join(", ");
-        }
-      }
     } catch (error) {
       code = "RECEIPT_INVALID";
       message = error instanceof Error ? error.message : String(error);
+    }
+    if (!code && ticket.mode === "commit-only") {
+      const verdict = await auditPreparedCommitAsync(cwd, receipt!.commit_baseline!, safetyOptions);
+      if (!verdict.accepted) {
+        code = "COMMIT_BASELINE_STALE";
+        message = verdict.violations.map((item) => item.code).join(", ");
+      }
     }
   }
   if (!code) return null;
@@ -482,6 +509,10 @@ interface ReserveOptions {
   host?: string;
   now?: TimeInput;
   env?: NodeJS.ProcessEnv;
+  /** Internal await-safety injection surface; not part of CLI syntax. */
+  safety?: AsyncSafetyOptions;
+  activationLock?: ReserveActivationLockOptions;
+  dispatchLock?: DispatchLockOptions;
 }
 
 function requireHost(host: string): HostId {
@@ -533,12 +564,13 @@ function guardUnavailableForReservation(
   }
 }
 
-export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host = "codex", now, env = process.env }: ReserveOptions) {
+export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host = "codex", now, env = process.env, safety, activationLock = {}, dispatchLock = {} }: ReserveOptions) {
   const targetHost = requireHost(host);
   const max = capacityValue(capacity);
-  return withActivationLock(cwd, env, () => {
+  const safetyOptions = safety || {};
+  return withActivationLockAsync(cwd, env, async () => {
     const maxTake = Math.max(0, Math.floor(Number(limit) || 0));
-    return withLock(cwd, () => {
+    return withDispatchLockAsync(cwd, async () => {
     const at = instant(now).toISOString();
     const tickets = fifoTickets(cwd, env);
     const activeTickets = tickets.filter((ticket) => holdsHostSlot(ticket) && ticketMatchesHost(ticket, targetHost));
@@ -586,11 +618,11 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
       if (ticket.mode === "commit-only" && (anyActive.length > 0 || reserved.length > 0)) break;
       if (reserved.some((item) => item.mode === "commit-only")) break;
       ensureActivation();
-      const rejected = rejectUndispatchable(cwd, ticket, at, targetHost, env);
+      const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions);
       if (rejected) {
         blocked.push(rejected);
         if (rejected.code === "MODEL_QUOTA_EXHAUSTED") {
-          createQuotaSuccessor(cwd, ticket, at, env);
+          await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
           writeSpawn(cwd, ticket, env);
         }
         continue;
@@ -618,7 +650,7 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
           transition(ticket, "queued", "errored", { at, event: "dispatch_blocked", detail: { error_code: probeRejected.code } });
           ticket.error = { code: probeRejected.code, message: probeRejected.message };
           ticket.finished_at = at;
-          createQuotaSuccessor(cwd, ticket, at, env);
+          await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
           writeSpawn(cwd, ticket, env);
           continue;
         }
@@ -664,8 +696,8 @@ export function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INT
     }
     rememberDispatchCapacity(cwd, max, targetHost, env);
       return { reserved, blocked, snapshot: dispatchSnapshot(cwd, { capacity: max, host: targetHost, env }) };
-    });
-  }, { host: targetHost });
+    }, dispatchLock);
+  }, { ...activationLock, host: targetHost, scope: "both", operation: "dispatch-reservation" });
 }
 
 interface BindOptions {
@@ -1059,6 +1091,9 @@ interface FinishOptions {
   host?: string;
   now?: TimeInput;
   env?: NodeJS.ProcessEnv;
+  /** Internal await-safety injection surface; not part of CLI syntax. */
+  safety?: AsyncSafetyOptions;
+  dispatchLock?: DispatchLockOptions;
 }
 
 function clearTicketNativeIdentity(cwd: string, ticket: SpawnTicket, env: NodeJS.ProcessEnv = process.env): void {
@@ -1163,7 +1198,7 @@ function fallbackRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, en
   return null;
 }
 
-function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv = process.env): string | null {
+async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}): Promise<string | null> {
   if (ticket.mode !== "write" || !ticket.receipt_id) {
     ticket.fallback_reason = "FALLBACK_REQUIRES_RECONCILIATION";
     return null;
@@ -1173,7 +1208,7 @@ function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string, env:
     ticket.fallback_reason = "FALLBACK_REQUIRES_RECONCILIATION";
     return null;
   }
-  const noMutation = auditWorktree(cwd, receipt.baseline, { write_allowlist: [], allowed_operations: [] });
+  const noMutation = await auditWorktreeAsync(cwd, receipt.baseline, { write_allowlist: [], allowed_operations: [] }, safetyOptions);
   if (!noMutation.accepted) {
     ticket.fallback_reason = "FALLBACK_REQUIRES_RECONCILIATION";
     return null;
@@ -1262,7 +1297,7 @@ function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string, env:
   return successor.id;
 }
 
-export function finishAgent(cwd: string, id: string, {
+export async function finishAgent(cwd: string, id: string, {
   status,
   conclusion = null,
   errorCode = null,
@@ -1273,10 +1308,13 @@ export function finishAgent(cwd: string, id: string, {
   host,
   now,
   env = process.env,
-}: FinishOptions): SpawnTicket {
+  safety,
+  dispatchLock = {},
+}: FinishOptions): Promise<SpawnTicket> {
   const terminal = String(status || "").trim();
   if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
-  return withLock(cwd, () => {
+  const safetyOptions = safety || {};
+  return withDispatchLockAsync(cwd, async () => {
     const at = instant(now).toISOString();
     const ticket = requireCurrentTicket(readSpawn(cwd, id, env));
     if (host && ticketTargetHost(ticket) !== requireHost(host)) {
@@ -1321,11 +1359,11 @@ export function finishAgent(cwd: string, id: string, {
       if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
       const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation =>
         ["write", "create", "delete", "rename", "chmod"].includes(item));
-      const verdict = auditWorktree(cwd, receipt.baseline, {
+      const verdict = await auditWorktreeAsync(cwd, receipt.baseline, {
         write_allowlist: receipt.scope.write_allowlist,
         allowed_operations: allowedOperations,
         peer_write_allowlists: peerWriteAllowlists(cwd, ticket, env),
-      });
+      }, safetyOptions);
       ticket.safety_verdict = verdict as unknown as UnknownRecord;
       if (!verdict.accepted) {
         transition(ticket, expected, "errored", {
@@ -1364,7 +1402,7 @@ export function finishAgent(cwd: string, id: string, {
       if (!ticket.receipt_id) throw new DispatchError(`ticket ${id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: id });
       const receipt = readReceipt(cwd, ticket.receipt_id, env);
       if (!receipt.commit_baseline) throw new DispatchError(`ticket ${id} has no commit baseline`, "COMMIT_BASELINE_REQUIRED", { ticketId: id });
-      const verdict = auditCommitOutcome(cwd, receipt.commit_baseline, { requireCommit: terminal === "completed" });
+      const verdict = await auditCommitOutcomeAsync(cwd, receipt.commit_baseline, { ...safetyOptions, requireCommit: terminal === "completed" });
       ticket.safety_verdict = verdict as unknown as UnknownRecord;
       if (!verdict.accepted) {
         transition(ticket, expected, "errored", {
@@ -1437,13 +1475,13 @@ export function finishAgent(cwd: string, id: string, {
       // availabilityOutcome either durably records the route state or throws
       // MODEL_AVAILABILITY_WRITE_FAILED. Never create a successor from an
       // unpersisted quota decision.
-      createQuotaSuccessor(cwd, ticket, at, env);
+      await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
     }
     clearTicketNativeIdentity(cwd, ticket, env);
     writeSpawn(cwd, ticket, env);
     updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at, env);
     return ticket;
-  });
+  }, dispatchLock);
 }
 
 interface ReleaseOptions {

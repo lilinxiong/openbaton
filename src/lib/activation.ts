@@ -15,6 +15,7 @@ import {
 } from "./paths.js";
 import type { CodedError, UnknownRecord, WritableLike } from "../types.js";
 import type { GuardMode } from "./config.js";
+import { acquireOwnedLock, type OwnedLock } from "./owned-lock.js";
 
 export type ActivationScope = "all" | "curproject";
 export type ActivationProvenance = "global" | "project" | "global-and-project" | "invalid";
@@ -329,20 +330,22 @@ export interface ActivationLockOptions {
   /** Host lock is required by reservation and all activation mutations. */
   host?: string;
   scope?: "project" | "global" | "both";
+  operation?: string;
+  /** Test/runtime tuning; production defaults retain a 60 second lease. */
+  leaseMs?: number;
+  staleMs?: number;
+  now?: () => number;
+  isPidAlive?: (pid: number) => boolean;
+  refreshIntervalMs?: number;
 }
 
-function acquireActivationLock(file: string): number {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return fs.openSync(file, "wx", 0o600);
-    } catch {
-      try {
-        if (Date.now() - fs.statSync(file).mtimeMs >= 60_000) fs.unlinkSync(file);
-      } catch { /* another process owns or removed the lock */ }
-    }
-  }
-  throw invalid(`activation lock is busy: ${file}`, "ACTIVATION_LOCK_BUSY");
+function activationFiles(cwd: string, env: NodeJS.ProcessEnv | undefined, options: ActivationLockOptions): string[] {
+  const scope = options.scope || (options.host ? "both" : "project");
+  const files: string[] = [];
+  if ((scope === "global" || scope === "both") && options.host) files.push(globalActivationLockPath(options.host, env));
+  if (scope === "project" || scope === "both") files.push(activationLockPath(cwd, env, options.host));
+  if (!files.length) throw invalid("activation lock requires a scope and host", "ACTIVATION_LOCK_INVALID");
+  return files;
 }
 
 /**
@@ -356,22 +359,49 @@ export function withActivationLock<T>(
   fn: () => T,
   options: ActivationLockOptions = {},
 ): T {
-  const scope = options.scope || (options.host ? "both" : "project");
-  const files: string[] = [];
-  if ((scope === "global" || scope === "both") && options.host) files.push(globalActivationLockPath(options.host, env));
-  if (scope === "project" || scope === "both") {
-    files.push(activationLockPath(cwd, env, options.host));
-  }
-  if (!files.length) throw invalid("activation lock requires a scope and host", "ACTIVATION_LOCK_INVALID");
-  const acquired: Array<{ file: string; fd: number }> = [];
+  const files = activationFiles(cwd, env, options);
+  const acquired: OwnedLock[] = [];
   try {
-    for (const file of files) acquired.push({ file, fd: acquireActivationLock(file) });
+    for (const file of files) {
+      try { acquired.push(acquireOwnedLock(file, { ...options, operation: options.operation || "activation" })); }
+      catch (error) {
+        if ((error as CodedError).code === "LOCK_BUSY") throw invalid(`activation lock is busy: ${file}`, "ACTIVATION_LOCK_BUSY");
+        throw error;
+      }
+    }
     return fn();
   } finally {
-    for (const lock of acquired.reverse()) {
-      try { fs.closeSync(lock.fd); } catch { /* already closed */ }
-      try { fs.unlinkSync(lock.file); } catch { /* stale cleanup may have reclaimed it */ }
+    for (const lock of acquired.reverse()) lock.release();
+  }
+}
+
+/** Await-safe activation transaction. The lease is refreshed while user code awaits. */
+export async function withActivationLockAsync<T>(
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+  fn: (locks: readonly OwnedLock[]) => Promise<T>,
+  options: ActivationLockOptions = {},
+): Promise<T> {
+  const files = activationFiles(cwd, env, options);
+  const acquired: OwnedLock[] = [];
+  try {
+    for (const file of files) {
+      try { acquired.push(acquireOwnedLock(file, { ...options, operation: options.operation || "activation" })); }
+      catch (error) {
+        if ((error as CodedError).code === "LOCK_BUSY") throw invalid(`activation lock is busy: ${file}`, "ACTIVATION_LOCK_BUSY");
+        throw error;
+      }
     }
+  } catch (error) {
+    for (const lock of [...acquired].reverse()) lock.release();
+    throw error;
+  }
+  const interval = options.refreshIntervalMs ?? Math.max(1, Math.floor((options.leaseMs ?? 60_000) / 3));
+  const timer = setInterval(() => { for (const lock of acquired) lock.refresh(); }, interval);
+  timer.unref?.();
+  try { return await fn(acquired); } finally {
+    clearInterval(timer);
+    for (const lock of [...acquired].reverse()) lock.release();
   }
 }
 

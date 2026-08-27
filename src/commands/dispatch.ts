@@ -102,14 +102,14 @@ function dispatchHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): Host
   return resolveRuntimeHost({ cwd, env, explicitHost: stringFlag(flags, "host") });
 }
 
-function finishAndMaybeRelease(
+async function finishAndMaybeRelease(
   cwd: string,
   id: string,
   flags: FlagMap,
   options: Parameters<typeof finishAgent>[2],
 ) {
   const host = stringFlag(flags, "host");
-  const ticket = finishAgent(cwd, id, { ...options, env: options.env || process.env, ...(host ? { host } : {}) });
+  const ticket = await finishAgent(cwd, id, { ...options, env: options.env || process.env, ...(host ? { host } : {}) });
   if (!flags.release) return ticket;
   return releaseAgent(cwd, id, {
     agentId: stringFlag(flags, "agent-id"),
@@ -126,7 +126,7 @@ interface DispatchCommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-export function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): number {
+export async function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): Promise<number> {
   const sub = args[0] || "status";
   const rest = args.slice(1);
   const flags = parseFlags(rest);
@@ -135,7 +135,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
 
   if (sub === "next") {
     const host = dispatchHost(flags, cwd, env);
-    const result = reserveNext(cwd, {
+    const result = await reserveNext(cwd, {
       capacity: capacity(cwd, env, flags.capacity, host),
       limit: flags.limit == null ? Number.MAX_SAFE_INTEGER : Number(flags.limit),
       host,
@@ -215,7 +215,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
   if (sub === "complete") {
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
-    const ticket = finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")!, env });
+    const ticket = await finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")!, env });
     print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
@@ -226,7 +226,7 @@ export function runDispatch(args: string[], { cwd, stdout, env = process.env }: 
     const timeoutProbeSequence = sub === "timeout" ? stringFlag(flags, "probe-sequence") : undefined;
     if (sub === "timeout" && !timeoutProbeSequence) throw new Error(USAGE.trim());
     const status = sub === "fail" ? "errored" : sub === "timeout" ? "timed_out" : "closed";
-    const ticket = finishAndMaybeRelease(cwd, id, flags, {
+    const ticket = await finishAndMaybeRelease(cwd, id, flags, {
       status,
       conclusion: stringFlag(flags, "text") || null,
       errorCode: stringFlag(flags, "code") || null,

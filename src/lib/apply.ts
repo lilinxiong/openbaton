@@ -17,9 +17,9 @@ import {
   writeTaskConclusionByNumber,
   OpenSpecError,
 } from "./openspec.js";
-import { buildSpawnTicket, nextSpawnId, writeSpawn, readSpawn } from "./spawn.js";
-import { buildReadOnlyReceipt, buildWriteReceipt, writeReceipt } from "./receipt.js";
-import { captureBaseline } from "./safety.js";
+import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn } from "./spawn.js";
+import { buildReadOnlyReceipt } from "./receipt.js";
+import { materializeStandalonePlanAsync } from "./ticket-materialization.js";
 import { runsDir } from "./paths.js";
 import type { ApplyUnitScopeMap } from "./apply-scope.js";
 import type { SpawnTicket } from "./spawn.js";
@@ -144,6 +144,7 @@ interface ApplyChangeInput {
   selectCards?: (prompt: string, cards: ApplyModelCard[]) => ApplyModelCard[];
   selectionApprovals?: Map<string, ModelSelectionApproval>;
   unitScopes?: ApplyUnitScopeMap;
+  routingRequirements?: Map<string, NonNullable<SpawnTicket["routing_requirements"]>>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -235,7 +236,7 @@ export function formatTaskPrompt(task: OpenSpecTask): string {
   return `OpenSpec task${num}${section}: ${task.description}`;
 }
 
-export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map(), unitScopes, env }: ApplyChangeInput): ApplyResult {
+export async function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, selectCards, selectionApprovals = new Map(), unitScopes, routingRequirements, env }: ApplyChangeInput): Promise<ApplyResult> {
   const changeDir = resolveApplyChange(cwd, change);
   const changeData: OpenSpecChange = loadTasksFromChangeDir(changeDir);
   const { tasksPath, tasks } = changeData;
@@ -292,6 +293,7 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       },
       selection: selectionApprovals.get(unit.id) || null,
     });
+    if (routingRequirements?.has(unit.id)) ticket.routing_requirements = routingRequirements.get(unit.id);
     const card = {
       id: unit.model_id,
       strengths: "",
@@ -306,19 +308,12 @@ export function applyChange({ cwd, change, cfg, cards, includeTask, selectCard, 
       maxAttempts: ticket.max_attempts,
       selection: selectionApprovals.get(unit.id) || null,
     });
-    if (scope?.mode === "write") {
-      receipt = buildWriteReceipt({
-        base: receipt,
-        baseline: captureBaseline(cwd),
-        writeAllowlist: scope.write_paths,
-        allowedOperations: ["write", "create"],
-      });
-      ticket.mode = "write";
-      ticket.read_only = false;
-    }
     ticket.receipt_id = receipt.receipt_id;
-    writeReceipt(cwd, receipt, env);
-    writeSpawn(cwd, ticket, env);
+    const planned = { ticket, receipt, director_local: false as const, queue: { running: 0, queued: 0 } };
+    await materializeStandalonePlanAsync(cwd, planned, {
+      env,
+      ...(scope?.mode === "write" ? { writeAllowlist: scope.write_paths, allowedOperations: ["write", "create"] as const } : {}),
+    });
     tickets.push(ticket);
   }
 

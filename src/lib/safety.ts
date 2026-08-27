@@ -2,6 +2,14 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM, LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
+import {
+  captureStableSafetyFacts,
+  type GitSafetyFacts,
+  type StableGitSafetyFacts,
+  type StableGitSafetyFactsOptions,
+} from "./git-safety-facts.js";
+import { collectGitScalar, type GitProcessOptions } from "./git-safety-process.js";
 
 export type SafetyOperation = "write" | "create" | "delete" | "rename" | "chmod";
 
@@ -16,6 +24,10 @@ export interface GitBaseline {
   index_tree: string;
   /** Semantic index-entry control flags; stat-cache bytes are deliberately omitted. */
   index_control_checksum: string;
+  /** Optional version marker for the framed index-control fingerprint. */
+  index_control_algorithm?: string;
+  /** Number of index-control records covered by the versioned fingerprint. */
+  index_control_entry_count?: number;
   /** Complete refs and HEAD reflog captured for ordinary worker audits. */
   refs: string[];
   head_reflog_count: number;
@@ -34,6 +46,10 @@ export interface CommitBaseline {
   staged_tree: string;
   /** Semantic index-entry control flags; stat-cache bytes are deliberately omitted. */
   staged_index_control_checksum: string;
+  /** Optional version marker for the framed index-control fingerprint. */
+  staged_index_control_algorithm?: string;
+  /** Number of index-control records covered by the versioned fingerprint. */
+  staged_index_control_entry_count?: number;
   staged_paths: string[];
   refs: string[];
   head_reflog_count: number;
@@ -85,6 +101,13 @@ export interface CommitSafetyVerdict {
   violations: CommitSafetyViolation[];
 }
 
+/** Narrow injection surface for Promise-based stable safety APIs. */
+export interface AsyncSafetyOptions {
+  spawn?: GitProcessOptions["spawn"];
+  collectFacts?: StableGitSafetyFactsOptions["collectFacts"];
+  collectToken?: StableGitSafetyFactsOptions["collectToken"];
+}
+
 export class CommitBaselineError extends Error {
   readonly code: string;
   constructor(message: string, code: string) {
@@ -92,6 +115,58 @@ export class CommitBaselineError extends Error {
     this.name = "CommitBaselineError";
     this.code = code;
   }
+}
+
+export type IndexControlBaselineErrorCode =
+  | "INDEX_CONTROL_ALGORITHM_UNSUPPORTED"
+  | "INDEX_CONTROL_BASELINE_INVALID";
+
+const HEX_SHA256 = /^[0-9a-f]{64}$/;
+
+/**
+ * Validate the optional versioned index-control metadata without changing the
+ * legacy checksum semantics.  An entirely absent marker is an old baseline;
+ * once any v2 field is present, all fields must be complete and canonical.
+ */
+export function validateIndexControlBaselineMetadata(
+  baseline: {
+    index_control_algorithm?: unknown;
+    index_control_checksum?: unknown;
+    index_control_entry_count?: unknown;
+  },
+  prefix = "index_control",
+): IndexControlBaselineErrorCode | null {
+  const algorithm = baseline.index_control_algorithm;
+  const checksum = baseline.index_control_checksum;
+  const entryCount = baseline.index_control_entry_count;
+  const hasAlgorithm = algorithm !== undefined;
+  const hasChecksum = checksum !== undefined;
+  const hasEntryCount = entryCount !== undefined;
+  // Legacy baselines have the old checksum but no marker or count. Keep that
+  // shape compatible, while still requiring its checksum to be canonical.
+  if (!hasAlgorithm && !hasEntryCount) {
+    return typeof checksum === "string" && HEX_SHA256.test(checksum)
+      ? null
+      : "INDEX_CONTROL_BASELINE_INVALID";
+  }
+  if (hasAlgorithm && typeof algorithm === "string" && algorithm !== GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM) {
+    return "INDEX_CONTROL_ALGORITHM_UNSUPPORTED";
+  }
+  if (!hasAlgorithm || typeof algorithm !== "string" || !hasChecksum || !hasEntryCount
+    || typeof checksum !== "string" || !HEX_SHA256.test(checksum)
+    || typeof entryCount !== "number" || !Number.isSafeInteger(entryCount) || entryCount < 0) {
+    return "INDEX_CONTROL_BASELINE_INVALID";
+  }
+  void prefix;
+  return null;
+}
+
+function indexControlBaselineViolation(
+  baseline: { index_control_algorithm?: unknown; index_control_checksum?: unknown; index_control_entry_count?: unknown },
+  prefix = "index_control",
+): { code: IndexControlBaselineErrorCode; message: string } | null {
+  const code = validateIndexControlBaselineMetadata(baseline, prefix);
+  return code ? { code, message: `${prefix} baseline metadata is invalid` } : null;
 }
 
 function git(cwd: string, args: string[]): string {
@@ -279,6 +354,104 @@ export function captureBaseline(worktree: string, now: Date = new Date()): GitBa
   };
 }
 
+async function resolveRepoRootAsync(worktree: string, spawn?: GitProcessOptions["spawn"]): Promise<string> {
+  const resolved = await collectGitScalar({ cwd: worktree, args: ["rev-parse", "--show-toplevel"], spawn });
+  return fs.realpathSync(resolved.trim());
+}
+
+function indexMetadata(fingerprint: GitSafetyFacts["indexControl"]): {
+  checksum: string;
+  algorithm: string;
+  entryCount: number;
+} {
+  return { checksum: fingerprint.checksum, algorithm: fingerprint.algorithm, entryCount: fingerprint.entryCount };
+}
+
+/** Select only a known collector algorithm; malformed metadata is reported by
+ * the verdict mapper rather than being passed to the collector as a string. */
+function selectAuditIndexControlAlgorithm(baseline: {
+  index_control_algorithm?: unknown;
+  index_control_checksum?: unknown;
+  index_control_entry_count?: unknown;
+}): typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM | typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM {
+  // Select legacy only after the complete legacy shape has been validated.
+  // Unknown or incomplete metadata must still use a known collector so the
+  // mapper can return the precise baseline violation rather than a collector
+  // configuration error.
+  if (!validateIndexControlBaselineMetadata(baseline)) {
+    return baseline.index_control_algorithm === undefined
+      ? LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM
+      : GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
+  }
+  // Unknown or incomplete metadata remains visible to indexControlBaselineViolation;
+  // v2 is merely the safe known parser used to finish the stable observation.
+  return GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
+}
+
+function stableObservationOptions(
+  options: AsyncSafetyOptions,
+  purpose: "baseline" | "audit",
+  indexControlAlgorithm: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM | typeof LEGACY_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
+): StableGitSafetyFactsOptions {
+  // Pick fields explicitly so JavaScript callers cannot smuggle legacyIndexControl
+  // or an arbitrary algorithm into a new stable collection.
+  return {
+    purpose,
+    spawn: options.spawn,
+    collectFacts: options.collectFacts,
+    collectToken: options.collectToken,
+    indexControlAlgorithm,
+  };
+}
+
+function factsHaveUnstagedOrUntracked(facts: GitSafetyFacts): boolean {
+  return facts.untrackedExists || facts.dirtyEntries.some((entry) => entry.code === "??" || entry.code[1] !== " ");
+}
+
+function dirtyChecksumsFromFacts(root: string, entries: StatusEntry[]): Record<string, string> {
+  const dirtyChecksums: Record<string, string> = {};
+  for (const entry of entries) {
+    dirtyChecksums[entry.path] = checksumWorktreePath(root, entry.path);
+    if (entry.original_path) dirtyChecksums[entry.original_path] = checksumWorktreePath(root, entry.original_path);
+  }
+  return dirtyChecksums;
+}
+
+/**
+ * Promise-based baseline capture. The complete facts pass is accepted only
+ * after its independent stability token agrees, so no Receipt should be
+ * materialized from a mixed-time repository observation.
+ */
+export async function captureBaselineAsync(
+  worktree: string,
+  now: Date = new Date(),
+  options: AsyncSafetyOptions = {},
+): Promise<GitBaseline> {
+  const root = await resolveRepoRootAsync(worktree, options.spawn);
+  const facts = await captureStableSafetyFacts(
+    root,
+    stableObservationOptions(options, "baseline", GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM),
+  );
+  const metadata = indexMetadata(facts.indexControl);
+  return {
+    repo_root: root,
+    head: facts.head,
+    branch: facts.branch,
+    branch_ref: facts.branchRef,
+    index_path: facts.indexPath || path.join(root, ".git", "index"),
+    index_tree: facts.stagedTree,
+    index_control_checksum: metadata.checksum,
+    index_control_algorithm: metadata.algorithm,
+    index_control_entry_count: metadata.entryCount,
+    refs: facts.refs,
+    head_reflog_count: facts.reflog.count,
+    head_reflog_checksum: facts.reflog.checksum,
+    dirty_entries: facts.dirtyEntries,
+    dirty_checksums: dirtyChecksumsFromFacts(root, facts.dirtyEntries),
+    captured_at: now.toISOString(),
+  };
+}
+
 /**
  * Freeze an already-staged, otherwise-clean commit candidate. The worker may
  * consume this exact index tree with one commit, but may not stage or edit it.
@@ -325,6 +498,56 @@ export function captureCommitBaseline(worktree: string, now: Date = new Date()):
   };
 }
 
+/** Promise-based stable capture for an already-staged commit-only candidate. */
+export async function captureCommitBaselineAsync(
+  worktree: string,
+  now: Date = new Date(),
+  options: AsyncSafetyOptions = {},
+): Promise<CommitBaseline> {
+  const root = await resolveRepoRootAsync(worktree, options.spawn);
+  const facts = await captureStableSafetyFacts(
+    root,
+    stableObservationOptions(options, "baseline", GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM),
+  );
+  if (!facts.stagedPaths.length) {
+    throw new CommitBaselineError("commit-only dispatch requires a non-empty staged diff", "STAGED_DIFF_REQUIRED");
+  }
+  if (factsHaveUnstagedOrUntracked(facts)) {
+    throw new CommitBaselineError(
+      "commit-only dispatch requires an otherwise clean worktree; stage the complete intended change and keep unrelated changes out",
+      "COMMIT_BASELINE_NOT_STAGED_ONLY",
+    );
+  }
+  if (facts.gitOperation) {
+    throw new CommitBaselineError(`commit-only dispatch is blocked while ${facts.gitOperation} exists`, "GIT_OPERATION_IN_PROGRESS");
+  }
+  if (!facts.branchRef.startsWith("refs/heads/")) {
+    throw new CommitBaselineError("commit-only dispatch requires an attached local branch", "ATTACHED_BRANCH_REQUIRED");
+  }
+  if (!facts.refs.some((item) => item.startsWith(`${facts.branchRef}\0`))) {
+    throw new CommitBaselineError("current branch ref is missing from the Git ref snapshot", "BRANCH_REF_MISSING");
+  }
+  if (!facts.reflog.count) {
+    throw new CommitBaselineError("commit-only dispatch requires an enabled HEAD reflog", "HEAD_REFLOG_REQUIRED");
+  }
+  const metadata = indexMetadata(facts.indexControl);
+  return {
+    repo_root: root,
+    head: facts.head,
+    branch: facts.branch,
+    branch_ref: facts.branchRef,
+    staged_tree: facts.stagedTree,
+    staged_index_control_checksum: metadata.checksum,
+    staged_index_control_algorithm: metadata.algorithm,
+    staged_index_control_entry_count: metadata.entryCount,
+    staged_paths: facts.stagedPaths,
+    refs: facts.refs,
+    head_reflog_count: facts.reflog.count,
+    head_reflog_checksum: facts.reflog.checksum,
+    captured_at: now.toISOString(),
+  };
+}
+
 function commitViolation(violations: CommitSafetyViolation[], code: string, message: string): void {
   violations.push({ code, message });
 }
@@ -333,6 +556,12 @@ function commitViolation(violations: CommitSafetyViolation[], code: string, mess
 export function auditPreparedCommit(worktree: string, baseline: CommitBaseline): CommitSafetyVerdict {
   const root = fs.realpathSync(git(worktree, ["rev-parse", "--show-toplevel"]).trim());
   const violations: CommitSafetyViolation[] = [];
+  const metadataError = indexControlBaselineViolation({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  }, "staged_index_control");
+  if (metadataError) commitViolation(violations, metadataError.code, metadataError.message);
   if (root !== baseline.repo_root) commitViolation(violations, "E_BASELINE_REPO_MISMATCH", "baseline belongs to another repository");
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   if (head !== baseline.head) commitViolation(violations, "E_HEAD_MUTATION", "HEAD changed after commit authorization");
@@ -345,7 +574,7 @@ export function auditPreparedCommit(worktree: string, baseline: CommitBaseline):
   }
   const indexTree = git(root, ["write-tree"]).trim();
   if (indexTree !== baseline.staged_tree) commitViolation(violations, "E_INDEX_TREE_MUTATION", "staged tree changed after commit authorization");
-  if (indexControlChecksum(root) !== baseline.staged_index_control_checksum) {
+  if (!metadataError && indexControlChecksum(root) !== baseline.staged_index_control_checksum) {
     commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata changed after commit authorization");
   }
   if (!sameList(stagedPaths(root), baseline.staged_paths)) commitViolation(violations, "E_STAGED_PATH_MUTATION", "staged paths changed after commit authorization");
@@ -354,6 +583,50 @@ export function auditPreparedCommit(worktree: string, baseline: CommitBaseline):
   const operation = gitOperationInProgress(root);
   if (operation) commitViolation(violations, "E_GIT_OPERATION", `unexpected Git operation state: ${operation}`);
   return { accepted: violations.length === 0, committed: false, commit: null, violations };
+}
+
+function auditPreparedCommitFromFacts(root: string, facts: StableGitSafetyFacts, baseline: CommitBaseline): CommitSafetyVerdict {
+  const violations: CommitSafetyViolation[] = [];
+  const metadataError = indexControlBaselineViolation({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  }, "staged_index_control");
+  if (metadataError) commitViolation(violations, metadataError.code, metadataError.message);
+  if (root !== baseline.repo_root) commitViolation(violations, "E_BASELINE_REPO_MISMATCH", "baseline belongs to another repository");
+  if (facts.head !== baseline.head) commitViolation(violations, "E_HEAD_MUTATION", "HEAD changed after commit authorization");
+  if (facts.branchRef !== baseline.branch_ref) commitViolation(violations, "E_BRANCH_MUTATION", "current branch changed after commit authorization");
+  if (!sameList(facts.refs, baseline.refs)) commitViolation(violations, "E_REFS_MUTATION", "Git refs changed after commit authorization");
+  if (facts.reflog.count !== baseline.head_reflog_count || facts.reflog.checksum !== baseline.head_reflog_checksum) {
+    commitViolation(violations, "E_HEAD_REFLOG_MUTATION", "HEAD reflog changed after commit authorization");
+  }
+  if (facts.stagedTree !== baseline.staged_tree) commitViolation(violations, "E_INDEX_TREE_MUTATION", "staged tree changed after commit authorization");
+  if (!metadataError && (facts.indexControl.checksum !== baseline.staged_index_control_checksum
+    || facts.indexControl.algorithm !== (baseline.staged_index_control_algorithm || "legacy-json-sorted-v1")
+    || (baseline.staged_index_control_entry_count !== undefined && facts.indexControl.entryCount !== baseline.staged_index_control_entry_count))) {
+    commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata changed after commit authorization");
+  }
+  if (!sameList(facts.stagedPaths, baseline.staged_paths)) commitViolation(violations, "E_STAGED_PATH_MUTATION", "staged paths changed after commit authorization");
+  if (!facts.stagedPaths.length) commitViolation(violations, "E_STAGED_DIFF_MISSING", "authorized staged diff is no longer present");
+  if (factsHaveUnstagedOrUntracked(facts)) commitViolation(violations, "E_WORKTREE_MUTATION", "worktree gained unstaged or untracked changes");
+  if (facts.gitOperation) commitViolation(violations, "E_GIT_OPERATION", `unexpected Git operation state: ${facts.gitOperation}`);
+  return { accepted: violations.length === 0, committed: false, commit: null, violations };
+}
+
+/** Promise-based prepared-commit audit over one stable complete facts pass. */
+export async function auditPreparedCommitAsync(
+  worktree: string,
+  baseline: CommitBaseline,
+  options: AsyncSafetyOptions = {},
+): Promise<CommitSafetyVerdict> {
+  const root = await resolveRepoRootAsync(worktree, options.spawn);
+  const indexControlAlgorithm = selectAuditIndexControlAlgorithm({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  });
+  const facts = await captureStableSafetyFacts(root, stableObservationOptions(options, "audit", indexControlAlgorithm));
+  return auditPreparedCommitFromFacts(root, facts, baseline);
 }
 
 /**
@@ -367,6 +640,11 @@ export function auditCommitOutcome(
   { requireCommit = true }: { requireCommit?: boolean } = {},
 ): CommitSafetyVerdict {
   const root = fs.realpathSync(git(worktree, ["rev-parse", "--show-toplevel"]).trim());
+  const metadataError = indexControlBaselineViolation({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  }, "staged_index_control");
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   if (head === baseline.head) {
     const prepared = auditPreparedCommit(root, baseline);
@@ -376,6 +654,7 @@ export function auditCommitOutcome(
   }
 
   const violations: CommitSafetyViolation[] = [];
+  if (metadataError) commitViolation(violations, metadataError.code, metadataError.message);
   if (root !== baseline.repo_root) commitViolation(violations, "E_BASELINE_REPO_MISMATCH", "baseline belongs to another repository");
   const branchRef = gitOptional(root, ["symbolic-ref", "-q", "HEAD"])?.trim() || "";
   if (branchRef !== baseline.branch_ref) commitViolation(violations, "E_BRANCH_MUTATION", "commit changed or detached the authorized branch");
@@ -409,7 +688,7 @@ export function auditCommitOutcome(
   if (git(root, ["write-tree"]).trim() !== baseline.staged_tree) {
     commitViolation(violations, "E_INDEX_TREE_MUTATION", "index does not match the authorized committed tree");
   }
-  if (indexControlChecksum(root) !== baseline.staged_index_control_checksum) {
+  if (!metadataError && indexControlChecksum(root) !== baseline.staged_index_control_checksum) {
     commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata does not match the authorized committed state");
   }
   const status = parsePorcelainV1Z(git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
@@ -417,6 +696,80 @@ export function auditCommitOutcome(
   const operation = gitOperationInProgress(root);
   if (operation) commitViolation(violations, "E_GIT_OPERATION", `unexpected Git operation state: ${operation}`);
   return { accepted: violations.length === 0, committed: true, commit, violations };
+}
+
+function auditCommitOutcomeFromFacts(
+  root: string,
+  facts: StableGitSafetyFacts,
+  baseline: CommitBaseline,
+  { requireCommit = true }: { requireCommit?: boolean } = {},
+): CommitSafetyVerdict {
+  if (facts.head === baseline.head) {
+    const prepared = auditPreparedCommitFromFacts(root, facts, baseline);
+    if (requireCommit) commitViolation(prepared.violations, "E_COMMIT_MISSING", "worker completed without creating the authorized commit");
+    prepared.accepted = prepared.violations.length === 0;
+    return prepared;
+  }
+  const violations: CommitSafetyViolation[] = [];
+  const metadataError = indexControlBaselineViolation({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  }, "staged_index_control");
+  if (metadataError) commitViolation(violations, metadataError.code, metadataError.message);
+  if (root !== baseline.repo_root) commitViolation(violations, "E_BASELINE_REPO_MISMATCH", "baseline belongs to another repository");
+  if (facts.branchRef !== baseline.branch_ref) commitViolation(violations, "E_BRANCH_MUTATION", "commit changed or detached the authorized branch");
+  const observedCommit = facts.commit || { id: facts.head, parent: "", parentCount: 0, tree: "", subject: "" };
+  if (observedCommit.parentCount !== undefined
+    ? observedCommit.parentCount !== 1 || observedCommit.parent !== baseline.head
+    : observedCommit.parent !== baseline.head) {
+    commitViolation(violations, "E_COMMIT_PARENT_MISMATCH", "authorized commit must have exactly the frozen HEAD as its only parent");
+  }
+  if (observedCommit.tree !== baseline.staged_tree) commitViolation(violations, "E_COMMIT_TREE_MISMATCH", "commit tree does not match the frozen staged tree");
+  const expectedRefs = baseline.refs.map((item) => item.startsWith(`${baseline.branch_ref}\0`)
+    ? `${baseline.branch_ref}\0${facts.head}` : item);
+  if (!sameList(facts.refs, expectedRefs)) commitViolation(violations, "E_REFS_MUTATION", "refs changed outside the authorized branch commit");
+  if (facts.reflog.count !== baseline.head_reflog_count + 1
+    || !facts.reflogFirst?.startsWith(`${facts.head}\0`)
+    || facts.reflogPriorChecksum !== baseline.head_reflog_checksum) {
+    commitViolation(violations, "E_HEAD_REFLOG_MUTATION", "HEAD did not advance through exactly one reflog entry");
+  }
+  if (facts.stagedTree !== baseline.staged_tree) commitViolation(violations, "E_INDEX_TREE_MUTATION", "index does not match the authorized committed tree");
+  if (!metadataError && (facts.indexControl.checksum !== baseline.staged_index_control_checksum
+    || facts.indexControl.algorithm !== (baseline.staged_index_control_algorithm || "legacy-json-sorted-v1")
+    || (baseline.staged_index_control_entry_count !== undefined && facts.indexControl.entryCount !== baseline.staged_index_control_entry_count))) {
+    commitViolation(violations, "E_INDEX_CONTROL_MUTATION", "index control metadata does not match the authorized committed state");
+  }
+  if (facts.dirtyEntries.length) commitViolation(violations, "E_WORKTREE_MUTATION", "commit-only worker left tracked or untracked worktree changes");
+  if (facts.gitOperation) commitViolation(violations, "E_GIT_OPERATION", `unexpected Git operation state: ${facts.gitOperation}`);
+  return {
+    accepted: violations.length === 0,
+    committed: true,
+    commit: {
+      id: observedCommit.id,
+      parent: observedCommit.parent,
+      tree: observedCommit.tree,
+      subject: observedCommit.subject,
+    },
+    violations,
+  };
+}
+
+/** Promise-based commit-outcome audit over one stable complete facts pass. */
+export async function auditCommitOutcomeAsync(
+  worktree: string,
+  baseline: CommitBaseline,
+  options: { requireCommit?: boolean } & AsyncSafetyOptions = {},
+): Promise<CommitSafetyVerdict> {
+  const root = await resolveRepoRootAsync(worktree, options.spawn);
+  const { requireCommit = true, ...factsOptions } = options;
+  const indexControlAlgorithm = selectAuditIndexControlAlgorithm({
+    index_control_algorithm: baseline.staged_index_control_algorithm,
+    index_control_checksum: baseline.staged_index_control_checksum,
+    index_control_entry_count: baseline.staged_index_control_entry_count,
+  });
+  const facts = await captureStableSafetyFacts(root, stableObservationOptions(factsOptions, "audit", indexControlAlgorithm));
+  return auditCommitOutcomeFromFacts(root, facts, baseline, { requireCommit });
 }
 
 function globPattern(pattern: string): RegExp {
@@ -459,6 +812,8 @@ function operationOf(entry: StatusEntry): SafetyOperation {
 export function auditWorktree(worktree: string, baseline: GitBaseline, policy: SafetyPolicy): SafetyVerdict {
   const root = fs.realpathSync(git(worktree, ["rev-parse", "--show-toplevel"]).trim());
   const violations: SafetyViolation[] = [];
+  const metadataError = indexControlBaselineViolation(baseline);
+  if (metadataError) violations.push({ code: metadataError.code, message: metadataError.message });
   const currentFormat = typeof baseline.branch_ref === "string"
     && typeof baseline.index_tree === "string"
     && typeof baseline.index_control_checksum === "string"
@@ -494,7 +849,7 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   // current-format Receipt; old raw index checksums are never accepted.
   if (currentFormat) {
     if (stagedTree(root) !== baseline.index_tree) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the staged Git index tree" });
-    if (indexControlChecksum(root) !== baseline.index_control_checksum) {
+    if (!metadataError && indexControlChecksum(root) !== baseline.index_control_checksum) {
       violations.push({ code: "E_INDEX_MUTATION", message: "worker changed Git index control metadata" });
     }
   }
@@ -553,4 +908,88 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
     });
   }
   return { accepted: violations.length === 0, changes, violations };
+}
+
+function auditWorktreeFromFacts(root: string, facts: StableGitSafetyFacts, baseline: GitBaseline, policy: SafetyPolicy): SafetyVerdict {
+  const violations: SafetyViolation[] = [];
+  const metadataError = indexControlBaselineViolation(baseline);
+  if (metadataError) violations.push({ code: metadataError.code, message: metadataError.message });
+  const currentFormat = typeof baseline.branch_ref === "string"
+    && typeof baseline.index_tree === "string"
+    && typeof baseline.index_control_checksum === "string"
+    && Array.isArray(baseline.refs)
+    && Number.isInteger(baseline.head_reflog_count)
+    && typeof baseline.head_reflog_checksum === "string";
+  if (!currentFormat) violations.push({ code: "E_BASELINE_FORMAT", message: "baseline is not a current-format Git safety snapshot" });
+  if (root !== baseline.repo_root) violations.push({ code: "E_BASELINE_REPO_MISMATCH", message: "baseline belongs to another repository" });
+  if (facts.head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
+  if (currentFormat && facts.branch !== baseline.branch) violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the current branch" });
+  if (currentFormat && facts.branchRef !== baseline.branch_ref) violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the attached branch ref" });
+  if (currentFormat && !sameList(facts.refs, baseline.refs)) violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  if (currentFormat && (facts.reflog.count !== baseline.head_reflog_count || facts.reflog.checksum !== baseline.head_reflog_checksum)) {
+    violations.push({ code: "E_HEAD_REFLOG_MUTATION", message: "worker changed the HEAD reflog" });
+  }
+  if (currentFormat) {
+    if (facts.stagedTree !== baseline.index_tree) violations.push({ code: "E_INDEX_MUTATION", message: "worker changed the staged Git index tree" });
+    const index = indexMetadata(facts.indexControl);
+    const expectedAlgorithm = baseline.index_control_algorithm || "legacy-json-sorted-v1";
+    if (!metadataError && (index.checksum !== baseline.index_control_checksum
+      || index.algorithm !== expectedAlgorithm
+      || (baseline.index_control_entry_count !== undefined && index.entryCount !== baseline.index_control_entry_count))) {
+      violations.push({ code: "E_INDEX_MUTATION", message: "worker changed Git index control metadata" });
+    }
+  }
+
+  const entries = facts.dirtyEntries;
+  const changes = entries.map((entry) => ({ ...entry, operation: facts.modeChangedPaths.has(entry.path) ? "chmod" as const : operationOf(entry) }));
+  const baselineDirt = new Map(baseline.dirty_entries.map((entry) => [entry.path, entry]));
+  const checksums = baseline.dirty_checksums || {};
+  for (const change of changes) {
+    const inScope = pathAllowed(change.path, policy.write_allowlist)
+      && (!change.original_path || pathAllowed(change.original_path, policy.write_allowlist));
+    if (inScope) {
+      if (!policy.allowed_operations.includes(change.operation)) {
+        violations.push({ code: "E_OUT_OF_SCOPE_OP", path: change.path, original_path: change.original_path, operation: change.operation, message: "change operation is not authorized" });
+        continue;
+      }
+    } else if (coveredByPeers(change.path, change.original_path, policy.peer_write_allowlists)) {
+      continue;
+    } else if (baselineDirt.has(change.path)) {
+      const expected = checksums[change.path];
+      const actual = checksumWorktreePath(root, change.path);
+      if (expected !== actual) violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: change.path, original_path: change.original_path, operation: change.operation, message: "worker mutated pre-existing dirt outside the Receipt allowlist" });
+      continue;
+    } else {
+      violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: change.path, original_path: change.original_path, operation: change.operation, message: "changed path is outside the Receipt allowlist" });
+      continue;
+    }
+    const absolute = path.join(root, change.path);
+    if (fs.existsSync(absolute) && fs.lstatSync(absolute).isSymbolicLink()) {
+      const resolved = fs.realpathSync(absolute);
+      const relative = path.relative(root, resolved).replaceAll("\\", "/");
+      if (relative.startsWith("../") || !pathAllowed(relative, policy.write_allowlist)) {
+        violations.push({ code: "E_SYMLINK_ESCAPE", path: change.path, operation: change.operation, message: "symlink target escapes repository or Receipt scope" });
+      }
+    }
+  }
+  for (const entry of baseline.dirty_entries) {
+    if (pathAllowed(entry.path, policy.write_allowlist)) continue;
+    if (coveredByPeers(entry.path, entry.original_path, policy.peer_write_allowlists)) continue;
+    if (entries.some((item) => item.path === entry.path)) continue;
+    violations.push({ code: "E_OUT_OF_SCOPE_PATH", path: entry.path, original_path: entry.original_path, operation: operationOf(entry), message: "worker cleared pre-existing dirt outside the Receipt allowlist" });
+  }
+  return { accepted: violations.length === 0, changes, violations };
+}
+
+/** Promise-based worktree audit over one stable complete facts pass. */
+export async function auditWorktreeAsync(
+  worktree: string,
+  baseline: GitBaseline,
+  policy: SafetyPolicy,
+  options: AsyncSafetyOptions = {},
+): Promise<SafetyVerdict> {
+  const root = await resolveRepoRootAsync(worktree, options.spawn);
+  const indexControlAlgorithm = selectAuditIndexControlAlgorithm(baseline);
+  const facts = await captureStableSafetyFacts(root, stableObservationOptions(options, "audit", indexControlAlgorithm));
+  return auditWorktreeFromFacts(root, facts, baseline, policy);
 }

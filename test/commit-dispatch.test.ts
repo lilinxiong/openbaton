@@ -6,7 +6,10 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 import { run } from "../src/cli.js";
-import { spawnsDir } from "../src/lib/paths.js";
+import { activationLockPath, dispatchLockPath, globalActivationLockPath, spawnsDir } from "../src/lib/paths.js";
+import { finishAgent, reserveNext } from "../src/lib/dispatch.js";
+import { GitSafetyError } from "../src/lib/git-safety-process.js";
+import { collectGitSafetyFacts } from "../src/lib/git-safety-facts.js";
 import { recordNativeIdentity, recordPendingReservation } from "../src/lib/host-identity.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { configureCodex } from "./configure.js";
@@ -59,6 +62,10 @@ async function createCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<
   const out = capture();
   assert.equal(await run(["spawn", "git commit staged changes", "--host", "codex", "--classification", COMMIT_CLASSIFICATION, "--json"], { cwd, env, stdout: out, stderr: out }), 0, out.text());
   assert.equal(readTicket(cwd).mode, "commit-only");
+  const ticket = readTicket(cwd);
+  const receipt = JSON.parse(fs.readFileSync(path.join(path.dirname(spawnsDir(cwd)), "receipts", `${ticket.receipt_id}.json`), "utf8"));
+  assert.equal(receipt.commit_baseline.staged_index_control_algorithm, "git-index-control-framed-sha256-v2");
+  assert.equal(typeof receipt.commit_baseline.staged_index_control_entry_count, "number");
 }
 
 async function bindCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
@@ -80,6 +87,22 @@ async function bindCommitTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
 
 function parseJson(text: string) {
   return JSON.parse(text.slice(text.indexOf("{")));
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function until(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(predicate(), true, "condition did not become true before timeout");
+}
+
+function lockOwner(file: string) {
+  return JSON.parse(fs.readFileSync(file, "utf8")) as { token: string; lease_until: string; refreshed_at: string };
 }
 
 describe("commit-only dispatch integration", () => {
@@ -143,6 +166,22 @@ describe("commit-only dispatch integration", () => {
     });
   });
 
+  it("cannot weaken commit completion policy through an injected safety option", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await bindCommitTicket(cwd, env);
+
+      const unsafeRuntimeOptions = { requireCommit: false } as unknown as import("../src/lib/safety.js").AsyncSafetyOptions;
+      const ticket = await finishAgent(cwd, "spn-0001", {
+        status: "completed", conclusion: "claimed completion", env, safety: unsafeRuntimeOptions,
+      });
+      assert.equal(ticket.status, "errored");
+      assert.equal(ticket.error?.code, "COMMIT_SCOPE_VIOLATION");
+      assert.ok(ticket.safety_verdict && (ticket.safety_verdict.violations as Array<{ code: string }>).some((item) => item.code === "E_COMMIT_MISSING"));
+    });
+  });
+
   it("rejects a worker that widens the staged tree before committing", async () => {
     await withHome(async (home) => {
       const cwd = fixture();
@@ -193,6 +232,128 @@ describe("commit-only dispatch integration", () => {
       assert.deepEqual(result.reserved, []);
       assert.equal(result.blocked[0].code, "COMMIT_BASELINE_STALE");
       assert.equal(readTicket(cwd).status, "errored");
+    });
+  });
+
+  it("propagates async Git safety collection failures during reservation", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await createCommitTicket(cwd, env);
+      fs.writeFileSync(path.join(cwd, ".git", "index"), Buffer.from("corrupt-index\n"));
+
+      await assert.rejects(
+        () => reserveNext(cwd, { capacity: 4, host: "codex", env }),
+        (error: unknown) => error instanceof GitSafetyError && error.code === "GIT_SAFETY_COMMAND_FAILED",
+      );
+      assert.equal(readTicket(cwd).status, "queued");
+      assert.equal(fs.existsSync(dispatchLockPath(cwd)), false);
+      assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+      assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
+    });
+  });
+
+  it("propagates async Git safety collection failures during terminal completion", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await bindCommitTicket(cwd, env);
+      fs.writeFileSync(path.join(cwd, ".git", "index"), Buffer.from("corrupt-index\n"));
+
+      await assert.rejects(
+        () => finishAgent(cwd, "spn-0001", { status: "completed", conclusion: "commit attempted", env }),
+        (error: unknown) => error instanceof GitSafetyError && error.code === "GIT_SAFETY_COMMAND_FAILED",
+      );
+      assert.equal(readTicket(cwd).status, "running");
+      assert.equal(fs.existsSync(dispatchLockPath(cwd)), false);
+    });
+  });
+
+  it("keeps a live paused reservation owned beyond lease/stale thresholds and serializes a competitor", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await createCommitTicket(cwd, env);
+      const gate = deferred<void>();
+      const reservation = reserveNext(cwd, {
+        capacity: 4, host: "codex", env,
+        activationLock: { leaseMs: 20, staleMs: 20, refreshIntervalMs: 3 },
+        dispatchLock: { leaseMs: 20, staleMs: 20, refreshIntervalMs: 3 },
+        safety: { collectFacts: async (root, options) => { await gate.promise; return collectGitSafetyFacts(root, options); } },
+      });
+      await until(() => fs.existsSync(globalActivationLockPath("codex", env)) && fs.existsSync(activationLockPath(cwd, env, "codex")) && fs.existsSync(dispatchLockPath(cwd)));
+      const before = lockOwner(dispatchLockPath(cwd));
+      await new Promise((resolve) => setTimeout(resolve, 65));
+      const after = lockOwner(dispatchLockPath(cwd));
+      assert.notEqual(after.lease_until, before.lease_until, "live scan lease was not refreshed");
+      await assert.rejects(() => reserveNext(cwd, { capacity: 1, host: "codex", env, activationLock: { staleMs: 1 }, dispatchLock: { staleMs: 1 } }), (error: unknown) => (error as { code?: string }).code === "ACTIVATION_LOCK_BUSY");
+      gate.resolve();
+      const result = await reservation;
+      assert.deepEqual(result.reserved.map((item) => item.ticket_id), ["spn-0001"]);
+      assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+      assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
+      assert.equal(fs.existsSync(dispatchLockPath(cwd)), false);
+    });
+  });
+
+  it("serializes paused terminal completion against reservation without deadlock and recovers locks", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await bindCommitTicket(cwd, env);
+      const gate = deferred<void>();
+      const completion = finishAgent(cwd, "spn-0001", {
+        status: "errored", errorCode: "INTERRUPTED", env,
+        dispatchLock: { leaseMs: 20, staleMs: 20, refreshIntervalMs: 3 },
+        safety: { collectFacts: async (root, options) => { await gate.promise; return collectGitSafetyFacts(root, options); } },
+      });
+      await until(() => fs.existsSync(dispatchLockPath(cwd)));
+      const started = Date.now();
+      await assert.rejects(() => reserveNext(cwd, { capacity: 1, host: "codex", env, dispatchLock: { staleMs: 1 } }), (error: unknown) => (error as { code?: string }).code === "DISPATCH_LOCKED");
+      assert.ok(Date.now() - started < 500, "competing reservation was not bounded");
+      assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+      assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
+      gate.resolve();
+      const done = await completion;
+      assert.equal(done.status, "errored");
+      assert.equal(fs.existsSync(dispatchLockPath(cwd)), false);
+      await assert.rejects(() => finishAgent(cwd, "spn-0001", { status: "closed", env }), /already terminal/);
+    });
+  });
+
+  it("cleans only caller-owned locks after ordinary rejection and preserves a foreign dispatch owner", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await createCommitTicket(cwd, env);
+      const gate = deferred<void>();
+      const failure = reserveNext(cwd, { capacity: 1, host: "codex", env, dispatchLock: { leaseMs: 20, refreshIntervalMs: 3 }, safety: { collectFacts: async () => { await gate.promise; throw new Error("injected rejection"); } } });
+      await until(() => fs.existsSync(dispatchLockPath(cwd)));
+      fs.unlinkSync(dispatchLockPath(cwd));
+      const foreign = { version: 1, token: "foreign-token", pid: process.pid, operation: "foreign", acquired_at: new Date().toISOString(), lease_until: new Date(Date.now() + 60000).toISOString(), refreshed_at: new Date().toISOString() };
+      fs.writeFileSync(dispatchLockPath(cwd), `${JSON.stringify(foreign)}\n`);
+      gate.resolve();
+      await assert.rejects(failure, /injected rejection/);
+      assert.equal(lockOwner(dispatchLockPath(cwd)).token, "foreign-token");
+      assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+      assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
+      fs.unlinkSync(dispatchLockPath(cwd));
+    });
+  });
+
+  it("cleans caller-owned activation and dispatch locks on AbortError cancellation", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await createCommitTicket(cwd, env);
+      const gate = deferred<void>();
+      const failure = reserveNext(cwd, { capacity: 1, host: "codex", env, safety: { collectFacts: async () => { await gate.promise; const error = new Error("cancelled"); error.name = "AbortError"; throw error; } } });
+      await until(() => fs.existsSync(dispatchLockPath(cwd)));
+      gate.resolve();
+      await assert.rejects(failure, (error: unknown) => (error as Error).name === "AbortError");
+      assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+      assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
+      assert.equal(fs.existsSync(dispatchLockPath(cwd)), false);
     });
   });
 

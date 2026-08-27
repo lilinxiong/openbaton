@@ -3,12 +3,12 @@ import { parseHostId } from "../lib/hosts.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
-import { planStandaloneSpawn, writeSpawn, type SpawnTicket } from "../lib/spawn.js";
+import { planStandaloneSpawn, type SpawnTicket } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
 import { applyTaskId } from "../lib/apply-waves.js";
 import { scopesFromRecord } from "../lib/apply-scope.js";
-import { buildWriteReceipt, writeReceipt } from "../lib/receipt.js";
-import { captureBaseline, type SafetyOperation } from "../lib/safety.js";
+import { type SafetyOperation } from "../lib/safety.js";
+import { materializeStandalonePlanAsync } from "../lib/ticket-materialization.js";
 import { loadTasksFromChangeDir } from "../lib/openspec.js";
 import {
   readSelectionProposal,
@@ -126,7 +126,7 @@ function validateProposal(cwd: string, proposal: SelectionProposal, env?: NodeJS
   }
 }
 
-function approveStandalone(cwd: string, proposal: SelectionProposal, cards: ModelCard[], env?: NodeJS.ProcessEnv) {
+async function approveStandalone(cwd: string, proposal: SelectionProposal, cards: ModelCard[], env?: NodeJS.ProcessEnv) {
   const units = proposal.units.filter((item) => !item.director_local);
   if (!units.length) throw new Error(`proposal ${proposal.id} has no delegated unit`);
   const choices = units.map((unit) => ({ unit, candidate: recommendedCandidate(proposal, unit.key) }));
@@ -160,24 +160,21 @@ function approveStandalone(cwd: string, proposal: SelectionProposal, cards: Mode
       const operations = Array.isArray(proposal.payload.write_operations)
         ? proposal.payload.write_operations.map(String) as SafetyOperation[]
         : ["write", "create"] as SafetyOperation[];
-      planned.receipt = buildWriteReceipt({
-        base: planned.receipt,
-        baseline: captureBaseline(cwd),
+      await materializeStandalonePlanAsync(cwd, planned, {
+        env,
         writeAllowlist: writePaths,
         allowedOperations: operations,
       });
-      planned.ticket.mode = "write";
-      planned.ticket.read_only = false;
+    } else {
+      await materializeStandalonePlanAsync(cwd, planned, { env });
     }
-    writeReceipt(cwd, planned.receipt, env);
-    writeSpawn(cwd, planned.ticket, env);
     tickets.push(planned.ticket);
     approvals.push({ key: unit.key, approval });
   }
   return { tickets, approvals, local: [], confirmation: context };
 }
 
-function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelCard[], env: NodeJS.ProcessEnv) {
+async function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelCard[], env: NodeJS.ProcessEnv) {
   const candidates = new Map<string, SelectionCandidate>();
   for (const unit of proposal.units) {
     if (!unit.director_local) candidates.set(unit.key, recommendedCandidate(proposal, unit.key));
@@ -194,7 +191,7 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     selected.set(unit.key, requireCardId(candidate.model_id, cards));
     approvals.set(unit.key, approvalFor(proposal, unit.key, candidate, unit.recommended_model_id, context));
   }
-  const result = applyChange({
+  const result = await applyChange({
     cwd,
     change: String(proposal.payload.change),
     cfg: loadConfig(cwd, { env }),
@@ -204,20 +201,13 @@ function approveOpenSpec(cwd: string, proposal: SelectionProposal, cards: ModelC
     selectCards: (prompt, available) => cardsForAutomaticSelection(cwd, available, prompt, selectionHost, env),
     selectionApprovals: approvals,
     unitScopes: scopesFromRecord(proposal.payload.unit_scopes),
+    routingRequirements: new Map(proposal.units.map((unit) => [unit.key, {
+      required_reasoning_effort: unit.target_reasoning_effort,
+      estimated_context_tokens: unit.estimated_context_tokens,
+    }])),
     env,
   });
   if (result.error || result.blocked.length) throw new Error(result.error || result.blocked.map((item) => `${item.id}: ${item.error}`).join("; "));
-  for (const ticket of result.tickets) {
-    const binding = ticket.openspec as Record<string, unknown> | null;
-    const unitKey = binding?.number ? String(binding.number) : typeof binding?.line_index === "number" ? `line-${binding.line_index}` : "";
-    const unit = proposal.units.find((item) => item.key === unitKey);
-    if (!unit) continue;
-    ticket.routing_requirements = {
-      required_reasoning_effort: unit.target_reasoning_effort,
-      estimated_context_tokens: unit.estimated_context_tokens,
-    };
-    writeSpawn(cwd, ticket, env);
-  }
   return {
     tickets: result.tickets,
     approvals: [...approvals.entries()].map(([key, approval]) => ({ key, approval })),
@@ -314,7 +304,7 @@ function unavailableRecommendationError(
   return error;
 }
 
-export function approveRecommendedSelection({
+export async function approveRecommendedSelection({
   cwd,
   proposal,
   cards,
@@ -324,12 +314,12 @@ export function approveRecommendedSelection({
   proposal: SelectionProposal;
   cards: ModelCard[];
   env?: NodeJS.ProcessEnv;
-}): SelectionApprovalOutput {
+}): Promise<SelectionApprovalOutput> {
   validateProposal(cwd, proposal, env);
   assertRecommendedSelectionAvailable(proposal.units);
   const result = proposal.source === "standalone"
-    ? approveStandalone(cwd, proposal, cards, env)
-    : approveOpenSpec(cwd, proposal, cards, env);
+    ? await approveStandalone(cwd, proposal, cards, env)
+    : await approveOpenSpec(cwd, proposal, cards, env);
   return finalizeSelectionApproval(cwd, proposal, result, env);
 }
 

@@ -101,6 +101,78 @@ Before creating or dispatching any write ticket, the director performs a read-on
 
 Parallel dispatch is permitted only for units with complete, pairwise disjoint write sets, including rename source/destination paths and path-prefix overlaps. Incomplete or intersecting scopes are sequenced or remain director-local. A worker that discovers an undeclared path or operation stops before mutation and returns a scope decision to the director. It never edits first and relies on terminal retry or audit for authorization. Mechanical routing remains class-based, and operation labels are opaque audit metadata rather than route selectors.
 
+## Streaming Git safety contract
+
+Write and commit-only ticket materialization, reservation, and terminal audit use
+one safety-owned asynchronous Git process boundary. Commands whose output size is
+unknown are streamed with concurrent stdout/stderr drains, backpressure, bounded
+stderr diagnostics, abort/signal propagation, and child reaping. The consumer must
+reach a complete valid end state before its facts are used; partial output is never
+a baseline. These commands do not use Node/Bun aggregate `maxBuffer`, so valid
+streams above the former 1 MiB limit, including an opt-in stream above 128 MiB,
+remain valid when the compact facts fit in memory. Scalar commands have a separate
+explicit small-output contract and report an overflow rather than being buffered
+as a general snapshot. The streaming layer retains only facts needed by a Receipt
+or verdict, not verbose Git diagnostic text.
+
+The safety transaction keeps activation and dispatch ownership across the complete
+asynchronous observation. It captures the required facts, obtains a fresh
+stability token for HEAD, branch, refs, reflog summary, staged tree, and index
+controls, and retries the entire observation once if the token changes. A second
+mismatch is `GIT_BASELINE_RACED` for baseline creation or `GIT_AUDIT_RACED` for an
+audit. Locks are released in `finally` on success, failure, or interruption; no
+Receipt, spawn, or successful terminal verdict is persisted from a failed or
+mixed-time observation.
+
+### Versioned index-control metadata
+
+Every new schema-v4 write Receipt carries the immutable baseline fields
+`index_control_algorithm`, `index_control_checksum`, and
+`index_control_entry_count`. Commit-only Receipts carry the corresponding
+`staged_index_control_algorithm`, `staged_index_control_checksum`, and
+`staged_index_control_entry_count`. New baselines select
+`git-index-control-framed-sha256-v2`: canonical Git index order, raw pathname
+bytes, an unambiguous length-prefixed frame, semantic control flags after masking
+only `CE_FSMONITOR_VALID` (`0x80000000`), and a terminal entry count. The staged
+tree remains a separate content/mode fingerprint. Raw bytes and framing make the
+result independent of text decoding, runtime, delimiter-like pathnames, and chunk
+boundaries; parser memory is bounded by one record.
+
+### Structured failures and forward compatibility
+
+Collection and metadata failures use one structured safety-failure contract
+instead of prose-only diagnostics. The `GIT_*` collection codes below are
+`GitSafetyError` codes; the `INDEX_CONTROL_*` codes are separate Receipt/index
+metadata validation codes and must not be treated as `GitSafetyError` values:
+
+- `GIT_SAFETY_COMMAND_FAILED` covers spawn, non-zero exit, signal termination, and
+  child-stream errors.
+- `GIT_SAFETY_SCALAR_LIMIT` means a scalar command violated its explicit output
+  contract.
+- `GIT_SAFETY_STREAM_MALFORMED` means a streamed record was malformed or
+  truncated.
+- `INDEX_CONTROL_ALGORITHM_UNSUPPORTED` means a Receipt names an unknown
+  fingerprint algorithm (metadata validation).
+- `INDEX_CONTROL_BASELINE_INVALID` means a known v2 baseline is incomplete or its
+  checksum or count is invalid (metadata validation).
+- `GIT_BASELINE_RACED` and `GIT_AUDIT_RACED` distinguish a persistent repository
+  race after one complete retry from an ordinary scope mutation.
+
+Receipt schema v4 and public ticket syntax stay unchanged. A pre-existing
+algorithm-less Receipt is explicitly verified as `legacy-json-sorted-v1`: Baton
+streams the input but retains the compact pathname/masked-flag records needed to
+reproduce the historical sort, JSON serialization, and SHA-256 checksum. New
+Receipts always use v2. Unknown or incomplete metadata fails closed; no algorithm
+guessing or silent fallback is allowed. This is forward compatibility: a new
+runtime can finish old tickets without rewriting immutable Receipts, but an old
+runtime cannot safely audit a v2 baseline.
+
+Runtime rollback is therefore a safety boundary. Before replacing the runtime with
+an older version, the director must drain every active v2 write and commit-only
+ticket until it reaches a terminal state (explicitly closing it when appropriate)
+and is then released. Rollback while one of those tickets is active, bypassing
+the check, and rewriting a Receipt are all unsupported.
+
 ## Safety and lifecycle invariants
 
 - No parent-model inheritance, in-place model change, cross-host fallback, or invented effort or speed fields. Explicit quota exhaustion may create an immutable, auditable successor after a clean pre-mutation baseline; successors rerun all hard gates.
@@ -109,4 +181,5 @@ Parallel dispatch is permitted only for units with complete, pairwise disjoint w
 - AgentLimitReached defers the same ticket without changing its model.
 - Polling timeout is not worker timeout; exact not_found evidence is required.
 - Writes are allowlisted and parent-audited. Each write Receipt carries exact paths and allowed operations; only an exclusive parent-staged commit-only Receipt can authorize one Git commit.
+- Active v2 write and commit-only tickets are a runtime rollout boundary: each must reach a terminal state (explicitly closed when appropriate) and then be released before rollback to an older Baton runtime.
 - Baton state is user-global under ~/.baton; OpenSpec remains optional and is not reimplemented.

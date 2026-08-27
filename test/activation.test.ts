@@ -12,6 +12,7 @@ import {
   resolveActivation,
   runActivation,
   withActivationLock,
+  withActivationLockAsync,
 } from "../src/lib/activation.js";
 import {
   activationLockPath,
@@ -343,5 +344,31 @@ describe("activation settings", () => {
       (error: unknown) => (error as NodeJS.ErrnoException).code === "ACTIVATION_LOCK_BUSY",
     );
     fs.unlinkSync(globalLock);
+  });
+
+  it("holds global before project for await-safe transactions and records operation", async () => {
+    const cwd = project(); const env = environment(); configure(cwd, env);
+    const seen: string[] = [];
+    await withActivationLockAsync(cwd, env, async (locks) => {
+      seen.push(...locks.map((lock) => path.basename(lock.file)));
+      assert.equal(JSON.parse(fs.readFileSync(globalActivationLockPath("codex", env), "utf8")).operation, "test-op");
+    }, { host: "codex", scope: "both", operation: "test-op", leaseMs: 8, refreshIntervalMs: 1 });
+    assert.deepEqual(seen, [path.basename(globalActivationLockPath("codex", env)), path.basename(activationLockPath(cwd, env, "codex"))]);
+    assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+    assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
+  });
+
+  it("cleans global partial acquisition and both locks on async rejection", async () => {
+    const cwd = project(); const env = environment(); configure(cwd, env);
+    const projectFile = activationLockPath(cwd, env, "codex");
+    fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+    fs.writeFileSync(projectFile, JSON.stringify({ version: 1, token: "project-owner", pid: process.pid, operation: "test", acquired_at: new Date().toISOString(), refreshed_at: new Date().toISOString(), lease_until: new Date(Date.now() + 60_000).toISOString() }));
+    await assert.rejects(withActivationLockAsync(cwd, env, async () => undefined, { host: "codex", scope: "both" }), (error) => (error as { code?: string }).code === "ACTIVATION_LOCK_BUSY");
+    assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+    assert.equal(JSON.parse(fs.readFileSync(projectFile, "utf8")).token, "project-owner");
+    fs.unlinkSync(projectFile);
+    await assert.rejects(withActivationLockAsync(cwd, env, async () => { throw new Error("cancel"); }, { host: "codex", scope: "both", refreshIntervalMs: 1 }), /cancel/);
+    assert.equal(fs.existsSync(globalActivationLockPath("codex", env)), false);
+    assert.equal(fs.existsSync(activationLockPath(cwd, env, "codex")), false);
   });
 });

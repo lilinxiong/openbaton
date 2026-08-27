@@ -180,6 +180,73 @@ For OpenSpec, scope each unit before dispatch; only complete, disjoint scopes ma
     baton apply CHANGE --host HOST --dispatch \
       --unit ID --write-path src/migration.ts --unit ID --write-path src/config.ts
 
+## Git safety snapshots and runtime compatibility
+
+Write and commit-only tickets use a fail-closed Git safety snapshot. Every
+size-unknown Git result is consumed as a stream: stdout and stderr are drained
+concurrently, backpressure is respected, and the child is reaped before Baton
+accepts the facts. There is no Node or Bun aggregate `maxBuffer` limit on this
+path, so a valid stream may exceed the former 1 MiB boundary or 128 MiB without
+being rejected merely for being large. Baton retains only the compact facts
+needed by the Receipt or verdict. Scalar commands retain a deliberately small
+contract; exceeding that contract is an error, not permission to treat scalar
+output as a snapshot. Partial, malformed, truncated, interrupted, or failed
+streams are discarded and never become a valid baseline.
+
+Receipt schema v4 and the public CLI syntax remain unchanged. New write
+baselines record:
+
+    index_control_algorithm = "git-index-control-framed-sha256-v2"
+    index_control_checksum = "<sha256>"
+    index_control_entry_count = <number>
+
+Commit-only baselines use the corresponding `staged_index_control_*` fields.
+The v2 fingerprint frames entries in canonical Git index order with raw
+pathname bytes, a pathname length, and the semantic control flags after masking
+only Git's volatile fsmonitor-valid bit (`0x80000000`), then appends the entry
+count. The staged-tree fingerprint remains separate. This makes fingerprints
+stable across Node and Bun and keeps additional parser memory proportional to a
+single record rather than the complete `ls-files --debug -z` output.
+
+Collection and metadata failures share one structured safety-failure contract
+with stable meanings. The `GIT_*` collection codes are `GitSafetyError` codes;
+the `INDEX_CONTROL_*` codes are separate Receipt/index metadata validation
+codes, not `GitSafetyError` values:
+
+- `GIT_SAFETY_COMMAND_FAILED`: Git could not be spawned, exited unsuccessfully,
+  terminated by a signal, or failed while its streams were being consumed.
+- `GIT_SAFETY_SCALAR_LIMIT`: a command declared to return one small scalar
+  exceeded its explicit scalar contract.
+- `GIT_SAFETY_STREAM_MALFORMED`: a streamed record was malformed or truncated,
+  including an index entry that never supplied its terminal flags field.
+- `INDEX_CONTROL_ALGORITHM_UNSUPPORTED`: a Receipt names an algorithm Baton does
+  not implement.
+- `INDEX_CONTROL_BASELINE_INVALID`: v2 metadata is incomplete or has an invalid
+  checksum or entry count.
+- `GIT_BASELINE_RACED` and `GIT_AUDIT_RACED`: the complete safety observation
+  changed during collection and still did not stabilize after one full retry.
+
+Collection failures happen before a new Receipt or worker is made durable, so
+they leave no successful Receipt or spawn. A terminal audit cannot record a
+successful verdict until its stable observation succeeds. Existing public
+safety verdict mapping is preserved; collection failures are not fabricated as
+write-scope mutations.
+
+An algorithm-less existing schema-v4 Receipt is interpreted as
+`legacy-json-sorted-v1`. The new runtime streams its Git input but retains the
+compact pathname and masked-flag records needed to reproduce the established
+sort, JSON, and SHA-256 checksum exactly. New Receipts always use v2. Unknown
+algorithms, missing required v2 fields, invalid checksums, and inconsistent
+counts fail closed; Baton never guesses or silently falls back. Thus a new
+runtime can finish tickets created by an older one without rewriting their
+immutable Receipts, while an older runtime cannot safely audit a v2 Receipt.
+
+Before replacing Baton with an older runtime, drain all active v2 write and
+commit-only tickets: each must reach a terminal state (using explicit close
+when appropriate) and then be released before rollback. Do not roll back
+across an active v2 ticket, bypass the safety check, or rewrite a Receipt to
+make the old runtime accept it.
+
 ## Mechanical ops
 
 The director's structured execution class selects `runner` or `longctx`; operation labels are retained for audit only. Empty or unusable labels fail closed for classified mechanical work. Mechanical workers execute the director-specified operation and do not infer commands from prose or explore. Commit-only additionally requires an explicit commit capability and the Receipt/Git safety gate; `operation = "git-commit"` alone is not authority.

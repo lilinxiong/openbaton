@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { run } from "../src/cli.js";
+import { finishAgent } from "../src/lib/dispatch.js";
+import { collectGitSafetyFacts } from "../src/lib/git-safety-facts.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { withHome, fakeEnv } from "./home.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
@@ -83,6 +85,11 @@ async function boundWriteTicket(cwd: string, env: NodeJS.ProcessEnv): Promise<vo
   await run(["dispatch", "bind", "spn-0001", "--host", "codex", "--task-name", CODEX_TASK_NAME, "--json"], { cwd, env, stdout: sink(), stderr: sink() });
 }
 
+function receiptFile(cwd: string, id: string): string {
+  const ticket = readTicket(cwd, id);
+  return path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`);
+}
+
 async function reportMissingWriteAgent(cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
   const out = capture();
   const code = await run([
@@ -93,6 +100,61 @@ async function reportMissingWriteAgent(cwd: string, env: NodeJS.ProcessEnv): Pro
 }
 
 describe("write dispatch safety integration", () => {
+  it("audits an algorithm-less legacy Receipt through the dispatch boundary", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await boundWriteTicket(cwd, env);
+      const legacyFacts = await collectGitSafetyFacts(cwd, { indexControlAlgorithm: "legacy-json-sorted-v1" });
+      const file = receiptFile(cwd, "spn-0001");
+      const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+      receipt.baseline.index_control_checksum = legacyFacts.indexControl.checksum;
+      delete receipt.baseline.index_control_algorithm;
+      delete receipt.baseline.index_control_entry_count;
+      fs.writeFileSync(file, `${JSON.stringify(receipt)}\n`);
+      fs.appendFileSync(path.join(cwd, "allowed.txt"), "LEGACY_WORKER_ALLOWED\n");
+      await finishAgent(cwd, "spn-0001", { status: "completed", conclusion: "legacy accepted", env });
+      const ticket = readTicket(cwd, "spn-0001");
+      assert.equal(ticket.status, "completed");
+      assert.equal(ticket.safety_verdict.accepted, true);
+    });
+  });
+
+  it("rejects a v2 Receipt when the streamed entry count no longer matches", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await boundWriteTicket(cwd, env);
+      const file = receiptFile(cwd, "spn-0001");
+      const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+      receipt.baseline.index_control_entry_count += 1;
+      fs.writeFileSync(file, `${JSON.stringify(receipt)}\n`);
+      fs.appendFileSync(path.join(cwd, "allowed.txt"), "WORKER_ALLOWED\n");
+      await run(["dispatch", "complete", "spn-0001", "--text", "must reject", "--json"], { cwd, env, stdout: sink(), stderr: sink() });
+      const ticket = readTicket(cwd, "spn-0001");
+      assert.equal(ticket.status, "errored");
+      assert.equal(ticket.error.code, "WRITE_SCOPE_VIOLATION");
+      assert.ok(ticket.safety_verdict.violations.some((item: { code: string }) => item.code === "E_INDEX_MUTATION"));
+    });
+  });
+
+  it("fails closed before a verdict when a persisted Receipt names an unknown algorithm", async () => {
+    await withHome(async (home) => {
+      const cwd = fixture();
+      const env = fakeEnv(home);
+      await boundWriteTicket(cwd, env);
+      const file = receiptFile(cwd, "spn-0001");
+      const receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+      receipt.baseline.index_control_algorithm = "future-v3";
+      fs.writeFileSync(file, `${JSON.stringify(receipt)}\n`);
+      await assert.rejects(
+        () => finishAgent(cwd, "spn-0001", { status: "completed", conclusion: "must reject", env }),
+        (error: unknown) => error instanceof Error && (error as { code?: string }).code === "INDEX_CONTROL_ALGORITHM_UNSUPPORTED",
+      );
+      assert.equal(readTicket(cwd, "spn-0001").status, "running");
+    });
+  });
+
   it("completes an allowlisted write after the parent gate passes", async () => {
     await withHome(async (home) => {
       const cwd = fixture();

@@ -181,6 +181,61 @@ OpenSpec dispatch 前必须给每个单元划定范围；只有完整且互不�
     baton apply CHANGE --host HOST --dispatch \
       --unit ID --write-path src/migration.ts --unit ID --write-path src/config.ts
 
+## Git safety snapshot 与 runtime 兼容边界
+
+写入和 commit-only ticket 都使用 fail-closed 的 Git safety snapshot。所有
+大小未知的 Git 输出都走 streaming：stdout 与 stderr 并行 drain，遵守
+backpressure，并在 Baton 接受事实前回收 child。该路径不使用 Node 或 Bun 的
+聚合 `maxBuffer`，所以合法输出超过原先 1 MiB 边界甚至超过 128 MiB 时，也不
+会仅因总大小而失败。Baton 只保留 Receipt 或 verdict 真正需要的紧凑事实；声明
+为小 scalar 的命令仍有明确的小上限，超过上限会报错，不能把 scalar 输出降级
+成 snapshot。partial、malformed、truncated、被中断或失败的 stream 都会丢弃，
+不能成为有效 baseline。
+
+Receipt schema v4 与公开 CLI syntax 不变。新的 write baseline 会记录：
+
+    index_control_algorithm = "git-index-control-framed-sha256-v2"
+    index_control_checksum = "<sha256>"
+    index_control_entry_count = <number>
+
+commit-only baseline 使用对应的 `staged_index_control_*` 字段。v2 fingerprint
+按 Git index 的 canonical 顺序，对每条记录编码原始 pathname bytes、pathname
+长度，以及仅屏蔽 Git 易变的 fsmonitor-valid bit（`0x80000000`）之后的语义
+control flags，最后追加 entry count。staged-tree fingerprint 仍然独立保存。
+因此 Node 与 Bun 的结果一致，parser 的额外内存只随单条最大记录增长，不随完整
+`ls-files --debug -z` 输出增长。
+
+采集与元数据失败共用一个结构化 safety-failure contract，并保持稳定含义。
+其中 `GIT_*` 采集码属于 `GitSafetyError`；`INDEX_CONTROL_*` 是独立的
+Receipt/index 元数据校验码，不属于 `GitSafetyError`：
+
+- `GIT_SAFETY_COMMAND_FAILED`：Git 无法 spawn、非零退出、被 signal 终止，或
+  stream 消费阶段出错。
+- `GIT_SAFETY_SCALAR_LIMIT`：声明为小 scalar 的命令超过明确的 scalar 契约。
+- `GIT_SAFETY_STREAM_MALFORMED`：stream record malformed 或 truncated，包括
+  index entry 没有提供终止 flags 字段。
+- `INDEX_CONTROL_ALGORITHM_UNSUPPORTED`：Receipt 指定了 Baton 不支持的算法。
+- `INDEX_CONTROL_BASELINE_INVALID`：v2 元数据不完整，或 checksum/entry count
+  无效。
+- `GIT_BASELINE_RACED` 与 `GIT_AUDIT_RACED`：完整 safety observation 在采集
+  期间发生变化，完成一次整体验证重试后仍未稳定。
+
+采集失败发生在新 Receipt 或 worker 持久化之前，因此不会留下成功的 Receipt 或
+spawn。terminal audit 只有在 stable observation 成功后才能记录成功 verdict。
+已有的 public safety verdict mapping 保持不变；采集失败不能伪装成
+write-scope mutation。
+
+没有算法字段的旧 schema-v4 Receipt 按 `legacy-json-sorted-v1` 解释。新 runtime
+仍以 streaming 方式读取 Git，但只保留复现既有 sort、JSON 与 SHA-256 checksum
+所需的 pathname 和 masked-flag 紧凑记录。新 Receipt 一律使用 v2。未知算法、缺少
+v2 必填字段、checksum 无效或 entry count 不一致都必须 fail closed；Baton 不猜测，
+也不静默 fallback。因此新 runtime 可以完成旧 runtime 创建的 ticket，而旧 runtime
+不能安全审计 v2 Receipt；既有 immutable Receipt 不需要重写。
+
+将 Baton runtime 回滚到旧版本前，必须 drain 所有 active v2 write 与 commit-only
+ticket：每张 ticket 都要先进入 terminal（适用时显式 close），然后 release，再进行 rollback。
+不能跨越 active v2 ticket 回滚、绕过 safety check，或改写 Receipt 来迎合旧 runtime。
+
 ## 机械 ops
 
 director 提供结构化执行分类，Baton 据此选择 `runner` 或 `longctx`；operation label 只保留作审计，不能选择 profile。分类机械工作遇到空/不可用 route 时必须 fail closed。机械 worker 只执行 director 指定的 operation，不从 prose 推断命令，也不探索。commit-only 还必须有显式 commit capability 和 Receipt/Git 门禁；单独的 `operation = "git-commit"` 不具备权限。
