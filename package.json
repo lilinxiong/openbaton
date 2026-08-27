@@ -1,6 +1,6 @@
 {
   "name": "@zhouliuya/openbaton",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Manifest-driven, CLI-neutral scheduler with a public adapter SDK, native execution lifecycle, and scoped ticket orchestration.",
   "type": "module",
   "bin": {

@@ -239,7 +239,7 @@ function runAppServer(executable, { cwd, env, timeoutMs = CATALOG_TIMEOUT_MS } =
       method: "initialize",
       id: 0,
       params: {
-        clientInfo: { name: "openbaton-codex-adapter", title: "OpenBaton Codex adapter", version: "0.2.0" },
+        clientInfo: { name: "openbaton-codex-adapter", title: "OpenBaton Codex adapter", version: "1.0.0" },
         capabilities: { experimentalApi: true },
       },
     });

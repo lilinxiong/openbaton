@@ -4,7 +4,7 @@
     "id": "codex",
     "display_name": "Codex",
     "package_name": "@zhouliuya/openbaton-codex-adapter",
-    "package_version": "0.2.0",
+    "package_version": "1.0.0",
     "sdk_version": "1.0"
   },
   "catalog": {
