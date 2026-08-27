@@ -74,13 +74,47 @@ With an enabled selected CLI profile and explicit user authorization, the direct
 
 Before creating or dispatching any write ticket, the director MUST perform a read-only impact/dependency pass for that unit. The pass records a complete, exact per-unit write-path set and the allowed operations for those paths. Paths must be explicit, and allowed operations are drawn from `write`, `create`, `delete`, `rename`, and `chmod`. Unknown impact, dependency, path, or operation leaves the classification unresolved; no implementation ticket is created or dispatched until the scope decision is complete.
 
-Parallel dispatch is allowed only for units whose write scopes are complete and pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Otherwise units are sequenced or remain director-local. If a worker discovers an undeclared path or operation, it stops before mutation and returns a scope decision to the director. It must never edit first and rely on terminal retry or audit to authorize an undeclared change. Mechanical routing continues to use the structured class; operation labels stay opaque audit metadata and never select a route.
+The director MUST calculate the maximal safe ready frontier at every scheduling and
+refill decision: all currently order-ready units whose scopes are complete and can
+coexist under the selected host capacity. It MUST fill every available slot from
+that frontier. Section order is only a stable tie-breaker when choosing among
+otherwise-safe frontier units; it is not a dependency and MUST NOT serialize an
+independent ready unit. Recompute the frontier whenever a dependency becomes
+terminal or a running slot is released. If a worker discovers an undeclared path
+or operation, it stops before mutation and returns a scope decision to the
+director. It must never edit first and rely on terminal retry or audit to
+authorize an undeclared change. Mechanical routing continues to use the
+structured class; operation labels stay opaque audit metadata and never select a
+route.
+
+Before creating any ticket, each proposal/dispatch invocation MUST validate all
+units atomically. A standalone multi-unit request carries an exact write-path set
+and allowed operation set for every unit; the one-unit `standalone` form uses the
+same per-unit shape. OpenSpec apply carries the same scope and operation data for
+each `--unit`. Any unknown scope/operation or any pairwise conflict with another
+unit or an already-owned write scope (including rename source/destination paths
+and path-prefix overlaps) rejects the whole invocation before ticket,
+reservation, Receipt, or native dispatch creation; partial ticket creation is
+forbidden. Read-only units may be included only when their classification and
+dependencies are otherwise resolved.
 
 The installed global Baton skill and every host runtime skill are release artifacts of this same contract. `scripts/update_local_baton.py` must build/link this checkout and invoke the linked `baton update`, which refreshes the active global `~/.baton/SKILL.md` from the checkout as well as installed host skills that already exist.
 
+Future host templates MUST preserve these frontier, tie-breaker, per-unit scope,
+and atomic-rejection semantics verbatim; only the native child-agent protocol
+and other host-specific details may vary.
+
 All hosts are hookless. The director MUST enforce ticket presence, reservation, lifecycle, path scope, and Git safety explicitly at command boundaries; runtime skills MUST NOT describe hook installation, trust, observation, or interception.
 
-Keep the adapter-boundary and model/configuration invariants above. Do not rewrite OpenSpec apply skills. OpenSpec apply intercept remains in the target host Baton skill via `baton apply` plan → read-only director impact/dependency pass → filter the order-ready frontier (`--write-path`/`--read-only`) → pack only complete, disjoint write scopes by section order and host cap → one scoped `--dispatch` with multiple `--unit` flags. A write scope also carries its allowed operations (`write`, `create`, `delete`, `rename`, `chmod`); the standalone write surface is `--write-path PATH --write-ops OPS`.
+Keep the adapter-boundary and model/configuration invariants above. Do not rewrite
+OpenSpec apply skills. OpenSpec apply intercept remains in the target host Baton
+skill via `baton apply` plan → read-only director impact/dependency pass → filter
+the order-ready frontier (`--write-path`/`--read-only`) → validate all selected
+unit scopes and operations atomically → fill the maximal safe frontier (section
+order is only a tie-breaker) → one scoped `--dispatch` with multiple `--unit`
+flags. A write scope also carries its allowed operations (`write`, `create`,
+`delete`, `rename`, `chmod`). Standalone multi-unit requests carry those fields
+per unit; the one-unit surface remains `--write-path PATH --write-ops OPS`.
 
 ## Runtime skill and native protocol
 
@@ -97,7 +131,7 @@ The runtime sequence remains logically equivalent across hosts:
 
 Do not substitute a shell-launched coding CLI, print mode, or new top-level session for a native child agent.
 
-OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` through `baton apply` plan → read-only director impact/dependency pass → filter the order-ready frontier (`--write-path`/`--read-only`) → pack only complete, disjoint write scopes by section order and host cap → one scoped `baton apply --dispatch` with multiple `--unit` flags and same-turn native children. A worker that finds an undeclared path or operation stops before mutation and returns a scope decision; it does not edit and defer the decision to terminal retry or audit.
+OpenSpec apply intercept lives in the target host's Baton skill, not in OpenSpec's apply skill. Do not edit `.agents/skills/openspec-apply-change` or `opsx-apply` to force Baton dispatch. When the target profile is enabled, the host skill consumes original `tasks.md` through `baton apply` plan → read-only director impact/dependency pass → filter the order-ready frontier (`--write-path`/`--read-only`) → validate all selected unit scopes and operations atomically → fill the maximal safe frontier (section order is only a tie-breaker) → one scoped `baton apply --dispatch` with multiple `--unit` flags and same-turn native children. A conflict rejects the complete invocation before creating any ticket; a worker that finds an undeclared path or operation stops before mutation and returns a scope decision, it does not edit and defer the decision to terminal retry or audit.
 
 ## User-visible completion
 

@@ -233,6 +233,15 @@ export function nextSpawnId(cwd: string, prefix = "spn", env?: NodeJS.ProcessEnv
   return `${prefix}-${String(max + 1).padStart(4, "0")}`;
 }
 
+/** Reserve a deterministic contiguous id range before a multi-unit wave is persisted. */
+export function nextSpawnIds(cwd: string, prefix = "spn", count = 1, env?: NodeJS.ProcessEnv): string[] {
+  const first = nextSpawnId(cwd, prefix, env);
+  const match = first.match(/^(.*-)(\d+)$/);
+  if (!match) return Array.from({ length: count }, (_, index) => `${first}-${index + 1}`);
+  const start = Number(match[2]);
+  return Array.from({ length: count }, (_, index) => `${match[1]}${String(start + index).padStart(match[2].length, "0")}`);
+}
+
 interface BuildSpawnTicketOptions {
   id: string;
   description: string;
@@ -324,18 +333,19 @@ interface PlanStandaloneOptions {
   host?: string | null;
   forceDelegate?: boolean;
   env?: NodeJS.ProcessEnv;
+  id?: string;
 }
 
 export type StandalonePlan =
   | { director_local: true; reason: string; description: string }
   | { director_local: false; ticket: SpawnTicket; receipt: DelegationReceipt; queue: { running: number; queued: number } };
 
-export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, host = null, forceDelegate: _forceDelegate = false, env }: PlanStandaloneOptions): StandalonePlan {
+export function planStandaloneSpawn({ description, prompt = null, cards, explicitModel, queue, cwd, taskKind, deliverable, doneWhen, selectionApproval = null, host = null, forceDelegate: _forceDelegate = false, env, id: requestedId }: PlanStandaloneOptions): StandalonePlan {
   void queue;
   const card = explicitModel
     ? requireCardId(explicitModel, cards)
     : matchModelCard(description, cards).card;
-  const id = nextSpawnId(cwd, "spn", env);
+  const id = requestedId || nextSpawnId(cwd, "spn", env);
   const ticket = buildSpawnTicket({
     id,
     description,

@@ -151,11 +151,15 @@ Discussion and read-only analysis stay on the director. When the selected CLI pr
 
 With the selected CLI profile enabled and the user authorizing execution, the director classifies each executable request and passes that structured classification to Baton before dispatch. Baton persists the resulting tickets and Receipts; it does not invent or own a separate DAG. Discussion and read-only analysis stay on the director. Authorized implementation nodes use the current host's native subagent tool. A `mechanical` classification selects the configured `runner` route (and `long-context` selects `longctx`); operation labels are audit metadata and never a fixed action-name matcher. Commit/publish authority remains the deterministic Receipt/Git capability gate. Missing authorization, a disabled profile, or unresolved classification fails closed.
 
+At each scheduling and refill decision, Baton fills the maximal safe ready frontier: every currently order-ready unit that has a complete scope and can coexist under the selected host capacity. Section order is only a stable tie-breaker within that frontier; it is not a dependency and cannot serialize an independent ready unit. Dependency completion and write-scope conflicts are the only reasons to leave capacity unused or serialize an otherwise-ready unit.
+
 ## Write-scope readiness
 
 Before creating or dispatching any write ticket, the director performs a read-only impact/dependency pass for that unit. The pass must resolve the affected dependencies and record a complete, exact per-unit write-path set with allowed operations. Paths are explicit; allowed operations are `write`, `create`, `delete`, `rename`, and `chmod`. Unknown impact, dependency, path, or operation keeps classification unresolved, so no implementation ticket is created or dispatched.
 
-Parallel dispatch is permitted only when every participating unit has a complete scope and pairwise disjoint write sets, including rename source/destination paths and path-prefix overlaps. Otherwise units are sequenced or remain director-local. If a worker discovers an undeclared path or operation, it stops before mutation and returns a scope decision to the director. It must never edit first and rely on terminal retry or audit to authorize the change. Mechanical routing remains based on the structured class; operation labels stay opaque audit metadata and never select a route.
+Standalone multi-unit requests must carry a complete, exact write-path set and allowed operations for each unit independently; the one-unit `standalone` form uses the same per-unit shape. OpenSpec apply carries the same scope and operation data for each `--unit`. Before creating any ticket, Baton validates the complete proposal/dispatch invocation atomically against itself and currently owned write scopes. An unknown scope/operation or any pairwise write conflict rejects the whole invocation with no partial tickets, reservations, Receipts, or native dispatches. Conflicts include rename source/destination paths and path-prefix overlaps.
+
+The director recomputes the maximal safe ready frontier whenever a dependency becomes terminal or a running slot is released, and fills every newly available slot. If a worker discovers an undeclared path or operation, it stops before mutation and returns a scope decision to the director. It must never edit first and rely on terminal retry or audit to authorize the change. Mechanical routing remains based on the structured class; operation labels stay opaque audit metadata and never select a route.
 
 ## Execution lifecycle
 
@@ -176,10 +180,19 @@ For a standalone write, pass the exact path and operations explicitly:
     baton spawn "implement the migration" --host HOST --classification implementation \
       --write-path src/migration.ts --write-ops write,create
 
-For OpenSpec, scope each unit before dispatch; only complete, disjoint scopes may share a wave:
+For multiple standalone units, scope each unit independently. The `--unit`
+declaration selects the following `--write-path` and `--write-ops` values; an
+equivalent `KEY=VALUE` assignment form is accepted:
+
+    baton spawn "implement both migrations" --host HOST --classification implementation \
+      --unit "db=update schema" --write-path db/schema.sql --write-ops write,create \
+      --unit "api=update endpoint" --write-path src/api.ts --write-ops write
+
+For OpenSpec, scope each unit before dispatch; complete, disjoint units fill the safe ready frontier, with section order used only as a tie-breaker:
 
     baton apply CHANGE --host HOST --dispatch \
-      --unit ID --write-path src/migration.ts --unit ID --write-path src/config.ts
+      --unit 1.1 --write-path src/migration.ts --write-ops write,create \
+      --unit 1.2 --write-path src/config.ts --write-ops write
 
 ## Git safety snapshots and runtime compatibility
 
@@ -333,7 +346,7 @@ Baton never creates project-local runtime state:
                  [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
                  [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
     baton apply [change]
-    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
+    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH [--write-ops OPS] --unit ID --write-path PATH [--write-ops OPS]|--read-only
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --task-name CODEX_TASK_NAME --host codex --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json  # other hosts

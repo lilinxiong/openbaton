@@ -152,11 +152,15 @@ Baton 不继承 parent 模型，不越过启用的 allowlist，不编造 CLI 没
 
 只有在所选 CLI profile 已启用、且用户明确授权执行时，工作流才允许产生原生实现任务。director 必须先给每个可执行请求分类，并把结构化分类交给 Baton；Baton 只持久化由此产生的 ticket 和 Receipt，不另造或接管 DAG。讨论与只读分析留在 director；获得授权的实现节点交给当前 host 的原生 subagent。`mechanical` 分类走 `runner`（`long-context` 走 `longctx`），operation label 只作审计元数据，不得退化成固定 action 名匹配；commit/publish 仍由确定性的 Receipt/Git capability 门禁决定。缺少授权、profile 被关闭或分类未决时必须 fail closed。
 
+每次调度和补位时，Baton 都必须填满 maximal safe ready frontier：当前所有依赖已满足、范围完整、且能在所选 host 容量内安全共存的 ready unit。section 顺序只在这个 frontier 内作为稳定 tie-breaker，不是 dependency，不能让独立 ready unit 串行。只有依赖尚未完成或写入范围冲突，才可以让容量空置或串行化本来已 ready 的 unit。
+
 ## 写入范围就绪条件
 
 创建或 dispatch 任何写 ticket 之前，director 必须先对该单元做一次只读的影响/依赖梳理。梳理结果必须解析受影响的依赖，并记录完整、精确的单元级写入路径集合及允许的操作。路径必须逐项明确；允许的操作只能来自 `write`、`create`、`delete`、`rename`、`chmod`。影响、依赖、路径或操作只要未知，分类就保持未决，不创建也不 dispatch implementation ticket。
 
-只有所有参与单元的范围都完整且写集合两两不相交时，才允许并行 dispatch；rename 的源/目标路径以及路径前缀重叠也算相交。否则单元必须串行，或继续留在 director。worker 如果发现未声明的路径或操作，必须在 mutation 前停止并返回 scope decision 给 director；不能先编辑，再依赖终态 retry 或 audit 追认。机械路由仍由结构化分类决定，operation label 只是 opaque 审计元数据，不能选择 route。
+standalone 多单元请求必须为每个 unit 独立携带完整、精确的写入路径集合和允许操作；单 unit 的 `standalone` 形式也使用同一套 unit 级结构。OpenSpec apply 对每个 `--unit` 使用同样的 scope/operation 数据。Baton 在创建任何 ticket 前，以原子方式针对本次调用和当前已占用的写范围校验整份 proposal/dispatch：scope/operation 未知，或任意两组写范围冲突，就拒绝整个调用，不得产生部分 ticket、reservation、Receipt 或 native dispatch。rename 源/目标路径以及路径前缀重叠都算冲突。
+
+每次依赖完成或运行中的 slot 释放后，director 都必须重新计算 maximal safe ready frontier，并填满新可用的 slot。worker 如果发现未声明的路径或操作，必须在 mutation 前停止并返回 scope decision 给 director；不能先编辑，再依赖终态 retry 或 audit 追认。机械路由仍由结构化分类决定，operation label 只是 opaque 审计元数据，不能选择 route。
 
 ## 执行生命周期
 
@@ -177,10 +181,19 @@ standalone 写入必须明确给出路径和操作：
     baton spawn "实现迁移" --host HOST --classification implementation \
       --write-path src/migration.ts --write-ops write,create
 
-OpenSpec dispatch 前必须给每个单元划定范围；只有完整且互不相交的范围才能进入同一 wave：
+standalone 多单元必须逐个 unit 声明 scope 和 operations。`--unit` 会选择后续
+的 `--write-path` 与 `--write-ops`；也可以使用等价的 `KEY=VALUE` assignment：
+
+    baton spawn "实现两项迁移" --host HOST --classification implementation \
+      --unit "db=更新 schema" --write-path db/schema.sql --write-ops write,create \
+      --unit "api=更新 endpoint" --write-path src/api.ts --write-ops write
+
+OpenSpec dispatch 前必须给每个 unit 声明 scope 和 operations；完整且互不相交的
+unit 填满 safe ready frontier，section 顺序只作 tie-breaker：
 
     baton apply CHANGE --host HOST --dispatch \
-      --unit ID --write-path src/migration.ts --unit ID --write-path src/config.ts
+      --unit 1.1 --write-path src/migration.ts --write-ops write,create \
+      --unit 1.2 --write-path src/config.ts --write-ops write
 
 ## Git safety snapshot 与 runtime 兼容边界
 
@@ -322,7 +335,7 @@ Baton 不创建项目内运行时目录：
                  [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
                  [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
     baton apply [change]
-    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH --unit ID --write-path PATH|--read-only
+    baton apply [change] --host HOST --dispatch --unit ID --write-path PATH [--write-ops OPS] --unit ID --write-path PATH [--write-ops OPS]|--read-only
     baton dispatch next --host HOST --capacity N --json
     baton dispatch bind TICKET --task-name CODEX_TASK_NAME --host codex --json
     baton dispatch bind TICKET --agent-id ID --host HOST --json  # 其他 host

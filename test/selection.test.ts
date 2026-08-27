@@ -13,7 +13,7 @@ import {
   readSelectionProposal,
   selectionSourceFingerprint,
 } from "../src/lib/selection.js";
-import { artificialAnalysisDbPath, modelAvailabilityPath, receiptsDir } from "../src/lib/paths.js";
+import { artificialAnalysisDbPath, modelAvailabilityPath, receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { availabilityForRoute, readModelAvailability } from "../src/lib/model-availability.js";
 import { configureCodex } from "./configure.js";
 import { withHome, fakeEnv } from "./home.js";
@@ -267,6 +267,47 @@ describe("automatic configured-model selection", () => {
         stderr: explicit,
       }), 1);
       assert.match(explicit.text(), /MODEL_SELECTION_REMOVED/);
+    });
+  });
+
+  it("allows disjoint standalone units to carry independent write scopes", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-select-multi-write-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      setup(cwd, env);
+      execFileSync("git", ["init", "-q"], { cwd });
+      execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd });
+      execFileSync("git", ["config", "user.name", "Selection Test"], { cwd });
+      fs.writeFileSync(path.join(cwd, "seed.txt"), "seed\n");
+      execFileSync("git", ["add", "seed.txt"], { cwd });
+      execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd });
+      const out = capture();
+      const code = await run([
+        "spawn", "implement two files", "--host", "codex", "--classification", "implementation",
+        "--unit", "one=implement one", "--write-path", "one.txt", "--write-ops", "write",
+        "--unit", "two=implement two", "--write-path", "two.txt", "--write-ops", "create", "--json",
+      ], { cwd, env, stdout: out, stderr: out });
+      assert.equal(code, 0, out.text());
+      const body = JSON.parse(out.text());
+      assert.equal(body.tickets.length, 2);
+      const receipts = body.tickets.map((ticket: { receipt_id: string }) => JSON.parse(
+        fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"),
+      ));
+      assert.deepEqual(receipts.map((receipt: { scope: { write_allowlist: string[] } }) => receipt.scope.write_allowlist), [["one.txt"], ["two.txt"]]);
+      assert.deepEqual(receipts.map((receipt: { scope: { allowed_operations: string[] } }) => receipt.scope.allowed_operations), [["write"], ["create"]]);
+
+      const retainedPath = path.join(spawnsDir(cwd), `${body.tickets[0].id}.json`);
+      const retainedTicket = JSON.parse(fs.readFileSync(retainedPath, "utf8"));
+      retainedTicket.status = "completed";
+      delete retainedTicket.slot_released_at;
+      fs.writeFileSync(retainedPath, `${JSON.stringify(retainedTicket)}\n`);
+      const blocked = capture();
+      assert.equal(await run([
+        "spawn", "implement one again", "--host", "codex", "--classification", "implementation",
+        "--write-path", "one.txt", "--write-ops", "write", "--json",
+      ], { cwd, env, stdout: blocked, stderr: blocked }), 1);
+      assert.match(blocked.text(), /WRITE_SCOPE_CONFLICT/);
     });
   });
 });

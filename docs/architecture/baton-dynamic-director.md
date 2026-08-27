@@ -53,12 +53,17 @@ CLI-reported configuration.
 There is no runtime human model selector. Explicit model or route flags and the former model-selection toggle are rejected.
 
 Standalone syntax carries one director classification/operation for the request
-or per-unit overrides when decomposing a request:
+or per-unit overrides when decomposing a request. For multiple units, scope and
+operations follow each `--unit`; the global flags remain the one-unit form:
 
     baton spawn REQUEST [--classification CLASS] [--operation LABEL]
       [--unit KEY=TEXT ...]
       [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...]
       [--write-path PATH] [--write-ops write,create,delete,rename,chmod]
+
+    baton spawn REQUEST --unit "db=update schema" \
+      --write-path db/schema.sql --write-ops write,create \
+      --unit "api=update endpoint" --write-path src/api.ts --write-ops write
 
 Every standalone request is persisted in the same multi-unit proposal shape;
 without `--unit`, the request becomes the single `standalone` unit. Classification
@@ -99,7 +104,24 @@ The decomposition and ordering graph belongs to the director workflow or OpenSpe
 
 Before creating or dispatching any write ticket, the director performs a read-only impact/dependency pass for the unit. The pass must produce a complete, exact per-unit write-path set and the allowed operations for those paths. Paths are explicit; allowed operations are `write`, `create`, `delete`, `rename`, and `chmod`. Unknown impact, dependency, path, or operation keeps classification unresolved and creates no implementation ticket.
 
-Parallel dispatch is permitted only for units with complete, pairwise disjoint write sets, including rename source/destination paths and path-prefix overlaps. Incomplete or intersecting scopes are sequenced or remain director-local. A worker that discovers an undeclared path or operation stops before mutation and returns a scope decision to the director. It never edits first and relies on terminal retry or audit for authorization. Mechanical routing remains class-based, and operation labels are opaque audit metadata rather than route selectors.
+Before any ticket is created, standalone and OpenSpec multi-unit proposals are
+validated atomically against one another and already-owned write scopes. Each
+unit carries an exact write-path set and allowed operations (`write`, `create`,
+`delete`, `rename`, or `chmod`). An unknown scope or operation, or any pairwise
+conflict, rejects the complete invocation with no partial ticket, reservation,
+Receipt, or native dispatch. Rename source and destination paths and path-prefix
+overlaps are conflicts.
+
+At every scheduling and refill decision, the director computes and fills the
+maximal safe ready frontier: all order-ready units with complete, pairwise
+disjoint scopes that fit the selected host capacity. Recompute it after a
+dependency becomes terminal or a running slot is released. Section order is
+only a stable tie-breaker within the frontier; it is not a dependency and must
+not serialize an independent ready unit. A worker that discovers an undeclared
+path or operation stops before mutation and returns a scope decision to the
+director; it never edits first and relies on terminal retry or audit for
+authorization. Mechanical routing remains class-based, and operation labels are
+opaque audit metadata rather than route selectors.
 
 ## Streaming Git safety contract
 

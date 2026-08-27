@@ -54,6 +54,13 @@ Inspect the installed target runtime Baton skill. It MUST state the shared routi
 
 Omitting the table or substituting a host-specific exception is not `PASS`. Unit tests still must not merely regex-match documentation wording; this gate is an acceptance completeness check that the runtime skill contains the table, not a wording-regex unit test.
 
+The runtime skill must also preserve the shared scheduling and scope semantics:
+fill the maximal safe ready frontier at each scheduling/refill decision, use
+section order only as a tie-breaker, require standalone per-unit paths and
+operations, and atomically reject conflicting standalone/OpenSpec scopes before
+creating any ticket. Host-specific templates may change only the native protocol
+details, not these safety or concurrency rules.
+
 ### Hookless hosts
 
 All hosts are hookless. Acceptance verifies that the director performs classification,
@@ -70,8 +77,9 @@ Acceptance must also show that, after the selected profile is enabled and execut
 Acceptance must prove the write boundary before any write ticket is created or dispatched:
 
 - The director performs a read-only impact/dependency pass for each proposed write unit.
-- Each write unit records an exact, complete per-unit path set and allowed operations from `write`, `create`, `delete`, `rename`, and `chmod`; an implicit, wildcard, or partial scope is not complete.
-- Parallel dispatch is accepted only when all participating scopes are complete and pairwise disjoint, including rename source/destination paths and path-prefix overlaps. Intersecting or incomplete scopes are sequenced or kept director-local.
+- Each write unit records an exact, complete per-unit path set and allowed operations from `write`, `create`, `delete`, `rename`, and `chmod`; an implicit, wildcard, or partial scope is not complete. Standalone multi-unit requests must carry this scope and operation data separately for every unit; the one-unit `standalone` form uses the same shape. OpenSpec apply must carry the same data for every `--unit`.
+- Before ticket creation, the full standalone or OpenSpec proposal/dispatch invocation is validated atomically against itself and currently owned write scopes. Any unknown scope/operation or pairwise conflict rejects the entire invocation with zero tickets, reservations, Receipts, or native dispatches. Conflict detection includes rename source/destination paths and path-prefix overlaps; it must not defer the decision to a terminal Receipt audit.
+- At every scheduling and refill decision, the director computes the maximal safe ready frontier and fills every available host slot with units from it. Section order is only a stable tie-breaker among otherwise-safe frontier units; it is not a dependency and must not serialize an independent ready unit. Recompute after dependency completion and slot release. If capacity remains while an otherwise-ready unit is not selected, acceptance evidence names the concrete dependency or write-scope conflict; section order and FIFO position are not valid reasons.
 - Unknown impact, dependency, path, or operation leaves classification unresolved and creates no implementation ticket.
 - A worker that discovers an undeclared path or operation stops before mutation and returns a scope decision. It must not edit first or rely on terminal retry or audit to authorize the change.
 - Mechanical routing still follows the structured class, while operation labels remain opaque audit metadata and never select a route.

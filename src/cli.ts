@@ -25,15 +25,15 @@ import {
 import { CardMatchError } from "./lib/cards.js";
 import { persistedCapacity, reserveNext } from "./lib/dispatch.js";
 import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts.js";
-import { listSpawns, planStandaloneSpawn } from "./lib/spawn.js";
+import { listSpawns, nextSpawnIds, planStandaloneSpawn, type StandalonePlan } from "./lib/spawn.js";
 import { formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId } from "./lib/task-id.js";
-import { parseApplyUnitScopes, scopeRecord } from "./lib/apply-scope.js";
+import { parseApplyUnitScopes, scopeRecord, DEFAULT_WRITE_OPERATIONS, WRITE_OPERATIONS, type ApplyUnitScope } from "./lib/apply-scope.js";
 import { authorizeCommitOpsPlanAsync, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
 import { normalizeAgentTaskClassification } from "./lib/ops-task.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { type SafetyOperation } from "./lib/safety.js";
-import { materializeStandalonePlanAsync } from "./lib/ticket-materialization.js";
+import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./lib/ticket-materialization.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { artificialAnalysisDbPath } from "./lib/paths.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
@@ -443,16 +443,9 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const unitDefinitions = declaredUnitDefinitions.length
     ? declaredUnitDefinitions
     : [{ key: "standalone", description: text }];
-  const writePathsEarly = multiFlag(flags, "write-path").flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean);
-  const allowedWriteOperations = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
-  const writeOpsFlags = multiFlag(flags, "write-ops");
-  const writeOperationsEarly = (writeOpsFlags.length ? writeOpsFlags : ["write,create"])
-    .flatMap((item) => item.split(","))
-    .map((item) => item.trim())
-    .filter(Boolean) as SafetyOperation[];
-  if (writePathsEarly.length && (!writeOperationsEarly.length || writeOperationsEarly.some((item) => !allowedWriteOperations.has(item)))) {
-    throw new Error("--write-ops must contain write,create,delete,rename,chmod");
-  }
+  const standaloneScopes = parseStandaloneWriteScopes(args, unitDefinitions);
+  const writePathsEarly = standaloneScopes.globalPaths;
+  const writeOperationsEarly = standaloneScopes.globalOperations;
   validateClassificationContract(hostEnabled, classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
   if (stringFlag(flags, "model")) {
     throw new Error("MODEL_SELECTION_REMOVED: --model is not supported; configure cli.<id>.coding_models and let Baton route automatically");
@@ -460,7 +453,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const explicitModel = null;
   if (unitDefinitions.length) {
     if (writePathsEarly.length && unitDefinitions.length > 1) {
-      throw new Error("multi-unit standalone proposals are read-only; create separately scoped write proposals");
+      throw new Error("TASK_SCOPE_REQUIRED: multi-unit standalone writes require per-unit --unit KEY=TASK --write-path PATH declarations");
     }
     const source = {
       source_shape: "multi-unit-v1",
@@ -472,6 +465,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       unit_operations: Object.fromEntries(unitOperations.entries()),
       write_paths: writePathsEarly,
       write_operations: writePathsEarly.length ? writeOperationsEarly : [],
+      ...(standaloneScopes.unitScopes.size ? { unit_scopes: scopeRecord(standaloneScopes.unitScopes) } : {}),
     };
     const resolved = unitDefinitions.map((item, index) => ({
       item,
@@ -494,6 +488,8 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
 
     const units = [];
     const dispatched = [];
+    const standaloneIds = nextSpawnIds(cwd, "spn", unitDefinitions.length, env);
+    const pendingDispatches: Array<{ key: string; operation: string | null; profile: string; planned: Extract<StandalonePlan, { director_local: false }>; scope?: ApplyUnitScope }> = [];
     const local = [];
     const skipped = [];
     for (const { item, index, ops } of resolved) {
@@ -517,20 +513,14 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
           host,
           forceDelegate: true,
           env,
+          id: standaloneIds[index],
         });
         if (planned.director_local === true) throw new Error(`ops dispatch unexpectedly stayed on the director: ${item.key}`);
         const delegated = planned;
-        const ticket = await withActivationLockAsync(cwd, env, async () => {
-          const current = requireActivation(cwd, env, host);
-          if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
-          if (!writePathsEarly.length && ops.commit_only === true) await authorizeCommitOpsPlanAsync(cwd, delegated);
-          await materializeStandalonePlanAsync(cwd, delegated, {
-            env,
-            ...(writePathsEarly.length ? { writeAllowlist: writePathsEarly, allowedOperations: writeOperationsEarly } : {}),
-          });
-          return delegated.ticket;
-        }, { host, scope: "both" });
-        dispatched.push({ key: item.key, operation: ops.operation || null, profile: ops.profile, ticket });
+        const itemScope = standaloneScopes.unitScopes.get(item.key)
+          || (writePathsEarly.length ? { mode: "write" as const, write_paths: writePathsEarly, allowed_operations: writeOperationsEarly } : undefined);
+        if (!writePathsEarly.length && ops.commit_only === true) await authorizeCommitOpsPlanAsync(cwd, delegated);
+        pendingDispatches.push({ key: item.key, operation: ops.operation || null, profile: ops.profile, planned: delegated, scope: itemScope });
         continue;
       }
       const unitClassification = unitClassifications.get(item.key) || (classificationFlag.present ? classificationFlag.value : null);
@@ -559,6 +549,32 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
         },
       });
       units.push(unit);
+    }
+    if (pendingDispatches.length) {
+      await withActivationLockAsync(cwd, env, async () => {
+        const current = requireActivation(cwd, env, host);
+        if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
+        const sameWaveScopes = [
+          ...pendingDispatches
+            .filter((item) => item.scope?.mode === "write")
+            .map((item) => ({ key: item.key, write_paths: item.scope!.write_paths })),
+          ...units
+            .map((unit) => ({ key: unit.key, scope: standaloneScopes.unitScopes.get(unit.key) }))
+            .filter((item): item is { key: string; scope: ApplyUnitScope } => item.scope?.mode === "write")
+            .map((item) => ({ key: item.key, write_paths: item.scope.write_paths })),
+        ];
+        assertWriteScopesAvailable(cwd, sameWaveScopes, env);
+        for (const { key, operation, profile, planned, scope } of pendingDispatches) {
+          await materializeStandalonePlanAsync(cwd, planned, {
+            env,
+            ...(scope?.mode === "write" ? {
+              writeAllowlist: scope.write_paths,
+              allowedOperations: scope.allowed_operations || [...DEFAULT_WRITE_OPERATIONS],
+            } : {}),
+          });
+          dispatched.push({ key, operation, profile, ticket: planned.ticket });
+        }
+      }, { host, scope: "both" });
     }
     assertRecommendedSelectionAvailable(units);
     const proposal = units.length ? createSelectionProposal(cwd, {
@@ -1024,6 +1040,92 @@ function parseStandaloneUnits(values: string[]): Array<{ key: string; descriptio
     units.push({ key, description });
   }
   return units;
+}
+
+interface StandaloneWriteScopeFlags {
+  globalPaths: string[];
+  globalOperations: SafetyOperation[];
+  unitScopes: Map<string, ApplyUnitScope>;
+}
+
+/** Parse standalone write declarations while retaining each unit's boundary.
+ * The one-unit form keeps the historical global flags. For multiple units,
+ * --unit KEY=TASK selects the unit for following --write-path/--write-ops;
+ * KEY=PATH/KEY=OPS assignment forms are accepted as an order-independent
+ * convenience for callers constructing argv programmatically. */
+function parseStandaloneWriteScopes(args: string[], units: Array<{ key: string; description: string }>): StandaloneWriteScopeFlags {
+  const known = new Set(units.map((unit) => unit.key));
+  const globalPaths: string[] = [];
+  const globalOperations: SafetyOperation[] = [];
+  const unitScopes = new Map<string, ApplyUnitScope>();
+  let explicitGlobalOperations = false;
+  let current: string | null = null;
+  const operationsFor = (raw: string): SafetyOperation[] => {
+    const values = raw.split(",").map((item) => item.trim()).filter(Boolean) as SafetyOperation[];
+    if (!values.length || values.some((item) => !WRITE_OPERATIONS.includes(item))) {
+      throw new Error("--write-ops must contain write,create,delete,rename,chmod");
+    }
+    return [...new Set(values)];
+  };
+  const scopeFor = (key: string): ApplyUnitScope => {
+    let scope = unitScopes.get(key);
+    if (!scope) {
+      scope = { mode: "write", write_paths: [] };
+      unitScopes.set(key, scope);
+    }
+    return scope;
+  };
+  const assignment = (value: string, kind: "path" | "ops"): { key: string; value: string } | null => {
+    const index = value.indexOf("=");
+    if (index <= 0 || !known.has(value.slice(0, index).trim())) return null;
+    return { key: value.slice(0, index).trim(), value: value.slice(index + 1).trim() };
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--unit") {
+      const raw = args[index + 1];
+      if (raw) {
+        const key = raw.slice(0, raw.indexOf("=")).trim();
+        if (known.has(key)) current = key;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg !== "--write-path" && arg !== "--write-ops") continue;
+    const raw = args[index + 1];
+    if (raw === undefined || raw.startsWith("--")) continue;
+    index += 1;
+    const kind = arg === "--write-path" ? "path" : "ops";
+    const parsed = assignment(raw, kind);
+    const key = units.length > 1 ? (parsed?.key || current) : null;
+    const value = parsed?.value || raw;
+    if (key && known.has(key)) {
+      const scope = scopeFor(key);
+      if (kind === "path") {
+        for (const item of value.split(",").map((part) => part.trim()).filter(Boolean)) {
+          if (!scope.write_paths.includes(item)) scope.write_paths.push(item);
+        }
+      } else {
+        scope.allowed_operations = [...new Set([...(scope.allowed_operations || []), ...operationsFor(value)])];
+      }
+    } else if (kind === "path") {
+      for (const item of value.split(",").map((part) => part.trim()).filter(Boolean)) if (item) globalPaths.push(item);
+    } else {
+      explicitGlobalOperations = true;
+      globalOperations.push(...operationsFor(value));
+    }
+  }
+  if (!globalOperations.length) globalOperations.push(...DEFAULT_WRITE_OPERATIONS);
+  if (explicitGlobalOperations && !globalPaths.length) {
+    throw new Error("TASK_SCOPE_REQUIRED: write operations require --write-path");
+  }
+  for (const scope of unitScopes.values()) {
+    if (!scope.write_paths.length) {
+      throw new Error("TASK_SCOPE_REQUIRED: per-unit write operations require --write-path");
+    }
+    if (!scope.allowed_operations?.length) scope.allowed_operations = [...DEFAULT_WRITE_OPERATIONS];
+  }
+  return { globalPaths, globalOperations: [...new Set(globalOperations)], unitScopes };
 }
 
 function firstPositionalArg(args: string[]): string | null {

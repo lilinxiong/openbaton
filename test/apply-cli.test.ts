@@ -74,8 +74,8 @@ describe("baton apply orchestration", () => {
 
       const result = await command([
         "apply", "wave-demo", "--host", "codex", "--dispatch", "--json", "--capacity", "4",
-        "--unit", "1.1", "--write-path", "src/lib/config.ts",
-        "--unit", "1.2", "--write-path", "src/lib/hosts.ts",
+        "--unit", "1.1", "--write-path", "src/lib/config.ts", "--write-ops", "write,delete",
+        "--unit", "1.2", "--write-path", "src/lib/hosts.ts", "--write-ops", "create",
       ], { cwd, env });
       assert.equal(result.code, 0, result.stderr || result.stdout);
       const body = JSON.parse(result.stdout);
@@ -102,6 +102,9 @@ describe("baton apply orchestration", () => {
         assert.equal(receipt.baseline.index_control_algorithm, "git-index-control-framed-sha256-v2");
         assert.equal(typeof receipt.baseline.index_control_entry_count, "number");
       }
+      assert.deepEqual(body.tickets.map((ticket: { receipt_id: string }) => JSON.parse(
+        fs.readFileSync(path.join(receiptsDir(cwd), `${ticket.receipt_id}.json`), "utf8"),
+      ).scope.allowed_operations), [["write", "delete"], ["create"]]);
     });
   });
 
@@ -230,7 +233,7 @@ describe("baton apply orchestration", () => {
     });
   });
 
-  it("leaves overlapping write decisions to terminal Receipt audits", async () => {
+  it("rejects overlapping write decisions before creating any ticket", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-apply-write-conflict-"));
       const env = fakeEnv(home);
@@ -252,13 +255,10 @@ describe("baton apply orchestration", () => {
         "--unit", "1.1", "--write-path", "src/lib/config.ts",
         "--unit", "1.2", "--write-path", "src/lib/config.ts",
       ], { cwd, env });
-      assert.equal(result.code, 0, result.stderr || result.stdout);
-      const body = JSON.parse(result.stdout);
-      assert.equal(body.tickets.length, 2);
-      for (const planned of body.tickets) {
-        const receipt = JSON.parse(fs.readFileSync(path.join(receiptsDir(cwd), `${planned.receipt_id}.json`), "utf8"));
-        assert.deepEqual(receipt.scope.write_allowlist, ["src/lib/config.ts"]);
-      }
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /WRITE_SCOPE_CONFLICT/);
+      assert.equal(fs.existsSync(spawnsDir(cwd)), false);
+      assert.equal(fs.existsSync(receiptsDir(cwd)), false);
     });
   });
 

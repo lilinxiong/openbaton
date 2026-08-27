@@ -3,12 +3,12 @@ import { parseHostId } from "../lib/hosts.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { readRouteSnapshot } from "../lib/routes.js";
 import { requireCardId } from "../lib/cards.js";
-import { planStandaloneSpawn, type SpawnTicket } from "../lib/spawn.js";
+import { nextSpawnIds, planStandaloneSpawn, type SpawnTicket, type StandalonePlan } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
 import { applyTaskId } from "../lib/task-id.js";
-import { scopesFromRecord } from "../lib/apply-scope.js";
+import { DEFAULT_WRITE_OPERATIONS, scopesFromRecord, type ApplyUnitScope } from "../lib/apply-scope.js";
 import { type SafetyOperation } from "../lib/safety.js";
-import { materializeStandalonePlanAsync } from "../lib/ticket-materialization.js";
+import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "../lib/ticket-materialization.js";
 import { loadTasksFromChangeDir } from "../lib/openspec.js";
 import {
   readSelectionProposal,
@@ -89,6 +89,7 @@ function currentSourceFingerprint(proposal: SelectionProposal): string {
       ...(Object.hasOwn(proposal.payload, "unit_operations") ? { unit_operations: proposal.payload.unit_operations } : {}),
       write_paths: proposal.payload.write_paths || [],
       write_operations: proposal.payload.write_operations || [],
+      ...(Object.hasOwn(proposal.payload, "unit_scopes") ? { unit_scopes: proposal.payload.unit_scopes } : {}),
     });
   }
   const changeDir = String(proposal.payload.change_dir || "");
@@ -132,10 +133,24 @@ async function approveStandalone(cwd: string, proposal: SelectionProposal, cards
   const choices = units.map((unit) => ({ unit, candidate: recommendedCandidate(proposal, unit.key) }));
   const context = automaticContext(proposal, choices.map((item) => item.candidate));
   const writePaths = Array.isArray(proposal.payload.write_paths) ? proposal.payload.write_paths.map(String) : [];
-  if (writePaths.length && units.length > 1) throw new Error("multi-unit standalone write approval is not supported; use separately scoped write proposals");
+  const declaredScopes = scopesFromRecord(proposal.payload.unit_scopes);
+  if (writePaths.length && units.length > 1 && declaredScopes.size === 0) {
+    throw new Error("TASK_SCOPE_REQUIRED: multi-unit standalone writes require one scope per unit");
+  }
+  if (writePaths.length && units.length === 1 && !declaredScopes.has(units[0].key)) {
+    declaredScopes.set(units[0].key, {
+      mode: "write",
+      write_paths: writePaths,
+      allowed_operations: Array.isArray(proposal.payload.write_operations)
+        ? proposal.payload.write_operations.map(String) as SafetyOperation[]
+        : [...DEFAULT_WRITE_OPERATIONS],
+    });
+  }
   const tickets: SpawnTicket[] = [];
   const approvals: Array<{ key: string; approval: ModelSelectionApproval }> = [];
-  for (const { unit, candidate } of choices) {
+  const plans: Array<{ key: string; planned: Extract<StandalonePlan, { director_local: false }>; scope?: ApplyUnitScope; approval: ModelSelectionApproval }> = [];
+  const ids = nextSpawnIds(cwd, "spn", choices.length, env);
+  for (const [{ unit, candidate }, index] of choices.map((choice, index) => [choice, index] as const)) {
     requireCardId(candidate.model_id, cards);
     const approval = approvalFor(proposal, unit.key, candidate, unit.recommended_model_id, context);
     const planned = planStandaloneSpawn({
@@ -150,27 +165,30 @@ async function approveStandalone(cwd: string, proposal: SelectionProposal, cards
       // delegable. Do not let the tiny-edit hygiene shortcut pull it
       // back onto the director during ticket materialization.
       forceDelegate: true,
+      id: ids[index],
     });
     if (planned.director_local === true) throw new Error(`selection source no longer requires delegation: ${unit.key}`);
-    planned.ticket.routing_requirements = {
+    const delegated = planned;
+    delegated.ticket.routing_requirements = {
       required_reasoning_effort: unit.target_reasoning_effort,
       estimated_context_tokens: unit.estimated_context_tokens,
     };
-    if (writePaths.length) {
-      const operations = Array.isArray(proposal.payload.write_operations)
-        ? proposal.payload.write_operations.map(String) as SafetyOperation[]
-        : ["write", "create"] as SafetyOperation[];
-      await materializeStandalonePlanAsync(cwd, planned, {
-        env,
-        writeAllowlist: writePaths,
-        allowedOperations: operations,
-      });
-    } else {
-      await materializeStandalonePlanAsync(cwd, planned, { env });
-    }
-    tickets.push(planned.ticket);
-    approvals.push({ key: unit.key, approval });
+    plans.push({ key: unit.key, planned: delegated, scope: declaredScopes.get(unit.key), approval });
   }
+  assertWriteScopesAvailable(cwd, plans
+    .filter((item) => item.scope?.mode === "write")
+    .map((item) => ({ key: item.key, write_paths: item.scope!.write_paths })), env);
+  for (const { planned, scope } of plans) {
+    await materializeStandalonePlanAsync(cwd, planned, {
+      env,
+      ...(scope?.mode === "write" ? {
+        writeAllowlist: scope.write_paths,
+        allowedOperations: scope.allowed_operations || [...DEFAULT_WRITE_OPERATIONS],
+      } : {}),
+    });
+    tickets.push(planned.ticket);
+  }
+  approvals.push(...plans.map(({ key, approval }) => ({ key, approval })));
   return { tickets, approvals, local: [], confirmation: context };
 }
 

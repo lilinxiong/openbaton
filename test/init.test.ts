@@ -19,10 +19,32 @@ const DIRECTOR_WORKER_TABLE_ROWS = [
   "OpenSpec only lightens orchestration",
 ] as const;
 
+/** Shared maximal-safe-frontier contract markers every host skill must name. */
+const MAXIMAL_SAFE_FRONTIER_MARKERS = [
+  /maximal safe ready frontier/i,
+  /section order is only a stable tie-breaker/i,
+  /MUST NOT impose serialization/i,
+  /MUST recompute this maximal safe ready frontier/i,
+  /immediately refill every newly available slot/i,
+  /concrete blocking dependency or write-scope conflict/i,
+  /section order and FIFO position are not reasons/i,
+  /Dependencies and write-scope conflicts are the only serialization reasons/i,
+] as const;
+
 function assertDirectorWorkerRoutingTable(skill: string, label: string): void {
   for (const row of DIRECTOR_WORKER_TABLE_ROWS) {
     assert.ok(skill.includes(row), `${label} omits routing row: ${row}`);
   }
+}
+
+function assertMaximalSafeReadyFrontier(skill: string, label: string): void {
+  for (const marker of MAXIMAL_SAFE_FRONTIER_MARKERS) {
+    assert.match(skill, marker, `${label} omits maximal-safe-frontier contract: ${marker}`);
+  }
+  assert.doesNotMatch(skill, /later sections stay serial while an earlier section is pending/i,
+    `${label} retains section-order serialization`);
+  assert.doesNotMatch(skill, /Pack by section order, director write-set intersection, and host cap/i,
+    `${label} retains section-order packing`);
 }
 
 describe("Codex init and update", () => {
@@ -33,11 +55,11 @@ describe("Codex init and update", () => {
       "root SKILL.md",
     );
     for (const host of ["codex", "grok", "cursor", "claude"] as const) {
-      assertDirectorWorkerRoutingTable(
-        fs.readFileSync(path.join(root, "templates", "hosts", host, "SKILL.md"), "utf8"),
-        `templates/hosts/${host}/SKILL.md`,
-      );
+      const skill = fs.readFileSync(path.join(root, "templates", "hosts", host, "SKILL.md"), "utf8");
+      assertDirectorWorkerRoutingTable(skill, `templates/hosts/${host}/SKILL.md`);
+      assertMaximalSafeReadyFrontier(skill, `templates/hosts/${host}/SKILL.md`);
     }
+    assertMaximalSafeReadyFrontier(fs.readFileSync(path.join(root, "SKILL.md"), "utf8"), "SKILL.md");
 
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-init-routing-"));
@@ -48,11 +70,14 @@ describe("Codex init and update", () => {
         "installed ~/.baton/SKILL.md",
       );
       for (const host of ["codex", "grok", "cursor", "claude"] as const) {
-        assertDirectorWorkerRoutingTable(
-          fs.readFileSync(path.join(home, HOST_SKILL_REL[host]), "utf8"),
-          `installed ${HOST_SKILL_REL[host]}`,
-        );
+        const skill = fs.readFileSync(path.join(home, HOST_SKILL_REL[host]), "utf8");
+        assertDirectorWorkerRoutingTable(skill, `installed ${HOST_SKILL_REL[host]}`);
+        assertMaximalSafeReadyFrontier(skill, `installed ${HOST_SKILL_REL[host]}`);
       }
+      assertMaximalSafeReadyFrontier(
+        fs.readFileSync(path.join(home, ".baton", "SKILL.md"), "utf8"),
+        "installed ~/.baton/SKILL.md",
+      );
     });
   });
 
@@ -106,12 +131,12 @@ describe("Codex init and update", () => {
       assert.match(grokSkill, /Compact dispatch is the same for runner ops, longctx ops, and ordinary `[^`]+` tickets/);
       assert.match(grokSkill, /--dispatch --json/);
       assert.match(grokSkill, /order-ready frontier/);
-      assert.match(grokSkill, /write-set intersection/);
       assert.match(grokSkill, /host cap/);
       assert.match(grokSkill, /--unit ID --write-path PATH --unit ID/);
       assert.match(hostSkill, /order-ready frontier/);
-      assert.match(hostSkill, /write-set intersection/);
       assert.match(hostSkill, /host cap/);
+      assertMaximalSafeReadyFrontier(grokSkill, `installed ${HOST_SKILL_REL.grok}`);
+      assertMaximalSafeReadyFrontier(hostSkill, `installed ${HOST_SKILL_REL.codex}`);
       assert.match(grokSkill, /When `cli.grok.enabled` is true and the user applies an OpenSpec change/);
       assert.match(grokSkill, /Do not edit OpenSpec apply skills/);
       assert.match(hostSkill, /When `cli.codex.enabled` is true and the user applies an OpenSpec change/);

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { receiptsDir, spawnsDir } from "./paths.js";
-import { buildWriteReceipt, writeReceipt } from "./receipt.js";
+import { buildWriteReceipt, readReceipt, writeReceipt } from "./receipt.js";
 import {
   captureBaselineAsync,
   captureCommitBaselineAsync,
@@ -10,8 +10,9 @@ import {
   type GitBaseline,
   type SafetyOperation,
 } from "./safety.js";
-import { writeSpawn, type SpawnTicket, type StandalonePlan } from "./spawn.js";
+import { listSpawns, writeSpawn, type SpawnTicket, type StandalonePlan } from "./spawn.js";
 import { applyCommitBaselineToPlan } from "./ops-dispatch.js";
+import { assertDisjointWriteScopes, writePathsOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
 
 /** Dependencies are injectable so Git/stream/race failures can be tested
  * without weakening the production stable-observation boundary. */
@@ -27,6 +28,53 @@ export interface TicketMaterializationOptions extends TicketMaterializationDepen
   safety?: AsyncSafetyOptions;
   writeAllowlist?: string[];
   allowedOperations?: SafetyOperation[];
+}
+
+export interface PendingWriteScope extends WriteScopeDeclaration {
+  ticket_id?: string;
+}
+
+function activeWriteScopes(cwd: string, env?: NodeJS.ProcessEnv): PendingWriteScope[] {
+  const scopes: PendingWriteScope[] = [];
+  for (const ticket of listSpawns(cwd, env)) {
+    if (!ticket.receipt_id) continue;
+    // A terminal ticket still owns its path until the dispatch slot is
+    // explicitly released. This closes the race between completion and the
+    // next wave's materialization.
+    if (ticket.slot_released_at) continue;
+    try {
+      const receipt = readReceipt(cwd, ticket.receipt_id, env);
+      if ((ticket.mode === "write" || receipt.execution.mode === "write") && receipt.scope.write_allowlist.length) {
+        scopes.push({ key: ticket.id, ticket_id: ticket.id, write_paths: receipt.scope.write_allowlist });
+      }
+    } catch {
+      // A malformed receipt is rejected by the normal ticket lifecycle. It
+      // cannot safely be treated as an empty scope here.
+      throw new Error(`WRITE_SCOPE_CONFLICT: unable to inspect active write ticket ${ticket.id}`);
+    }
+  }
+  return scopes;
+}
+
+/**
+ * Validate the complete write wave and all currently owned write scopes.
+ * Callers must invoke this before their first materialization so a rejected
+ * wave leaves no partially-created tickets or Receipts.
+ */
+export function assertWriteScopesAvailable(cwd: string, scopes: PendingWriteScope[], env?: NodeJS.ProcessEnv): void {
+  assertDisjointWriteScopes(scopes);
+  const active = activeWriteScopes(cwd, env);
+  for (const incoming of scopes) {
+    for (const existing of active) {
+      for (const incomingPath of incoming.write_paths) {
+        for (const existingPath of existing.write_paths) {
+          if (writePathsOverlap(incomingPath, existingPath)) {
+            throw new Error(`WRITE_SCOPE_CONFLICT: ${incoming.key}:${incomingPath} overlaps active ${existing.key}:${existingPath}`);
+          }
+        }
+      }
+    }
+  }
 }
 
 function removeIfNew(file: string, existed: boolean): void {
@@ -56,6 +104,9 @@ export async function materializeStandalonePlanAsync(
   const allowedOperations = options.allowedOperations || ["write", "create"];
 
   if (writeAllowlist.length) {
+    // Keep a single-plan caller safe as well; batch callers additionally
+    // preflight the complete wave so they cannot leave partial artifacts.
+    assertWriteScopesAvailable(cwd, [{ key: planned.ticket.id, write_paths: writeAllowlist }], options.env);
     const baseline = await captureWrite(cwd, safety);
     planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline, writeAllowlist, allowedOperations });
     planned.ticket.mode = "write";

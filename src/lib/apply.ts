@@ -19,7 +19,7 @@ import {
 } from "./openspec.js";
 import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn } from "./spawn.js";
 import { buildReadOnlyReceipt } from "./receipt.js";
-import { materializeStandalonePlanAsync } from "./ticket-materialization.js";
+import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./ticket-materialization.js";
 import { runsDir } from "./paths.js";
 import type { ApplyUnitScopeMap } from "./apply-scope.js";
 import type { SpawnTicket } from "./spawn.js";
@@ -256,6 +256,14 @@ export async function applyChange({ cwd, change, cfg, cards, includeTask, select
 
   const tickets: OpenSpecTicket[] = [];
   const local: ApplyUnit[] = [];
+  const writeScopes = units
+    .filter((unit) => !unit.director_local)
+    .map((unit) => {
+      const scope = unitScopes?.get(unit.id);
+      return scope?.mode === "write" ? { key: unit.id, write_paths: scope.write_paths } : null;
+    })
+    .filter((scope): scope is { key: string; write_paths: string[] } => Boolean(scope));
+  assertWriteScopesAvailable(cwd, writeScopes, env);
   for (const unit of units) {
     if (unit.director_local) {
       local.push(unit);
@@ -312,7 +320,10 @@ export async function applyChange({ cwd, change, cfg, cards, includeTask, select
     const planned = { ticket, receipt, director_local: false as const, queue: { running: 0, queued: 0 } };
     await materializeStandalonePlanAsync(cwd, planned, {
       env,
-      ...(scope?.mode === "write" ? { writeAllowlist: scope.write_paths, allowedOperations: ["write", "create"] as const } : {}),
+      ...(scope?.mode === "write" ? {
+        writeAllowlist: scope.write_paths,
+        allowedOperations: scope.allowed_operations || ["write", "create"],
+      } : {}),
     });
     tickets.push(ticket);
   }
