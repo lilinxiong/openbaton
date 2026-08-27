@@ -1,0 +1,18 @@
+$baton Complete this ordinary multi-task implementation request in the same main conversation.
+
+Absolute workspace: {{ABSOLUTE_WORKSPACE}}
+Baton host: {{HOST}}
+User-selected model route: {{MODEL}}
+BATON_SESSION_ID: {{SESSION_ID}}
+Export BATON_SESSION_ID={{SESSION_ID}} before running Baton commands and keep it unchanged for the OpenSpec request.
+
+Create both independent concrete outputs in one Baton wave:
+
+- `standalone/alpha.js` containing exactly `export const alpha = 'alpha';`
+- `standalone/beta.js` containing exactly `export const beta = 'beta';`
+
+Use only route {{MODEL}}. The main agent may inspect, scope, dispatch, bind,
+observe, and wait, but must not implement either file. Keep the write scopes
+disjoint. While either native child is pending or running, continue waiting;
+an empty poll is not a failure. Complete and release both tickets, then run
+`bun verify-standalone.mjs` and report its output.

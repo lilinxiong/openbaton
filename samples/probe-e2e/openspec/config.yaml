@@ -1,0 +1,5 @@
+schema: spec-driven
+context: |
+  Small JavaScript utility probe for Baton host end-to-end verification.
+  Tasks 1.1 and 1.2 are independent; task 2.1 integrates both modules.
+  Run bun verify-local.mjs after implementation.

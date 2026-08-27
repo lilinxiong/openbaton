@@ -24,6 +24,11 @@ activity, wait, cancellation, terminal, release, and workspace semantics.
 The adapter catalog is the only source for configured models. Preserve exact
 ids, reasoning options, service tiers, modalities, defaults, and missing
 optional values. Never add aliases or values from another source.
+Configuration acceptance requires one explicit user-selected route id from the
+picker-visible catalog before any ticket or native spawn. Persist that same
+exact id in `runner`, `longctx`, and the coding allowlist with one config
+operation, with no second coding model, implicit default, or cross-profile
+inheritance.
 
 ## Normalized dispatch and identity
 
@@ -65,6 +70,15 @@ read-only analysis stay in the director; authorized implementation and declared
 mechanical units use native children. The structured class selects the
 configured route; operation labels remain audit metadata. Baton stores tickets
 and Receipts, not a separate task graph.
+
+For live acceptance, keep the target CLI's main conversation unchanged while
+running `$baton <ordinary multi-task implementation request>` followed by
+`$baton $openspec-apply-change probe-e2e`. The main agent is limited to scoping,
+dispatch, observation, and waiting; live children own executable paths. These
+successful paths are independent of the invalid-model and quota conformance
+cases, which must remain separately observable. A one-route live profile must
+stop as `BLOCKED` on quota exhaustion; successor testing uses a separate
+fixture with an explicit second route.
 
 For writes, the director records exact per-unit paths and allowed operations
 (`write`, `create`, `delete`, `rename`, `chmod`) during a read-only

@@ -36,13 +36,37 @@ the adapter package.
 5. Run SDK conformance and negative tests before publication. A catalog without
    an exact native child path is `CATALOG_ONLY`; an intrinsic missing SDK
    capability is `UNSUPPORTED`; an external prerequisite is `BLOCKED`.
-6. Install the package in an isolated home, run `baton init` and
-   `baton config --cli <id>`, and verify manifest discovery, profile persistence,
-   runtime-skill installation, and live catalog choices.
-7. Execute a real acceptance ticket with one exact picker-visible model:
-   reserve, native spawn, immediate identity handoff, activity wait, terminal
-   recording, release, and leak audit. Repeat with an invalid model and prove
-   rejection without inheritance or substitution.
+6. Install the package in an isolated home and run `baton init`. Verify manifest
+   discovery, runtime-skill installation, and live catalog choices, but do not
+   create a ticket or persist a model before the user's selection checkpoint.
+7. Require the user to choose exactly one model from the target CLI's
+   picker-visible catalog. Stop before config, ticket creation, or native
+   spawn until the user has made that choice. Persist the selected route id as
+   `runner`, `longctx`, and the sole entry in the coding allowlist with:
+
+   ```text
+   baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --enable --json
+   ```
+
+   Do not silently choose a default, add aliases, or persist another model.
+8. In the same target-CLI main conversation, run both real end-to-end inputs:
+   `$baton <ordinary multi-task implementation request>`, then
+   `$baton $openspec-apply-change probe-e2e`. Generate the disposable workspace
+   and the two paste-ready inputs with `samples/bootstrap-probe.mjs`, then
+   validate its five-ticket evidence with `samples/verify-probe.mjs`. The main
+   agent only performs read-only scoping, dispatch, observation, and waiting.
+   Live children own the executable paths and all requested
+   implementation/probe execution; the parent must not execute those paths
+   itself.
+
+   ```text
+   bun samples/bootstrap-probe.mjs --host <target> --model <model> --output <prompt-file>
+   bun samples/verify-probe.mjs --host <target> --model <model> <workspace>
+   ```
+9. Keep invalid-model rejection and quota/backpressure/successor checks as
+   separate conformance cases. Neither case may be substituted for the two
+   successful inputs, and a valid model must never be inherited or replaced
+   when either negative case is exercised.
 
 ## Routing and scope contract
 
@@ -64,9 +88,11 @@ The adapter handoff must preserve `session_id`, `ticket_id`, and its opaque
 native execution handle. Do not infer identity from ticket text or require a
 provider-specific identity field.
 
-On explicit quota exhaustion, Baton may create an immutable successor only
-after a clean pre-mutation baseline. The successor receives the next configured
-coding route, a new session ordinal and Receipt, and records
+With the live acceptance profile containing one coding route, explicit quota
+exhaustion is `BLOCKED` and must not fall back. Exercise the immutable
+successor separately in a conformance fixture with an explicitly configured
+second route and a clean pre-mutation baseline. The successor receives the next
+configured coding route, a new session ordinal and Receipt, and records
 `successor_from_ticket_id` and `successor_reason` while retaining host, scope,
 authorization, and quota lineage. It reruns all hard gates; the original ticket
 is never rewritten and quota is never reset.
@@ -75,6 +101,7 @@ is never rewritten and quota is never reset.
 
 Claim `PASS` only with SDK conformance, isolated build/package checks, manifest
 discovery, init/enable persistence, native exact-model proof, invalid-model
-rejection, terminal/release proof, quota-successor evidence, no leaked tickets,
-and an exact changed-path audit. Report static, package, catalog, native, and
-ticket evidence separately. Do not commit or publish unless separately asked.
+rejection, both same-conversation live inputs, terminal/release proof,
+separate quota-successor fixture evidence, no leaked tickets, and an exact
+changed-path audit. Report static, package, catalog, native, and ticket evidence
+separately. Do not commit or publish unless separately asked.

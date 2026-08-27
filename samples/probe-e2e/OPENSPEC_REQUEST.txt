@@ -1,0 +1,20 @@
+$baton $openspec-apply-change probe-e2e
+
+Continue in this same main conversation and workspace after the standalone request.
+Absolute workspace: {{ABSOLUTE_WORKSPACE}}
+Baton host: {{HOST}}
+User-selected model route: {{MODEL}}
+BATON_SESSION_ID: {{SESSION_ID}}
+Keep BATON_SESSION_ID={{SESSION_ID}}; it must be the same session identity used by the standalone request.
+
+Apply the existing OpenSpec change through Baton. Tasks `1.1` and `1.2` are
+independent and must run concurrently with disjoint scopes
+`src/utils/format.js` and `src/utils/validate.js`; task `2.1` owns
+`src/index.js` and must not dispatch until both dependencies finish.
+
+Use only route {{MODEL}}. The main agent may inspect OpenSpec state, scope,
+dispatch, bind, observe, wait, reconcile conclusions, and run final validation,
+but must not implement worker-owned source files. While any native child is
+pending or running, continue waiting; an empty poll is not a failure. Write one
+concise conclusion beneath each completed checkbox, release every ticket, then
+run `bun verify-local.mjs` and strict OpenSpec validation.
