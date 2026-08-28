@@ -18,8 +18,12 @@ tree-local 槽位池。
 ```bash
 npm install -g @zhouliuya/openbaton
 baton init
-baton config --cli <adapter-id> --enable
+baton config
 ```
+
+`baton config` 是带引导的 TTY 流程：方向键选择，空格切换 CLI 和
+Coding 模型优先级。它会问要启用哪个 adapter，再问 `runner`、`longctx`
+和 `coding_models`。只有跳过引导时才需要加 flag。
 
 ## 源码 checkout
 
@@ -69,8 +73,12 @@ baton init --cli codex
 adapter 的 manifest（`adapters/codex/adapter.json`）把 `runtime/SKILL.md`
 复制到 `.codex/skills/baton/SKILL.md`。Codex 就是这样看到 Baton 的。
 
-然后只写入 `[cli.codex]` profile。模型 id 来自实时 Codex CLI 目录
-（找不到 Codex 时可设 `BATON_CODEX_PATH`）：
+然后运行 `baton config --cli codex`。在 TTY 里这是引导流程：方向键选择，
+空格切换。它会依次问 `runner`、`longctx`、Coding 模型优先级，以及是否
+启用这个 profile。模型 id 来自实时 Codex CLI 目录（找不到 Codex 时可设
+`BATON_CODEX_PATH`）。
+
+非交互写入时才用 flag，并且只写 `[cli.codex]`：
 
 ```bash
 baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable

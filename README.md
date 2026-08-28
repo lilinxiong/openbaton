@@ -18,8 +18,12 @@ available. It requires Node.js 22.5 or newer.
 ```bash
 npm install -g @zhouliuya/openbaton
 baton init
-baton config --cli <adapter-id> --enable
+baton config
 ```
+
+`baton config` is a guided TTY flow: arrow keys select, space toggles CLIs
+and the Coding-model order. It asks which adapter to enable, then `runner`,
+`longctx`, and `coding_models`. Pass flags only to skip the prompts.
 
 ## Source checkout
 
@@ -72,8 +76,12 @@ baton init --cli codex
 adapter manifest (`adapters/codex/adapter.json`) copies `runtime/SKILL.md` to
 `.codex/skills/baton/SKILL.md`. That is how Codex sees Baton.
 
-Then write only the `[cli.codex]` profile. Use ids from the live Codex CLI
-catalog (`BATON_CODEX_PATH` if Codex is not on `PATH`):
+Then run `baton config --cli codex`. On a TTY it is a guided flow: arrow keys
+select, space toggles. It walks through `runner`, `longctx`, Coding-model
+priority, and whether to enable the profile. Model ids come from the live
+Codex CLI catalog (`BATON_CODEX_PATH` if Codex is not on `PATH`).
+
+Flags skip the prompts for non-interactive use and write only `[cli.codex]`:
 
 ```bash
 baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
