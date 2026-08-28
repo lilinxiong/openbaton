@@ -25,6 +25,15 @@ baton config
 Coding 模型优先级。它会问要启用哪个 adapter，再问 `runner`、`longctx`
 和 `coding_models`。只有跳过引导时才需要加 flag。
 
+![选择 CLI](assets/config/01-select-cli.png)
+
+![选择 Coding 模型](assets/config/03-select-coding-models.png)
+
+![是否启用](assets/config/04-enable.png)
+
+截图用的是仓库里的 `sample-adapter`。换 Codex 时引导一样，模型列表来自
+该 adapter 的实时目录。
+
 ## 源码 checkout
 
 在源码目录执行以下脚本，可以安装依赖、运行检查、构建、链接 `baton`，

@@ -25,6 +25,15 @@ baton config
 and the Coding-model order. It asks which adapter to enable, then `runner`,
 `longctx`, and `coding_models`. Pass flags only to skip the prompts.
 
+![Select CLI](assets/config/01-select-cli.png)
+
+![Select Coding models](assets/config/03-select-coding-models.png)
+
+![Enable the profile](assets/config/04-enable.png)
+
+These captures use the in-repo `sample-adapter`. The prompts are the same for
+Codex; the model list comes from that adapter's live catalog.
+
 ## Source checkout
 
 From a checkout, build and refresh the linked command with:
