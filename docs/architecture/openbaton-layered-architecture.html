@@ -1,0 +1,1317 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>OpenBaton 分层架构</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f2eee6;
+      --surface: #fffdf8;
+      --surface-strong: #ffffff;
+      --ink: #14221f;
+      --muted: #60706b;
+      --faint: #82908a;
+      --line: #c9d2cc;
+      --line-strong: #9cac9f;
+      --shadow: 0 18px 55px rgb(42 58 51 / 11%);
+      --shadow-small: 0 7px 22px rgb(42 58 51 / 9%);
+      --accent: #167477;
+      --accent-soft: #e2f2ef;
+      --accent-strong: #0f565a;
+      --decision: #2f67c7;
+      --decision-soft: #e8f0ff;
+      --core: #7657aa;
+      --core-soft: #f0eafa;
+      --safety: #b66338;
+      --safety-soft: #fff0e7;
+      --adapter: #267d5a;
+      --adapter-soft: #e8f5ed;
+      --native: #0d708a;
+      --native-soft: #e5f3f7;
+      --runtime: #56656b;
+      --runtime-soft: #edf1f0;
+      --control: #177b79;
+      --activity: #b35a38;
+      --control-line: #2b9993;
+      --activity-line: #bf8067;
+      --focus: #1c65c7;
+      --code-bg: rgb(20 34 31 / 7%);
+      --grid: rgb(20 34 31 / 4%);
+      --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+    }
+
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0e1514;
+      --surface: #15211f;
+      --surface-strong: #1a2926;
+      --ink: #edf7f2;
+      --muted: #afc2ba;
+      --faint: #81958d;
+      --line: #344944;
+      --line-strong: #526d65;
+      --shadow: 0 22px 70px rgb(0 0 0 / 29%);
+      --shadow-small: 0 9px 28px rgb(0 0 0 / 24%);
+      --accent: #71d1ca;
+      --accent-soft: #173b3a;
+      --accent-strong: #b9f0e7;
+      --decision: #9bbcff;
+      --decision-soft: #1d3154;
+      --core: #c4a9f2;
+      --core-soft: #322650;
+      --safety: #f0a77b;
+      --safety-soft: #4a2b22;
+      --adapter: #85d4a7;
+      --adapter-soft: #1b3c2b;
+      --native: #7bd0e4;
+      --native-soft: #183c49;
+      --runtime: #bdcbc8;
+      --runtime-soft: #263531;
+      --control: #7ce0d4;
+      --activity: #f0a77b;
+      --control-line: #67cfc4;
+      --activity-line: #d39679;
+      --focus: #a6c8ff;
+      --code-bg: rgb(237 247 242 / 9%);
+      --grid: rgb(237 247 242 / 5%);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-width: 320px;
+      background: var(--bg);
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% -5%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 35rem),
+        radial-gradient(circle at 100% 10%, color-mix(in srgb, var(--decision) 10%, transparent), transparent 34rem),
+        var(--bg);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button,
+    code {
+      font: inherit;
+    }
+
+    button {
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
+    }
+
+    .page {
+      width: min(1320px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 36px 0 52px;
+    }
+
+    .masthead {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 28px;
+    }
+
+    .masthead-copy {
+      max-width: 850px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 13px;
+      color: var(--accent-strong);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      width: 28px;
+      height: 2px;
+      background: var(--accent);
+      content: "";
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 850px;
+      font-size: clamp(31px, 4.5vw, 58px);
+      font-weight: 780;
+      letter-spacing: -.055em;
+      line-height: 1.02;
+    }
+
+    .dek {
+      max-width: 750px;
+      margin-top: 17px;
+      color: var(--muted);
+      font-size: clamp(14px, 1.7vw, 17px);
+      line-height: 1.7;
+    }
+
+    .theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--surface) 84%, transparent);
+      box-shadow: var(--shadow-small);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+    }
+
+    .theme-toggle:hover {
+      border-color: var(--accent);
+      background: var(--surface-strong);
+      transform: translateY(-1px);
+    }
+
+    .theme-toggle .toggle-dot {
+      display: block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 15%, transparent);
+    }
+
+    .architecture {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+        color-mix(in srgb, var(--surface) 88%, transparent);
+      background-size: 36px 36px;
+      box-shadow: var(--shadow);
+    }
+
+    .diagram-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 28px;
+      padding: 24px 28px 21px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--surface) 76%, transparent);
+    }
+
+    .diagram-label {
+      margin-bottom: 8px;
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .diagram-title {
+      font-size: clamp(19px, 2.3vw, 27px);
+      font-weight: 760;
+      letter-spacing: -.035em;
+    }
+
+    .diagram-summary {
+      max-width: 640px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .legend {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      max-width: 345px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+    }
+
+    .legend-mark {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid currentColor;
+      border-radius: 50%;
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .legend-item.control {
+      color: var(--control);
+    }
+
+    .legend-item.activity {
+      color: var(--activity);
+    }
+
+    .legend-item.tree {
+      color: var(--core);
+    }
+
+    .legend-item.workspace {
+      color: var(--safety);
+    }
+
+    .diagram-flow {
+      padding: 24px 28px 28px;
+    }
+
+    .layer-row {
+      display: grid;
+      grid-template-columns: 68px minmax(0, 1fr);
+      gap: 15px;
+      align-items: stretch;
+    }
+
+    .gutter {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 17px;
+      color: var(--faint);
+    }
+
+    .step {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: 0 3px 0 color-mix(in srgb, var(--line) 55%, transparent);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .gutter-note {
+      margin-top: 8px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 750;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      writing-mode: vertical-rl;
+    }
+
+    .layer-panel {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: color-mix(in srgb, var(--surface-strong) 93%, transparent);
+      box-shadow: var(--shadow-small);
+    }
+
+    .layer-panel::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 5px;
+      background: var(--layer-color);
+      content: "";
+    }
+
+    .layer-panel.layer-decision {
+      --layer-color: var(--decision);
+      --layer-soft: var(--decision-soft);
+    }
+
+    .layer-panel.layer-cli {
+      --layer-color: var(--accent);
+      --layer-soft: var(--accent-soft);
+    }
+
+    .layer-panel.layer-core {
+      --layer-color: var(--core);
+      --layer-soft: var(--core-soft);
+    }
+
+    .layer-panel.layer-safety {
+      --layer-color: var(--safety);
+      --layer-soft: var(--safety-soft);
+    }
+
+    .layer-panel.layer-adapter {
+      --layer-color: var(--adapter);
+      --layer-soft: var(--adapter-soft);
+    }
+
+    .layer-panel.layer-native {
+      --layer-color: var(--native);
+      --layer-soft: var(--native-soft);
+    }
+
+    .layer-panel.layer-runtime {
+      --layer-color: var(--runtime);
+      --layer-soft: var(--runtime-soft);
+    }
+
+    .layer-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 18px 20px 14px 24px;
+    }
+
+    .layer-kicker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+      color: var(--layer-color);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    .layer-kicker::before {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--layer-color);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--layer-color) 14%, transparent);
+      content: "";
+    }
+
+    .layer-title {
+      color: var(--ink);
+      font-size: clamp(17px, 2vw, 23px);
+      font-weight: 760;
+      letter-spacing: -.035em;
+      line-height: 1.14;
+    }
+
+    .layer-intent {
+      max-width: 460px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .source-seam {
+      flex: 0 0 auto;
+      max-width: 300px;
+      padding: 6px 9px;
+      border: 1px solid color-mix(in srgb, var(--layer-color) 30%, var(--line));
+      border-radius: 8px;
+      color: var(--layer-color);
+      background: var(--layer-soft);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 650;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    .modules {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      padding: 0 20px 18px 24px;
+    }
+
+    .modules.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .module {
+      min-width: 0;
+      padding: 13px 14px 14px;
+      border: 1px solid color-mix(in srgb, var(--line) 86%, var(--layer-color) 14%);
+      border-radius: 13px;
+      background: color-mix(in srgb, var(--surface) 84%, var(--layer-soft) 16%);
+    }
+
+    .module-label {
+      margin-bottom: 6px;
+      color: var(--layer-color);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .module h3 {
+      font-size: 13px;
+      font-weight: 760;
+      letter-spacing: -.015em;
+      line-height: 1.25;
+    }
+
+    .module p {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: var(--code-bg);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: .92em;
+      overflow-wrap: anywhere;
+    }
+
+    .flow-band {
+      display: grid;
+      grid-template-columns: 68px minmax(0, 1fr);
+      gap: 15px;
+      min-height: 48px;
+    }
+
+    .flow-paths {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      padding: 5px 24px 5px 0;
+    }
+
+    .flow-path {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-width: 0;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.25;
+      text-align: center;
+    }
+
+    .flow-path .shaft {
+      position: relative;
+      display: block;
+      flex: 0 0 auto;
+      width: 2px;
+      height: 29px;
+      border-radius: 99px;
+    }
+
+    .flow-path.down {
+      color: var(--control);
+    }
+
+    .flow-path.down .shaft {
+      background: var(--control-line);
+    }
+
+    .flow-path.down .shaft::after {
+      position: absolute;
+      bottom: -2px;
+      left: 50%;
+      width: 7px;
+      height: 7px;
+      border-right: 2px solid var(--control-line);
+      border-bottom: 2px solid var(--control-line);
+      content: "";
+      transform: translateX(-50%) rotate(45deg);
+    }
+
+    .flow-path.up {
+      color: var(--activity);
+    }
+
+    .flow-path.up .shaft {
+      border-left: 2px dashed var(--activity-line);
+    }
+
+    .flow-path.up .shaft::after {
+      position: absolute;
+      top: -2px;
+      left: -5px;
+      width: 7px;
+      height: 7px;
+      border-top: 2px solid var(--activity-line);
+      border-left: 2px solid var(--activity-line);
+      content: "";
+      transform: rotate(45deg);
+    }
+
+    .flow-path span:last-child {
+      max-width: 190px;
+    }
+
+    .scope-strip {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);
+      gap: 12px;
+      align-items: stretch;
+      margin-top: 24px;
+      padding: 16px 0 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .scope-card {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 11px;
+      align-items: start;
+      min-width: 0;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+
+    .scope-card.tree {
+      border-color: color-mix(in srgb, var(--core) 46%, var(--line));
+      background: color-mix(in srgb, var(--core-soft) 58%, var(--surface));
+    }
+
+    .scope-card.workspace {
+      border-color: color-mix(in srgb, var(--safety) 52%, var(--line));
+      background: color-mix(in srgb, var(--safety-soft) 58%, var(--surface));
+    }
+
+    .scope-icon {
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      border: 1px dashed currentColor;
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .tree .scope-icon,
+    .tree .scope-name {
+      color: var(--core);
+    }
+
+    .workspace .scope-icon,
+    .workspace .scope-name {
+      color: var(--safety);
+    }
+
+    .scope-name {
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .scope-name small {
+      display: block;
+      margin-top: 2px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .scope-card p {
+      grid-column: 2;
+      margin-top: -4px;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .scope-divider {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--faint);
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      line-height: 1.35;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .scope-divider::before,
+    .scope-divider::after {
+      width: 1px;
+      height: 18px;
+      background: var(--line-strong);
+      content: "";
+    }
+
+    .scope-divider::before {
+      margin-bottom: 7px;
+    }
+
+    .scope-divider::after {
+      margin-top: 7px;
+    }
+
+    .diagram-foot {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 28px 19px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      background: color-mix(in srgb, var(--surface) 74%, transparent);
+      font-size: 11px;
+    }
+
+    .diagram-foot strong {
+      color: var(--ink);
+    }
+
+    .foot-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .foot-note::before {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      content: "";
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 900px) {
+      .page {
+        width: min(100% - 28px, 760px);
+        padding-top: 26px;
+      }
+
+      .masthead {
+        margin-bottom: 20px;
+      }
+
+      .diagram-head {
+        grid-template-columns: 1fr;
+        gap: 17px;
+        padding: 21px 20px 18px;
+      }
+
+      .legend {
+        justify-content: flex-start;
+        max-width: none;
+      }
+
+      .diagram-flow {
+        padding: 19px 20px 22px;
+      }
+
+      .layer-row,
+      .flow-band {
+        grid-template-columns: 48px minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      .flow-paths {
+        padding-right: 0;
+      }
+
+      .modules {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .source-seam {
+        max-width: 240px;
+      }
+
+      .scope-strip {
+        grid-template-columns: 1fr;
+        gap: 9px;
+      }
+
+      .scope-divider {
+        flex-direction: row;
+        gap: 9px;
+        min-height: 24px;
+      }
+
+      .scope-divider::before,
+      .scope-divider::after {
+        width: 28px;
+        height: 1px;
+      }
+
+      .scope-divider::before {
+        margin: 0;
+      }
+
+      .scope-divider::after {
+        margin: 0;
+      }
+
+      .diagram-foot {
+        flex-direction: column;
+        gap: 8px;
+        padding: 14px 20px 17px;
+      }
+    }
+
+    @media (max-width: 610px) {
+      .page {
+        width: min(100% - 20px, 520px);
+        padding: 18px 0 30px;
+      }
+
+      .masthead {
+        display: block;
+      }
+
+      .theme-toggle {
+        margin-top: 17px;
+      }
+
+      h1 {
+        font-size: clamp(30px, 10vw, 43px);
+      }
+
+      .dek {
+        margin-top: 13px;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .architecture {
+        border-radius: 19px;
+      }
+
+      .diagram-head {
+        padding: 18px 15px 16px;
+      }
+
+      .diagram-flow {
+        padding: 15px 12px 17px;
+      }
+
+      .layer-row,
+      .flow-band {
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 7px;
+      }
+
+      .gutter {
+        padding-top: 12px;
+      }
+
+      .step {
+        width: 30px;
+        height: 30px;
+        border-radius: 10px;
+        font-size: 9px;
+      }
+
+      .gutter-note {
+        display: none;
+      }
+
+      .layer-head {
+        display: block;
+        padding: 15px 14px 11px 17px;
+      }
+
+      .layer-title {
+        font-size: 17px;
+      }
+
+      .layer-intent {
+        font-size: 11px;
+      }
+
+      .source-seam {
+        display: inline-block;
+        max-width: 100%;
+        margin-top: 10px;
+        font-size: 8px;
+      }
+
+      .modules,
+      .modules.two {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 0 12px 13px 17px;
+      }
+
+      .module {
+        padding: 11px 12px 12px;
+      }
+
+      .module p {
+        font-size: 10px;
+      }
+
+      .flow-band {
+        min-height: 56px;
+      }
+
+      .flow-paths {
+        grid-template-columns: 1fr 1fr;
+        gap: 5px;
+        padding-right: 0;
+      }
+
+      .flow-path {
+        gap: 5px;
+        font-size: 8px;
+      }
+
+      .flow-path .shaft {
+        height: 25px;
+      }
+
+      .flow-path span:last-child {
+        max-width: 90px;
+      }
+
+      .scope-strip {
+        margin-top: 17px;
+        padding-top: 13px;
+      }
+
+      .scope-card {
+        padding: 11px 12px;
+      }
+
+      .diagram-foot {
+        padding: 13px 15px 15px;
+        font-size: 10px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div class="masthead-copy">
+        <p class="eyebrow">OpenBaton / architecture map</p>
+        <h1>从决策到原生执行，<br>七层边界各司其职。</h1>
+        <p class="dek">一张图看清：Codex Director 如何把授权后的工作交给 Baton，Baton 如何在不透明的 host 生命周期中保留可审计身份，同时把树内容量和 workspace-wide 安全分开管理。</p>
+      </div>
+      <button class="theme-toggle" type="button" aria-pressed="false" aria-label="切换浅色或深色主题">
+        <span class="toggle-dot" aria-hidden="true"></span>
+        <span class="toggle-label">切换主题</span>
+      </button>
+    </header>
+
+    <figure class="architecture" aria-labelledby="diagram-title">
+      <div class="diagram-head">
+        <div>
+          <p class="diagram-label">single diagram · current hookless boundary</p>
+          <h2 class="diagram-title" id="diagram-title">OpenBaton 分层运行图</h2>
+          <p class="diagram-summary">实线向下是授权后的控制流；虚线向上是 activity、probe、progress 与 terminal result。每一层只拥有自己的事实，不跨边界猜测。</p>
+        </div>
+        <div class="legend" aria-label="图例">
+          <span class="legend-item control"><span class="legend-mark" aria-hidden="true">↓</span>控制流</span>
+          <span class="legend-item activity"><span class="legend-mark" aria-hidden="true">↑</span>活动 / 结果流</span>
+          <span class="legend-item tree"><span class="legend-mark" aria-hidden="true">T</span>tree-local 容量</span>
+          <span class="legend-item workspace"><span class="legend-mark" aria-hidden="true">W</span>workspace-wide 安全</span>
+        </div>
+      </div>
+
+      <div class="diagram-flow">
+        <p class="sr-only">控制流从用户和 Codex Director 依次向下经过 Baton CLI、编排策略、安全状态、公共 Adapter SDK、host 原生生命周期到 worker 与 worktree。活动和结果沿同一边界向上返回。树内容量只约束当前 host 与 session_uid 的 root-agent tree；workspace-wide 安全仍检查所有 tree 的路径所有权、锁和 Git 状态。</p>
+
+        <article class="layer-row" aria-labelledby="layer-1-title">
+          <div class="gutter"><span class="step">01</span><span class="gutter-note">decide</span></div>
+          <div class="layer-panel layer-decision">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Decision layer</p>
+                <h2 class="layer-title" id="layer-1-title">用户 &amp; Codex Director 决策层</h2>
+                <p class="layer-intent">把“想做什么”转成“能否执行、由谁执行、允许改哪里”的确定性执行单元。</p>
+              </div>
+              <span class="source-seam">source: README.zh.md · director contract</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">intent / auth</p>
+                <h3>意图与授权</h3>
+                <p>用户提出目标；Director 判断只读、写入或 commit-only，并保留显式授权边界。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">analysis</p>
+                <h3>分类、依赖、影响面</h3>
+                <p>先做 read-only impact/dependency pass，再记录精确路径与 <code>write/create/delete/rename/chmod</code>。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">ready frontier</p>
+                <h3>最大安全 ready frontier</h3>
+                <p>只把依赖已就绪、scope 完整、互不冲突且适合容量的 unit 送入 Baton；讨论仍留在 Director。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="flow-band" aria-hidden="true">
+          <div></div>
+          <div class="flow-paths">
+            <span class="flow-path down"><span class="shaft"></span><span>意图 + 授权 + unit scope</span></span>
+            <span class="flow-path up"><span>proposal / blocker / result</span><span class="shaft"></span></span>
+          </div>
+        </div>
+
+        <article class="layer-row" aria-labelledby="layer-2-title">
+          <div class="gutter"><span class="step">02</span><span class="gutter-note">enter</span></div>
+          <div class="layer-panel layer-cli">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Command / API entry</p>
+                <h2 class="layer-title" id="layer-2-title">Baton CLI &amp; command/API 入口层</h2>
+                <p class="layer-intent">把调用面统一为 CLI 中立的命令入口，并在进入写入或 dispatch 前做 activation、host 与参数门禁。</p>
+              </div>
+              <span class="source-seam">source: src/cli.ts · src/commands/*</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">bootstrap</p>
+                <h3><code>init</code> / <code>config</code> / <code>models</code></h3>
+                <p>发现 manifest、选择 profile、刷新实时目录；配置只持久化明确选择的 host/model。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">work intake</p>
+                <h3><code>match</code> / <code>spawn</code> / <code>apply</code></h3>
+                <p>解析 standalone 或 OpenSpec unit，传递分类、操作、scope 和自动路由提案。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">lifecycle view</p>
+                <h3><code>dispatch</code> / <code>status</code></h3>
+                <p>提供 reserve、bind、probe、progress、finish、release 与当前 tree 的状态视图。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="flow-band" aria-hidden="true">
+          <div></div>
+          <div class="flow-paths">
+            <span class="flow-path down"><span class="shaft"></span><span>spawn / apply / dispatch</span></span>
+            <span class="flow-path up"><span>ticket / reservation / status</span><span class="shaft"></span></span>
+          </div>
+        </div>
+
+        <article class="layer-row" aria-labelledby="layer-3-title">
+          <div class="gutter"><span class="step">03</span><span class="gutter-note">orchestrate</span></div>
+          <div class="layer-panel layer-core">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Orchestration / policy core</p>
+                <h2 class="layer-title" id="layer-3-title">Baton 编排与策略核心</h2>
+                <p class="layer-intent">让 ticket、Receipt、reservation 和 native 生命周期保持一条不可跳过、可恢复的链路。</p>
+              </div>
+              <span class="source-seam">source: src/lib/dispatch.ts · queue.ts · agent-tree-capacity.ts</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">ticket + receipt</p>
+                <h3>不可变身份与选择</h3>
+                <p>写入前 materialize ticket 与 Receipt；记录 route、model、effort、scope、baseline 和 <code>session_uid</code>。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">tree-local capacity</p>
+                <h3>当前 root-agent tree 的容量</h3>
+                <p><code>(host, session_uid)</code> 独享 active descendants 槽位；有效值取 host、policy、operation 限制的最小值。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">lifecycle</p>
+                <h3>reserve → bind → wait → finish → release</h3>
+                <p>从 dispatching 到 native release 都占用槽位；AGENT_LIMIT_REACHED 回到原 tree queue，不换身份。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="flow-band" aria-hidden="true">
+          <div></div>
+          <div class="flow-paths">
+            <span class="flow-path down"><span class="shaft"></span><span>scope + Receipt baseline</span></span>
+            <span class="flow-path up"><span>reservation / audit verdict</span><span class="shaft"></span></span>
+          </div>
+        </div>
+
+        <article class="layer-row" aria-labelledby="layer-4-title">
+          <div class="gutter"><span class="step">04</span><span class="gutter-note">enforce</span></div>
+          <div class="layer-panel layer-safety">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Safety / immutable state</p>
+                <h2 class="layer-title" id="layer-4-title">安全与不可变状态强制层</h2>
+                <p class="layer-intent">把“允许执行”落实为跨 tree 仍有效的路径、锁、Git baseline 和状态转移约束。</p>
+              </div>
+              <span class="source-seam">source: src/lib/safety.ts · receipt.ts · session-scope.ts</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">workspace-wide</p>
+                <h3>路径所有权与冲突</h3>
+                <p>原子校验 allowlist、rename 两端、前缀重叠、active ticket 与跨 tree 写入冲突；未知 scope 直接 fail closed。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">git safety</p>
+                <h3>baseline、index、锁与审计</h3>
+                <p>保护 worktree/index/ref；worker 不 stage、branch、rebase。parent 保持 staging/commit 所有权。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">immutability</p>
+                <h3>Receipt 与 session 身份</h3>
+                <p><code>BATON_SESSION_ID</code> 派生稳定的 <code>session_uid</code>；ticket、Receipt 与 terminal 结果不可被悄悄改写。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="flow-band" aria-hidden="true">
+          <div></div>
+          <div class="flow-paths">
+            <span class="flow-path down"><span class="shaft"></span><span>validated contract only</span></span>
+            <span class="flow-path up"><span>manifest / scope rejection</span><span class="shaft"></span></span>
+          </div>
+        </div>
+
+        <article class="layer-row" aria-labelledby="layer-5-title">
+          <div class="gutter"><span class="step">05</span><span class="gutter-note">boundary</span></div>
+          <div class="layer-panel layer-adapter">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Public adapter boundary</p>
+                <h2 class="layer-title" id="layer-5-title">Public Adapter SDK &amp; manifest 边界</h2>
+                <p class="layer-intent">Baton core 不内置目录、不内置 provider 分支；所有 host-specific 事实从公开 SDK 合同进入。</p>
+              </div>
+              <span class="source-seam">source: src/adapters/sdk.ts · contract.ts · registry.ts</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">public package</p>
+                <h3><code>@zhouliuya/openbaton/adapters</code></h3>
+                <p>adapter 以稳定的 public types 暴露 catalog、model、capability 与 native lifecycle 合同。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">manifest schema 1</p>
+                <h3>声明，而不是猜测</h3>
+                <p>manifest 固定声明 adapter、catalog command/protocol、invocation signal、native handle kind、skill 与 quota。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">discovery gate</p>
+                <h3>严格发现与归一化</h3>
+                <p>从 <code>~/.baton/adapters</code> 或 <code>BATON_ADAPTER_PATHS</code> 发现；路径越界、id 重复、版本不符即停止。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="flow-band" aria-hidden="true">
+          <div></div>
+          <div class="flow-paths">
+            <span class="flow-path down"><span class="shaft"></span><span>selected model + options</span></span>
+            <span class="flow-path up"><span>live catalog + opaque facts</span><span class="shaft"></span></span>
+          </div>
+        </div>
+
+        <article class="layer-row" aria-labelledby="layer-6-title">
+          <div class="gutter"><span class="step">06</span><span class="gutter-note">native</span></div>
+          <div class="layer-panel layer-native">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Host-native lifecycle</p>
+                <h2 class="layer-title" id="layer-6-title">host-native catalog / spawn / opaque-handle 生命周期</h2>
+                <p class="layer-intent">adapter 拥有 host 的可执行文件解析、实时目录和原生子执行；Baton 只编排，不伪造 host 事实。</p>
+              </div>
+              <span class="source-seam">source: src/adapters/registry.ts · src/lib/dispatch.ts · routes.ts</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">catalog</p>
+                <h3>实时 model catalog</h3>
+                <p>保留 id、visibility、reasoning、modality、speed/service tier 等原始事实；Baton 不补造选项。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">native spawn</p>
+                <h3>原生执行接口</h3>
+                <p>以 adapter 选出的 exact model/effort 调用 host-native child API，返回 adapter 定义的 opaque handle。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">identity handoff</p>
+                <h3><code>{session_id, ticket_id, native_handle}</code></h3>
+                <p>立即绑定身份，按 exact handle 做 activity/probe；terminal result 之后仍需 native release。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="flow-band" aria-hidden="true">
+          <div></div>
+          <div class="flow-paths">
+            <span class="flow-path down"><span class="shaft"></span><span>native spawn + exact handle</span></span>
+            <span class="flow-path up"><span>activity / progress / terminal result</span><span class="shaft"></span></span>
+          </div>
+        </div>
+
+        <article class="layer-row" aria-labelledby="layer-7-title">
+          <div class="gutter"><span class="step">07</span><span class="gutter-note">execute</span></div>
+          <div class="layer-panel layer-runtime">
+            <div class="layer-head">
+              <div>
+                <p class="layer-kicker">Execution + persistence</p>
+                <h2 class="layer-title" id="layer-7-title">worker + worktree + <code>~/.baton</code> 持久化层</h2>
+                <p class="layer-intent">native worker 在允许范围内执行；调用方拥有 worktree，Baton 把控制平面证据保存在用户级 runtime。</p>
+              </div>
+              <span class="source-seam">source: src/lib/spawn.ts · apply.ts · paths.ts</span>
+            </div>
+            <div class="modules">
+              <div class="module">
+                <p class="module-label">worker</p>
+                <h3>原生 Codex child worker</h3>
+                <p>只写 Receipt 允许的 exact paths；回报 starting、working、waiting、blocked、checkpoint 等 activity。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">caller-owned files</p>
+                <h3>worktree / working tree</h3>
+                <p>源码文件属于调用方的 worktree；worker 不执行 Git 操作，parent 审计 diff、staging 与最终 publication。</p>
+              </div>
+              <div class="module">
+                <p class="module-label">user-global runtime</p>
+                <h3><code>~/.baton</code></h3>
+                <p>保存 config、catalog snapshot、Receipt、ticket/run state、lock 与 route health；不把容量变成 workspace 总数。</p>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="scope-strip" role="group" aria-label="容量范围与安全范围">
+          <div class="scope-card tree">
+            <span class="scope-icon" aria-hidden="true">T</span>
+            <div>
+              <p class="scope-name">树内容量 <small>tree-local capacity</small></p>
+              <p>只看当前 <code>(host, session_uid)</code> root-agent tree 的 active descendants；root 不占槽位，其他 tree 不参与 refill。</p>
+            </div>
+          </div>
+          <div class="scope-divider" aria-hidden="true">并行<br>成立</div>
+          <div class="scope-card workspace">
+            <span class="scope-icon" aria-hidden="true">W</span>
+            <div>
+              <p class="scope-name">工作区安全 <small>workspace-wide safety</small></p>
+              <p>所有 tree 仍共享路径所有权、Git safety、activation/dispatch locks 和 cross-tree conflict checks。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <figcaption class="diagram-foot">
+        <span class="foot-note"><strong>读写分离：</strong>讨论 / 分析在 Director；实现由 Baton 授权并交给 native worker。</span>
+        <span><strong>边界原则：</strong>容量隔离不等于安全隔离。</span>
+      </figcaption>
+    </figure>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const button = document.querySelector('.theme-toggle');
+      const label = document.querySelector('.toggle-label');
+      if (!button || !label) return;
+      const preferred = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const initial = root.dataset.theme || (preferred ? 'dark' : 'light');
+      root.dataset.theme = initial;
+      const render = () => {
+        const dark = root.dataset.theme === 'dark';
+        button.setAttribute('aria-pressed', String(dark));
+        label.textContent = dark ? '切换浅色' : '切换深色';
+      };
+      render();
+      button.addEventListener('click', () => {
+        root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        render();
+      });
+    })();
+  </script>
+</body>
+</html>
