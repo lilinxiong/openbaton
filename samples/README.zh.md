@@ -63,4 +63,4 @@ successor，并分配新的 per-session ordinal 和新 Receipt。它记录
 host/scope/session 与配额 lineage，并重新执行全部路由检查。
 原 ticket 保持不变。
 
-简明验收清单见 [EXPECTED.zh.md](EXPECTED.zh.md)。
+简明验收清单见 [EXPECTED.md](EXPECTED.md)。
