@@ -56,7 +56,6 @@
     "task-orchestration"
   ],
   "license": "MIT",
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
