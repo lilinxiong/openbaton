@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-  <title>OpenBaton layered architecture</title>
+  <title>OpenBaton 分层架构</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -144,14 +144,6 @@
     .masthead-copy {
       max-width: 850px;
     }
-
-    .lang-switch {
-      margin: 0 0 14px;
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 650;
-    }
-    .lang-switch a { color: inherit; }
 
     .eyebrow {
       display: inline-flex;
@@ -981,14 +973,13 @@
   <main class="page">
     <header class="masthead">
       <div class="masthead-copy">
-        <p class="lang-switch"><strong>English</strong> | <a href="openbaton-layered-architecture.zh.html">中文</a></p>
         <p class="eyebrow">OpenBaton / architecture map</p>
-        <h1>From decision to native execution,<br>seven boundaries, each owning its job.</h1>
-        <p class="dek">One diagram: how the Codex Director hands authorized work to Baton, how Baton keeps an auditable identity through an opaque host lifecycle, and how tree-local capacity stays separate from workspace-wide safety.</p>
+        <h1>从决策到原生执行，<br>七层边界各司其职。</h1>
+        <p class="dek">一张图看清：Codex Director 如何把授权后的工作交给 Baton，Baton 如何在不透明的 host 生命周期中保留可审计身份，同时把树内容量和 workspace-wide 安全分开管理。</p>
       </div>
-      <button class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch light or dark theme">
+      <button class="theme-toggle" type="button" aria-pressed="false" aria-label="切换浅色或深色主题">
         <span class="toggle-dot" aria-hidden="true"></span>
-        <span class="toggle-label">Switch theme</span>
+        <span class="toggle-label">切换主题</span>
       </button>
     </header>
 
@@ -996,19 +987,19 @@
       <div class="diagram-head">
         <div>
           <p class="diagram-label">single diagram · current hookless boundary</p>
-          <h2 class="diagram-title" id="diagram-title">OpenBaton layered runtime</h2>
-          <p class="diagram-summary">Solid arrows down are authorized control flow; dashed arrows up are activity, probe, progress, and the terminal result. Each layer owns only its own facts and does not guess across the boundary.</p>
+          <h2 class="diagram-title" id="diagram-title">OpenBaton 分层运行图</h2>
+          <p class="diagram-summary">实线向下是授权后的控制流；虚线向上是 activity、probe、progress 与 terminal result。每一层只拥有自己的事实，不跨边界猜测。</p>
         </div>
-        <div class="legend" aria-label="Legend">
-          <span class="legend-item control"><span class="legend-mark" aria-hidden="true">↓</span>Control flow</span>
-          <span class="legend-item activity"><span class="legend-mark" aria-hidden="true">↑</span>Activity / result flow</span>
-          <span class="legend-item tree"><span class="legend-mark" aria-hidden="true">T</span>tree-local capacity</span>
-          <span class="legend-item workspace"><span class="legend-mark" aria-hidden="true">W</span>workspace-wide safety</span>
+        <div class="legend" aria-label="图例">
+          <span class="legend-item control"><span class="legend-mark" aria-hidden="true">↓</span>控制流</span>
+          <span class="legend-item activity"><span class="legend-mark" aria-hidden="true">↑</span>活动 / 结果流</span>
+          <span class="legend-item tree"><span class="legend-mark" aria-hidden="true">T</span>tree-local 容量</span>
+          <span class="legend-item workspace"><span class="legend-mark" aria-hidden="true">W</span>workspace-wide 安全</span>
         </div>
       </div>
 
       <div class="diagram-flow">
-        <p class="sr-only">Control flow moves from the user and Codex Director down through the Baton CLI, orchestration policy, safety state, the public Adapter SDK, the host-native lifecycle, and the worker plus worktree. Activity and results return along the same boundary. Tree-local capacity only constrains the current host and session_uid root-agent tree; workspace-wide safety still checks path ownership, locks, and Git state across every tree.</p>
+        <p class="sr-only">控制流从用户和 Codex Director 依次向下经过 Baton CLI、编排策略、安全状态、公共 Adapter SDK、host 原生生命周期到 worker 与 worktree。活动和结果沿同一边界向上返回。树内容量只约束当前 host 与 session_uid 的 root-agent tree；workspace-wide 安全仍检查所有 tree 的路径所有权、锁和 Git 状态。</p>
 
         <article class="layer-row" aria-labelledby="layer-1-title">
           <div class="gutter"><span class="step">01</span><span class="gutter-note">decide</span></div>
@@ -1016,26 +1007,26 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Decision layer</p>
-                <h2 class="layer-title" id="layer-1-title">User &amp; Codex Director decision layer</h2>
-                <p class="layer-intent">Turn “what we want” into a deterministic unit: whether it can run, who runs it, and which paths may change.</p>
+                <h2 class="layer-title" id="layer-1-title">用户 &amp; Codex Director 决策层</h2>
+                <p class="layer-intent">把“想做什么”转成“能否执行、由谁执行、允许改哪里”的确定性执行单元。</p>
               </div>
-              <span class="source-seam">source: README.md · director contract</span>
+              <span class="source-seam">source: README.zh.md · director contract</span>
             </div>
             <div class="modules">
               <div class="module">
                 <p class="module-label">intent / auth</p>
-                <h3>Intent and authorization</h3>
-                <p>The user states the goal; the Director decides read-only, write, or commit-only and keeps the explicit authorization boundary.</p>
+                <h3>意图与授权</h3>
+                <p>用户提出目标；Director 判断只读、写入或 commit-only，并保留显式授权边界。</p>
               </div>
               <div class="module">
                 <p class="module-label">analysis</p>
-                <h3>Classification, dependencies, impact</h3>
-                <p>Run a read-only impact/dependency pass first, then record exact paths and <code>write/create/delete/rename/chmod</code>。</p>
+                <h3>分类、依赖、影响面</h3>
+                <p>先做 read-only impact/dependency pass，再记录精确路径与 <code>write/create/delete/rename/chmod</code>。</p>
               </div>
               <div class="module">
                 <p class="module-label">ready frontier</p>
-                <h3>Maximal safe ready frontier</h3>
-                <p>Only send units that are order-ready, fully scoped, pairwise disjoint, and within capacity into Baton; discussion stays with the Director.</p>
+                <h3>最大安全 ready frontier</h3>
+                <p>只把依赖已就绪、scope 完整、互不冲突且适合容量的 unit 送入 Baton；讨论仍留在 Director。</p>
               </div>
             </div>
           </div>
@@ -1044,7 +1035,7 @@
         <div class="flow-band" aria-hidden="true">
           <div></div>
           <div class="flow-paths">
-            <span class="flow-path down"><span class="shaft"></span><span>intent + authorization + unit scope</span></span>
+            <span class="flow-path down"><span class="shaft"></span><span>意图 + 授权 + unit scope</span></span>
             <span class="flow-path up"><span>proposal / blocker / result</span><span class="shaft"></span></span>
           </div>
         </div>
@@ -1055,8 +1046,8 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Command / API entry</p>
-                <h2 class="layer-title" id="layer-2-title">Baton CLI &amp; command/API entry</h2>
-                <p class="layer-intent">Unify the call surface as a CLI-neutral command entry, and gate activation, host, and arguments before any write or dispatch.</p>
+                <h2 class="layer-title" id="layer-2-title">Baton CLI &amp; command/API 入口层</h2>
+                <p class="layer-intent">把调用面统一为 CLI 中立的命令入口，并在进入写入或 dispatch 前做 activation、host 与参数门禁。</p>
               </div>
               <span class="source-seam">source: src/cli.ts · src/commands/*</span>
             </div>
@@ -1064,17 +1055,17 @@
               <div class="module">
                 <p class="module-label">bootstrap</p>
                 <h3><code>init</code> / <code>config</code> / <code>models</code></h3>
-                <p>Discover manifests, select a profile, and refresh the live catalog; configuration only persists the explicitly selected host/model.</p>
+                <p>发现 manifest、选择 profile、刷新实时目录；配置只持久化明确选择的 host/model。</p>
               </div>
               <div class="module">
                 <p class="module-label">work intake</p>
                 <h3><code>match</code> / <code>spawn</code> / <code>apply</code></h3>
-                <p>Parse a standalone or OpenSpec unit and pass classification, operations, scope, and the automatic-routing proposal.</p>
+                <p>解析 standalone 或 OpenSpec unit，传递分类、操作、scope 和自动路由提案。</p>
               </div>
               <div class="module">
                 <p class="module-label">lifecycle view</p>
                 <h3><code>dispatch</code> / <code>status</code></h3>
-                <p>Provide reserve, bind, probe, progress, finish, release, and the current tree's status view.</p>
+                <p>提供 reserve、bind、probe、progress、finish、release 与当前 tree 的状态视图。</p>
               </div>
             </div>
           </div>
@@ -1094,26 +1085,26 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Orchestration / policy core</p>
-                <h2 class="layer-title" id="layer-3-title">Baton orchestration and policy core</h2>
-                <p class="layer-intent">Keep ticket, Receipt, reservation, and the native lifecycle on one unskippable, recoverable path.</p>
+                <h2 class="layer-title" id="layer-3-title">Baton 编排与策略核心</h2>
+                <p class="layer-intent">让 ticket、Receipt、reservation 和 native 生命周期保持一条不可跳过、可恢复的链路。</p>
               </div>
               <span class="source-seam">source: src/lib/dispatch.ts · queue.ts · agent-tree-capacity.ts</span>
             </div>
             <div class="modules">
               <div class="module">
                 <p class="module-label">ticket + receipt</p>
-                <h3>Immutable identity and selection</h3>
-                <p>Materialize the ticket and Receipt before mutation; record route, model, effort, scope, baseline, and <code>session_uid</code>。</p>
+                <h3>不可变身份与选择</h3>
+                <p>写入前 materialize ticket 与 Receipt；记录 route、model、effort、scope、baseline 和 <code>session_uid</code>。</p>
               </div>
               <div class="module">
                 <p class="module-label">tree-local capacity</p>
-                <h3>Capacity of the current root-agent tree</h3>
-                <p><code>(host, session_uid)</code> owns its active-descendant slots; the effective value is the minimum of host, policy, and operation limits.</p>
+                <h3>当前 root-agent tree 的容量</h3>
+                <p><code>(host, session_uid)</code> 独享 active descendants 槽位；有效值取 host、policy、operation 限制的最小值。</p>
               </div>
               <div class="module">
                 <p class="module-label">lifecycle</p>
                 <h3>reserve → bind → wait → finish → release</h3>
-                <p>A slot is held from dispatching through native release; AGENT_LIMIT_REACHED returns to the originating tree queue without changing identity.</p>
+                <p>从 dispatching 到 native release 都占用槽位；AGENT_LIMIT_REACHED 回到原 tree queue，不换身份。</p>
               </div>
             </div>
           </div>
@@ -1133,26 +1124,26 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Safety / immutable state</p>
-                <h2 class="layer-title" id="layer-4-title">Safety and immutable-state enforcement</h2>
-                <p class="layer-intent">Turn “allowed to run” into path, lock, Git baseline, and state-transition constraints that still hold across trees.</p>
+                <h2 class="layer-title" id="layer-4-title">安全与不可变状态强制层</h2>
+                <p class="layer-intent">把“允许执行”落实为跨 tree 仍有效的路径、锁、Git baseline 和状态转移约束。</p>
               </div>
               <span class="source-seam">source: src/lib/safety.ts · receipt.ts · session-scope.ts</span>
             </div>
             <div class="modules">
               <div class="module">
                 <p class="module-label">workspace-wide</p>
-                <h3>Path ownership and conflicts</h3>
-                <p>Atomically validate the allowlist, both rename endpoints, prefix overlap, active tickets, and cross-tree write conflicts; unknown scope fails closed.</p>
+                <h3>路径所有权与冲突</h3>
+                <p>原子校验 allowlist、rename 两端、前缀重叠、active ticket 与跨 tree 写入冲突；未知 scope 直接 fail closed。</p>
               </div>
               <div class="module">
                 <p class="module-label">git safety</p>
-                <h3>Baseline, index, locks, and audit</h3>
-                <p>Protect worktree/index/ref; workers do not stage, branch, or rebase. The parent keeps staging/commit ownership.</p>
+                <h3>baseline、index、锁与审计</h3>
+                <p>保护 worktree/index/ref；worker 不 stage、branch、rebase。parent 保持 staging/commit 所有权。</p>
               </div>
               <div class="module">
                 <p class="module-label">immutability</p>
-                <h3>Receipt and session identity</h3>
-                <p><code>BATON_SESSION_ID</code> derives a stable <code>session_uid</code>; tickets, Receipts, and terminal results cannot be rewritten quietly.</p>
+                <h3>Receipt 与 session 身份</h3>
+                <p><code>BATON_SESSION_ID</code> 派生稳定的 <code>session_uid</code>；ticket、Receipt 与 terminal 结果不可被悄悄改写。</p>
               </div>
             </div>
           </div>
@@ -1172,8 +1163,8 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Public adapter boundary</p>
-                <h2 class="layer-title" id="layer-5-title">Public Adapter SDK &amp; manifest boundary</h2>
-                <p class="layer-intent">Baton core has no built-in catalog and no provider-specific branch; every host-specific fact enters through the public SDK contract.</p>
+                <h2 class="layer-title" id="layer-5-title">Public Adapter SDK &amp; manifest 边界</h2>
+                <p class="layer-intent">Baton core 不内置目录、不内置 provider 分支；所有 host-specific 事实从公开 SDK 合同进入。</p>
               </div>
               <span class="source-seam">source: src/adapters/sdk.ts · contract.ts · registry.ts</span>
             </div>
@@ -1181,17 +1172,17 @@
               <div class="module">
                 <p class="module-label">public package</p>
                 <h3><code>@zhouliuya/openbaton/adapters</code></h3>
-                <p>The adapter exposes catalog, model, capability, and native-lifecycle contracts through stable public types.</p>
+                <p>adapter 以稳定的 public types 暴露 catalog、model、capability 与 native lifecycle 合同。</p>
               </div>
               <div class="module">
                 <p class="module-label">manifest schema 1</p>
-                <h3>Declare, do not guess</h3>
-                <p>The manifest declares the adapter, catalog command/protocol, invocation signal, native handle kind, skill, and quota.</p>
+                <h3>声明，而不是猜测</h3>
+                <p>manifest 固定声明 adapter、catalog command/protocol、invocation signal、native handle kind、skill 与 quota。</p>
               </div>
               <div class="module">
                 <p class="module-label">discovery gate</p>
-                <h3>Strict discovery and normalization</h3>
-                <p>Discover from <code>~/.baton/adapters</code> or <code>BATON_ADAPTER_PATHS</code>; a traversal, duplicate id, or version mismatch stops discovery.</p>
+                <h3>严格发现与归一化</h3>
+                <p>从 <code>~/.baton/adapters</code> 或 <code>BATON_ADAPTER_PATHS</code> 发现；路径越界、id 重复、版本不符即停止。</p>
               </div>
             </div>
           </div>
@@ -1211,26 +1202,26 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Host-native lifecycle</p>
-                <h2 class="layer-title" id="layer-6-title">host-native catalog / spawn / opaque-handle lifecycle</h2>
-                <p class="layer-intent">The adapter owns host executable resolution, the live catalog, and native child execution; Baton only orchestrates and never fabricates host facts.</p>
+                <h2 class="layer-title" id="layer-6-title">host-native catalog / spawn / opaque-handle 生命周期</h2>
+                <p class="layer-intent">adapter 拥有 host 的可执行文件解析、实时目录和原生子执行；Baton 只编排，不伪造 host 事实。</p>
               </div>
               <span class="source-seam">source: src/adapters/registry.ts · src/lib/dispatch.ts · routes.ts</span>
             </div>
             <div class="modules">
               <div class="module">
                 <p class="module-label">catalog</p>
-                <h3>Live model catalog</h3>
-                <p>Preserve id, visibility, reasoning, modality, speed/service tier, and other reported facts; Baton does not invent options.</p>
+                <h3>实时 model catalog</h3>
+                <p>保留 id、visibility、reasoning、modality、speed/service tier 等原始事实；Baton 不补造选项。</p>
               </div>
               <div class="module">
                 <p class="module-label">native spawn</p>
-                <h3>Native execution API</h3>
-                <p>Call the host-native child API with the exact selected model/effort and return the adapter-defined opaque handle.</p>
+                <h3>原生执行接口</h3>
+                <p>以 adapter 选出的 exact model/effort 调用 host-native child API，返回 adapter 定义的 opaque handle。</p>
               </div>
               <div class="module">
                 <p class="module-label">identity handoff</p>
                 <h3><code>{session_id, ticket_id, native_handle}</code></h3>
-                <p>Bind identity immediately, probe activity against the exact handle, and still require native release after the terminal result.</p>
+                <p>立即绑定身份，按 exact handle 做 activity/probe；terminal result 之后仍需 native release。</p>
               </div>
             </div>
           </div>
@@ -1250,53 +1241,53 @@
             <div class="layer-head">
               <div>
                 <p class="layer-kicker">Execution + persistence</p>
-                <h2 class="layer-title" id="layer-7-title">worker + worktree + <code>~/.baton</code> persistence</h2>
-                <p class="layer-intent">The native worker runs inside the allowed scope; the caller owns the worktree, and Baton stores control-plane evidence in the user-global runtime.</p>
+                <h2 class="layer-title" id="layer-7-title">worker + worktree + <code>~/.baton</code> 持久化层</h2>
+                <p class="layer-intent">native worker 在允许范围内执行；调用方拥有 worktree，Baton 把控制平面证据保存在用户级 runtime。</p>
               </div>
               <span class="source-seam">source: src/lib/spawn.ts · apply.ts · paths.ts</span>
             </div>
             <div class="modules">
               <div class="module">
                 <p class="module-label">worker</p>
-                <h3>Native Codex child worker</h3>
-                <p>Write only the exact paths allowed by the Receipt; report starting, working, waiting, blocked, checkpoint, and other activity.</p>
+                <h3>原生 Codex child worker</h3>
+                <p>只写 Receipt 允许的 exact paths；回报 starting、working、waiting、blocked、checkpoint 等 activity。</p>
               </div>
               <div class="module">
                 <p class="module-label">caller-owned files</p>
                 <h3>worktree / working tree</h3>
-                <p>Source files belong to the caller's worktree; the worker does not perform Git operations, and the parent audits the diff, staging, and final publication.</p>
+                <p>源码文件属于调用方的 worktree；worker 不执行 Git 操作，parent 审计 diff、staging 与最终 publication。</p>
               </div>
               <div class="module">
                 <p class="module-label">user-global runtime</p>
                 <h3><code>~/.baton</code></h3>
-                <p>Store config, catalog snapshots, Receipts, ticket/run state, locks, and route health; do not collapse capacity into one workspace total.</p>
+                <p>保存 config、catalog snapshot、Receipt、ticket/run state、lock 与 route health；不把容量变成 workspace 总数。</p>
               </div>
             </div>
           </div>
         </article>
 
-        <div class="scope-strip" role="group" aria-label="Capacity scope and safety scope">
+        <div class="scope-strip" role="group" aria-label="容量范围与安全范围">
           <div class="scope-card tree">
             <span class="scope-icon" aria-hidden="true">T</span>
             <div>
-              <p class="scope-name">Tree-local capacity <small>tree-local capacity</small></p>
-              <p>Count only active descendants of the current <code>(host, session_uid)</code> root-agent tree; the root does not occupy a slot, and other trees are not refilled.</p>
+              <p class="scope-name">树内容量 <small>tree-local capacity</small></p>
+              <p>只看当前 <code>(host, session_uid)</code> root-agent tree 的 active descendants；root 不占槽位，其他 tree 不参与 refill。</p>
             </div>
           </div>
-          <div class="scope-divider" aria-hidden="true">Holds<br>in parallel</div>
+          <div class="scope-divider" aria-hidden="true">并行<br>成立</div>
           <div class="scope-card workspace">
             <span class="scope-icon" aria-hidden="true">W</span>
             <div>
-              <p class="scope-name">Workspace safety <small>workspace-wide safety</small></p>
-              <p>Every tree still shares path ownership, Git safety, activation/dispatch locks, and cross-tree conflict checks.</p>
+              <p class="scope-name">工作区安全 <small>workspace-wide safety</small></p>
+              <p>所有 tree 仍共享路径所有权、Git safety、activation/dispatch locks 和 cross-tree conflict checks。</p>
             </div>
           </div>
         </div>
       </div>
 
       <figcaption class="diagram-foot">
-        <span class="foot-note"><strong>Read/write split:</strong>Discussion / analysis stay with the Director; implementation is authorized by Baton and handed to a native worker.</span>
-        <span><strong>Boundary rule:</strong>Capacity isolation is not safety isolation.</span>
+        <span class="foot-note"><strong>读写分离：</strong>讨论 / 分析在 Director；实现由 Baton 授权并交给 native worker。</span>
+        <span><strong>边界原则：</strong>容量隔离不等于安全隔离。</span>
       </figcaption>
     </figure>
   </main>
@@ -1313,7 +1304,7 @@
       const render = () => {
         const dark = root.dataset.theme === 'dark';
         button.setAttribute('aria-pressed', String(dark));
-        label.textContent = dark ? 'Switch to light' : 'Switch to dark';
+        label.textContent = dark ? '切换浅色' : '切换深色';
       };
       render();
       button.addEventListener('click', () => {

@@ -87,7 +87,7 @@ ticket inventory，但在 `capacity_trees` 下按 tree 分组。
 - [产品指南](docs/guide.zh.md) — adapter SDK、配置、调度、ticket 生命周期、
   仓库安全，以及一次实测 OpenSpec apply
 - [架构说明](docs/architecture/baton-dynamic-director.zh.md)
-- [架构图](docs/architecture/openbaton-architecture.zh.html)
-- [分层运行图](docs/architecture/openbaton-layered-architecture.zh.html)
+- [架构图](docs/architecture/openbaton-architecture.html)
+- [分层运行图](docs/architecture/openbaton-layered-architecture.html)
 - [运行时 skill](SKILL.md)
 
