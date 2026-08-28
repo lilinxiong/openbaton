@@ -110,7 +110,7 @@ function hasHumanTypeLabelOverride(events, typeLabels = TYPE_LABELS, botActors =
  * }} input
  * @returns {{
  *   skip: true,
- *   reason: "human-override" | "no-prefix",
+ *   reason: "human-override",
  * } | {
  *   skip: false,
  *   detected: string,
@@ -131,10 +131,9 @@ function planTypeLabelSync(input) {
   // titles it cannot (`stack 3/5: ...`), so a well-formed title is never
   // overridden by what happens to be committed under it.
   const detected =
-    detectTypeLabelFromTitle(title) ?? detectTypeLabelFromCommits(input?.commitMessages);
-  if (!detected) {
-    return { skip: true, reason: "no-prefix" };
-  }
+    detectTypeLabelFromTitle(title) ??
+    detectTypeLabelFromCommits(input?.commitMessages) ??
+    "chore";
 
   const current = new Set(currentLabels);
   const remove = [...TYPE_LABELS].filter((label) => current.has(label) && label !== detected);
