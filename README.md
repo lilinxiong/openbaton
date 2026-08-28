@@ -87,6 +87,7 @@ keeps workspace ticket inventory but groups capacity under `capacity_trees`.
 
 ## Documentation
 
+- [Getting started](samples/getting-started/README.md) — isolated init through dispatch
 - [Product guide](docs/guide.md) — adapter SDK, configuration, scheduling,
   ticket lifecycle, safety, and the measured OpenSpec apply
 - [Architecture notes](docs/architecture/baton-dynamic-director.md)
