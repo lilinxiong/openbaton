@@ -1,3 +1,11 @@
+# Samples
+
+**English** | [中文](README.zh.md)
+
+Newcomers should start with [getting-started](getting-started/README.md).
+That walkthrough uses the catalog fixture below to run init, config, match,
+spawn, and dispatch in an isolated HOME.
+
 # Adapter manifest sample
 
 `manifest-example/` is a small external adapter package. It demonstrates the
