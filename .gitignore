@@ -5,3 +5,4 @@ dist
 .DS_Store
 openspec/**
 samples/probe-e2e/src
+package-lock.json
