@@ -44,6 +44,108 @@ Core has no built-in catalog. An adapter package is discovered from
 `BATON_ADAPTER_PATHS`. There is no interactive model-choice step during
 execution.
 
+## Getting started
+
+An isolated walkthrough lives at [`samples/getting-started/`](samples/getting-started/).
+It uses the in-repo `sample-adapter`, so you can run init through dispatch
+without a paid host.
+
+From the repository root:
+
+```bash
+bun samples/getting-started/walkthrough.mjs
+```
+
+Or follow [samples/getting-started/README.md](samples/getting-started/README.md).
+
+## Using Baton inside Codex
+
+### Setup
+
+```bash
+npm install -g @zhouliuya/openbaton
+# or from a checkout: bun run baton -- <command> ...
+baton init --cli codex
+```
+
+`baton init --cli codex` installs bundled adapters and host skills. The Codex
+adapter manifest (`adapters/codex/adapter.json`) copies `runtime/SKILL.md` to
+`.codex/skills/baton/SKILL.md`. That is how Codex sees Baton.
+
+Then write only the `[cli.codex]` profile. Use ids from the live Codex CLI
+catalog (`BATON_CODEX_PATH` if Codex is not on `PATH`):
+
+```bash
+baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+```
+
+Turn activation on or off with:
+
+```bash
+baton enable|disable all|curproject --host codex
+```
+
+When activation is effectively disabled, `spawn` and `apply` create no tickets
+(bypass). Ticket commands need `BATON_SESSION_ID` (opaque; hashed to
+`session_uid`). The Codex director creates one before the first control-plane
+call.
+
+### When Baton auto-triggers (current version)
+
+This is **current-version** behavior. Later versions are not intended to
+auto-trigger.
+
+After init installs `.codex/skills/baton/SKILL.md` and the Codex profile is
+enabled with activation on, the Codex director conversation follows that skill:
+
+- Discussion and read-only analysis stay in the Codex director session. These
+  do **not** create Baton tickets.
+- Authorized implementation, mechanical, long-context, and OpenSpec units are
+  supposed to go through Baton (`spawn`/`apply` plus a native Codex child),
+  not be implemented inline in the director.
+
+That skill-following is the current auto-trigger. The auto path still requires
+a director **structured classification**. Baton does not infer a route from
+prose. Missing classification blocks ticket creation on an enabled host.
+
+### Manual trigger
+
+You or the director can run the CLI yourselves:
+
+```bash
+export BATON_SESSION_ID="<opaque-session>"
+baton models refresh --host codex
+baton match "<work description>" --host codex
+baton spawn "<request>" --host codex --classification <class> [--write-path ...]
+baton dispatch next --host codex --json
+# bind the Codex native handle:
+baton dispatch bind TICKET --host codex --execution-handle task_name=CODEX_TASK_NAME --json
+baton dispatch complete TICKET --host codex --text "..." --release --json
+```
+
+`baton apply` plans an OpenSpec change. `--dispatch` needs per-unit
+`--write-path` or `--read-only`. Without OpenSpec, use `spawn`.
+`baton match` discloses the preferred model without creating work.
+
+### What runs where
+
+`--classification` is required on an enabled host:
+`mechanical|long-context|implementation|analysis|discussion|general`.
+
+- `discussion` / `analysis` → director only. No worker ticket.
+- `mechanical` → configured `runner` label. Empty runner blocks; classified
+  mechanical work is not executable on the director. Commit-only capability
+  is mechanical only.
+- `long-context` → configured `longctx` label. Empty longctx blocks.
+- `implementation` and `general` → automatic selection over the ordered
+  `coding_models` allowlist (Coding priority). `general` is `not-ops` for
+  runner/longctx. `runner` and `longctx` are labels, not Coding-priority
+  entries.
+
+`--operation` is audit metadata only; it never selects a route.
+
+Deep lifecycle stays in [docs/guide.md](docs/guide.md).
+
 ## First session
 
 Ticket-producing and capacity-sensitive dispatch commands require

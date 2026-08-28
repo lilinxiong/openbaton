@@ -41,6 +41,106 @@ Baton core 不内置目录。adapter 软件包通过 `~/.baton/adapters/<adapter
 `adapter.json` 发现，或由 `BATON_ADAPTER_PATHS` 指定。执行阶段没有交互式
 模型选择。
 
+## 入门样例
+
+隔离 walkthrough 在 [`samples/getting-started/`](samples/getting-started/)。
+它使用仓库内的 `sample-adapter`，不需要付费 host。
+
+在仓库根目录执行：
+
+```bash
+bun samples/getting-started/walkthrough.mjs
+```
+
+也可以按 [samples/getting-started/README.zh.md](samples/getting-started/README.zh.md)
+逐步操作。
+
+## 在 Codex 里使用 Baton
+
+### 准备
+
+```bash
+npm install -g @zhouliuya/openbaton
+# 或在 checkout 中：bun run baton -- <command> ...
+baton init --cli codex
+```
+
+`baton init --cli codex` 会安装捆绑的 adapter 和 host skills。Codex
+adapter 的 manifest（`adapters/codex/adapter.json`）把 `runtime/SKILL.md`
+复制到 `.codex/skills/baton/SKILL.md`。Codex 就是这样看到 Baton 的。
+
+然后只写入 `[cli.codex]` profile。模型 id 来自实时 Codex CLI 目录
+（找不到 Codex 时可设 `BATON_CODEX_PATH`）：
+
+```bash
+baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+```
+
+用下面的命令打开或关闭 activation：
+
+```bash
+baton enable|disable all|curproject --host codex
+```
+
+activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）。
+会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
+`session_uid`）。Codex director 会在第一次控制平面调用之前创建它。
+
+### 何时自动触发（仅当前版本）
+
+这是**当前版本**的行为。后续版本不打算再自动触发。
+
+init 安装 `.codex/skills/baton/SKILL.md`，并且 Codex profile 已启用、
+activation 打开之后，Codex director 对话会遵循该 skill：
+
+- 讨论和只读分析留在 Codex director 会话里。这些**不会**创建 Baton
+  ticket。
+- 已授权的 implementation、mechanical、long-context 和 OpenSpec unit
+  应当走 Baton（`spawn`/`apply` 加上 Codex 原生子），而不是在 director
+  里直接实现。
+
+这种 skill 跟随就是当前的自动触发。自动路径仍然要求 director 给出
+**结构化 classification**。Baton 不会从自由文本里推断路由。已启用 host
+上缺少 classification 时，会阻止创建 ticket。
+
+### 手动触发
+
+你或 director 也可以自己跑 CLI：
+
+```bash
+export BATON_SESSION_ID="<opaque-session>"
+baton models refresh --host codex
+baton match "<work description>" --host codex
+baton spawn "<request>" --host codex --classification <class> [--write-path ...]
+baton dispatch next --host codex --json
+# 绑定 Codex 原生 handle：
+baton dispatch bind TICKET --host codex --execution-handle task_name=CODEX_TASK_NAME --json
+baton dispatch complete TICKET --host codex --text "..." --release --json
+```
+
+`baton apply` 用于规划 OpenSpec 变更。`--dispatch` 必须为每个 unit 提供
+`--write-path` 或 `--read-only`。没有 OpenSpec 时使用 `spawn`。
+`baton match` 会披露首选模型，但不会创建工作。
+
+### 分类如何落到路由
+
+已启用 host 上必须提供 `--classification`：
+`mechanical|long-context|implementation|analysis|discussion|general`。
+
+- `discussion` / `analysis` → 只留在 director。没有 worker ticket。
+- `mechanical` → 配置的 `runner` 标签。runner 为空会阻断；已分类的
+  mechanical 工作不能在 director 上执行。commit-only 能力只属于
+  mechanical。
+- `long-context` → 配置的 `longctx` 标签。longctx 为空会阻断。
+- `implementation` 和 `general` → 在有序的 `coding_models` allowlist
+  上自动选择（Coding priority）。对 runner/longctx 来说，`general`
+  是 `not-ops`。`runner` 和 `longctx` 是标签，不是 Coding-priority
+  条目。
+
+`--operation` 只是审计元数据，从不选择路由。
+
+完整生命周期见 [docs/guide.zh.md](docs/guide.zh.md)。
+
 ## 第一次会话
 
 所有会产生 ticket 或对容量敏感的 dispatch 命令都要求 `BATON_SESSION_ID`。
