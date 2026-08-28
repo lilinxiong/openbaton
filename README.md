@@ -71,6 +71,40 @@ bun samples/getting-started/walkthrough.mjs
 
 Or follow [samples/getting-started/README.md](samples/getting-started/README.md).
 
+## Measured OpenSpec apply
+
+One completed change, `scope-subagent-capacity-per-agent-tree`, was applied
+through Baton with native subagents. The change scoped dispatch capacity to
+one immutable `(host, session_uid)` root-agent tree: session identity,
+tree-local slots, status provenance, cross-tree safety isolation, adapter
+quota wording, and installed-runtime acceptance.
+
+### Task scale
+
+| Dimension | Size |
+|---|---|
+| OpenSpec work | 7 sections, 30 tasks |
+| Spec contract | 10 requirements, 26 scenarios |
+| Implementation commit `2aca248` | 46 files, +3,293 / −246 |
+| Source verification | 223 tests passed, 1 skipped |
+
+### Execution
+
+The comparison excludes 33m36s of unrelated compatibility-gate wait from
+another task. Amounts are public-API equivalent cost, not a subscription
+invoice. The solo-director row is a counterfactual: the same productive
+token volume priced and serialized on `gpt-5.6-sol`, not a second live run.
+
+| | Solo director estimate | Baton (1 director + 36 subagents) |
+|---|---|---|
+| Models | `gpt-5.6-sol` throughout | director `gpt-5.6-sol` (`high`, 3 auto-compacts); subagents `gpt-5.6-luna` (no auto-compacts) |
+| Effective wall clock | 2h 34m 33s | 1h 58m 05s (−36m 28s, 1.31×) |
+| Productive tokens | ~137.16M | ~137.16M |
+| API-equivalent cost | $79.70 | $30.56 (−$49.14, −61.7%) |
+
+Subagents carried more than half of the tokens; at `gpt-5.6-luna` prices
+their combined equivalent cost was about $2.66.
+
 ## Using Baton inside Codex
 
 ### Setup
