@@ -1,5 +1,7 @@
 # Getting started with Baton
 
+**English** | [中文](README.zh.md)
+
 This walkthrough uses the in-repo `sample-adapter` catalog fixture so you can
 run `baton init`, `baton config`, `baton match`, `baton spawn`, and
 `dispatch` without a paid host. It does not call a real native child CLI.

@@ -255,3 +255,11 @@ token volume priced and serialized on `gpt-5.6-sol`, not a second live run.
 
 Subagents carried more than half of the tokens; at `gpt-5.6-luna` prices
 their combined equivalent cost was about $2.66.
+
+## Related documentation
+
+- [Getting started](../samples/getting-started/README.md)
+- [Samples](../samples/README.md)
+- [Architecture notes](architecture/baton-dynamic-director.md)
+- [Architecture diagram](architecture/openbaton-architecture.html)
+- [Layered runtime](architecture/openbaton-layered-architecture.html)

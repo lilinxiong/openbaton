@@ -231,3 +231,11 @@ installed-runtime 验收。
 | API 等价成本 | $79.70 | $30.56（节省 $49.14，降 61.7%） |
 
 subagent 承担了过半 Token，但按 `gpt-5.6-luna` 单价合计约 $2.66。
+
+## 相关文档
+
+- [入门样例](../samples/getting-started/README.zh.md)
+- [样例说明](../samples/README.zh.md)
+- [架构说明](architecture/baton-dynamic-director.zh.md)
+- [架构图](architecture/openbaton-architecture.zh.html)
+- [分层运行图](architecture/openbaton-layered-architecture.zh.html)

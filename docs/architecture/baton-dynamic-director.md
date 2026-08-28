@@ -1,5 +1,7 @@
 # Baton architecture
 
+**English** | [中文](baton-dynamic-director.zh.md)
+
 ## Boundary
 
 Baton is a CLI-neutral scheduler and policy layer. External adapter packages

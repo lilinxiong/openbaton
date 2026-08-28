@@ -1,5 +1,7 @@
 # Manifest sample acceptance
 
+**English** | [中文](EXPECTED.zh.md)
+
 - Discovery reads only `manifest-example/adapter.json`.
 - The manifest validates as schema `1` and uses SDK version `1.0`.
 - The catalog response has the matching `adapter_id`, a version, and an exact

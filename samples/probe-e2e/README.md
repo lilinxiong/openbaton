@@ -1,5 +1,7 @@
 # Baton probe E2E
 
+**English** | [中文](README.zh.md)
+
 This disposable fixture exercises both Baton standalone multi-unit dispatch
 and the OpenSpec apply path in one session.
 
