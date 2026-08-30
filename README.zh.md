@@ -190,6 +190,80 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 
 完整生命周期见 [docs/guide.zh.md](docs/guide.zh.md)。
 
+## 在 Grok 里使用 Baton
+
+### 准备
+
+```bash
+npm install -g @zhouliuya/openbaton
+# 或在 checkout 中：bun run baton -- <command> ...
+baton init --cli grok
+```
+
+`baton init --cli grok` 会安装捆绑的 adapter 和 host skills。Grok
+adapter 的 manifest（`adapters/grok/adapter.json`）把 `runtime/SKILL.md`
+复制到 `.grok/skills/baton/SKILL.md`。Grok 就是这样看到 Baton 的。
+
+然后运行 `baton config --cli grok`。在 TTY 里这是引导流程：方向键选择，
+空格切换。它会依次问 `runner`、`longctx`、Coding 模型优先级，以及是否
+启用这个 profile。模型 id 来自实时 Grok ACP 目录（找不到 Grok 时可设
+`BATON_GROK_PATH`）。
+
+非交互写入时才用 flag，并且只写 `[cli.grok]`：
+
+```bash
+baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+```
+
+用下面的命令打开或关闭 activation：
+
+```bash
+baton enable|disable all|curproject --host grok
+```
+
+activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）。
+会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
+`session_uid`）。Grok director 会在第一次控制平面调用之前创建它。
+
+### 何时自动触发（仅当前版本）
+
+这是**当前版本**的行为。后续版本不打算再自动触发。
+
+init 安装 `.grok/skills/baton/SKILL.md`，并且 Grok profile 已启用、
+activation 打开之后，Grok director 对话会遵循该 skill：
+
+- 讨论和只读分析留在 Grok director 会话里。这些**不会**创建 Baton
+  ticket。
+- 已授权的 implementation、mechanical、long-context 和 OpenSpec unit
+  应当走 Baton（`spawn`/`apply` 加上 Grok 原生子），而不是在 director
+  里直接实现。
+
+这种 skill 跟随就是当前的自动触发。自动路径仍然要求 director 给出
+**结构化 classification**。Baton 不会从自由文本里推断路由。已启用 host
+上缺少 classification 时，会阻止创建 ticket。
+
+### 手动触发
+
+你或 director 也可以自己跑 CLI：
+
+```bash
+export BATON_SESSION_ID="<opaque-session>"
+baton models refresh --host grok
+baton match "<work description>" --host grok
+baton spawn "<request>" --host grok --classification <class> [--write-path ...]
+baton dispatch next --host grok --json
+# 绑定 Grok 原生 handle：
+baton dispatch bind TICKET --host grok --execution-handle subagent_id=GROK_SUBAGENT_ID --json
+baton dispatch complete TICKET --host grok --text "..." --release --json
+```
+
+`baton apply` 用于规划 OpenSpec 变更。`--dispatch` 必须为每个 unit 提供
+`--write-path` 或 `--read-only`。没有 OpenSpec 时使用 `spawn`。
+`baton match` 会披露首选模型，但不会创建工作。
+
+分类、路由标签和生命周期与上面的 Codex 章节以及
+[docs/guide.zh.md](docs/guide.zh.md) 相同。
+
 ## 第一次会话
 
 所有会产生 ticket 或对容量敏感的 dispatch 命令都要求 `BATON_SESSION_ID`。

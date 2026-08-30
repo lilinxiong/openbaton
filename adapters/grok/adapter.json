@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "adapter": {
+    "id": "grok",
+    "display_name": "Grok",
+    "package_name": "@zhouliuya/openbaton-grok-adapter",
+    "package_version": "1.0.0",
+    "sdk_version": "1.0"
+  },
+  "catalog": {
+    "command": "catalog.mjs",
+    "args": [],
+    "protocol": "json",
+    "timeout_ms": 30000
+  },
+  "invocation": {
+    "signal": "GROK_SESSION_ID",
+    "environment": "Grok Build TUI session runtime"
+  },
+  "native": {
+    "execution_handle_kind": "subagent_id"
+  },
+  "runtime_skill": {
+    "source": "runtime/SKILL.md",
+    "destination": ".grok/skills/baton/SKILL.md"
+  },
+  "quota": {
+    "max_concurrent_subagents": 32,
+    "max_depth": 1,
+    "backpressure": "defer"
+  }
+}

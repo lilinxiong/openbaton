@@ -108,7 +108,7 @@ describe("external Codex adapter package", () => {
   it("records adapter ownership and preserves a modified package on update", () => {
     const { home, cwd, env } = isolatedEnv();
     const first = installBundledAdaptersAndRecord(cwd, ["codex"], env);
-    assert.equal(first.installed.length, 1);
+    assert.ok(first.installed.some((line) => line.includes("codex")));
     const destination = adapterInstallDir("codex", env);
     const before = readInstallManifest(env);
     assert.ok(before?.files.some((entry) => entry.kind === "adapter-package" && entry.path === path.resolve(destination)));
@@ -116,10 +116,10 @@ describe("external Codex adapter package", () => {
     fs.appendFileSync(catalogFile, "\n// user change\n");
     const original = fs.readFileSync(catalogFile, "utf8");
     const second = installBundledAdaptersAndRecord(cwd, ["codex"], env);
-    assert.equal(second.conflicts.length, 1);
+    assert.ok(second.conflicts.some((line) => line.includes("codex")));
     assert.equal(fs.readFileSync(catalogFile, "utf8"), original);
-    assert.equal(readInstallManifest(env)?.files.find((entry) => entry.kind === "adapter-package")?.fingerprint,
-      before?.files.find((entry) => entry.kind === "adapter-package")?.fingerprint);
+    assert.equal(readInstallManifest(env)?.files.find((entry) => entry.path === path.resolve(destination))?.fingerprint,
+      before?.files.find((entry) => entry.path === path.resolve(destination))?.fingerprint);
     assert.equal(fs.existsSync(installManifestPath(env)), true);
     assert.ok(home);
   });

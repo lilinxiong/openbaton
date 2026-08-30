@@ -197,6 +197,82 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 
 Deep lifecycle stays in [docs/guide.md](docs/guide.md).
 
+## Using Baton inside Grok
+
+### Setup
+
+```bash
+npm install -g @zhouliuya/openbaton
+# or from a checkout: bun run baton -- <command> ...
+baton init --cli grok
+```
+
+`baton init --cli grok` installs bundled adapters and host skills. The Grok
+adapter manifest (`adapters/grok/adapter.json`) copies `runtime/SKILL.md` to
+`.grok/skills/baton/SKILL.md`. That is how Grok sees Baton.
+
+Then run `baton config --cli grok`. On a TTY it is a guided flow: arrow keys
+select, space toggles. It walks through `runner`, `longctx`, Coding-model
+priority, and whether to enable the profile. Model ids come from the live
+Grok ACP catalog (`BATON_GROK_PATH` if Grok is not on `PATH`).
+
+Flags skip the prompts for non-interactive use and write only `[cli.grok]`:
+
+```bash
+baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+```
+
+Turn activation on or off with:
+
+```bash
+baton enable|disable all|curproject --host grok
+```
+
+When activation is effectively disabled, `spawn` and `apply` create no tickets
+(bypass). Ticket commands need `BATON_SESSION_ID` (opaque; hashed to
+`session_uid`). The Grok director creates one before the first control-plane
+call.
+
+### When Baton auto-triggers (current version)
+
+This is **current-version** behavior. Later versions are not intended to
+auto-trigger.
+
+After init installs `.grok/skills/baton/SKILL.md` and the Grok profile is
+enabled with activation on, the Grok director conversation follows that skill:
+
+- Discussion and read-only analysis stay in the Grok director session. These
+  do **not** create Baton tickets.
+- Authorized implementation, mechanical, long-context, and OpenSpec units are
+  supposed to go through Baton (`spawn`/`apply` plus a native Grok child),
+  not be implemented inline in the director.
+
+That skill-following is the current auto-trigger. The auto path still requires
+a director **structured classification**. Baton does not infer a route from
+prose. Missing classification blocks ticket creation on an enabled host.
+
+### Manual trigger
+
+You or the director can run the CLI yourselves:
+
+```bash
+export BATON_SESSION_ID="<opaque-session>"
+baton models refresh --host grok
+baton match "<work description>" --host grok
+baton spawn "<request>" --host grok --classification <class> [--write-path ...]
+baton dispatch next --host grok --json
+# bind the Grok native handle:
+baton dispatch bind TICKET --host grok --execution-handle subagent_id=GROK_SUBAGENT_ID --json
+baton dispatch complete TICKET --host grok --text "..." --release --json
+```
+
+`baton apply` plans an OpenSpec change. `--dispatch` needs per-unit
+`--write-path` or `--read-only`. Without OpenSpec, use `spawn`.
+`baton match` discloses the preferred model without creating work.
+
+Classification, routing labels, and lifecycle match the Codex host section
+above and [docs/guide.md](docs/guide.md).
+
 ## First session
 
 Ticket-producing and capacity-sensitive dispatch commands require
