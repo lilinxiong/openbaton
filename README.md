@@ -115,7 +115,9 @@ baton init --cli codex
 
 `baton init --cli codex` installs bundled adapters and host skills. The Codex
 adapter manifest (`adapters/codex/adapter.json`) copies `runtime/SKILL.md` to
-`.codex/skills/baton/SKILL.md`. That is how Codex sees Baton.
+`.codex/skills/baton/SKILL.md` and its companion policy to
+`.codex/skills/baton/agents/openai.yaml`. That is how Codex sees Baton and
+keeps implicit invocation disabled.
 
 Then run `baton config --cli codex`. On a TTY it is a guided flow: arrow keys
 select, space toggles. It walks through `runner`, `longctx`, and Coding-model
@@ -131,18 +133,18 @@ baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model
 Ticket commands need `BATON_SESSION_ID` (opaque; hashed to `session_uid`). The
 Codex director creates one before the first control-plane call.
 
-### Triggering Baton (`/baton` only)
+### Triggering Baton (`$baton` only)
 
 The installed host skill does **not** auto-load. Codex applies its rules only
-when you explicitly run `/baton`. Ordinary conversation, implementation
+when you explicitly mention `$baton`. Ordinary conversation, implementation
 requests, and implied intent must not load the skill or follow its routing
 rules.
 
-The skill frontmatter sets `disable-model-invocation: true` so the host cannot
-invoke it automatically, and `user-invocable: true` so `/baton` remains the
-slash command.
+The installed `agents/openai.yaml` sets `policy.allow_implicit_invocation` to
+`false`, while explicit `$baton` invocation remains available through Codex's
+skill picker.
 
-When `/baton` is used and the Codex profile is configured:
+When `$baton` is used and the Codex profile is configured:
 
 - Discussion and read-only analysis stay in the Codex director session. These
   do **not** create Baton tickets.
@@ -150,7 +152,7 @@ When `/baton` is used and the Codex profile is configured:
   through Baton (`spawn`/`apply` plus a native Codex child), not inline in
   the director.
 
-`/baton` still requires a director **structured classification**. Baton does
+`$baton` still requires a director **structured classification**. Baton does
 not infer a route from prose. Missing classification blocks ticket creation.
 
 ### CLI commands
@@ -314,4 +316,3 @@ keeps workspace ticket inventory but groups capacity under `capacity_trees`.
 - [Architecture diagram](docs/architecture/openbaton-architecture.html)
 - [Layered runtime](docs/architecture/openbaton-layered-architecture.html)
 - [Runtime skill](SKILL.md)
-

@@ -183,8 +183,14 @@ export function resolveGrokCommand(env = process.env) {
   return known.find(executable) || null;
 }
 
-function send(child, message) {
-  child.stdin.write(`${JSON.stringify(message)}\n`);
+function send(child, message, onError) {
+  try {
+    child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+      if (error) onError(error);
+    });
+  } catch (error) {
+    onError(error);
+  }
 }
 
 function modelStateFromInitialize(result) {
@@ -203,11 +209,11 @@ function catalogSpawnEnv(env) {
   return next;
 }
 
-function runAgentCatalog(executablePath, { cwd, env, timeoutMs = CATALOG_TIMEOUT_MS } = {}) {
+function runAgentCatalog(executablePath, { cwd, env, timeoutMs = CATALOG_TIMEOUT_MS, spawnImpl = spawn } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(executablePath, AGENT_ARGS, {
+      child = spawnImpl(executablePath, AGENT_ARGS, {
         cwd,
         env: catalogSpawnEnv(env || process.env),
         stdio: ["pipe", "pipe", "pipe"],
@@ -235,6 +241,7 @@ function runAgentCatalog(executablePath, { cwd, env, timeoutMs = CATALOG_TIMEOUT
     const timer = setTimeout(() => fail("GROK_CATALOG_TIMEOUT: agent initialize timed out"), timeoutMs);
 
     child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+    child.stdin.on("error", (error) => fail(`GROK_CATALOG_FAILED: stdin write failed: ${error.message}`));
     child.once("error", (error) => fail(`GROK_CATALOG_FAILED: ${error.message}`));
     child.once("close", (code) => {
       if (settled) return;
@@ -295,14 +302,14 @@ function runAgentCatalog(executablePath, { cwd, env, timeoutMs = CATALOG_TIMEOUT
         clientInfo: { name: "openbaton-grok-adapter", title: "OpenBaton Grok adapter", version: "1.0.0" },
         clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
       },
-    });
+    }, (error) => fail(`GROK_CATALOG_FAILED: stdin write failed: ${error instanceof Error ? error.message : String(error)}`));
   });
 }
 
-export async function discoverGrokCatalog({ cwd = process.cwd(), env = process.env, command, timeoutMs } = {}) {
+export async function discoverGrokCatalog({ cwd = process.cwd(), env = process.env, command, timeoutMs, spawnImpl } = {}) {
   const executablePath = command ? path.resolve(command) : resolveGrokCommand(env);
   if (!executablePath || !executablePath.trim()) throw new Error("GROK_CLI_NOT_AVAILABLE: install Grok or set BATON_GROK_PATH");
-  return runAgentCatalog(executablePath, { cwd, env, timeoutMs });
+  return runAgentCatalog(executablePath, { cwd, env, timeoutMs, spawnImpl });
 }
 
 // macOS exposes /var as a symlink to /private/var. Compare canonical paths so

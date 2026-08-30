@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { describe, it } from "bun:test";
 import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
@@ -11,7 +13,7 @@ import { runHost } from "../src/commands/host.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import { resolveAgentTreeCapacity } from "../src/lib/agent-tree-capacity.js";
 import { dispatchSnapshot, reserveNext } from "../src/lib/dispatch.js";
-import { loadConfig } from "../src/lib/config.js";
+import { loadConfig, saveConfig } from "../src/lib/config.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { buildSpawnTicket, nextSpawnId, writeSpawn } from "../src/lib/spawn.js";
 import {
@@ -84,6 +86,7 @@ describe("external Grok adapter package", () => {
     assert.equal(manifests[0].quota.max_concurrent_subagents, 16);
     assert.equal(manifests[0].quota.max_depth, 1);
     assert.equal(getCliAdapter("grok", env).host.defaultMaxConcurrent, 16);
+    assert.equal(getCliAdapter("grok", env).host.defaultMaxDepth, 1);
     assert.equal(getCliAdapter("grok", env).host.executionHandleKind, "subagent_id");
     assert.equal(resolveAgentTreeCapacity({ host: getCliAdapter("grok", env).host }).capacity, 16);
   });
@@ -190,6 +193,34 @@ process.exit(0);
     await assert.rejects(
       () => getCliAdapter("grok", env).discoverModels({ cwd: repoRoot, env }),
       /GROK_CATALOG_FAILED|ADAPTER_CATALOG/,
+    );
+  });
+
+  it("turns an early stdin close into a catalog error instead of an unhandled EPIPE", async () => {
+    const { env } = isolatedEnv();
+    const child = new EventEmitter() as EventEmitter & Record<string, any>;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new EventEmitter();
+    child.stdin.write = () => {
+      queueMicrotask(() => child.stdin.emit("error", new Error("write EPIPE")));
+      return false;
+    };
+    child.stdin.end = () => {};
+    child.killed = false;
+    child.kill = () => {
+      child.killed = true;
+      return true;
+    };
+
+    await assert.rejects(
+      () => discoverGrokCatalog({
+        cwd: repoRoot,
+        env,
+        command: "/fake/grok",
+        spawnImpl: () => child,
+      }),
+      /GROK_CATALOG_FAILED: stdin write failed: write EPIPE/,
     );
   });
 
@@ -314,6 +345,9 @@ process.exit(0);
       _meta: { agentVersion: "fake-grok/1", modelState: { currentModelId: "grok-visible", availableModels: [{ modelId: "grok-visible", name: "Visible" }] } }
     }`));
     await initProject(cwd, { env });
+    const initialConfig = loadConfig(cwd, { env });
+    initialConfig.director.max_depth = 5;
+    saveConfig(cwd, initialConfig, { env });
     const output: string[] = [];
     const code = await runConfig(
       ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--json"],
@@ -323,16 +357,20 @@ process.exit(0);
     const payload = JSON.parse(output.join(""));
     assert.equal(payload.max_concurrent_subagents, 16);
     assert.equal(payload.max_concurrent_subagents_source, "adapter");
+    assert.equal(payload.max_depth, 1);
+    assert.equal(payload.max_depth_source, "adapter");
     assert.equal(loadConfig(cwd, { env }).cli.grok?.max_concurrent, 16);
+    assert.equal(loadConfig(cwd, { env }).cli.grok?.max_depth, 1);
     assert.match(fs.readFileSync(configPath(cwd, { env }), "utf8"), /max_concurrent = 16/);
+    assert.match(fs.readFileSync(configPath(cwd, { env }), "utf8"), /max_depth = 1/);
   });
 
-  it("uses the live CLI concurrent limit to persist config and fill that many dispatch slots", async () => {
+  it("lets a live CLI concurrent limit above the manifest fallback drive dispatch capacity", async () => {
     const { cwd, env } = isolatedEnv();
     installPackage(env);
     env.BATON_GROK_PATH = fakeGrokExecutable(acpInitializeFake(`{
       protocolVersion: 1,
-      agentCapabilities: { max_concurrent_subagents: 2 },
+      agentCapabilities: { max_concurrent_subagents: 32 },
       _meta: {
         agentVersion: "fake-grok/2",
         modelState: {
@@ -342,7 +380,7 @@ process.exit(0);
       }
     }`));
     const catalog = await getCliAdapter("grok", env).discoverModels({ cwd: repoRoot, env });
-    assert.deepEqual(catalog.capabilities, { max_concurrent_subagents: 2 });
+    assert.deepEqual(catalog.capabilities, { max_concurrent_subagents: 32 });
 
     await initProject(cwd, { env });
     const output: string[] = [];
@@ -352,9 +390,9 @@ process.exit(0);
     );
     assert.equal(code, 0, output.join(""));
     const payload = JSON.parse(output.join(""));
-    assert.equal(payload.max_concurrent_subagents, 2);
+    assert.equal(payload.max_concurrent_subagents, 32);
     assert.equal(payload.max_concurrent_subagents_source, "adapter");
-    assert.equal(loadConfig(cwd, { env }).cli.grok?.max_concurrent, 2);
+    assert.equal(loadConfig(cwd, { env }).cli.grok?.max_concurrent, 32);
 
     env.BATON_SESSION_ID = "grok-obtained-capacity";
     const now = "2026-08-30T06:00:00.000Z";
@@ -397,13 +435,13 @@ process.exit(0);
     }
 
     const before = dispatchSnapshot(cwd, { host: "grok", env });
-    assert.equal(before.capacity, 2);
-    assert.equal(before.available, 2);
+    assert.equal(before.capacity, 32);
+    assert.equal(before.available, 32);
     const reserved = await reserveNext(cwd, { host: "grok", now: "2026-08-30T06:01:00.000Z", env });
-    assert.equal(reserved.reserved.length, 2);
-    assert.equal(reserved.snapshot.active, 2);
-    assert.equal(reserved.snapshot.available, 0);
-    assert.equal(reserved.snapshot.queued.length, 1);
-    assert.equal(reserved.snapshot.capacity, 2);
+    assert.equal(reserved.reserved.length, 3);
+    assert.equal(reserved.snapshot.active, 3);
+    assert.equal(reserved.snapshot.available, 29);
+    assert.equal(reserved.snapshot.queued.length, 0);
+    assert.equal(reserved.snapshot.capacity, 32);
   });
 });

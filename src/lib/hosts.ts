@@ -108,6 +108,42 @@ export function skillTemplatePath(tool: HostId, env: NodeJS.ProcessEnv = process
   return manifestSource;
 }
 
+interface HostSkillFile {
+  source: string;
+  destination: string;
+}
+
+/**
+ * Expand a runtime skill into its installed files. Supporting files next to
+ * SKILL.md (for example agents/openai.yaml) stay relative to the skill root.
+ */
+function hostSkillPackageFiles(tool: HostId, options: HostEnvOptions = {}): HostSkillFile[] {
+  const source = skillTemplatePath(tool, options.env);
+  const destination = hostSkillDest(tool, options);
+  const sourceRoot = path.dirname(source);
+  const destinationRoot = path.dirname(destination);
+  const files: HostSkillFile[] = [];
+  const visit = (directory: string, relative: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const sourceFile = path.join(directory, entry.name);
+      const nextRelative = path.join(relative, entry.name);
+      if (entry.isDirectory()) visit(sourceFile, nextRelative);
+      else if (entry.isFile()) files.push({ source: sourceFile, destination: path.join(destinationRoot, nextRelative) });
+      else throw new Error(`ADAPTER_RUNTIME_SKILL_INVALID: unsupported entry ${sourceFile}`);
+    }
+  };
+  visit(sourceRoot, "");
+  if (!files.some((file) => path.resolve(file.source) === path.resolve(source))) {
+    throw new Error(`ADAPTER_RUNTIME_SKILL_MISSING: ${source}`);
+  }
+  return files;
+}
+
+/** Installed files owned by one host runtime skill package. */
+export function hostSkillFiles(tool: HostId, options: HostEnvOptions = {}): string[] {
+  return hostSkillPackageFiles(tool, options).map((file) => file.destination);
+}
+
 function shown(dest: string, options: HostEnvOptions): string {
   return displayHomePath(dest, { cwd: options.cwd, env: options.env });
 }
@@ -134,8 +170,9 @@ export function installHostSkills(cwd: string, options: InstallHostSkillsOptions
   const created: string[] = [];
   const skipped: string[] = [];
   for (const tool of hostTools) {
-    const dest = hostSkillDest(tool, { cwd, env });
-    copySkill(skillTemplatePath(tool, env), dest, { force, cwd, env, created, skipped });
+    for (const file of hostSkillPackageFiles(tool, { cwd, env })) {
+      copySkill(file.source, file.destination, { force, cwd, env, created, skipped });
+    }
   }
   return { tools: hostTools, created, skipped };
 }
@@ -145,8 +182,11 @@ export function refreshInstalledHostSkills(cwd: string, options: RefreshHostSkil
   for (const tool of hostIds(options.env)) {
     const dest = hostSkillDest(tool, { cwd, env: options.env });
     if (!fs.existsSync(dest)) continue;
-    fs.copyFileSync(skillTemplatePath(tool, options.env), dest);
-    actions.push(`updated ${shown(dest, { cwd, env: options.env })}`);
+    for (const file of hostSkillPackageFiles(tool, { cwd, env: options.env })) {
+      fs.mkdirSync(path.dirname(file.destination), { recursive: true });
+      fs.copyFileSync(file.source, file.destination);
+      actions.push(`updated ${shown(file.destination, { cwd, env: options.env })}`);
+    }
   }
   return { actions };
 }

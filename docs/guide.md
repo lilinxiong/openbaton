@@ -85,10 +85,13 @@ max_concurrent = 3
 
 `[cli.<id>].max_concurrent` is that CLI's reported per-root-tree subagent
 ceiling. Discovery writes the live catalog value, else the adapter manifest
-quota. `-1` (and `0`) means discovery did not report a limit; runtime then
-uses `director.max_concurrent`. `director.max_concurrent` is the fallback
-policy for unknown CLIs, not a workspace-wide pool. A known host limit always
-bounds it. `max_depth` is an independent descendant-depth policy.
+quota, else preserves an existing positive reported value. Only when none of
+those sources is available does it write `-1`; `0` also normalizes to unknown.
+At runtime a positive profile value is the resolved host limit and replaces
+the manifest fallback. `director.max_concurrent` applies only while that host
+limit is unknown; it is not a workspace-wide pool. `max_depth` is an
+independent descendant-depth policy. A live depth value replaces the manifest
+depth, which otherwise replaces the director fallback.
 
 `runner` and `longctx` are routing labels. `coding_models` is an ordered
 allowlist and its order is the Coding priority. Automatic selection uses only

@@ -110,7 +110,9 @@ baton init --cli codex
 
 `baton init --cli codex` 会安装捆绑的 adapter 和 host skills。Codex
 adapter 的 manifest（`adapters/codex/adapter.json`）把 `runtime/SKILL.md`
-复制到 `.codex/skills/baton/SKILL.md`。Codex 就是这样看到 Baton 的。
+复制到 `.codex/skills/baton/SKILL.md`，并把配套 policy 复制到
+`.codex/skills/baton/agents/openai.yaml`。Codex 通过它们发现 Baton，并
+禁用隐式调用。
 
 然后运行 `baton config --cli codex`。在 TTY 里这是引导流程：方向键选择，
 空格切换。它会依次问 `runner`、`longctx` 和 Coding 模型优先级。模型 id
@@ -125,17 +127,16 @@ baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model
 会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
 `session_uid`）。Codex director 会在第一次控制平面调用之前创建它。
 
-### 如何触发 Baton（仅 `/baton`）
+### 如何触发 Baton（仅 `$baton`）
 
-已安装的 host skill **不会**自动加载。只有你显式输入 `/baton` 时，Codex
+已安装的 host skill **不会**自动加载。只有你显式提及 `$baton` 时，Codex
 才会应用其中的规则。普通对话、实现请求或隐含意图都不得加载该 skill，
 也不得跟随其中的路由规则。
 
-skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
-不能自动调用它；同时设置 `user-invocable: true`，因此 `/baton` 仍是
-斜杠命令。
+安装的 `agents/openai.yaml` 把 `policy.allow_implicit_invocation` 设置为
+`false`；通过 Codex skill picker 显式调用 `$baton` 仍然可用。
 
-使用 `/baton`，并且 Codex profile 已配置之后：
+使用 `$baton`，并且 Codex profile 已配置之后：
 
 - 讨论和只读分析留在 Codex director 会话里。这些**不会**创建 Baton
   ticket。
@@ -143,7 +144,7 @@ skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
   走 Baton（`spawn`/`apply` 加上 Codex 原生子），而不是在 director
   里直接实现。
 
-`/baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
+`$baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
 自由文本里推断路由。缺少 classification 时，会阻止创建 ticket。
 
 ### CLI 命令
@@ -303,4 +304,3 @@ ticket inventory，但在 `capacity_trees` 下按 tree 分组。
 - [架构图](docs/architecture/openbaton-architecture.html)
 - [分层运行图](docs/architecture/openbaton-layered-architecture.html)
 - [运行时 skill](SKILL.md)
-

@@ -67,7 +67,8 @@ recording `successor_from_ticket_id`.
 This host's measured concurrent subagent ceiling is 16 and is stored on
 `[cli.grok].max_concurrent`. If Grok's catalog later reports
 `max_concurrent_subagents`, that live CLI value replaces it. If neither is
-available, the profile stores `-1` and Baton uses `[director].max_concurrent`
+currently available, Baton preserves an existing positive reported value;
+otherwise the profile stores `-1` and Baton uses `[director].max_concurrent`
 (default 4). The root conversation is excluded; direct and nested descendants
 share the same tree-local pool. A separate root conversation has its own
 tree-local capacity; shared workspace safety checks and host/profile quota

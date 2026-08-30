@@ -160,7 +160,7 @@ interface CliProfileResult {
   max_concurrent_subagents: number;
   max_depth: number;
   max_concurrent_subagents_source: "adapter" | "director_policy";
-  max_depth_source: "cli" | "director";
+  max_depth_source: "cli" | "adapter" | "director";
   capacity_scope: "root_agent_tree";
   model_source: string;
   config: string;
@@ -176,6 +176,7 @@ async function configureCliProfile(
     current,
     catalog,
     hostLimit,
+    hostDepth,
     ask,
     single,
   }: {
@@ -185,6 +186,7 @@ async function configureCliProfile(
     current: Config;
     catalog: CliModelCatalog;
     hostLimit?: number;
+    hostDepth?: number;
     ask: () => SelectPrompt;
     single: boolean;
   },
@@ -240,7 +242,7 @@ async function configureCliProfile(
     hostReported,
     existing.max_concurrent,
   );
-  const maxDepth = capabilities?.max_depth;
+  const maxDepth = capabilities?.max_depth ?? hostDepth;
   current.cli[cli] = {
     runner,
     longctx,
@@ -258,7 +260,11 @@ async function configureCliProfile(
     max_concurrent_subagents_source: reportedConcurrentLimit(maxConcurrent) !== undefined
       ? "adapter"
       : "director_policy",
-    max_depth_source: maxDepth !== undefined ? "cli" : "director",
+    max_depth_source: capabilities?.max_depth !== undefined
+      ? "cli"
+      : hostDepth !== undefined
+        ? "adapter"
+        : "director",
     capacity_scope: "root_agent_tree",
     model_source: `${cli} catalog`,
     config: "",
@@ -320,9 +326,11 @@ export async function runConfig(args: string[], {
     const selectedAdapter = discoverAdapter(cli);
     if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
     const catalog = await selectedAdapter.discoverModels({ cwd, env });
-    const hostLimit = getCliAdapter(cli, env).host.defaultMaxConcurrent;
+    const hostMetadata = getCliAdapter(cli, env).host;
+    const hostLimit = hostMetadata.defaultMaxConcurrent;
+    const hostDepth = hostMetadata.defaultMaxDepth;
     results.push(await configureCliProfile(cli, args, {
-      cwd, stdout, env, current, catalog, hostLimit, ask, single,
+      cwd, stdout, env, current, catalog, hostLimit, hostDepth, ask, single,
     }));
   }
 

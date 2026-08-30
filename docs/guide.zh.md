@@ -82,11 +82,13 @@ max_concurrent = 3
 ```
 
 `[cli.<id>].max_concurrent` 是该 CLI 报告的、按 root-agent tree 计算的
-subagent 上限。写入时优先用实时目录值，否则用 adapter manifest 的 quota。
-`-1`（以及 `0`）表示探测不到，运行时回退到 `director.max_concurrent`。
-`director.max_concurrent` 只是未知 CLI 的 fallback policy，不是 workspace
-共享池；已知的 host 上限始终会约束它。`max_depth` 是独立的 descendants
-深度策略，不等同于并发容量。
+subagent 上限。写入时优先用实时目录值，其次用 adapter manifest 的 quota，
+两者都没有时保留已有的正整数报告值；所有来源都未知才写入 `-1`，`0` 也会
+归一化为未知。运行时，profile 中的正整数就是已解析的 host 上限，并替代
+manifest fallback。只有 host 上限未知时才使用 `director.max_concurrent`；它
+不是 workspace 共享池。`max_depth` 是独立的 descendants 深度策略，不等同于
+并发容量；实时深度优先于 manifest 深度，manifest 深度又优先于 director
+fallback。
 
 `runner` 与 `longctx` 是路由标签；`coding_models` 是有序 allowlist，数组
 顺序就是 Coding 优先级。自动选择只使用该 allowlist、当前目录、任务形状、

@@ -57,6 +57,29 @@ describe("root agent tree capacity resolver", () => {
     assert.equal(source(treeB, "host_limit")?.applied, true);
   });
 
+  it("lets a persisted live CLI limit replace the manifest fallback", () => {
+    const result = resolveAgentTreeCapacity({
+      host: host("grok", 16),
+      config: {
+        schema_version: 2,
+        director: { max_concurrent: 4, max_depth: 1 },
+        cli: {
+          grok: {
+            runner: "grok",
+            longctx: "grok",
+            coding_models: ["grok"],
+            max_concurrent: 32,
+          },
+        },
+      },
+    });
+
+    assert.equal(result.capacity, 32);
+    assert.deepEqual(result.capacity_sources, [
+      { kind: "host_limit", value: 32, applied: true },
+    ]);
+  });
+
   it("uses configured policy when the host limit is unknown and stays unknown otherwise", () => {
     const unknownHost = {
       ...host("opaque", 0),

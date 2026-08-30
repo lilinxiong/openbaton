@@ -104,8 +104,7 @@ function targetFile(file: string, base: UninstallTarget): UninstallTarget {
   return { ...base, expected_fingerprint, expected_mode, expected_kind: kind };
 }
 
-function skillTarget(host: HostId | null, cwd: string, env: NodeJS.ProcessEnv | undefined, manifest: InstallManifest | null): UninstallTarget {
-  const file = host ? hostSkillDest(host, { cwd, env }) : skillPath(cwd, { env });
+function skillTarget(file: string, host: HostId | null, env: NodeJS.ProcessEnv | undefined, manifest: InstallManifest | null): UninstallTarget {
   const shown = display(file, env);
   if (!fs.existsSync(file)) return targetFile(file, { action: "already-absent", path: shown, host: host || undefined, reason: "skill absent" });
   const owned = manifestOwnsFile(manifest, file);
@@ -253,7 +252,13 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
   if (clean && active.length && !options.dry_run) throw coded(`${UNINSTALL_ACTIVE_TICKETS}: ${active.map((item) => item.ticket_id).join(", ")}`, UNINSTALL_ACTIVE_TICKETS);
   const targets: UninstallTarget[] = [];
   for (const host of clean ? hostIds(env) : hosts) {
-    addTarget(targets, skillTarget(host, options.cwd, env, manifest));
+    const mainSkill = hostSkillDest(host, { cwd: options.cwd, env });
+    const installedSkills = manifest?.files
+      .filter((entry) => entry.kind === "host-skill" && entry.host === host)
+      .map((entry) => entry.path) || [];
+    for (const file of new Set([mainSkill, ...installedSkills])) {
+      addTarget(targets, skillTarget(file, host, env, manifest));
+    }
     const adapterPath = adapterInstallDir(host, env);
     const ownedAdapter = manifest?.files.some((entry) => entry.kind === "adapter-package" && entry.adapter === host && entry.path === path.resolve(adapterPath));
     if (ownedAdapter || fs.existsSync(adapterPath)) addUniqueTarget(targets, adapterTarget(host, env, manifest));
@@ -265,9 +270,9 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
   }
   // Default uninstall removes the selected host integration and the shared
   // Baton skill. Clean adds the remaining global/runtime ownership below.
-  if (!clean) addTarget(targets, skillTarget(null, options.cwd, env, manifest));
+  if (!clean) addTarget(targets, skillTarget(skillPath(options.cwd, { env }), null, env, manifest));
   if (clean) {
-    addTarget(targets, skillTarget(null, options.cwd, env, manifest));
+    addTarget(targets, skillTarget(skillPath(options.cwd, { env }), null, env, manifest));
     const home = batonHomeDir(env);
     for (const file of [configPath(options.cwd, { env }), installManifestPath(env)]) {
       addTarget(targets, targetFile(file, { action: fs.existsSync(file) ? "remove" : "already-absent", path: display(file, env), reason: "clean removes Baton-owned global file" }));

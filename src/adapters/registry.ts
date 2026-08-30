@@ -19,7 +19,9 @@ function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
   return {
     id: manifest.adapter.id,
     host: { id: manifest.adapter.id, skillPath: manifest.runtime_skill.destination,
-      defaultMaxConcurrent: maxConcurrent(), maxConcurrent,
+      defaultMaxConcurrent: maxConcurrent(),
+      ...(manifest.quota.max_depth === undefined ? {} : { defaultMaxDepth: manifest.quota.max_depth }),
+      maxConcurrent,
       isInvoking: (env = process.env) => Boolean(String(env[manifest.invocation.signal] || "").trim()),
       executionHandleKind: manifest.native.execution_handle_kind },
     resolveCommand: () => manifest.catalog.command.startsWith("/") ? manifest.catalog.command : `${directory}/${manifest.catalog.command}`,

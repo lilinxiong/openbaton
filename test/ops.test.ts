@@ -140,6 +140,7 @@ describe("configured mechanical operations", () => {
         longctx: model,
         coding_models: [model],
         max_concurrent: 2,
+        max_depth: 3,
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -193,6 +194,7 @@ describe("configured mechanical operations", () => {
         longctx: alphaModel,
         coding_models: [alphaModel],
         max_concurrent: 2,
+        max_depth: 3,
       });
       assert.deepEqual(config.cli[BETA], {
         runner: betaModel,

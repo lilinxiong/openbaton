@@ -82,6 +82,8 @@ export interface CliHostMetadata {
   skillPath: string;
   /** Native per-root-tree subagent ceiling before environment overrides. */
   defaultMaxConcurrent: number;
+  /** Manifest-reported nesting ceiling when the host exposes one. */
+  defaultMaxDepth?: number;
   /** Optional environment variable used by the host to override its cap. */
   maxConcurrentEnv?: string;
   /** Resolve the per-root-tree subagent cap exactly as the host exposes it to Baton. */

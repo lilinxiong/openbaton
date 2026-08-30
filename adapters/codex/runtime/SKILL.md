@@ -1,14 +1,12 @@
 ---
 name: baton
-description: "Baton runtime for approved Codex execution. Invoke only with /baton; discussion and read-only analysis stay in the director session."
-disable-model-invocation: true
-user-invocable: true
+description: "Baton runtime for approved Codex execution. Invoke explicitly with $baton; discussion and read-only analysis stay in the director session."
 ---
 
 # Baton runtime for Codex
 
-This skill is slash-command only. Apply these rules only after the user
-explicitly ran `/baton`. Do not load or follow this skill from ordinary
+This skill is explicit-invocation only. Apply these rules only after the user
+explicitly mentioned `$baton`. Do not load or follow this skill from ordinary
 conversation, implementation requests, or implied intent.
 
 Codex is the selected host. Baton owns classification, exact write scopes,
@@ -62,7 +60,8 @@ recording `successor_from_ticket_id`.
 The manifest's `quota.max_concurrent_subagents` is stored on
 `[cli.codex].max_concurrent` as the maximum number of simultaneously active
 descendants in this root agent tree. A live catalog value replaces it. If
-neither is available, the profile stores `-1` and Baton uses
+neither current source is available, Baton preserves an existing positive
+reported value; otherwise the profile stores `-1` and Baton uses
 `[director].max_concurrent`. It excludes the root conversation, includes
 direct and nested descendants together, and is strictly tree-local rather
 than a process, model, or historical-ticket count.

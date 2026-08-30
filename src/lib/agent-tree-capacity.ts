@@ -1,6 +1,6 @@
 import type { CliAdapter, CliHostMetadata, CliRuntimeCapabilities } from "../adapters/contract.js";
 import type { Config } from "./config.js";
-import { effectiveMaxConcurrentForHost } from "./config.js";
+import { cliProfileForHost, reportedConcurrentLimit } from "./config.js";
 import type { SessionScope, SessionUid } from "./session-scope.js";
 
 /** A capacity source always has the same meaning: tree-local subagents, excluding the root. */
@@ -79,13 +79,19 @@ function capabilityLimit(capabilities: AgentTreeCapacityInput["capabilities"]): 
  */
 export function resolveAgentTreeCapacity(input: AgentTreeCapacityInput = {}): EffectiveAgentTreeCapacity {
   const metadata = hostMetadata(input.host);
+  const id = hostId(input.host);
+  const configuredHostLimit = input.config && id
+    ? reportedConcurrentLimit(cliProfileForHost(input.config, id).max_concurrent)
+    : undefined;
   const hostLimit = positiveInteger(input.hostLimit)
     ?? positiveInteger(capabilityLimit(input.capabilities))
+    // A persisted live CLI value replaces the manifest fallback.
+    ?? configuredHostLimit
     ?? (metadata ? positiveInteger(metadata.maxConcurrent(input.env)) : undefined)
     ?? (metadata ? positiveInteger(metadata.defaultMaxConcurrent) : undefined);
   const policy = positiveInteger(input.configuredPolicy ?? input.policyLimit)
-    ?? (input.config && hostId(input.host)
-      ? positiveInteger(effectiveMaxConcurrentForHost(input.config, hostId(input.host) as string, input.env))
+    ?? (input.config && id && hostLimit === undefined
+      ? positiveInteger(input.config.director.max_concurrent)
       : undefined);
   const operation = positiveInteger(input.currentOperationLimit ?? input.operationLimit);
 
