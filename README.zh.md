@@ -135,24 +135,29 @@ activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）
 会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
 `session_uid`）。Codex director 会在第一次控制平面调用之前创建它。
 
-### 何时自动触发（仅当前版本）
+### 如何触发 Baton（仅 `/baton`）
 
-这是**当前版本**的行为。后续版本不打算再自动触发。
+已安装的 host skill **不会**自动加载。只有你显式输入 `/baton` 时，Codex
+才会应用其中的规则。普通对话、实现请求或隐含意图都不得加载该 skill，
+也不得跟随其中的路由规则。
 
-init 安装 `.codex/skills/baton/SKILL.md`，并且 Codex profile 已启用、
-activation 打开之后，Codex director 对话会遵循该 skill：
+skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
+不能自动调用它；同时设置 `user-invocable: true`，因此 `/baton` 仍是
+斜杠命令。
+
+使用 `/baton`，并且 Codex profile 已启用、activation 打开之后：
 
 - 讨论和只读分析留在 Codex director 会话里。这些**不会**创建 Baton
   ticket。
 - 已授权的 implementation、mechanical、long-context 和 OpenSpec unit
-  应当走 Baton（`spawn`/`apply` 加上 Codex 原生子），而不是在 director
+  走 Baton（`spawn`/`apply` 加上 Codex 原生子），而不是在 director
   里直接实现。
 
-这种 skill 跟随就是当前的自动触发。自动路径仍然要求 director 给出
-**结构化 classification**。Baton 不会从自由文本里推断路由。已启用 host
-上缺少 classification 时，会阻止创建 ticket。
+`/baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
+自由文本里推断路由。已启用 host 上缺少 classification 时，会阻止创建
+ticket。
 
-### 手动触发
+### CLI 命令
 
 你或 director 也可以自己跑 CLI：
 
@@ -225,24 +230,29 @@ activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）
 会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
 `session_uid`）。Grok director 会在第一次控制平面调用之前创建它。
 
-### 何时自动触发（仅当前版本）
+### 如何触发 Baton（仅 `/baton`）
 
-这是**当前版本**的行为。后续版本不打算再自动触发。
+已安装的 host skill **不会**自动加载。只有你显式输入 `/baton` 时，Grok
+才会应用其中的规则。普通对话、实现请求或隐含意图都不得加载该 skill，
+也不得跟随其中的路由规则。
 
-init 安装 `.grok/skills/baton/SKILL.md`，并且 Grok profile 已启用、
-activation 打开之后，Grok director 对话会遵循该 skill：
+skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
+不能自动调用它；同时设置 `user-invocable: true`，因此 `/baton` 仍是
+斜杠命令。
+
+使用 `/baton`，并且 Grok profile 已启用、activation 打开之后：
 
 - 讨论和只读分析留在 Grok director 会话里。这些**不会**创建 Baton
   ticket。
 - 已授权的 implementation、mechanical、long-context 和 OpenSpec unit
-  应当走 Baton（`spawn`/`apply` 加上 Grok 原生子），而不是在 director
+  走 Baton（`spawn`/`apply` 加上 Grok 原生子），而不是在 director
   里直接实现。
 
-这种 skill 跟随就是当前的自动触发。自动路径仍然要求 director 给出
-**结构化 classification**。Baton 不会从自由文本里推断路由。已启用 host
-上缺少 classification 时，会阻止创建 ticket。
+`/baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
+自由文本里推断路由。已启用 host 上缺少 classification 时，会阻止创建
+ticket。
 
-### 手动触发
+### CLI 命令
 
 你或 director 也可以自己跑 CLI：
 

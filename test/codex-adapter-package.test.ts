@@ -184,6 +184,12 @@ describe("external Codex adapter package", () => {
     assert.doesNotMatch(sourceManifestText, /"max_concurrent"\s*:/);
     assert.match(sourceRuntimeText, /root agent tree/);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
+    assert.match(sourceRuntimeText, /^disable-model-invocation:\s*true$/m);
+    assert.match(sourceRuntimeText, /^user-invocable:\s*true$/m);
+    assert.match(
+      fs.readFileSync(path.join(repoRoot, "SKILL.md"), "utf8"),
+      /^disable-model-invocation:\s*true$/m,
+    );
   });
 
   it("plans safe host and clean removal of an owned adapter package", () => {

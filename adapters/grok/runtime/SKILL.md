@@ -1,9 +1,15 @@
 ---
 name: baton
-description: "Use Baton for approved Grok execution; discussion and read-only analysis stay in the director session."
+description: "Baton runtime for approved Grok execution. Invoke only with /baton; discussion and read-only analysis stay in the director session."
+disable-model-invocation: true
+user-invocable: true
 ---
 
 # Baton runtime for Grok
+
+This skill is slash-command only. Apply these rules only after the user
+explicitly ran `/baton`. Do not load or follow this skill from ordinary
+conversation, implementation requests, or implied intent.
 
 Grok is the selected host. Baton owns classification, exact write scopes,
 reservations, receipts, and lifecycle; this runtime skill does not add hooks or

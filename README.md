@@ -141,27 +141,32 @@ When activation is effectively disabled, `spawn` and `apply` create no tickets
 `session_uid`). The Codex director creates one before the first control-plane
 call.
 
-### When Baton auto-triggers (current version)
+### Triggering Baton (`/baton` only)
 
-This is **current-version** behavior. Later versions are not intended to
-auto-trigger.
+The installed host skill does **not** auto-load. Codex applies its rules only
+when you explicitly run `/baton`. Ordinary conversation, implementation
+requests, and implied intent must not load the skill or follow its routing
+rules.
 
-After init installs `.codex/skills/baton/SKILL.md` and the Codex profile is
-enabled with activation on, the Codex director conversation follows that skill:
+The skill frontmatter sets `disable-model-invocation: true` so the host cannot
+invoke it automatically, and `user-invocable: true` so `/baton` remains the
+slash command.
+
+When `/baton` is used and the Codex profile is enabled with activation on:
 
 - Discussion and read-only analysis stay in the Codex director session. These
   do **not** create Baton tickets.
-- Authorized implementation, mechanical, long-context, and OpenSpec units are
-  supposed to go through Baton (`spawn`/`apply` plus a native Codex child),
-  not be implemented inline in the director.
+- Authorized implementation, mechanical, long-context, and OpenSpec units go
+  through Baton (`spawn`/`apply` plus a native Codex child), not inline in
+  the director.
 
-That skill-following is the current auto-trigger. The auto path still requires
-a director **structured classification**. Baton does not infer a route from
-prose. Missing classification blocks ticket creation on an enabled host.
+`/baton` still requires a director **structured classification**. Baton does
+not infer a route from prose. Missing classification blocks ticket creation
+on an enabled host.
 
-### Manual trigger
+### CLI commands
 
-You or the director can run the CLI yourselves:
+You or the director can also run the CLI yourselves:
 
 ```bash
 export BATON_SESSION_ID="<opaque-session>"
@@ -233,27 +238,32 @@ When activation is effectively disabled, `spawn` and `apply` create no tickets
 `session_uid`). The Grok director creates one before the first control-plane
 call.
 
-### When Baton auto-triggers (current version)
+### Triggering Baton (`/baton` only)
 
-This is **current-version** behavior. Later versions are not intended to
-auto-trigger.
+The installed host skill does **not** auto-load. Grok applies its rules only
+when you explicitly run `/baton`. Ordinary conversation, implementation
+requests, and implied intent must not load the skill or follow its routing
+rules.
 
-After init installs `.grok/skills/baton/SKILL.md` and the Grok profile is
-enabled with activation on, the Grok director conversation follows that skill:
+The skill frontmatter sets `disable-model-invocation: true` so the host cannot
+invoke it automatically, and `user-invocable: true` so `/baton` remains the
+slash command.
+
+When `/baton` is used and the Grok profile is enabled with activation on:
 
 - Discussion and read-only analysis stay in the Grok director session. These
   do **not** create Baton tickets.
-- Authorized implementation, mechanical, long-context, and OpenSpec units are
-  supposed to go through Baton (`spawn`/`apply` plus a native Grok child),
-  not be implemented inline in the director.
+- Authorized implementation, mechanical, long-context, and OpenSpec units go
+  through Baton (`spawn`/`apply` plus a native Grok child), not inline in
+  the director.
 
-That skill-following is the current auto-trigger. The auto path still requires
-a director **structured classification**. Baton does not infer a route from
-prose. Missing classification blocks ticket creation on an enabled host.
+`/baton` still requires a director **structured classification**. Baton does
+not infer a route from prose. Missing classification blocks ticket creation
+on an enabled host.
 
-### Manual trigger
+### CLI commands
 
-You or the director can run the CLI yourselves:
+You or the director can also run the CLI yourselves:
 
 ```bash
 export BATON_SESSION_ID="<opaque-session>"

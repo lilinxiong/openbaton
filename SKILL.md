@@ -1,9 +1,15 @@
 ---
 name: baton
-description: "Use Baton for approved multi-unit execution and structured change application. Baton is a manifest-driven, CLI-neutral scheduler; keep discussion and read-only analysis in the director session."
+description: "Baton runtime for approved multi-unit execution. Invoke only with /baton; discussion and read-only analysis stay in the director session."
+disable-model-invocation: true
+user-invocable: true
 ---
 
 # Baton runtime
+
+This skill is slash-command only. Apply these rules only after the user
+explicitly ran `/baton`. Do not load or follow this skill from ordinary
+conversation, implementation requests, or implied intent.
 
 Baton is a scheduling and policy layer. External adapter packages describe a
 CLI, its catalog, native child execution surface, runtime skill, and capacity

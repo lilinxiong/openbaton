@@ -270,6 +270,12 @@ process.exit(0);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
     assert.match(sourceRuntimeText, /spawn_subagent/);
     assert.match(sourceRuntimeText, /subagent_id=/);
+    assert.match(sourceRuntimeText, /^disable-model-invocation:\s*true$/m);
+    assert.match(sourceRuntimeText, /^user-invocable:\s*true$/m);
+    assert.match(
+      fs.readFileSync(path.join(repoRoot, "SKILL.md"), "utf8"),
+      /^disable-model-invocation:\s*true$/m,
+    );
   });
 
   it("plans safe host and clean removal of an owned adapter package", () => {
