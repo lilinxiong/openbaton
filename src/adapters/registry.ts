@@ -11,10 +11,11 @@ function discovered(env: NodeJS.ProcessEnv = process.env): DiscoveredAdapter[] {
 /** The only source of truth for supported CLI adapters in this release. */
 function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
   const { manifest, directory } = adapter;
-  // Schema-1 manifests now express a per-root-tree subagent quota. A
-  // packaged adapter with no explicit quota gets the Codex-compatible
-  // three-subagent fallback; the root agent is never part of this count.
-  const maxConcurrent = () => manifest.quota.max_concurrent_subagents ?? 3;
+  // Schema-1 manifests may omit a concurrent quota. Missing is unknown, not a
+  // guessed host limit; the director default applies until the catalog reports
+  // a live CLI value. The root agent is never part of this count.
+  const reported = manifest.quota.max_concurrent_subagents;
+  const maxConcurrent = () => reported ?? Number.NaN;
   return {
     id: manifest.adapter.id,
     host: { id: manifest.adapter.id, skillPath: manifest.runtime_skill.destination,

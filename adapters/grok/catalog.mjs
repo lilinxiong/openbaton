@@ -44,6 +44,41 @@ function normalizeReasoningEfforts(value) {
   return [...byId.values()];
 }
 
+function positiveLimit(value) {
+  if (typeof value === "string" && value.trim()) value = Number(value.trim());
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return undefined;
+  return value;
+}
+
+/** Read only a CLI-reported concurrent limit. Missing or invalid values stay unknown. */
+export function concurrentSubagentsFromInitialize(result) {
+  const root = record(result);
+  if (!root) return undefined;
+  const meta = record(root._meta) || {};
+  const caps = record(root.agentCapabilities) || record(root.agent_capabilities) || {};
+  const capsMeta = record(caps._meta) || {};
+  const sources = [
+    caps,
+    capsMeta,
+    record(capsMeta["x.ai/capabilities"]),
+    meta,
+    record(meta.subagents),
+    record(meta.capabilities),
+    record(root.capabilities),
+  ];
+  for (const source of sources) {
+    if (!source) continue;
+    const limit = positiveLimit(
+      source.max_concurrent_subagents
+      ?? source.maxConcurrentSubagents
+      ?? source.max_concurrent
+      ?? source.maxConcurrent,
+    );
+    if (limit !== undefined) return limit;
+  }
+  return undefined;
+}
+
 function defaultReasoningEffort(efforts, meta) {
   if (Array.isArray(efforts)) {
     for (const item of efforts) {
@@ -239,10 +274,12 @@ function runAgentCatalog(executablePath, { cwd, env, timeoutMs = CATALOG_TIMEOUT
           fail("GROK_CATALOG_INVALID: initialize returned no picker-visible models");
           return;
         }
+        const concurrent = concurrentSubagentsFromInitialize(result);
         finish(null, {
           adapter_id: ADAPTER_ID,
           version: text(meta.agentVersion ?? meta.agent_version ?? result?.agentVersion) || null,
           models,
+          ...(concurrent === undefined ? {} : { capabilities: { max_concurrent_subagents: concurrent } }),
         });
       } catch (error) {
         fail(`GROK_CATALOG_INVALID: ${error instanceof Error ? error.message : String(error)}`);

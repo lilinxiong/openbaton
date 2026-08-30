@@ -527,6 +527,24 @@ function requireHost(host: string, env: NodeJS.ProcessEnv = process.env): HostId
   }
 }
 
+function hostReportedLimit(host: HostId | undefined, env: NodeJS.ProcessEnv): number | undefined {
+  if (!host) return undefined;
+  const value = getCliAdapter(host, env).host.maxConcurrent(env);
+  return Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
+function treeConfiguredPolicy(
+  config: ReturnType<typeof loadConfig> | undefined,
+  host: HostId | undefined,
+  hostLimit: number | undefined,
+): number | undefined {
+  if (!config || !host) return undefined;
+  const profileLimit = cliProfileForHost(config, host).max_concurrent;
+  if (profileLimit !== undefined) return profileLimit;
+  // Director 4 is only the fallback when the CLI/host did not report a limit.
+  return hostLimit === undefined ? config.director.max_concurrent : undefined;
+}
+
 function resolvedCapacity(cwd: string, host: HostId | undefined, env: NodeJS.ProcessEnv, operationLimit?: number): EffectiveAgentTreeCapacity {
   const adapter = host ? getCliAdapter(host, env) : undefined;
   let config;
@@ -537,7 +555,15 @@ function resolvedCapacity(cwd: string, host: HostId | undefined, env: NodeJS.Pro
     // operation limit; the host resolver remains authoritative when config is
     // unavailable.
   }
-  return resolveAgentTreeCapacity({ host: adapter?.host, config, currentOperationLimit: operationLimit, session: sessionUid(env), env });
+  const hostLimit = hostReportedLimit(host, env);
+  return resolveAgentTreeCapacity({
+    host: adapter?.host,
+    hostLimit,
+    configuredPolicy: treeConfiguredPolicy(config, host, hostLimit),
+    currentOperationLimit: operationLimit,
+    session: sessionUid(env),
+    env,
+  });
 }
 
 function requiredCapacity(value: EffectiveAgentTreeCapacity): number {
@@ -1581,7 +1607,14 @@ export function dispatchWorkspaceCapacitySnapshots(
   const currentMs = instant(now).getTime();
   return [...groups.values()].sort((a, b) => a.host.localeCompare(b.host) || a.session_uid.localeCompare(b.session_uid)).map((group) => {
     const adapter = getCliAdapter(group.host, env);
-    const resolved = resolveAgentTreeCapacity({ host: adapter?.host, config, session: group.session_uid, env });
+    const hostLimit = hostReportedLimit(group.host, env);
+    const resolved = resolveAgentTreeCapacity({
+      host: adapter?.host,
+      hostLimit,
+      configuredPolicy: treeConfiguredPolicy(config, group.host, hostLimit),
+      session: group.session_uid,
+      env,
+    });
     const active = group.tickets.filter(holdsHostSlot);
     const counts: Partial<Record<TicketStatus, number>> = {};
     for (const ticket of group.tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;

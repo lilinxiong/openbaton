@@ -6,8 +6,14 @@ import { describe, it } from "bun:test";
 import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
 import { initProject } from "../src/commands/init.js";
+import { runConfig } from "../src/commands/config.js";
 import { runHost } from "../src/commands/host.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
+import { resolveAgentTreeCapacity } from "../src/lib/agent-tree-capacity.js";
+import { dispatchSnapshot, reserveNext } from "../src/lib/dispatch.js";
+import { loadConfig } from "../src/lib/config.js";
+import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
+import { buildSpawnTicket, nextSpawnId, writeSpawn } from "../src/lib/spawn.js";
 import {
   adapterInstallDir,
   installBundledAdaptersAndRecord,
@@ -20,7 +26,7 @@ import {
 import { buildUninstallPlan } from "../src/lib/uninstall.js";
 import { configPath, skillPath } from "../src/lib/paths.js";
 import { parseToml } from "../src/lib/toml.js";
-import { discoverGrokCatalog, normalizeGrokModels, resolveGrokCommand } from "../adapters/grok/catalog.mjs";
+import { concurrentSubagentsFromInitialize, discoverGrokCatalog, normalizeGrokModels, resolveGrokCommand } from "../adapters/grok/catalog.mjs";
 
 const repoRoot = process.cwd();
 const packageSource = path.join(repoRoot, "adapters", "grok");
@@ -75,10 +81,11 @@ describe("external Grok adapter package", () => {
     assert.equal(manifests[0].catalog.command, "catalog.mjs");
     assert.equal(manifests[0].native.execution_handle_kind, "subagent_id");
     assert.equal(manifests[0].invocation.signal, "GROK_SESSION_ID");
-    assert.equal(manifests[0].quota.max_concurrent_subagents, 32);
+    assert.equal(manifests[0].quota.max_concurrent_subagents, 16);
     assert.equal(manifests[0].quota.max_depth, 1);
-    assert.equal(getCliAdapter("grok", env).host.defaultMaxConcurrent, 32);
+    assert.equal(getCliAdapter("grok", env).host.defaultMaxConcurrent, 16);
     assert.equal(getCliAdapter("grok", env).host.executionHandleKind, "subagent_id");
+    assert.equal(resolveAgentTreeCapacity({ host: getCliAdapter("grok", env).host }).capacity, 16);
   });
 
   it("detects Grok from GROK_SESSION_ID without adapter-path signals", () => {
@@ -256,9 +263,10 @@ process.exit(0);
     );
     const sourceManifestText = fs.readFileSync(sourceManifest, "utf8");
     const sourceRuntimeText = fs.readFileSync(sourceRuntimeSkill, "utf8");
-    assert.match(sourceManifestText, /max_concurrent_subagents/);
+    assert.match(sourceManifestText, /"max_concurrent_subagents": 16/);
+    assert.match(sourceManifestText, /max_depth/);
     assert.doesNotMatch(sourceManifestText, /"max_concurrent"\s*:/);
-    assert.match(sourceRuntimeText, /root agent tree/);
+    assert.match(sourceRuntimeText, /measured concurrent subagent ceiling is 16/);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
     assert.match(sourceRuntimeText, /spawn_subagent/);
     assert.match(sourceRuntimeText, /subagent_id=/);
@@ -276,5 +284,99 @@ process.exit(0);
     fs.appendFileSync(path.join(destination, "catalog.mjs"), "\n// modified\n");
     const conflict = buildUninstallPlan({ cwd, env, hosts: ["grok"] });
     assert.equal(conflict.targets.find((item) => item.path === target?.path)?.action, "conflict");
+  });
+
+  it("omits catalog capabilities when Grok does not report a concurrent limit", async () => {
+    const { env } = isolatedEnv();
+    installPackage(env);
+    env.BATON_GROK_PATH = fakeGrokExecutable(acpInitializeFake(`{
+      protocolVersion: 1,
+      _meta: { agentVersion: "fake-grok/1", modelState: { currentModelId: "grok-visible", availableModels: [{ modelId: "grok-visible", name: "Visible" }] } }
+    }`));
+    const catalog = await getCliAdapter("grok", env).discoverModels({ cwd: repoRoot, env });
+    assert.equal(catalog.capabilities, undefined);
+    assert.equal(concurrentSubagentsFromInitialize({
+      _meta: { modelState: { availableModels: [{ modelId: "grok-visible" }] } },
+    }), undefined);
+  });
+
+  it("uses the live CLI concurrent limit to persist config and fill that many dispatch slots", async () => {
+    const { cwd, env } = isolatedEnv();
+    installPackage(env);
+    env.BATON_GROK_PATH = fakeGrokExecutable(acpInitializeFake(`{
+      protocolVersion: 1,
+      agentCapabilities: { max_concurrent_subagents: 2 },
+      _meta: {
+        agentVersion: "fake-grok/2",
+        modelState: {
+          currentModelId: "grok-visible",
+          availableModels: [{ modelId: "grok-visible", name: "Visible", description: "Exact" }]
+        }
+      }
+    }`));
+    const catalog = await getCliAdapter("grok", env).discoverModels({ cwd: repoRoot, env });
+    assert.deepEqual(catalog.capabilities, { max_concurrent_subagents: 2 });
+
+    await initProject(cwd, { env });
+    const output: string[] = [];
+    const code = await runConfig(
+      ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--enable", "--json"],
+      { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
+    );
+    assert.equal(code, 0, output.join(""));
+    const payload = JSON.parse(output.join(""));
+    assert.equal(payload.max_concurrent_subagents, 2);
+    assert.equal(payload.max_concurrent_subagents_source, "adapter");
+    assert.equal(loadConfig(cwd, { env }).cli.grok?.max_concurrent, 2);
+
+    env.BATON_SESSION_ID = "grok-obtained-capacity";
+    const now = "2026-08-30T06:00:00.000Z";
+    const selection = {
+      host: "grok",
+      proposal_id: "proposal-grok-capacity",
+      approval_id: "approval-grok-capacity",
+      approved_at: now,
+      confirmed_by: "baton-recommendation" as const,
+      catalog_fingerprint: "grok-capacity-catalog",
+      recommended_model_id: "grok-visible",
+      selected_model_id: "grok-visible",
+      changed_by_user: false,
+    };
+    for (let offset = 0; offset < 3; offset += 1) {
+      const id = nextSpawnId(cwd, "spn", env);
+      const ticket = buildSpawnTicket({
+        cwd,
+        env,
+        id,
+        description: `capacity unit ${offset + 1}`,
+        prompt: `capacity unit ${offset + 1}`,
+        modelId: "grok-visible",
+        routeId: "grok-visible",
+        taskKind: "concrete",
+        selection,
+        targetHost: "grok",
+        now: new Date(Date.parse(now) + offset * 1000).toISOString(),
+      });
+      const receipt = buildReadOnlyReceipt({
+        ticketId: id,
+        card: { id: "grok-visible", strengths: "fixture", route_id: "grok-visible" },
+        issuedAt: ticket.created_at,
+        selection,
+        host: "grok",
+      });
+      ticket.receipt_id = receipt.receipt_id;
+      writeReceipt(cwd, receipt, env);
+      writeSpawn(cwd, ticket, env);
+    }
+
+    const before = dispatchSnapshot(cwd, { host: "grok", env });
+    assert.equal(before.capacity, 2);
+    assert.equal(before.available, 2);
+    const reserved = await reserveNext(cwd, { host: "grok", now: "2026-08-30T06:01:00.000Z", env });
+    assert.equal(reserved.reserved.length, 2);
+    assert.equal(reserved.snapshot.active, 2);
+    assert.equal(reserved.snapshot.available, 0);
+    assert.equal(reserved.snapshot.queued.length, 1);
+    assert.equal(reserved.snapshot.capacity, 2);
   });
 });

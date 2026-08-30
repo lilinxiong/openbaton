@@ -78,6 +78,11 @@ function optionalModelFlag(args: string[], name: string): string | undefined {
   return value === "-" ? "" : value;
 }
 
+function reportedSubagentLimit(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return undefined;
+  return value;
+}
+
 function parseCliChoice(value: string, env: NodeJS.ProcessEnv = process.env): CliId {
   const text = value.trim().toLowerCase();
   if (cliIds(env).includes(text)) return text as CliId;
@@ -251,21 +256,18 @@ async function configureCliProfile(
   // Adapter discovery normalizes legacy capability spellings to the public
   // per-root-tree subagent field. Keep the persisted config key unchanged for
   // schema compatibility; it is interpreted as the same subagent limit.
-  const maxConcurrent = capabilities?.max_concurrent_subagents;
+  // A live CLI-reported concurrent value replaces the director default. The
+  // default 4 is only used when the CLI did not report a limit.
+  const catalogLimit = reportedSubagentLimit(capabilities?.max_concurrent_subagents);
+  const hostReported = reportedSubagentLimit(hostLimit);
   const maxDepth = capabilities?.max_depth;
   const configuredMaxConcurrent = effectiveMaxConcurrentForHost(current, cli);
-  const knownAdapterLimit = [maxConcurrent, hostLimit]
-    .filter((value): value is number => value !== undefined)
-    .reduce((minimum, value) => Math.min(minimum, value), Number.POSITIVE_INFINITY);
-  const effectiveMaxConcurrent = Number.isFinite(knownAdapterLimit)
-    ? Math.min(configuredMaxConcurrent, knownAdapterLimit)
-    : configuredMaxConcurrent;
   current.cli[cli] = {
     enabled,
     runner,
     longctx,
     coding_models: codingModels,
-    ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
+    ...(catalogLimit !== undefined ? { max_concurrent: catalogLimit } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
   return {
@@ -274,9 +276,9 @@ async function configureCliProfile(
     runner: runner || null,
     longctx: longctx || null,
     coding_models: codingModels,
-    max_concurrent_subagents: effectiveMaxConcurrent,
+    max_concurrent_subagents: catalogLimit ?? hostReported ?? configuredMaxConcurrent,
     max_depth: effectiveMaxDepthForHost(current, cli),
-    max_concurrent_subagents_source: (Number.isFinite(knownAdapterLimit) && configuredMaxConcurrent >= knownAdapterLimit)
+    max_concurrent_subagents_source: (catalogLimit ?? hostReported) !== undefined
       ? "adapter"
       : "director_policy",
     max_depth_source: maxDepth !== undefined ? "cli" : "director",
@@ -341,7 +343,7 @@ export async function runConfig(args: string[], {
     const selectedAdapter = discoverAdapter(cli);
     if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
     const catalog = await selectedAdapter.discoverModels({ cwd, env });
-    const hostLimit = (selectedAdapter as { host?: { defaultMaxConcurrent?: number } }).host?.defaultMaxConcurrent;
+    const hostLimit = getCliAdapter(cli, env).host.defaultMaxConcurrent;
     results.push(await configureCliProfile(cli, args, {
       cwd, stdout, env, current, catalog, hostLimit, ask, single,
     }));

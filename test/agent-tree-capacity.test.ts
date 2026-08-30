@@ -110,7 +110,7 @@ describe("root agent tree capacity resolver", () => {
     );
   });
 
-  it("falls back to three Codex subagents when a manifest omits its quota", () => {
+  it("treats an omitted manifest quota as unknown rather than a guessed host limit", () => {
     const sourceDirectory = path.resolve(import.meta.dir, "../adapters/codex");
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "baton-codex-capacity-"));
     const temporaryAdapter = path.join(temporaryRoot, "codex");
@@ -123,8 +123,9 @@ describe("root agent tree capacity resolver", () => {
 
     const env = { ...process.env, BATON_ADAPTER_PATHS: temporaryAdapter };
     const adapter = getCliAdapter("codex", env);
-    assert.equal(adapter.host.defaultMaxConcurrent, 3);
-    assert.equal(resolveAgentTreeCapacity({ host: adapter.host }).capacity, 3);
+    assert.equal(Number.isNaN(adapter.host.defaultMaxConcurrent), true);
+    assert.equal(resolveAgentTreeCapacity({ host: adapter.host }).capacity, null);
+    assert.equal(resolveAgentTreeCapacity({ host: adapter.host, configuredPolicy: 4 }).capacity, 4);
   });
 
   it("keeps max_depth separate from the subagent capacity", () => {
