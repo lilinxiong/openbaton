@@ -22,7 +22,7 @@ import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, 
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
-import { cliProfileForHost, configuredCodingModelsForHost, loadConfig } from "./config.js";
+import { cliProfileForHost, configuredCodingModelsForHost, loadConfig, reportedConcurrentLimit } from "./config.js";
 import { parseHostId, type HostId } from "./hosts.js";
 import {
   BATON_DISPATCH_RESERVATION_SCHEMA,
@@ -539,7 +539,7 @@ function treeConfiguredPolicy(
   hostLimit: number | undefined,
 ): number | undefined {
   if (!config || !host) return undefined;
-  const profileLimit = cliProfileForHost(config, host).max_concurrent;
+  const profileLimit = reportedConcurrentLimit(cliProfileForHost(config, host).max_concurrent);
   if (profileLimit !== undefined) return profileLimit;
   // Director 4 is only the fallback when the CLI/host did not report a limit.
   return hostLimit === undefined ? config.director.max_concurrent : undefined;

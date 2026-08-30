@@ -57,11 +57,12 @@ At each dispatch or refill, calculate the maximal safe ready frontier: every
 order-ready unit whose scope is complete, pairwise disjoint, and within the
 selected adapter's tree-local runtime capacity. Fill every available slot.
 Section order only breaks otherwise equivalent choices; it is not a reason to
-serialize. `director.max_concurrent` is a configured policy input, while any
-`planning_max_concurrent` value emitted by Apply or the director queue is
-legacy director planning metadata. Neither planning field is a runtime
-snapshot; runtime capacity comes from the current `(host, session_uid)`
-resolver.
+serialize. `[cli.<id>].max_concurrent` is that CLI's reported tree limit
+(or `-1` when unknown). `director.max_concurrent` is the fallback policy
+when the CLI did not report one, while any `planning_max_concurrent` value
+emitted by Apply or the director queue is legacy director planning metadata.
+Neither planning field is a runtime snapshot; runtime capacity comes from
+the current `(host, session_uid)` resolver.
 
 ## Ticket identity and lifecycle
 

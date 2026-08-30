@@ -6,7 +6,9 @@ import { describe, it } from "bun:test";
 import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
 import { initProject } from "../src/commands/init.js";
+import { runConfig } from "../src/commands/config.js";
 import { runHost } from "../src/commands/host.js";
+import { loadConfig } from "../src/lib/config.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
@@ -103,6 +105,25 @@ describe("external Codex adapter package", () => {
     assert.deepEqual(catalog.models[0].input_modalities, ["text", "image"]);
     assert.equal(catalog.models[0].experimentalFlag, "keep-me");
     assert.equal(catalog.models.some((model) => model.id === "hidden"), false);
+  });
+
+  it("persists the adapter-measured Codex limit onto [cli.codex]", async () => {
+    const { cwd, env } = isolatedEnv();
+    fs.mkdirSync(path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
+    fs.cpSync(packageSource, path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
+    env.BATON_CODEX_PATH = fakeCodexExecutable();
+    await initProject(cwd, { env });
+    const output: string[] = [];
+    const code = await runConfig(
+      ["--cli", "codex", "--runner", "gpt-visible", "--longctx", "gpt-visible", "--coding-model", "gpt-visible", "--enable", "--json"],
+      { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
+    );
+    assert.equal(code, 0, output.join(""));
+    const payload = JSON.parse(output.join(""));
+    assert.equal(payload.max_concurrent_subagents, 3);
+    assert.equal(payload.max_concurrent_subagents_source, "adapter");
+    assert.equal(loadConfig(cwd, { env }).cli.codex?.max_concurrent, 3);
+    assert.match(fs.readFileSync(configPath(cwd, { env }), "utf8"), /max_concurrent = 3/);
   });
 
   it("records adapter ownership and preserves a modified package on update", () => {

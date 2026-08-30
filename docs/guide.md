@@ -81,11 +81,15 @@ enabled = true
 runner = "<model-id>"
 longctx = "<model-id>"
 coding_models = ["<model-id>", "<another-model-id>"]
+max_concurrent = 3
 ```
 
-`director.max_concurrent` is the configured per-root-tree policy limit for
-active subagents (excluding the root), not a workspace-wide pool. A known host
-limit always bounds it. `max_depth` is an independent descendant-depth policy.
+`[cli.<id>].max_concurrent` is that CLI's reported per-root-tree subagent
+ceiling. Discovery writes the live catalog value, else the adapter manifest
+quota. `-1` (and `0`) means discovery did not report a limit; runtime then
+uses `director.max_concurrent`. `director.max_concurrent` is the fallback
+policy for unknown CLIs, not a workspace-wide pool. A known host limit always
+bounds it. `max_depth` is an independent descendant-depth policy.
 
 `runner` and `longctx` are routing labels. `coding_models` is an ordered
 allowlist and its order is the Coding priority. Automatic selection uses only

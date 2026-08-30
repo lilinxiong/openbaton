@@ -53,10 +53,13 @@ only after a clean pre-mutation baseline and fresh hard checks; retain the
 same session identity, host, scope, authorization, and quota lineage while
 recording `successor_from_ticket_id`.
 
-The manifest's `quota.max_concurrent_subagents` is the maximum number of
-simultaneously active descendants in this root agent tree. It excludes the
-root conversation, includes direct and nested descendants together, and is
-strictly tree-local rather than a process, model, or historical-ticket count.
+The manifest's `quota.max_concurrent_subagents` is stored on
+`[cli.codex].max_concurrent` as the maximum number of simultaneously active
+descendants in this root agent tree. A live catalog value replaces it. If
+neither is available, the profile stores `-1` and Baton uses
+`[director].max_concurrent`. It excludes the root conversation, includes
+direct and nested descendants together, and is strictly tree-local rather
+than a process, model, or historical-ticket count.
 A separate root conversation has its own tree-local capacity; shared workspace
 safety checks and host/profile quota checks still apply across trees.
 

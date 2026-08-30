@@ -300,6 +300,27 @@ process.exit(0);
     }), undefined);
   });
 
+  it("persists the adapter-measured Grok limit when the catalog omits it", async () => {
+    const { cwd, env } = isolatedEnv();
+    installPackage(env);
+    env.BATON_GROK_PATH = fakeGrokExecutable(acpInitializeFake(`{
+      protocolVersion: 1,
+      _meta: { agentVersion: "fake-grok/1", modelState: { currentModelId: "grok-visible", availableModels: [{ modelId: "grok-visible", name: "Visible" }] } }
+    }`));
+    await initProject(cwd, { env });
+    const output: string[] = [];
+    const code = await runConfig(
+      ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--enable", "--json"],
+      { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
+    );
+    assert.equal(code, 0, output.join(""));
+    const payload = JSON.parse(output.join(""));
+    assert.equal(payload.max_concurrent_subagents, 16);
+    assert.equal(payload.max_concurrent_subagents_source, "adapter");
+    assert.equal(loadConfig(cwd, { env }).cli.grok?.max_concurrent, 16);
+    assert.match(fs.readFileSync(configPath(cwd, { env }), "utf8"), /max_concurrent = 16/);
+  });
+
   it("uses the live CLI concurrent limit to persist config and fill that many dispatch slots", async () => {
     const { cwd, env } = isolatedEnv();
     installPackage(env);

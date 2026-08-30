@@ -13,6 +13,8 @@ import {
   effectiveMaxConcurrentForHost,
   effectiveMaxDepthForHost,
   loadConfig,
+  persistableCliMaxConcurrent,
+  reportedConcurrentLimit,
   saveConfig,
   type Config,
 } from "../lib/config.js";
@@ -76,11 +78,6 @@ function lastFlag(args: string[], name: string): string | undefined {
 function optionalModelFlag(args: string[], name: string): string | undefined {
   const value = lastFlag(args, name);
   return value === "-" ? "" : value;
-}
-
-function reportedSubagentLimit(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return undefined;
-  return value;
 }
 
 function parseCliChoice(value: string, env: NodeJS.ProcessEnv = process.env): CliId {
@@ -253,21 +250,21 @@ async function configureCliProfile(
   }
 
   const capabilities = normalizeCliRuntimeCapabilities(catalog);
-  // Adapter discovery normalizes legacy capability spellings to the public
-  // per-root-tree subagent field. Keep the persisted config key unchanged for
-  // schema compatibility; it is interpreted as the same subagent limit.
-  // A live CLI-reported concurrent value replaces the director default. The
-  // default 4 is only used when the CLI did not report a limit.
-  const catalogLimit = reportedSubagentLimit(capabilities?.max_concurrent_subagents);
-  const hostReported = reportedSubagentLimit(hostLimit);
+  // Persist catalog > adapter quota > previously reported value; else -1.
+  const catalogLimit = reportedConcurrentLimit(capabilities?.max_concurrent_subagents);
+  const hostReported = reportedConcurrentLimit(hostLimit);
+  const maxConcurrent = persistableCliMaxConcurrent(
+    catalogLimit,
+    hostReported,
+    existing.max_concurrent,
+  );
   const maxDepth = capabilities?.max_depth;
-  const configuredMaxConcurrent = effectiveMaxConcurrentForHost(current, cli);
   current.cli[cli] = {
     enabled,
     runner,
     longctx,
     coding_models: codingModels,
-    ...(catalogLimit !== undefined ? { max_concurrent: catalogLimit } : {}),
+    max_concurrent: maxConcurrent,
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
   return {
@@ -276,9 +273,9 @@ async function configureCliProfile(
     runner: runner || null,
     longctx: longctx || null,
     coding_models: codingModels,
-    max_concurrent_subagents: catalogLimit ?? hostReported ?? configuredMaxConcurrent,
+    max_concurrent_subagents: effectiveMaxConcurrentForHost(current, cli),
     max_depth: effectiveMaxDepthForHost(current, cli),
-    max_concurrent_subagents_source: (catalogLimit ?? hostReported) !== undefined
+    max_concurrent_subagents_source: reportedConcurrentLimit(maxConcurrent) !== undefined
       ? "adapter"
       : "director_policy",
     max_depth_source: maxDepth !== undefined ? "cli" : "director",

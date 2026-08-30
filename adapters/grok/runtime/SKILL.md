@@ -58,12 +58,14 @@ only after a clean pre-mutation baseline and fresh hard checks; retain the
 same session identity, host, scope, authorization, and quota lineage while
 recording `successor_from_ticket_id`.
 
-This host's measured concurrent subagent ceiling is 16. If Grok's catalog
-later reports `max_concurrent_subagents`, that live CLI value replaces it.
-If neither is available, Baton uses 4. The root conversation is excluded;
-direct and nested descendants share the same tree-local pool. A
-separate root conversation has its own tree-local capacity; shared workspace
-safety checks and host/profile quota checks still apply across trees.
+This host's measured concurrent subagent ceiling is 16 and is stored on
+`[cli.grok].max_concurrent`. If Grok's catalog later reports
+`max_concurrent_subagents`, that live CLI value replaces it. If neither is
+available, the profile stores `-1` and Baton uses `[director].max_concurrent`
+(default 4). The root conversation is excluded; direct and nested descendants
+share the same tree-local pool. A separate root conversation has its own
+tree-local capacity; shared workspace safety checks and host/profile quota
+checks still apply across trees.
 Grok `max_depth` is a separate nesting policy: a child cannot spawn another
 child when the host depth ceiling is one.
 

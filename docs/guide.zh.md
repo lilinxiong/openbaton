@@ -79,11 +79,15 @@ enabled = true
 runner = "<model-id>"
 longctx = "<model-id>"
 coding_models = ["<model-id>", "<another-model-id>"]
+max_concurrent = 3
 ```
 
-`director.max_concurrent` 是当前 root-agent tree 的 active subagent policy
-上限（不包含 root），不是 workspace 共享池；已知的 host 上限始终会约束它。
-`max_depth` 是独立的 descendants 深度策略，不等同于并发容量。
+`[cli.<id>].max_concurrent` 是该 CLI 报告的、按 root-agent tree 计算的
+subagent 上限。写入时优先用实时目录值，否则用 adapter manifest 的 quota。
+`-1`（以及 `0`）表示探测不到，运行时回退到 `director.max_concurrent`。
+`director.max_concurrent` 只是未知 CLI 的 fallback policy，不是 workspace
+共享池；已知的 host 上限始终会约束它。`max_depth` 是独立的 descendants
+深度策略，不等同于并发容量。
 
 `runner` 与 `longctx` 是路由标签；`coding_models` 是有序 allowlist，数组
 顺序就是 Coding 优先级。自动选择只使用该 allowlist、当前目录、任务形状、
