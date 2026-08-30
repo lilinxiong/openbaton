@@ -42,6 +42,7 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const destConfig = configPath(cwd, { env });
   const destSkill = skillPath(cwd, { env });
 
+  const skippedOwnership: string[] = [];
   const configExisted = fs.existsSync(destConfig) && !force;
   if (!configExisted) {
     fs.copyFileSync(configTmpl, destConfig);
@@ -55,6 +56,7 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
     created.push(displayHomePath(destSkill, { cwd, env }));
   } else {
     skipped.push(displayHomePath(destSkill, { cwd, env }));
+    skippedOwnership.push(destSkill);
   }
 
   const cfg = loadConfig(cwd, { env });
@@ -79,7 +81,8 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const hosts = installHostSkills(cwd, { force, env });
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
-  writeInstallManifest(buildInstallManifest(cwd, hosts.tools, env, adapters.ownership), env);
+  skippedOwnership.push(...hosts.skippedFiles);
+  writeInstallManifest(buildInstallManifest(cwd, hosts.tools, env, adapters.ownership, skippedOwnership), env);
 
   return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools };
 }

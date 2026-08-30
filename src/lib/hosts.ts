@@ -88,6 +88,8 @@ export interface HostFileResult {
 
 export interface HostInstallResult extends HostFileResult {
   tools: HostId[];
+  /** Absolute destinations that already existed and were not overwritten. */
+  skippedFiles: string[];
 }
 
 export interface HostRefreshResult {
@@ -169,12 +171,14 @@ export function installHostSkills(cwd: string, options: InstallHostSkillsOptions
   const hostTools: HostId[] = [...hostIds(env)];
   const created: string[] = [];
   const skipped: string[] = [];
+  const skippedFiles: string[] = [];
   for (const tool of hostTools) {
     for (const file of hostSkillPackageFiles(tool, { cwd, env })) {
-      copySkill(file.source, file.destination, { force, cwd, env, created, skipped });
+      const wrote = copySkill(file.source, file.destination, { force, cwd, env, created, skipped });
+      if (!wrote) skippedFiles.push(path.resolve(file.destination));
     }
   }
-  return { tools: hostTools, created, skipped };
+  return { tools: hostTools, created, skipped, skippedFiles };
 }
 
 export function refreshInstalledHostSkills(cwd: string, options: RefreshHostSkillsOptions = {}): HostRefreshResult {

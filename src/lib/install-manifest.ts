@@ -99,30 +99,57 @@ function validHost(value: string): value is HostId {
   return /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(value);
 }
 
+function priorOwnedFile(
+  prior: InstallManifest | null | undefined,
+  file: string,
+  kind: ManifestFileKind,
+  host: HostId | null,
+): InstallManifestFile | undefined {
+  const dest = normalizedPath(file);
+  return prior?.files.find((entry) =>
+    entry.path === dest && entry.kind === kind && entry.host === host
+  );
+}
+
+function recordSkillFile(
+  files: InstallManifestFile[],
+  file: string,
+  kind: Extract<ManifestFileKind, "shared-runtime-skill" | "host-skill">,
+  host: HostId | null,
+  prior: InstallManifest | null | undefined,
+  skipped: Set<string>,
+): void {
+  const dest = normalizedPath(file);
+  if (skipped.has(dest)) {
+    const owned = priorOwnedFile(prior, dest, kind, host);
+    if (owned) files.push({ path: dest, kind, host, fingerprint: owned.fingerprint });
+    return;
+  }
+  const fingerprint = digestFile(dest);
+  if (fingerprint) {
+    files.push({ path: dest, kind, host, fingerprint });
+  }
+}
+
 /** Build a non-secret ownership snapshot for an installation. */
 export function buildInstallManifest(
   cwd: string,
   selectedHosts?: readonly HostId[],
   env?: NodeJS.ProcessEnv,
   adapterPackages?: readonly AdapterOwnership[],
+  skippedFiles?: readonly string[],
 ): InstallManifest {
   const hosts = [...new Set(selectedHosts || hostIds(env))].filter((host): host is HostId => validHost(host));
   const prior = readInstallManifest(env);
   const selected = new Set(hosts);
+  const skipped = new Set((skippedFiles || []).map(normalizedPath));
   const files: InstallManifestFile[] = (prior?.files || []).filter((entry) =>
     entry.kind === "adapter-package" || (entry.host !== null && !selected.has(entry.host))
   );
-  const shared = skillPath(cwd, { env });
-  const sharedFingerprint = digestFile(shared);
-  if (sharedFingerprint) {
-    files.push({ path: normalizedPath(shared), kind: "shared-runtime-skill", host: null, fingerprint: sharedFingerprint });
-  }
+  recordSkillFile(files, skillPath(cwd, { env }), "shared-runtime-skill", null, prior, skipped);
   for (const host of hosts) {
     for (const file of hostSkillFiles(host, { cwd, env })) {
-      const fingerprint = digestFile(file);
-      if (fingerprint) {
-        files.push({ path: normalizedPath(file), kind: "host-skill", host, fingerprint });
-      }
+      recordSkillFile(files, file, "host-skill", host, prior, skipped);
     }
   }
   for (const adapter of adapterPackages || []) {
