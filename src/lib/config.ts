@@ -18,7 +18,6 @@ export interface DirectorSettings {
 }
 
 export interface CliProfileSettings {
-  enabled: boolean;
   runner: string;
   longctx: string;
   /** Ordered Coding routes. Array order is the user's priority. */
@@ -59,7 +58,6 @@ export function emptyConfig(): Config {
 
 export function emptyCliProfile(): CliProfileSettings {
   return {
-    enabled: false,
     runner: "",
     longctx: "",
     coding_models: [],
@@ -126,7 +124,6 @@ function normalizeCliProfile(value: unknown): CliProfileSettings {
   const maxConcurrent = persistedConcurrentLimit(profile.max_concurrent);
   const maxDepth = positiveInteger(profile.max_depth);
   return {
-    enabled: profile.enabled === true,
     runner: rawRunner,
     longctx: rawLongctx,
     coding_models: codingModels,
@@ -183,8 +180,7 @@ export function cliProfileForHost(config: Pick<Config, "cli">, host: CliId): Cli
 }
 
 export function configuredCodingModelsForHost(config: Pick<Config, "cli">, host: CliId): string[] {
-  const profile = cliProfileForHost(config, host);
-  return profile.enabled ? [...profile.coding_models] : [];
+  return [...cliProfileForHost(config, host).coding_models];
 }
 
 function serializeConfig(cfg: Config): UnknownRecord {
@@ -192,7 +188,6 @@ function serializeConfig(cfg: Config): UnknownRecord {
   for (const [id, profile] of Object.entries(cfg.cli)) {
     if (!profile) continue;
     profiles[id] = {
-      enabled: profile.enabled,
       runner: profile.runner,
       longctx: profile.longctx,
       coding_models: profile.coding_models,

@@ -24,7 +24,6 @@ max_depth = 1
 # Operation labels are audit metadata, never a routing table.
 
 # A selected [cli.<id>] profile also stores:
-# enabled = true
 # runner = "<model-id>"
 # longctx = "<model-id>"
 # coding_models = ["<model-id>"] # ordered priority

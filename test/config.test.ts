@@ -35,8 +35,8 @@ describe("CLI concurrent limit persistence", () => {
     const cfg = normalizeConfig({
       director: { max_concurrent: 4, max_depth: 1 },
       cli: {
-        grok: { enabled: true, runner: "grok-4.5", longctx: "grok-4.5", coding_models: ["grok-4.5"], max_concurrent: 0 },
-        codex: { enabled: true, runner: "gpt-5.4", longctx: "gpt-5.4", coding_models: ["gpt-5.4"], max_concurrent: -1 },
+        grok: { runner: "grok-4.5", longctx: "grok-4.5", coding_models: ["grok-4.5"], max_concurrent: 0 },
+        codex: { runner: "gpt-5.4", longctx: "gpt-5.4", coding_models: ["gpt-5.4"], max_concurrent: -1 },
       },
     });
     assert.equal(cfg.cli.grok?.max_concurrent, UNKNOWN_MAX_CONCURRENT);
@@ -46,7 +46,7 @@ describe("CLI concurrent limit persistence", () => {
 
     const reported = normalizeConfig({
       director: { max_concurrent: 4, max_depth: 1 },
-      cli: { grok: { enabled: true, runner: "g", longctx: "g", coding_models: ["g"], max_concurrent: 16 } },
+      cli: { grok: { runner: "g", longctx: "g", coding_models: ["g"], max_concurrent: 16 } },
     });
     assert.equal(effectiveMaxConcurrentForHost(reported, "grok"), 16);
   });
@@ -61,7 +61,6 @@ describe("CLI concurrent limit persistence", () => {
       director: { max_concurrent: 4, max_depth: 1 },
       cli: {
         grok: {
-          enabled: true,
           runner: "grok-4.5",
           longctx: "grok-4.5",
           coding_models: ["grok-4.5"],
@@ -88,7 +87,6 @@ describe("CLI concurrent limit persistence", () => {
         "--runner", "alpha-model",
         "--longctx", "alpha-model",
         "--coding-model", "alpha-model",
-        "--enable",
         "--json",
       ], { cwd, env, stdout: { write: (chunk) => out.push(String(chunk)) } });
       assert.equal(code, 0, out.join(""));
@@ -121,7 +119,6 @@ describe("CLI concurrent limit persistence", () => {
         "--runner", "alpha-model",
         "--longctx", "alpha-model",
         "--coding-model", "alpha-model",
-        "--enable",
         "--json",
       ], {
         cwd,

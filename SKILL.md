@@ -23,9 +23,9 @@ packages; this skill never names or assumes a built-in adapter.
   created and runs through the selected adapter's native child execution API.
 - A `mechanical` unit uses the configured `runner` route; a `long-context` unit
   uses `longctx`. Operation labels are audit metadata, never route selectors.
-- Missing authorization, an unresolved classification, a missing adapter, or a
-  disabled profile stops before ticket creation. Do not infer a route from
-  prose or another adapter.
+- Missing authorization, an unresolved classification, or a missing adapter
+  stops before ticket creation. Do not infer a route from prose or another
+  adapter.
 - A structured change tool may provide decomposition and dependencies. Baton
   schedules its ready units but does not create a second task graph.
 
@@ -125,14 +125,14 @@ and no other repository operation.
 
 Do not dispatch a ticket without its Receipt, exact model, session identity,
 scope, and reservation. Do not inherit the parent model, choose outside the
-enabled adapter profile, or refill before release. A polling interval is not a
+configured adapter profile, or refill before release. A polling interval is not a
 worker failure; terminal state comes from the native execution handle.
 
 ## Useful command shapes
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>

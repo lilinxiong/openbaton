@@ -75,7 +75,6 @@ max_concurrent = 3
 max_depth = 1
 
 [cli.sample-adapter]
-enabled = true
 runner = "<model-id>"
 longctx = "<model-id>"
 coding_models = ["<model-id>", "<another-model-id>"]
@@ -95,13 +94,13 @@ adapter 支持的推理选项、服务层信息、路由健康和容量事实。
 proposal、ticket 与 Receipt，并在 dispatch 时再次按目录校验。
 
 执行阶段没有交互式模型选择。adapter、模型、推理选项、服务层、授权或
-分类无效时，在原生执行前停止；Baton 不越过启用的 profile，也不凭空添加
+分类无效时，在原生执行前停止；Baton 不越过已配置的 profile，也不凭空添加
 模型选项。
 
 非交互配置也可以一次写好标签：
 
 ```text
-baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model> --enable
+baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model>
 ```
 
 `--coding-model all` 选择目录里所有 picker 可见的模型。`--runner -` 或
@@ -182,7 +181,7 @@ Receipt、ticket 状态、目录快照和安装记录位于用户级 `~/.baton`�
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>

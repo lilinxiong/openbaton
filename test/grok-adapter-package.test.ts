@@ -316,7 +316,7 @@ process.exit(0);
     await initProject(cwd, { env });
     const output: string[] = [];
     const code = await runConfig(
-      ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--enable", "--json"],
+      ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--json"],
       { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
     );
     assert.equal(code, 0, output.join(""));
@@ -347,7 +347,7 @@ process.exit(0);
     await initProject(cwd, { env });
     const output: string[] = [];
     const code = await runConfig(
-      ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--enable", "--json"],
+      ["--cli", "grok", "--runner", "grok-visible", "--longctx", "grok-visible", "--coding-model", "grok-visible", "--json"],
       { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
     );
     assert.equal(code, 0, output.join(""));

@@ -64,7 +64,6 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
     // for the other registered CLIs or fill limits from host defaults.
     const existing = cfg.cli[selectedCli];
     cfg.cli[selectedCli] = {
-      enabled: true,
       runner: existing?.runner || "",
       longctx: existing?.longctx || "",
       coding_models: existing?.coding_models ? [...existing.coding_models] : [],

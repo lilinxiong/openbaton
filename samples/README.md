@@ -35,7 +35,7 @@ npm run build
 BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
   baton init
 BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
-  baton config --cli sample-adapter --enable
+  baton config --cli sample-adapter
 BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
   baton models refresh --host sample-adapter
 ```
@@ -45,7 +45,7 @@ Use a temporary home for a repeatable run:
 ```bash
 sample_home="$(mktemp -d)"
 HOME="$sample_home" BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
-  baton config --cli sample-adapter --enable
+  baton config --cli sample-adapter
 ```
 
 The result should contain only the selected `cli.sample-adapter` profile and

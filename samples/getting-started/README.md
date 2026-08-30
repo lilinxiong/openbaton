@@ -14,7 +14,7 @@ it is installed under `~/.baton/adapters/<adapter-id>/`.
 
 1. Install Baton or use a source checkout.
 2. Point discovery at the sample adapter.
-3. `init` and enable the profile with catalog model ids.
+3. `init` and configure the profile with catalog model ids.
 4. Refresh the catalog and `match` a simple request.
 5. Set `BATON_SESSION_ID`, `spawn` a write ticket, then `dispatch` it.
 6. Bind a teaching execution handle and `complete --release`.
@@ -50,7 +50,7 @@ and writes only the selected profile.
 
 ```bash
 baton init --cli sample-adapter
-baton config --cli sample-adapter --runner sample-model --longctx sample-model --coding-model sample-model --enable
+baton config --cli sample-adapter --runner sample-model --longctx sample-model --coding-model sample-model
 ```
 
 The catalog fixture currently reports one model id: sample-model. runner and

@@ -115,7 +115,7 @@ describe("external Codex adapter package", () => {
     await initProject(cwd, { env });
     const output: string[] = [];
     const code = await runConfig(
-      ["--cli", "codex", "--runner", "gpt-visible", "--longctx", "gpt-visible", "--coding-model", "gpt-visible", "--enable", "--json"],
+      ["--cli", "codex", "--runner", "gpt-visible", "--longctx", "gpt-visible", "--coding-model", "gpt-visible", "--json"],
       { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
     );
     assert.equal(code, 0, output.join(""));

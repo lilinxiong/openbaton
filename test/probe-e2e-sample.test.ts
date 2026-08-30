@@ -75,7 +75,6 @@ function makeFixture() {
     "max_concurrent = 3",
     "max_depth = 1",
     "[cli.codex]",
-    "enabled = true",
     `runner = "${model}"`,
     `longctx = "${model}"`,
     `coding_models = [\"${model}\"]`,

@@ -10,7 +10,7 @@ and let the user choose exactly one. Persist that route as all three profile
 fields in one operation:
 
 ```text
-baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --enable --json
+baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --json
 ```
 
 Create the workspace and paste-ready prompt document from the OpenBaton source

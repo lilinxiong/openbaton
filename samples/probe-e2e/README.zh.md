@@ -9,7 +9,7 @@
 并让用户只选择其中一条。把该 route 一次写入 profile 的三个字段：
 
 ```text
-baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --enable --json
+baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --json
 ```
 
 从 OpenBaton 源码 checkout 创建工作区，并生成可粘贴的 prompt 文档：

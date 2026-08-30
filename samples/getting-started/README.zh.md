@@ -14,7 +14,7 @@ adapter 软件包位于 [`../manifest-example`](../manifest-example)。
 
 1. 安装 Baton，或使用源码 checkout。
 2. 把发现路径指向样例 adapter。
-3. `init`，并用目录里的模型 id 启用 profile。
+3. `init`，并用目录里的模型 id 配置 profile。
 4. 刷新目录，并对一个简单请求执行 `match`。
 5. 设置 `BATON_SESSION_ID`，`spawn` 一张写入 ticket，再 `dispatch`。
 6. 绑定一个教学用 execution handle，然后 `complete --release`。
@@ -50,7 +50,7 @@ init 会发现 manifest，并把捆绑的 adapter 软件包装进
 
 ```bash
 baton init --cli sample-adapter
-baton config --cli sample-adapter --runner sample-model --longctx sample-model --coding-model sample-model --enable
+baton config --cli sample-adapter --runner sample-model --longctx sample-model --coding-model sample-model
 ```
 
 当前目录 fixture 只报告一个模型 id：sample-model。runner 和

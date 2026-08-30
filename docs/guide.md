@@ -77,7 +77,6 @@ max_concurrent = 3
 max_depth = 1
 
 [cli.sample-adapter]
-enabled = true
 runner = "<model-id>"
 longctx = "<model-id>"
 coding_models = ["<model-id>", "<another-model-id>"]
@@ -100,13 +99,13 @@ checks them again against the captured catalog.
 
 There is no interactive model-choice step during execution. An unavailable or
 invalid adapter, model, effort, service tier, authorization, or classification
-stops before native execution. Baton never chooses outside the enabled profile
-or invents a model option.
+stops before native execution. Baton never chooses outside the configured
+profile or invents a model option.
 
 Non-interactive config can also set labels in one command:
 
 ```text
-baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model> --enable
+baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model>
 ```
 
 `--coding-model all` selects every picker-visible catalog row. `--runner -`
@@ -203,7 +202,7 @@ user-global `~/.baton` directory. Worktree files remain the caller's files.
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>

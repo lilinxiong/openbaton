@@ -22,14 +22,12 @@ baton config
 ```
 
 `baton config` 是带引导的 TTY 流程：方向键选择，空格切换 CLI 和
-Coding 模型优先级。它会问要启用哪个 adapter，再问 `runner`、`longctx`
+Coding 模型优先级。它会问要配置哪个 adapter，再问 `runner`、`longctx`
 和 `coding_models`。只有跳过引导时才需要加 flag。
 
 ![选择 CLI](assets/config/01-select-cli.png)
 
 ![选择 Coding 模型](assets/config/03-select-coding-models.png)
-
-![是否启用](assets/config/04-enable.png)
 
 截图用的是仓库里的 `sample-adapter`。换 Codex 时引导一样，模型列表来自
 该 adapter 的实时目录。
@@ -115,23 +113,15 @@ adapter 的 manifest（`adapters/codex/adapter.json`）把 `runtime/SKILL.md`
 复制到 `.codex/skills/baton/SKILL.md`。Codex 就是这样看到 Baton 的。
 
 然后运行 `baton config --cli codex`。在 TTY 里这是引导流程：方向键选择，
-空格切换。它会依次问 `runner`、`longctx`、Coding 模型优先级，以及是否
-启用这个 profile。模型 id 来自实时 Codex CLI 目录（找不到 Codex 时可设
-`BATON_CODEX_PATH`）。
+空格切换。它会依次问 `runner`、`longctx` 和 Coding 模型优先级。模型 id
+来自实时 Codex CLI 目录（找不到 Codex 时可设 `BATON_CODEX_PATH`）。
 
 非交互写入时才用 flag，并且只写 `[cli.codex]`：
 
 ```bash
-baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id>
 ```
 
-用下面的命令打开或关闭 activation：
-
-```bash
-baton enable|disable all|curproject --host codex
-```
-
-activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）。
 会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
 `session_uid`）。Codex director 会在第一次控制平面调用之前创建它。
 
@@ -145,7 +135,7 @@ skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
 不能自动调用它；同时设置 `user-invocable: true`，因此 `/baton` 仍是
 斜杠命令。
 
-使用 `/baton`，并且 Codex profile 已启用、activation 打开之后：
+使用 `/baton`，并且 Codex profile 已配置之后：
 
 - 讨论和只读分析留在 Codex director 会话里。这些**不会**创建 Baton
   ticket。
@@ -154,8 +144,7 @@ skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
   里直接实现。
 
 `/baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
-自由文本里推断路由。已启用 host 上缺少 classification 时，会阻止创建
-ticket。
+自由文本里推断路由。缺少 classification 时，会阻止创建 ticket。
 
 ### CLI 命令
 
@@ -178,7 +167,7 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 
 ### 分类如何落到路由
 
-已启用 host 上必须提供 `--classification`：
+必须提供 `--classification`：
 `mechanical|long-context|implementation|analysis|discussion|general`。
 
 - `discussion` / `analysis` → 只留在 director。没有 worker ticket。
@@ -210,23 +199,15 @@ adapter 的 manifest（`adapters/grok/adapter.json`）把 `runtime/SKILL.md`
 复制到 `.grok/skills/baton/SKILL.md`。Grok 就是这样看到 Baton 的。
 
 然后运行 `baton config --cli grok`。在 TTY 里这是引导流程：方向键选择，
-空格切换。它会依次问 `runner`、`longctx`、Coding 模型优先级，以及是否
-启用这个 profile。模型 id 来自实时 Grok ACP 目录（找不到 Grok 时可设
-`BATON_GROK_PATH`）。
+空格切换。它会依次问 `runner`、`longctx` 和 Coding 模型优先级。模型 id
+来自实时 Grok ACP 目录（找不到 Grok 时可设 `BATON_GROK_PATH`）。
 
 非交互写入时才用 flag，并且只写 `[cli.grok]`：
 
 ```bash
-baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id>
 ```
 
-用下面的命令打开或关闭 activation：
-
-```bash
-baton enable|disable all|curproject --host grok
-```
-
-activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）。
 会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
 `session_uid`）。Grok director 会在第一次控制平面调用之前创建它。
 
@@ -240,7 +221,7 @@ skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
 不能自动调用它；同时设置 `user-invocable: true`，因此 `/baton` 仍是
 斜杠命令。
 
-使用 `/baton`，并且 Grok profile 已启用、activation 打开之后：
+使用 `/baton`，并且 Grok profile 已配置之后：
 
 - 讨论和只读分析留在 Grok director 会话里。这些**不会**创建 Baton
   ticket。
@@ -249,8 +230,7 @@ skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
   里直接实现。
 
 `/baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
-自由文本里推断路由。已启用 host 上缺少 classification 时，会阻止创建
-ticket。
+自由文本里推断路由。缺少 classification 时，会阻止创建 ticket。
 
 ### CLI 命令
 
@@ -292,14 +272,14 @@ baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --rel
 `baton apply` 用于规划 OpenSpec 变更。`--dispatch` 必须为每个 unit 提供
 `--write-path` 或 `--read-only`。没有 OpenSpec 时使用 `baton spawn`。
 
-自动路由只使用已启用 profile 的 `coding_models` allowlist、实时目录、任务
+自动路由只使用已配置 profile 的 `coding_models` allowlist、实时目录、任务
 形状、adapter 支持的推理选项、服务层信息、路由健康和容量事实。
 
 ## 常用命令
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>

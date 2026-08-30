@@ -55,7 +55,7 @@ function repeated(args: string[], name: string): string[] {
 /** Reject arguments outside the current config grammar before reading state. */
 function validateConfigArgs(args: string[]): void {
   const valueFlags = new Set(["cli", "runner", "longctx", "coding-model"]);
-  const booleanFlags = new Set(["enable", "disable", "json"]);
+  const booleanFlags = new Set(["json"]);
   const allowed = new Set([...valueFlags, ...booleanFlags]);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -153,7 +153,6 @@ function requirePrompt(
 
 interface CliProfileResult {
   cli: CliId;
-  enabled: boolean;
   runner: string | null;
   longctx: string | null;
   coding_models: string[];
@@ -232,23 +231,6 @@ async function configureCliProfile(
     codingModels = parseModelSet(catalog.models, codingFlags);
   }
 
-  if (args.includes("--enable") && args.includes("--disable")) {
-    throw new Error("--enable and --disable are mutually exclusive");
-  }
-  let enabled: boolean;
-  if (args.includes("--enable")) enabled = true;
-  else if (args.includes("--disable")) enabled = false;
-  else {
-    enabled = await ask().select({
-      message: `Enable this ${cli} configuration?`,
-      choices: [
-        { value: true, label: "yes" },
-        { value: false, label: "no" },
-      ],
-      initial: existing.enabled || existing.coding_models.length === 0,
-    });
-  }
-
   const capabilities = normalizeCliRuntimeCapabilities(catalog);
   // Persist catalog > adapter quota > previously reported value; else -1.
   const catalogLimit = reportedConcurrentLimit(capabilities?.max_concurrent_subagents);
@@ -260,7 +242,6 @@ async function configureCliProfile(
   );
   const maxDepth = capabilities?.max_depth;
   current.cli[cli] = {
-    enabled,
     runner,
     longctx,
     coding_models: codingModels,
@@ -269,7 +250,6 @@ async function configureCliProfile(
   };
   return {
     cli,
-    enabled,
     runner: runner || null,
     longctx: longctx || null,
     coding_models: codingModels,
@@ -286,7 +266,7 @@ async function configureCliProfile(
 }
 
 function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
-  stdout.write(`  cli: ${result.cli} (${result.enabled ? "enabled" : "disabled"})\n`);
+  stdout.write(`  cli: ${result.cli}\n`);
   stdout.write(`  runner: ${result.runner || "(missing route blocks classified work)"}\n`);
   stdout.write(`  longctx: ${result.longctx || "(missing route blocks classified work)"}\n`);
   stdout.write(`  Coding priority: ${result.coding_models.length ? result.coding_models.join(" > ") : "(none)"}\n`);
@@ -308,7 +288,7 @@ export async function runConfig(args: string[], {
   const discoverAdapter = adapterProvider || ((cli: CliId) => getCliAdapter(cli, env));
   const ask = (): SelectPrompt => requirePrompt(
     prompt, stdin, stdout, env,
-    "--cli, --runner, --longctx, --coding-model, and --enable|--disable",
+    "--cli, --runner, --longctx, and --coding-model",
   );
 
   const flaggedCli = lastFlag(args, "cli");

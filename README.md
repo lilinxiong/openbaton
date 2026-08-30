@@ -22,14 +22,12 @@ baton config
 ```
 
 `baton config` is a guided TTY flow: arrow keys select, space toggles CLIs
-and the Coding-model order. It asks which adapter to enable, then `runner`,
+and the Coding-model order. It asks which adapter to configure, then `runner`,
 `longctx`, and `coding_models`. Pass flags only to skip the prompts.
 
 ![Select CLI](assets/config/01-select-cli.png)
 
 ![Select Coding models](assets/config/03-select-coding-models.png)
-
-![Enable the profile](assets/config/04-enable.png)
 
 These captures use the in-repo `sample-adapter`. The prompts are the same for
 Codex; the model list comes from that adapter's live catalog.
@@ -120,26 +118,18 @@ adapter manifest (`adapters/codex/adapter.json`) copies `runtime/SKILL.md` to
 `.codex/skills/baton/SKILL.md`. That is how Codex sees Baton.
 
 Then run `baton config --cli codex`. On a TTY it is a guided flow: arrow keys
-select, space toggles. It walks through `runner`, `longctx`, Coding-model
-priority, and whether to enable the profile. Model ids come from the live
-Codex CLI catalog (`BATON_CODEX_PATH` if Codex is not on `PATH`).
+select, space toggles. It walks through `runner`, `longctx`, and Coding-model
+priority. Model ids come from the live Codex CLI catalog (`BATON_CODEX_PATH`
+if Codex is not on `PATH`).
 
 Flags skip the prompts for non-interactive use and write only `[cli.codex]`:
 
 ```bash
-baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id>
 ```
 
-Turn activation on or off with:
-
-```bash
-baton enable|disable all|curproject --host codex
-```
-
-When activation is effectively disabled, `spawn` and `apply` create no tickets
-(bypass). Ticket commands need `BATON_SESSION_ID` (opaque; hashed to
-`session_uid`). The Codex director creates one before the first control-plane
-call.
+Ticket commands need `BATON_SESSION_ID` (opaque; hashed to `session_uid`). The
+Codex director creates one before the first control-plane call.
 
 ### Triggering Baton (`/baton` only)
 
@@ -152,7 +142,7 @@ The skill frontmatter sets `disable-model-invocation: true` so the host cannot
 invoke it automatically, and `user-invocable: true` so `/baton` remains the
 slash command.
 
-When `/baton` is used and the Codex profile is enabled with activation on:
+When `/baton` is used and the Codex profile is configured:
 
 - Discussion and read-only analysis stay in the Codex director session. These
   do **not** create Baton tickets.
@@ -161,8 +151,7 @@ When `/baton` is used and the Codex profile is enabled with activation on:
   the director.
 
 `/baton` still requires a director **structured classification**. Baton does
-not infer a route from prose. Missing classification blocks ticket creation
-on an enabled host.
+not infer a route from prose. Missing classification blocks ticket creation.
 
 ### CLI commands
 
@@ -185,7 +174,7 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 
 ### What runs where
 
-`--classification` is required on an enabled host:
+`--classification` is required:
 `mechanical|long-context|implementation|analysis|discussion|general`.
 
 - `discussion` / `analysis` → director only. No worker ticket.
@@ -217,26 +206,18 @@ adapter manifest (`adapters/grok/adapter.json`) copies `runtime/SKILL.md` to
 `.grok/skills/baton/SKILL.md`. That is how Grok sees Baton.
 
 Then run `baton config --cli grok`. On a TTY it is a guided flow: arrow keys
-select, space toggles. It walks through `runner`, `longctx`, Coding-model
-priority, and whether to enable the profile. Model ids come from the live
-Grok ACP catalog (`BATON_GROK_PATH` if Grok is not on `PATH`).
+select, space toggles. It walks through `runner`, `longctx`, and Coding-model
+priority. Model ids come from the live Grok ACP catalog (`BATON_GROK_PATH`
+if Grok is not on `PATH`).
 
 Flags skip the prompts for non-interactive use and write only `[cli.grok]`:
 
 ```bash
-baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id>
 ```
 
-Turn activation on or off with:
-
-```bash
-baton enable|disable all|curproject --host grok
-```
-
-When activation is effectively disabled, `spawn` and `apply` create no tickets
-(bypass). Ticket commands need `BATON_SESSION_ID` (opaque; hashed to
-`session_uid`). The Grok director creates one before the first control-plane
-call.
+Ticket commands need `BATON_SESSION_ID` (opaque; hashed to `session_uid`). The
+Grok director creates one before the first control-plane call.
 
 ### Triggering Baton (`/baton` only)
 
@@ -249,7 +230,7 @@ The skill frontmatter sets `disable-model-invocation: true` so the host cannot
 invoke it automatically, and `user-invocable: true` so `/baton` remains the
 slash command.
 
-When `/baton` is used and the Grok profile is enabled with activation on:
+When `/baton` is used and the Grok profile is configured:
 
 - Discussion and read-only analysis stay in the Grok director session. These
   do **not** create Baton tickets.
@@ -258,8 +239,7 @@ When `/baton` is used and the Grok profile is enabled with activation on:
   the director.
 
 `/baton` still requires a director **structured classification**. Baton does
-not infer a route from prose. Missing classification blocks ticket creation
-on an enabled host.
+not infer a route from prose. Missing classification blocks ticket creation.
 
 ### CLI commands
 
@@ -302,7 +282,7 @@ baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --rel
 `baton apply` plans an OpenSpec change. `--dispatch` requires per-unit
 `--write-path` or `--read-only`. Without OpenSpec, use `baton spawn`.
 
-Automatic routing uses only the enabled profile's `coding_models` allowlist,
+Automatic routing uses only the configured profile's `coding_models` allowlist,
 the live catalog, task shape, supported reasoning options, service-tier
 metadata, route health, and capacity evidence.
 
@@ -310,7 +290,7 @@ metadata, route health, and capacity evidence.
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>

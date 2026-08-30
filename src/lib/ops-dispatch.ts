@@ -49,13 +49,8 @@ function suppliedClassification(options: OpsDispatchOptions): { present: boolean
     : { present: false, value: undefined };
 }
 
-function classificationRequiredForHost(cwd: string, env: NodeJS.ProcessEnv | undefined, host: HostId | undefined): boolean {
-  if (!host) return false;
-  try {
-    return cliProfileForHost(loadConfig(cwd, { env }), host).enabled;
-  } catch {
-    return false;
-  }
+function classificationRequiredForHost(host: HostId | undefined): boolean {
+  return Boolean(host);
 }
 
 export function hasStagedDiff(cwd: string): boolean {
@@ -102,8 +97,8 @@ export function resolveOpsDispatch(
   // structured class.
   void description;
   void cards;
-  if (classificationRequiredForHost(cwd, env, host)) {
-    return { kind: "blocked", reason: "director classification is required for the enabled host; no ticket may be created" };
+  if (classificationRequiredForHost(host)) {
+    return { kind: "blocked", reason: "director classification is required; no ticket may be created" };
   }
   return { kind: "not-ops" };
 }
@@ -139,8 +134,8 @@ export function resolveOpsUnitDispatch(
   void requestDescription;
   void unitDescription;
   void cards;
-  if (classificationRequiredForHost(cwd, env, host)) {
-    return { kind: "blocked", reason: "director classification is required for the enabled host; no ticket may be created" };
+  if (classificationRequiredForHost(host)) {
+    return { kind: "blocked", reason: "director classification is required; no ticket may be created" };
   }
   return { kind: "not-ops" };
 }
@@ -214,11 +209,9 @@ function resolveOpsProfileDispatch(
 ): OpsResolution {
   const config = loadConfig(cwd, { env });
   const profile = cliProfileForHost(config, host);
-  const configured = profile.enabled
-    ? (() => {
-      const route = profile[input.classification === "mechanical" ? "runner" : "longctx"].trim();
-      return route ? { profile: input.classification === "mechanical" ? "runner" as const : "longctx" as const, route } : null;
-    })()
+  const route = profile[input.classification === "mechanical" ? "runner" : "longctx"].trim();
+  const configured = route
+    ? { profile: input.classification === "mechanical" ? "runner" as const : "longctx" as const, route }
     : null;
   if (!configured) {
     return {

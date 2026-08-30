@@ -49,7 +49,7 @@ baton init
 baton spawn/apply
   -> resolve the selected adapter
   -> classify and scope units in the director
-  -> choose from the enabled coding_models order
+  -> 从已配置的 coding_models 顺序中选择
   -> validate model/options against the catalog
   -> create a Receipt and ticket
   -> reserve and hand off to native execution
