@@ -99,9 +99,9 @@ describe("compiled apply source observations", () => {
       readBytes: async (absolutePath: string) => absolutePath === ledgerPath ? Buffer.from(ledger) : Buffer.from("input-v1\n"),
     }));
     assert.equal(source.open_spec.task_ledger?.path, ledgerPath);
-    assert.match(source.open_spec.task_ledger?.sha256 || "", /^[0-9a-f]{64}$/);
+    assert.equal(source.open_spec.task_ledger?.sha256, "32488cbfc645fa331156f5958529b472cc580f1236e74fb64f1d56f51a3d16ed");
     assert.deepEqual(source.open_spec.selected_task_numbers, ["2.3"]);
-    assert.match(source.open_spec.selected_task_snapshot_fingerprint, /^[0-9a-f]{64}$/);
+    assert.equal(source.open_spec.selected_task_snapshot_fingerprint, "eee22449757cfcfd046d63901dcc15895c4d4b6598dbf7661fdea7e9fb637e7b");
   });
 
   it("detects OpenSpec context and selected-task identity changes", async () => {

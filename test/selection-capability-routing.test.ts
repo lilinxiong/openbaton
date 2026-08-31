@@ -11,6 +11,7 @@ import {
   type MinimumModelRequirementsInput,
 } from "../src/lib/selection.js";
 import { markRouteExhausted } from "../src/lib/model-availability.js";
+import { selectionsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import type { ModelCard } from "../src/types.js";
 import { fakeEnv, withHome } from "./home.js";
@@ -226,5 +227,38 @@ describe("capability-routed selection", () => {
     });
     const persisted = readSelectionProposal(cwd, proposal.id, env);
     assert.deepEqual(persisted.minimum_requirements.selection, result.minimum_requirements);
+  }));
+
+  it("backfills required diagnostics for legacy schema-v2 candidates", () => withHome((home) => {
+    const cwd = workspace();
+    const env = fakeEnv(home);
+    setup(cwd, env);
+    const result = unit(cwd, env, cards());
+    const proposal = createSelectionProposal(cwd, {
+      host: HOST,
+      source: "standalone",
+      units: [result],
+      sourceFingerprint: "legacy-diagnostics-source",
+      payload: { source_shape: "multi-unit-v1", units: [{ key: "selection", description: "simple fix" }] },
+      now: "2026-08-31T00:03:00.000Z",
+      env,
+    });
+    const file = path.join(selectionsDir(cwd, env), `${proposal.id}.json`);
+    const legacy = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const candidate of legacy.units[0].candidates) delete candidate.diagnostics;
+    fs.writeFileSync(file, `${JSON.stringify(legacy, null, 2)}\n`);
+
+    const persisted = readSelectionProposal(cwd, proposal.id, env);
+    assert.deepEqual(
+      persisted.units[0]?.candidates.map((candidate) => candidate.diagnostics),
+      proposal.units[0]?.candidates.map((candidate) => candidate.selection_diagnostics || candidate.exclusion_reasons || []),
+    );
+
+    legacy.units[0].candidates[0] = [];
+    fs.writeFileSync(file, `${JSON.stringify(legacy, null, 2)}\n`);
+    assert.throws(
+      () => readSelectionProposal(cwd, proposal.id, env),
+      /SELECTION_PROPOSAL_SHAPE_INVALID: proposal candidates are incomplete/,
+    );
   }));
 });

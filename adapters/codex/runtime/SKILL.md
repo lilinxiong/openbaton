@@ -125,8 +125,12 @@ reported value; otherwise the profile stores `-1` and Baton uses
 `[director].max_concurrent`. It excludes the root conversation, includes
 direct and nested descendants together, and is strictly tree-local rather
 than a process, model, or historical-ticket count.
-A separate root conversation has its own tree-local capacity; shared workspace
-safety checks and host/profile quota checks still apply across trees.
+A separate root conversation has its own tree-local capacity. Shared workspace
+safety checks still apply across trees, but native route availability, quota,
+rate-limit, and uncallability evidence remains session-local and a new session
+must recheck it. The only provider-wide quota input is `provider_quotas`
+explicitly returned by the active adapter catalog; Baton never promotes another
+session's native failure into that signal.
 
 Do not expose a human model selector at runtime, silently substitute a model,
 or release/refill before terminal recording. Commit and publication remain

@@ -133,8 +133,11 @@ currently available, Baton preserves an existing positive reported value;
 otherwise the profile stores `-1` and Baton uses `[director].max_concurrent`
 (default 4). The root conversation is excluded; direct and nested descendants
 share the same tree-local pool. A separate root conversation has its own
-tree-local capacity; shared workspace safety checks and host/profile quota
-checks still apply across trees.
+tree-local capacity. Shared workspace safety checks still apply across trees,
+but native route availability, quota, rate-limit, and uncallability evidence
+remains session-local and a new session must recheck it. The only provider-wide
+quota input is `provider_quotas` explicitly returned by the active adapter
+catalog; Baton never promotes another session's native failure into that signal.
 Grok `max_depth` is a separate nesting policy: a child cannot spawn another
 child when the host depth ceiling is one.
 

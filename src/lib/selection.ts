@@ -1315,6 +1315,25 @@ export function readSelectionProposal(cwd: string, id: string, env?: NodeJS.Proc
   if (!Array.isArray(value.units) || !Array.isArray(value.quota_pools) || !Array.isArray(value.task_exclusions)) {
     throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: proposal fields are incomplete");
   }
+  for (const unit of value.units) {
+    if (!unit || typeof unit !== "object" || !Array.isArray(unit.candidates)) {
+      throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: proposal units are incomplete");
+    }
+    for (const candidate of unit.candidates) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        throw new Error("SELECTION_PROPOSAL_SHAPE_INVALID: proposal candidates are incomplete");
+      }
+      // Early schema-v2 proposals persisted the same diagnostics under the
+      // compatibility aliases only. Keep those records readable while making
+      // the required runtime field total for every returned candidate.
+      if (!Array.isArray(candidate.diagnostics)) {
+        const legacy = Array.isArray(candidate.selection_diagnostics)
+          ? candidate.selection_diagnostics
+          : Array.isArray(candidate.exclusion_reasons) ? candidate.exclusion_reasons : [];
+        candidate.diagnostics = structuredClone(legacy);
+      }
+    }
+  }
   // Proposals written before requirement persistence remain readable. New
   // proposals always carry a deterministic unit-keyed copy.
   if (!value.minimum_requirements || typeof value.minimum_requirements !== "object" || Array.isArray(value.minimum_requirements)) {
