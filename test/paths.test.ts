@@ -13,6 +13,18 @@ import {
   dispatchLockPath,
   hostDispatchStatePath,
   hostRouteSnapshotPath,
+  rollingRunAcceptedDocumentPath,
+  rollingRunAcceptedDocumentsDir,
+  rollingRunCheckpointPath,
+  rollingRunDeltaDocumentPath,
+  rollingRunFactLogPath,
+  rollingRunFactsDir,
+  rollingRunFactPath,
+  rollingRunLockPath,
+  rollingRunRoot,
+  rollingRunsDir,
+  ROLLING_RUNS_DIR,
+  ROLLING_PATH_SEGMENT_INVALID,
   receiptsDir,
   routeHealthPath,
   runsDir,
@@ -47,6 +59,59 @@ describe("global Baton storage paths", () => {
     assert.match(compiledApplyRunBodyPath(cwd, "safe-run", "2"), /safe-run\/revisions\/revision-2\.json$/);
   }));
 
+  it("uses exact canonical paths for rolling-run v2 state", () => withHome((home) => {
+    const repo = gitRepo("baton-rolling-paths-");
+    const runId = "run-2026-08-31";
+    const root = path.join(home, ".baton", "workspaces", workspaceId(repo), CURRENT_RUNTIME_NAMESPACE, "runs", ROLLING_RUNS_DIR, runId);
+
+    assert.equal(rollingRunsDir(repo), path.dirname(root));
+    assert.equal(rollingRunRoot(repo, runId), root);
+    assert.equal(rollingRunFactLogPath(repo, runId), path.join(root, "facts.ndjson"));
+    assert.equal(rollingRunFactsDir(repo, runId), path.join(root, "facts"));
+    assert.equal(rollingRunFactPath(repo, runId, "fact-1"), path.join(root, "facts", "fact-1.json"));
+    assert.equal(rollingRunAcceptedDocumentsDir(repo, runId), path.join(root, "accepted-documents"));
+    assert.equal(rollingRunAcceptedDocumentPath(repo, runId, "doc-1"), path.join(root, "accepted-documents", "doc-1.json"));
+    assert.equal(rollingRunDeltaDocumentPath(repo, runId, "delta-1"), path.join(root, "accepted-documents", "delta-delta-1.json"));
+    assert.equal(rollingRunCheckpointPath(repo, runId), path.join(root, "checkpoint.json"));
+    assert.equal(rollingRunLockPath(repo, runId), path.join(root, ".lock"));
+    assert.ok(!fs.existsSync(path.join(repo, ".baton")));
+  }));
+
+  it("keeps rolling paths stable for nested Git cwd values", () => withHome(() => {
+    const repo = gitRepo("baton-rolling-nested-");
+    const nested = path.join(repo, "nested", "dir");
+    fs.mkdirSync(nested, { recursive: true });
+    const runId = "nested-run";
+
+    assert.equal(rollingRunsDir(nested), rollingRunsDir(repo));
+    assert.equal(rollingRunRoot(nested, runId), rollingRunRoot(repo, runId));
+    assert.equal(rollingRunFactLogPath(nested, runId), rollingRunFactLogPath(repo, runId));
+    assert.equal(rollingRunAcceptedDocumentPath(nested, runId, "doc-1"), rollingRunAcceptedDocumentPath(repo, runId, "doc-1"));
+    assert.equal(rollingRunCheckpointPath(nested, runId), rollingRunCheckpointPath(repo, runId));
+    assert.equal(rollingRunLockPath(nested, runId), rollingRunLockPath(repo, runId));
+    assert.ok(!fs.existsSync(path.join(repo, ".baton")));
+  }));
+
+  it("rejects malicious rolling run, delta, document, and fact segments", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-path-segment-"));
+    const unsafe = ["", " ", ".", "..", "../escape", "nested/run", "nested\\run", "bad\u0000id", "bad\u0007id", "C:escape", "/tmp/escape"];
+    const expectRollingError = (fn: () => unknown) => assert.throws(fn, (error: unknown) =>
+      (error as { code?: string }).code === ROLLING_PATH_SEGMENT_INVALID);
+
+    for (const value of unsafe) {
+      expectRollingError(() => rollingRunRoot(cwd, value));
+      expectRollingError(() => rollingRunFactLogPath(cwd, value));
+      expectRollingError(() => rollingRunAcceptedDocumentsDir(cwd, value));
+      expectRollingError(() => rollingRunCheckpointPath(cwd, value));
+      expectRollingError(() => rollingRunLockPath(cwd, value));
+    }
+    for (const value of unsafe) {
+      expectRollingError(() => rollingRunDeltaDocumentPath(cwd, "safe-run", value));
+      expectRollingError(() => rollingRunAcceptedDocumentPath(cwd, "safe-run", value));
+      expectRollingError(() => rollingRunFactPath(cwd, "safe-run", value));
+    }
+  }));
+
   it("keeps shared cache global and namespaces runtime by canonical Git root", () => withHome((home) => {
     const first = gitRepo("baton-path-first-");
     const nested = path.join(first, "nested", "dir");
@@ -66,6 +131,9 @@ describe("global Baton storage paths", () => {
     assert.equal(selectionsDir(first), path.join(firstRoot, "selections"));
     assert.equal(hostDispatchStatePath(first, "alpha"), path.join(firstRoot, "runs", "dispatch-alpha.json"));
     assert.equal(dispatchLockPath(first), path.join(firstRoot, "tmp", "dispatch.lock"));
+
+    assert.equal(rollingRunRoot(first, "run-1"), path.join(firstRoot, "runs", ROLLING_RUNS_DIR, "run-1"));
+    assert.equal(rollingRunRoot(nested, "run-1"), rollingRunRoot(first, "run-1"));
 
     assert.equal(hostRouteSnapshotPath(first, "alpha"), hostRouteSnapshotPath(second, "alpha"));
     assert.equal(hostRouteSnapshotPath(first, "alpha"), path.join(home, ".baton", "cache", "cli-models-alpha.json"));
