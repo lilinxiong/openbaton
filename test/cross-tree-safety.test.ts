@@ -125,7 +125,7 @@ describe("cross-tree workspace safety", () => {
     });
   });
 
-  it("keeps a terminal-unreleased write ticket blocking an overlapping tree", async () => {
+  it("keeps a bound terminal-unreleased write ticket blocking an overlapping tree", async () => {
     await withHome(async (home) => {
       const cwd = repository();
       const ownerEnv = fakeEnv(home, { BATON_SESSION_ID: "terminal-unreleased-owner" });
@@ -134,11 +134,32 @@ describe("cross-tree workspace safety", () => {
         const owner = await materializeWrite(cwd, ownerEnv, ["owned.txt"], ["write"]);
         owner.ticket.status = "completed";
         owner.ticket.slot_released_at = null;
+        owner.ticket.execution_handle = { kind: "alpha-task", value: "terminal-owner", source: "native-return" };
         writeSpawn(cwd, owner.ticket, ownerEnv);
         assert.throws(
           () => assertWriteScopesAvailable(cwd, [{ key: "contender", write_paths: ["owned.txt"] }], contenderEnv),
           /WRITE_SCOPE_CONFLICT/,
           "terminal completion must not release a write scope before explicit slot release",
+        );
+      } finally {
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("releases historical workspace scope for an unbound terminal ticket", async () => {
+    await withHome(async (home) => {
+      const cwd = repository();
+      const ownerEnv = fakeEnv(home, { BATON_SESSION_ID: "terminal-unbound-owner" });
+      const contenderEnv = fakeEnv(home, { BATON_SESSION_ID: "terminal-unbound-contender" });
+      try {
+        const owner = await materializeWrite(cwd, ownerEnv, ["owned.txt"], ["write"]);
+        owner.ticket.status = "completed";
+        owner.ticket.slot_released_at = null;
+        writeSpawn(cwd, owner.ticket, ownerEnv);
+        assert.doesNotThrow(
+          () => assertWriteScopesAvailable(cwd, [{ key: "contender", write_paths: ["owned.txt"] }], contenderEnv),
+          "an unbound terminal ticket never acquired worker-owned workspace scope",
         );
       } finally {
         fs.rmSync(cwd, { recursive: true, force: true });

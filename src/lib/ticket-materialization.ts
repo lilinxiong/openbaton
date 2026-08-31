@@ -53,6 +53,10 @@ function activeWriteScopes(cwd: string, env?: NodeJS.ProcessEnv): PendingWriteSc
   const scopes: PendingWriteScope[] = [];
   for (const ticket of listSpawns(cwd, env)) {
     if (!ticket.receipt_id) continue;
+    // A terminal ticket with no native handle never acquired worker-owned
+    // workspace scope. Ignore its historical Receipt even if an older record
+    // predates slot_released_at normalization.
+    if (["completed", "errored", "timed_out", "closed"].includes(ticket.status) && !ticket.execution_handle) continue;
     // A terminal ticket still owns its path until the dispatch slot is
     // explicitly released. This closes the race between completion and the
     // next wave's materialization.

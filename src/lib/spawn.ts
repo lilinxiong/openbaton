@@ -206,6 +206,17 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
   }
   const existing = normalizeExecutionHandle(ticket.execution_handle);
   ticket.execution_handle = existing;
+  // A terminal ticket that never received a native handle never owned a
+  // host slot. Normalize that fact on reads as well as writes so legacy
+  // records cannot retain stale capacity/workspace scope indefinitely.
+  if (!existing
+    && ["completed", "errored", "timed_out", "closed"].includes(String(ticket.status))
+    && !ticket.slot_released_at) {
+    const terminalAt = stringValue(ticket.finished_at)
+      || stringValue(ticket.updated_at)
+      || stringValue(ticket.created_at);
+    if (terminalAt) ticket.slot_released_at = terminalAt;
+  }
   if (ticket.liveness && typeof ticket.liveness === "object" && !Array.isArray(ticket.liveness)) {
     const live = ticket.liveness as unknown as Record<string, unknown>;
     const liveHandle = normalizeExecutionHandle(live.execution_handle);

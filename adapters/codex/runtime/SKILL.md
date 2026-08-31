@@ -31,25 +31,31 @@ split into disjoint units, coupled tasks may be merged into one patch, and a
 later overlapping integration unit must be ordered after its predecessor.
 
 Baton validates and persists that plan/run, computes the maximal safe ready
-frontier, and derives each unit's minimum capability (Codex route capability) from complexity,
-context, code scope, reasoning, and native/tool execution needs. It walks only
-the configured `coding_models` in exact priority order. Spark is only the
-first candidate: silently advance when it is under-capable or exhausted in the
-current session and a later configured route qualifies. Never use an
-unconfigured route. Notify only when no configured route is both current-session
-available and capable, and include every candidate's exclusion reason in the
-`NO_QUALIFIED_CANDIDATE` result. Quota and uncallability are session-local
-Baton cache facts; a new Codex session rechecks them.
+frontier, and derives each unit's minimum capability (Codex route capability)
+from complexity, context, code scope, reasoning, and native/tool execution
+needs. For every unit, routing walks only the configured `coding_models` in
+exact priority order. For every unverified session-host-route, single-flight
+the first native launch; bind success to fan out. On native launch failure,
+immediately report the exact code and unmodified raw message with
+`dispatch fail`, then release the ticket. Refill the same run only after that
+terminal/release boundary so Baton uses immutable configured successors. Never
+create a separate read-only probe or a new compiled run, and never special-case
+Spark. Silently continue while any configured route remains available and
+capable. Notify only on `NO_QUALIFIED_CANDIDATE`, listing every configured
+candidate and every exclusion reason. Quota, rate-limit, and uncallability
+evidence are session-local Baton cache facts; session evidence never carries to
+a new Codex session, which must recheck its routes.
 
 For every reservation, pass its prompt unchanged to a fresh exact-model Codex
 native worker (the native child, `fork_context=false`), immediately bind the returned opaque
 `task_name`, wait on real native liveness/activity, record exactly one terminal result,
-and release before refilling. Keep terminal scopes owned until release. Return
-to the director only for source staleness, changed contracts, scope changes,
-safety-blocked partial mutation, or structured `PLAN_INSUFFICIENT`. A worker
-must not redesign or broaden scope, spawn children, touch Git or OpenSpec, or
-choose a model. The parent alone accepts gates and reconciles task checkboxes
-after all mapped units and gates pass; never complete a checkbox early.
+release the ticket before refilling capacity, and keep terminal scopes owned until
+release. Return to the director only for
+source staleness, changed contracts, scope changes, safety-blocked partial
+mutation, or structured `PLAN_INSUFFICIENT`. A worker must not redesign or
+broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
+parent alone accepts gates and reconciles task checkboxes after all mapped units
+and gates pass; never complete a checkbox early.
 
 The compiled CLI operations are explicit and preserve manual compatibility:
 

@@ -45,28 +45,32 @@ The director follows this loop for every explicit apply request:
    units; coupled tasks can map to one patch unit; a later overlapping unit
    must carry an ordering dependency.
 3. Baton validates every unit atomically, persists the immutable plan and
-   versioned run state, and derives the maximal safe ready frontier. It also
-   derives each unit's minimum capability (minimum route capability) from complexity, estimated
-   context, code scope, required reasoning, and execution/tool needs before
-   routing that unit.
-4. Routing walks only the user's configured `coding_models` in their exact
-   priority order. Spark is only the first candidate: if it is under-capable
-   or exhausted in the current session, advance silently to a later configured
-   model when that model qualifies. Never select an unconfigured route. Notify
-   the user only when no configured route is both available in the current
-   Baton session and capable; the `NO_QUALIFIED_CANDIDATE` diagnostic must list every configured
-   candidate and every exclusion reason (including absent, quota, session,
-   context, reasoning, execution-capability, and task-suitability failures).
-   Quota and uncallability are current-session, session-local Baton cache facts only; a new
-   session must recheck them instead of inheriting the old result.
-5. For each reservation, Baton passes the exact reservation prompt unchanged
-   to a fresh native worker with the exact selected model and options,
-   immediately binds the returned opaque handle, waits on real native
-   liveness, records exactly one terminal result, and releases the ticket
-   before refilling capacity. Terminal scopes remain owned until release is
-   confirmed. The worker returns to the director only for source staleness,
-   changed contracts, scope changes, safety-blocked partial mutation, or a
-   structured `PLAN_INSUFFICIENT` result.
+   versioned run state, and derives the maximal safe ready frontier. Before
+   routing, it derives each unit's minimum capability (minimum route
+   capability) from complexity, estimated context, code scope, required
+   reasoning, and execution/tool needs.
+4. For every unit, routing walks only the configured `coding_models` in exact
+   priority order. For every unverified session-host-route, single-flight the
+   first native launch; bind success to fan out. On native launch failure,
+   immediately report the exact code and unmodified raw message with
+   `dispatch fail`, then release the ticket. Refill the same run only after that
+   terminal/release boundary so Baton uses immutable configured successors.
+   Never create a separate read-only probe or a new compiled run, and never
+   special-case Spark. Silently continue while any configured route remains
+   available and capable. Notify the user only on
+   `NO_QUALIFIED_CANDIDATE`, listing every configured candidate and every
+   exclusion reason (including absent, quota, session, context, reasoning,
+   execution-capability, and task-suitability failures).
+5. Quota, rate-limit, and uncallability evidence are current-session,
+   session-local Baton cache facts only; session evidence never carries to a
+   new Baton session, which must recheck its routes. For each reservation,
+   Baton passes the exact reservation prompt unchanged to a fresh native worker
+   with the exact selected model and options, waits on real native liveness,
+   records exactly one terminal result, releases the ticket before refilling
+   capacity, and keeps terminal scopes owned until release is confirmed. The
+   worker returns to the director only for source
+   staleness, changed contracts, scope changes, safety-blocked partial
+   mutation, or a structured `PLAN_INSUFFICIENT` result.
 6. Workers do not redesign or broaden the plan, spawn children, touch Git or
    OpenSpec, choose models, or write outside their Receipt. The parent alone
    accepts gates and, only after every mapped unit and gate passes, reconciles

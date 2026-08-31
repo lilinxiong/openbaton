@@ -27,7 +27,11 @@ export interface ModelAvailabilityRecord {
   probe_attempts: number;
   probe_lease_owner: string | null;
   probe_lease_until: string | null;
+  /** Classification of persisted unavailability evidence, when known. */
+  evidence_kind?: AvailabilityEvidenceKind;
 }
+
+export type AvailabilityEvidenceKind = "quota" | "rate_limit" | "session_uncallable" | null;
 
 type HistoricalModelAvailabilityRecord = Omit<ModelAvailabilityRecord, "session_uid">;
 
@@ -46,6 +50,8 @@ export interface AvailabilityScope {
 
 export interface AvailabilityState extends ModelAvailabilityRecord {
   probe_available: boolean;
+  /** False only for the synthetic default used before this session observes a route. */
+  evidence_present: boolean;
 }
 
 export interface QuotaOutcomeInput {
@@ -60,16 +66,34 @@ const EXPLICIT_QUOTA_CODES = new Set([
   "QUOTA_EXHAUSTED",
   "QUOTA_DEPLETED",
   "INSUFFICIENT_QUOTA",
+  "USAGE_LIMIT_REACHED",
+  "USAGE_LIMIT_EXHAUSTED",
 ]);
 
-/** Generic 429/rate-limit failures deliberately do not satisfy this check. */
+/**
+ * Provider-native usage-limit wording is quota evidence even when it does not
+ * mention a model. A bare HTTP 429 remains rate-limit evidence, not quota.
+ */
 export function isConfirmedQuotaExhaustion(input: QuotaOutcomeInput): boolean {
   const code = String(input.errorCode || "").trim().toUpperCase();
   if (EXPLICIT_QUOTA_CODES.has(code)) return true;
   if (typeof input.remainingPercent === "number" && Number.isFinite(input.remainingPercent) && input.remainingPercent <= 0) return true;
   const message = String(input.message || "");
-  return /\b(?:model|account|plan)\s+quota\s+(?:exhausted|depleted|remaining\s*[:=]?\s*0)\b/i.test(message);
+  return /\b(?:model|account|plan)\s+quota\s+(?:exhausted|depleted|remaining\s*[:=]?\s*0)\b/i.test(message)
+    || /\byou(?:\s+have|['’]ve)\s+hit\s+your\s+usage\s+limit\b/i.test(message)
+    || /\busage\s+limit\s+(?:(?:has|is)\s+been\s+)?(?:reached|exhausted)\b/i.test(message);
 }
+
+/** Explicit provider throttling evidence, kept distinct from quota. */
+export function isExplicitRateLimit(input: QuotaOutcomeInput): boolean {
+  const code = String(input.errorCode || "").trim().toUpperCase().replaceAll("-", "_");
+  if (code === "429" || code === "HTTP_429" || /(?:RATE_LIMIT|RATE_LIMITED|TOO_MANY_REQUESTS|THROTTL(?:ED|ING))/.test(code)) return true;
+  return /\b(?:rate[ -]?limit(?:ed|ing)?|too\s+many\s+requests|throttl(?:ed|ing))\b/i.test(String(input.message || ""));
+}
+
+/** Publicly named counterpart to isConfirmedQuotaExhaustion for callers that
+ * need to preserve rate-limit evidence without relabeling it as quota. */
+export const isConfirmedRateLimit = isExplicitRateLimit;
 
 export function earliestQuotaResetAt(values: Array<string | null | undefined>): string | null {
   const timestamps = values
@@ -129,6 +153,13 @@ function normalizeAvailabilityFields(item: Record<string, unknown>, requireHashe
   if (!optionalTimestamp(item.reset_at) || !optionalTimestamp(item.next_probe_at)) return null;
   if (!optionalOwner(item.probe_lease_owner) || !optionalTimestamp(item.probe_lease_until)) return null;
   if (!Number.isFinite(attempts) || attempts < 0 || !Number.isInteger(attempts)) return null;
+  const rawKind = item.evidence_kind;
+  const evidenceKind = rawKind === undefined || rawKind === null
+    ? (statusEvidenceKind(item.status, item.reason) as AvailabilityEvidenceKind)
+    : rawKind === "quota" || rawKind === "rate_limit" || rawKind === "session_uncallable"
+      ? rawKind
+      : null;
+  if (rawKind !== undefined && rawKind !== null && evidenceKind === null) return null;
   return {
     host,
     account_scope: scope,
@@ -141,7 +172,16 @@ function normalizeAvailabilityFields(item: Record<string, unknown>, requireHashe
     probe_attempts: attempts,
     probe_lease_owner: String(item.probe_lease_owner || "").trim() || null,
     probe_lease_until: String(item.probe_lease_until || "").trim() || null,
+    evidence_kind: evidenceKind,
   };
+}
+
+function statusEvidenceKind(status: unknown, reason: unknown): AvailabilityEvidenceKind {
+  if (status !== "exhausted" && status !== "probe_due") return null;
+  const value = String(reason || "");
+  if (isExplicitRateLimit({ errorCode: value, message: value })) return "rate_limit";
+  if (/UNCALLABLE|NOT_CALLABLE|UNAVAILABLE|UNREACHABLE/i.test(value)) return "session_uncallable";
+  return "quota";
 }
 
 function normalizeRecord(value: unknown): ModelAvailabilityRecord | null {
@@ -351,7 +391,8 @@ export function availabilityForRoute(
 ): AvailabilityState {
   const sessionUid = sessionUidFromEnv(env);
   const identity = scopeOf(scope, sessionUid);
-  const record = recordFor(readModelAvailability(cwd, env), identity) || {
+  const persisted = recordFor(readModelAvailability(cwd, env), identity);
+  const record = persisted || {
     ...identity,
     status: "available" as const,
     reason: null,
@@ -361,7 +402,9 @@ export function availabilityForRoute(
     probe_attempts: 0,
     probe_lease_owner: null,
     probe_lease_until: null,
+    evidence_kind: null as AvailabilityEvidenceKind,
   };
+  const evidencePresent = persisted !== null;
   const current = new Date(now instanceof Date ? now : new Date(now)).getTime();
   const leaseUntil = millis(record.probe_lease_until);
   const due = record.status === "exhausted"
@@ -371,13 +414,14 @@ export function availabilityForRoute(
     ...record,
     status: due ? "probe_due" : record.status,
     probe_available: (due || record.status === "probe_due") && (!leaseUntil || leaseUntil <= current),
+    evidence_present: evidencePresent,
   };
 }
 
 export function markRouteExhausted(
   cwd: string,
   scope: AvailabilityScope,
-  { reason = "QUOTA_EXHAUSTED", resetAt = null, now = new Date(), env }: { reason?: string; resetAt?: string | null; now?: Date | string | number; env?: NodeJS.ProcessEnv } = {},
+  { reason = "QUOTA_EXHAUSTED", resetAt = null, now = new Date(), env, evidenceKind }: { reason?: string; resetAt?: string | null; now?: Date | string | number; env?: NodeJS.ProcessEnv; evidenceKind?: Exclude<AvailabilityEvidenceKind, null> } = {},
 ): ModelAvailabilityRecord {
   const observed = iso(now);
   const result = withAvailabilityLock(cwd, env, new Date(observed), null, () => {
@@ -397,6 +441,7 @@ export function markRouteExhausted(
       probe_attempts: attempts,
       probe_lease_owner: null,
       probe_lease_until: null,
+      evidence_kind: evidenceKind || statusEvidenceKind("exhausted", reason),
     };
     replaceRecord(store, record);
     writeModelAvailability(cwd, store, env);
@@ -424,6 +469,7 @@ export function markRouteAvailable(
       probe_attempts: 0,
       probe_lease_owner: null,
       probe_lease_until: null,
+      evidence_kind: null,
     };
     const store = readModelAvailability(cwd, env);
     replaceRecord(store, record);

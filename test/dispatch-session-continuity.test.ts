@@ -140,6 +140,23 @@ describe("dispatch session continuity", () => {
     assert.equal(readSpawn(cwd, ticket.id, ownerEnv).status, "queued");
   }));
 
+  it("rejects an errored finish without explicit failure evidence", async () => withHome(async (home) => {
+    const cwd = newCwd("baton-dispatch-session-fail-evidence-");
+    const env = fakeEnv(home, { BATON_SESSION_ID: "fail-evidence-tree" });
+    const ticket = dispatchingTicket(cwd, env);
+    writeSpawn(cwd, ticket, env);
+
+    await assert.rejects(
+      finishAgent(cwd, ticket.id, { status: "errored", host: "alpha", env }),
+      (error: unknown) => (error as { code?: string }).code === "ERROR_CODE_REQUIRED",
+    );
+    await assert.rejects(
+      finishAgent(cwd, ticket.id, { status: "errored", errorCode: "NATIVE_EXECUTION_FAILED", errorMessage: "  ", host: "alpha", env }),
+      (error: unknown) => (error as { code?: string }).code === "ERROR_MESSAGE_REQUIRED",
+    );
+    assert.equal(readSpawn(cwd, ticket.id, env).status, "dispatching");
+  }));
+
   it("reconnects to the persisted native handle and completes the same ticket", async () => withHome(async (home) => {
     const cwd = newCwd("baton-dispatch-session-reconnect-");
     const env = fakeEnv(home, { BATON_SESSION_ID: "reconnect-tree" });
@@ -181,7 +198,7 @@ describe("dispatch session continuity", () => {
     publishRouteSnapshot(cwd, {
       models: [
         { id: exhaustedRoute, route_id: exhaustedRoute, provider: "alpha", supportedReasoningEfforts: ["low"], defaultReasoningEffort: "low" },
-        { id: successorRoute, route_id: successorRoute, provider: "alpha", supportedReasoningEfforts: ["low"], defaultReasoningEffort: "low" },
+        { id: successorRoute, route_id: successorRoute, provider: "alpha", supportedReasoningEfforts: ["medium", "high"], defaultReasoningEffort: "medium" },
       ],
     }, new Date("2026-08-27T00:00:00.000Z"), { cli: "alpha", host: "alpha", env });
     const id = nextSpawnId(cwd, "spn", env);
@@ -219,6 +236,7 @@ describe("dispatch session continuity", () => {
     ticket.target_host = "alpha";
     ticket.started_at = ticket.created_at;
     ticket.execution_handle = { kind: "alpha-task", value: "quota-handle", source: "native-return" };
+    ticket.routing_requirements = { required_reasoning_effort: "high", estimated_context_tokens: null };
     ticket.history.push({ event: "agent_bound", at: ticket.created_at });
     writeReceipt(cwd, receipt, env);
     writeSpawn(cwd, ticket, env);
@@ -246,6 +264,7 @@ describe("dispatch session continuity", () => {
     assert.equal(successor.session_ordinal, ticket.session_ordinal + 1);
     assert.equal(successor.successor_from_ticket_id, ticket.id);
     assert.equal(successor.route_id, successorRoute);
+    assert.equal(successor.reasoning_effort, "high");
     assert.equal(successor.status, "queued");
   }));
 

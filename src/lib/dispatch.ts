@@ -42,6 +42,7 @@ import { withActivationLockAsync, type ActivationLockOptions } from "./activatio
 import {
   availabilityForRoute,
   claimRouteProbe,
+  isExplicitRateLimit,
   isConfirmedQuotaExhaustion,
   markRouteAvailable,
   markRouteExhausted,
@@ -450,7 +451,7 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
   } else {
     const availability = availabilityForRoute(cwd, { host, routeId: ticket.route_id }, at, env);
     if ((availability.status === "exhausted" || availability.status === "probe_due") && !availability.probe_available) {
-      code = "MODEL_QUOTA_EXHAUSTED";
+      code = availability.evidence_kind === "rate_limit" ? "MODEL_RATE_LIMITED" : "MODEL_QUOTA_EXHAUSTED";
       message = `ticket ${ticket.id} route ${ticket.route_id} is unavailable until ${availability.reset_at || availability.next_probe_at || "a later probe"}`;
     }
   }
@@ -962,6 +963,13 @@ function activeTicketsInDispatchScope(tickets: SpawnTicket[], host: HostId, env:
   return ticketsInDispatchScope(tickets, host, env).filter(holdsHostSlot);
 }
 
+/** A synthetic route has no durable callability evidence yet. Keep one native
+ * launch in flight so a cold route cannot fan out before its first result. */
+function hasPendingSyntheticRouteProbe(tickets: SpawnTicket[], host: HostId, routeId: string, env: NodeJS.ProcessEnv): boolean {
+  return ticketsInDispatchScope(tickets, host, env).some((ticket) =>
+    ticket.route_id === routeId && ticket.status === "dispatching" && !ticket.execution_handle);
+}
+
 export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SAFE_INTEGER, host, now, env = process.env, safety, activationLock = {}, dispatchLock = {} }: ReserveOptions) {
   // Establish the root-agent-tree scope before acquiring either mutation
   // lock.  A missing BATON_SESSION_ID must not create a reservation or a
@@ -1036,7 +1044,7 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
       if (rejected) {
         blocked.push(rejected);
         let successorId: string | null = null;
-        if (rejected.code === "MODEL_QUOTA_EXHAUSTED"
+        if (rejected.code === "MODEL_QUOTA_EXHAUSTED" || rejected.code === "MODEL_RATE_LIMITED"
           || isSessionUncallable({ errorCode: ticket.error?.code, message: ticket.error?.message })) {
           successorId = await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions, compiledContext);
         }
@@ -1049,6 +1057,15 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
         continue;
       }
       const availability = availabilityForRoute(cwd, { host: targetHost, routeId: ticket.route_id! }, at, env);
+      if (!availability.evidence_present && hasPendingSyntheticRouteProbe(tickets, targetHost, ticket.route_id!, env)) {
+        const probePending = {
+          ticket_id: ticket.id,
+          code: "ROUTE_PROBE_PENDING",
+          message: `ticket ${ticket.id} route ${ticket.route_id} is awaiting the first native probe result`,
+        };
+        blocked.push(probePending);
+        continue;
+      }
       if ((availability.status === "exhausted" || availability.status === "probe_due") && availability.probe_available) {
         const nextAttempt = Number(ticket.attempt || 0) + 1;
         const probe = claimRouteProbe(cwd, { host: targetHost, routeId: ticket.route_id! }, {
@@ -1363,12 +1380,16 @@ function peerWriteAllowlists(cwd: string, ticket: SpawnTicket, env: NodeJS.Proce
   if (ownLedger) ledger.add(ownLedger);
   for (const other of listSpawns(cwd, env).map(requireCurrentTicket)) {
     const otherLedger = relativeLedgerPath(cwd, other.openspec?.tasks_path);
-    if (otherLedger) ledger.add(otherLedger);
+    // A terminal ticket without a native handle never acquired a host slot
+    // or workspace write scope. Do not let its historical ledger path keep
+    // blocking later workers after normalization has marked it released.
+    const terminalWithoutNativeHandle = TERMINAL_TICKET_STATUSES.has(other.status) && !other.execution_handle;
+    if (otherLedger && !terminalWithoutNativeHandle) ledger.add(otherLedger);
     if (other.id === ticket.id || other.mode !== "write" || !other.receipt_id) continue;
-    const overlapping = Boolean(other.started_at)
+    const overlapping = !terminalWithoutNativeHandle && (Boolean(other.started_at)
       || other.status === "dispatching"
       || other.status === "running"
-      || other.status === "completed";
+      || other.status === "completed");
     if (!overlapping) continue;
     try {
       const allowlist = readReceipt(cwd, other.receipt_id, env).scope.write_allowlist;
@@ -1503,6 +1524,7 @@ function availabilityOutcome(
     if (isConfirmedQuotaExhaustion(outcome) && !positiveRemaining) {
       const record = markRouteExhausted(cwd, { host, routeId: ticket.route_id }, {
         reason: outcome.errorCode || "QUOTA_EXHAUSTED",
+        evidenceKind: "quota",
         resetAt: outcome.resetAt || null,
         now: at,
         env: outcome.env,
@@ -1510,6 +1532,24 @@ function availabilityOutcome(
       return {
         status: record.status,
         reason: record.reason,
+        evidence_kind: record.evidence_kind,
+        reset_at: record.reset_at,
+        next_probe_at: record.next_probe_at,
+        remaining_percent: outcome.remainingPercent ?? null,
+      };
+    }
+    if (isExplicitRateLimit(outcome)) {
+      const record = markRouteExhausted(cwd, { host, routeId: ticket.route_id }, {
+        reason: outcome.errorCode || "RATE_LIMITED",
+        evidenceKind: "rate_limit",
+        resetAt: outcome.resetAt || null,
+        now: at,
+        env: outcome.env,
+      });
+      return {
+        status: record.status,
+        reason: record.reason,
+        evidence_kind: record.evidence_kind,
         reset_at: record.reset_at,
         next_probe_at: record.next_probe_at,
         remaining_percent: outcome.remainingPercent ?? null,
@@ -1518,6 +1558,7 @@ function availabilityOutcome(
     if (isSessionUncallable(outcome)) {
       const record = markRouteExhausted(cwd, { host, routeId: ticket.route_id }, {
         reason: outcome.errorCode || "MODEL_SESSION_UNCALLABLE",
+        evidenceKind: "session_uncallable",
         resetAt: null,
         now: at,
         env: outcome.env,
@@ -1525,6 +1566,7 @@ function availabilityOutcome(
       return {
         status: record.status,
         reason: record.reason,
+        evidence_kind: record.evidence_kind,
         reset_at: record.reset_at,
         next_probe_at: record.next_probe_at,
         remaining_percent: outcome.remainingPercent ?? null,
@@ -1532,11 +1574,12 @@ function availabilityOutcome(
     }
     if (outcome.success || positiveRemaining) {
       const record = markRouteAvailable(cwd, { host, routeId: ticket.route_id }, { now: at, env: outcome.env });
-      return { status: record.status, reason: null, reset_at: null, next_probe_at: null };
+      return { status: record.status, reason: null, evidence_kind: record.evidence_kind, reset_at: null, next_probe_at: null };
     }
     return null;
   } catch (error) {
     const durable = isConfirmedQuotaExhaustion(outcome)
+      || isExplicitRateLimit(outcome)
       || isSessionUncallable(outcome)
       || (typeof outcome.remainingPercent === "number" && outcome.remainingPercent <= 0)
       || outcome.success === true
@@ -1563,6 +1606,7 @@ function isSessionUncallable(input: { errorCode?: string | null; message?: strin
 interface SuccessorRouteCandidate {
   route: ExecutableRoute;
   routeId: string;
+  reasoning_effort: string | null;
   exclusions: Array<{ model_id: string; route_id: string; codes: string[]; reasons: string[] }>;
 }
 
@@ -1613,6 +1657,13 @@ const SUCCESSOR_EFFORT_RANK: Record<string, number> = {
 function successorEffort(value: unknown): string | null {
   const normalized = String(value || "").trim().toLowerCase().replaceAll(/[_ ]+/g, "-");
   return Object.hasOwn(SUCCESSOR_EFFORT_RANK, normalized) ? normalized : null;
+}
+
+function lowestSupportedEffort(values: string[], minimumRank: number): string | null {
+  return values
+    .map((value) => successorEffort(value))
+    .filter((value): value is string => Boolean(value) && SUCCESSOR_EFFORT_RANK[value] >= minimumRank)
+    .sort((left, right) => SUCCESSOR_EFFORT_RANK[left] - SUCCESSOR_EFFORT_RANK[right])[0] || null;
 }
 
 function successorCapability(value: unknown): string {
@@ -1700,6 +1751,8 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
     || requirements.reasoning
     || ticket.reasoning_effort
     || "").trim() || null;
+  const requiredEffortValue = successorEffort(requiredEffort);
+  const requiredEffortRank = requiredEffortValue ? SUCCESSOR_EFFORT_RANK[requiredEffortValue] : 0;
   const estimatedContext = Number(requirements.estimated_context_tokens
     ?? requirements.estimatedContextTokens
     ?? requirements.estimated_context
@@ -1733,8 +1786,10 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
       ? "ROUTE_ABSENT_FROM_ACTIVE_CATALOG"
       : isSessionUncallable({ errorCode: ticket.error?.code, message: ticket.error?.message })
         ? "CURRENT_SESSION_UNCALLABLE"
-        : availability?.status === "exhausted" || availability?.status === "probe_due"
-          ? "CURRENT_SESSION_QUOTA_EXHAUSTED"
+        : availability?.evidence_kind === "rate_limit"
+          ? "CURRENT_SESSION_RATE_LIMITED"
+          : availability?.status === "exhausted" || availability?.status === "probe_due"
+            ? "CURRENT_SESSION_QUOTA_EXHAUSTED"
           : "NATIVE_ROUTE_FAILURE";
     exclusions.push({
       model_id: configuredId,
@@ -1754,10 +1809,18 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
     } else if (route.disabled) {
       codes.push("ROUTE_DISABLED"); reasons.push("route is disabled in the active CLI catalog");
     } else {
-      const requiredEffortValue = successorEffort(requiredEffort);
-      const requiredEffortRank = requiredEffortValue ? SUCCESSOR_EFFORT_RANK[requiredEffortValue] : 0;
       const supportedEfforts = route.reasoning_efforts.map((item) => successorEffort(item) || String(item).trim().toLowerCase());
-      const candidateEffort = successorEffort(variant.effort || route.default_reasoning_effort || ticket.reasoning_effort);
+      // An unqualified route may advertise a lower default while still
+      // supporting the captured minimum. Preserve that captured requirement
+      // for the successor instead of rejecting the route because its default
+      // is lower.
+      const capturedMinimumEffort = requiredEffortValue && supportedEfforts.length > 0
+        ? lowestSupportedEffort(supportedEfforts, requiredEffortRank)
+        : null;
+      const candidateEffort = successorEffort(variant.effort)
+        || capturedMinimumEffort
+        || successorEffort(route.default_reasoning_effort)
+        || successorEffort(ticket.reasoning_effort);
       const candidateEffortRank = candidateEffort ? SUCCESSOR_EFFORT_RANK[candidateEffort] || 0 : 0;
       const exactVariantUnsupported = Boolean(variant.effort && supportedEfforts.length && !supportedEfforts.includes(variant.effort.toLowerCase()));
       const unsupportedDefault = Boolean(requiredEffort && !variant.effort && supportedEfforts.length
@@ -1791,7 +1854,9 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
       const availability = availabilityForRoute(cwd, { host, routeId: route.route_id }, at, env);
       if ((availability.status === "exhausted" || availability.status === "probe_due") && !availability.probe_available) {
         const uncallable = isSessionUncallable({ errorCode: availability.reason, message: availability.reason });
-        codes.push(uncallable ? "CURRENT_SESSION_UNCALLABLE" : "CURRENT_SESSION_QUOTA_EXHAUSTED");
+        codes.push(uncallable
+          ? "CURRENT_SESSION_UNCALLABLE"
+          : availability.evidence_kind === "rate_limit" ? "CURRENT_SESSION_RATE_LIMITED" : "CURRENT_SESSION_QUOTA_EXHAUSTED");
         reasons.push(availability.reason || "route is unavailable in the current Baton session");
       }
     }
@@ -1801,7 +1866,13 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
     }
     exclusions.push({ model_id: modelId, route_id: variant.base, codes: ["AVAILABLE"], reasons: ["later configured route satisfies the captured requirements"] });
     (ticket as unknown as UnknownRecord).successor_exclusion_matrix = exclusions;
-    return { route, routeId: configuredId, exclusions };
+    const selectedEffort = successorEffort(variant.effort)
+      || (requiredEffortValue && route.reasoning_efforts.length > 0
+        ? lowestSupportedEffort(route.reasoning_efforts, requiredEffortRank)
+        : null)
+      || successorEffort(route.default_reasoning_effort)
+      || successorEffort(ticket.reasoning_effort);
+    return { route, routeId: configuredId, reasoning_effort: selectedEffort, exclusions };
   }
   (ticket as unknown as UnknownRecord).successor_exclusion_matrix = exclusions;
   return null;
@@ -1874,7 +1945,8 @@ async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string
   const successorId = sessionTicketId("spn", ticket.session_uid, successorOrdinal);
   const route = candidate.route;
   const candidateVariant = routeVariantBase(candidate.routeId);
-  const reasoningEffort = candidateVariant.effort
+  const reasoningEffort = candidate.reasoning_effort
+    || candidateVariant.effort
     || (ticket.reasoning_effort && route.reasoning_efforts.includes(ticket.reasoning_effort) ? ticket.reasoning_effort : route.default_reasoning_effort);
   const serviceTier = ticket.service_tier
     && (route.service_tiers.includes(ticket.service_tier) || route.additional_speed_tiers.includes(ticket.service_tier))
@@ -1995,6 +2067,14 @@ export async function finishAgent(cwd: string, id: string, {
   sessionUid(env);
   const terminal = String(status || "").trim();
   if (!TERMINAL_TICKET_STATUSES.has(terminal as TicketStatus)) throw new DispatchError(`invalid terminal status: ${terminal}`, "INVALID_TERMINAL_STATUS", { ticketId: id });
+  if (terminal === "errored") {
+    if (typeof errorCode !== "string" || !errorCode.trim()) {
+      throw new DispatchError(`ticket ${id} failure requires an explicit error code`, "ERROR_CODE_REQUIRED", { ticketId: id });
+    }
+    if (typeof errorMessage !== "string" || !errorMessage.trim()) {
+      throw new DispatchError(`ticket ${id} failure requires a raw error message`, "ERROR_MESSAGE_REQUIRED", { ticketId: id });
+    }
+  }
   const safetyOptions = safety || {};
   return withDispatchLockAsync(cwd, async () => {
     const at = instant(now).toISOString();
@@ -2069,6 +2149,7 @@ export async function finishAgent(cwd: string, id: string, {
         ticket.error = rejection;
         ticket.conclusion = null;
         ticket.finished_at = at;
+        if (!ticket.execution_handle && !ticket.slot_released_at) ticket.slot_released_at = at;
         const availability = availabilityOutcome(cwd, ticket, at, {
           errorCode: hostError?.code,
           message: hostError?.message,
@@ -2111,6 +2192,7 @@ export async function finishAgent(cwd: string, id: string, {
         ticket.error = rejection;
         ticket.conclusion = null;
         ticket.finished_at = at;
+        if (!ticket.execution_handle && !ticket.slot_released_at) ticket.slot_released_at = at;
         const availability = availabilityOutcome(cwd, ticket, at, {
           errorCode: hostError?.code,
           message: hostError?.message,
@@ -2167,6 +2249,9 @@ export async function finishAgent(cwd: string, id: string, {
       }
     }
     ticket.finished_at = at;
+    // Keep the returned terminal ticket consistent with spawn normalization:
+    // a pre-bind failure has no native slot to await or release.
+    if (!ticket.execution_handle && !ticket.slot_released_at) ticket.slot_released_at = at;
     const availability = availabilityOutcome(cwd, ticket, at, {
       errorCode: hostError?.code,
       message: hostError?.message,
@@ -2181,7 +2266,8 @@ export async function finishAgent(cwd: string, id: string, {
       errorCode: hostError.code,
       message: hostError.message,
       remainingPercent,
-    }) || isSessionUncallable({ errorCode: hostError?.code, message: hostError?.message }))) {
+    }) || isExplicitRateLimit({ errorCode: hostError.code, message: hostError.message })
+      || isSessionUncallable({ errorCode: hostError?.code, message: hostError?.message }))) {
       // availabilityOutcome either durably records the route state or throws
       // MODEL_AVAILABILITY_WRITE_FAILED. Never create a successor from an
       // unpersisted quota decision.
@@ -2225,6 +2311,12 @@ export function releaseAgent(cwd: string, id: string, {
     if (!TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is not terminal`, "RELEASE_REQUIRES_TERMINAL", { ticketId: id, currentStatus: ticket.status });
     }
+    if (ticket.slot_released_at) {
+      // Native release confirmation may be retried after a transport timeout.
+      // A handle is not required once the ticket is already known released,
+      // including terminal tickets that never acquired one.
+      return ticket;
+    }
     if (!ticket.execution_handle) {
       throw new DispatchError(`ticket ${id} has no bound execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
     }
@@ -2235,13 +2327,6 @@ export function releaseAgent(cwd: string, id: string, {
     if (requestedHandle
       && (requestedHandle.kind !== ticket.execution_handle.kind || requestedHandle.value !== ticket.execution_handle.value)) {
       throw new DispatchError(`ticket ${id} is bound to ${ticket.execution_handle.value}, not ${requestedHandle.value}`, "EXECUTION_HANDLE_MISMATCH", { ticketId: id });
-    }
-    if (ticket.slot_released_at) {
-      // Native release confirmation may be retried after a transport timeout.
-      // The first confirmation already returned this tree-local slot, so a
-      // repeated confirmation must be a no-op rather than a second lifecycle
-      // mutation or a second release event.
-      return ticket;
     }
     ticket.slot_released_at = at;
     history(ticket, "agent_slot_released", at, {

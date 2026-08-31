@@ -117,6 +117,36 @@ describe("compiled apply run persistence", () => {
     assert.equal(readApplyRun(cwd, "run-1", { env }).task_state["1"]!.status, "accepted");
   });
 
+  it("keeps task execution facts separate across multiple mapped units", () => {
+    const { cwd, env, result } = create({
+      plan: multiUnitPlan(),
+      ticket_facts: [
+        { ticket_id: "ticket-u1", status: "queued", unit_ids: ["u1"], task_ids: ["1"] },
+        { ticket_id: "ticket-u2", status: "queued", unit_ids: ["u2"], task_ids: ["1"] },
+      ],
+    });
+
+    assert.deepEqual(result.task_state["1"]!.ticket_ids, ["ticket-u1", "ticket-u2"]);
+    assert.equal(result.task_state["1"]!.frozen_execution_facts, null);
+    const queued = statusApplyRun(cwd, "run-1", { env });
+    assert.equal(queued.unit_status.u1, "materialized");
+    assert.equal(queued.unit_status.u2, "materialized");
+    assert.equal(queued.task_status["1"], "materialized");
+
+    const statePath = compiledApplyRunStatePath(cwd, "run-1", env);
+    const firstAccepted = JSON.parse(fs.readFileSync(statePath, "utf8")) as ApplyRunState;
+    firstAccepted.unit_state.u1!.status = "accepted";
+    fs.writeFileSync(statePath, `${JSON.stringify(firstAccepted, null, 2)}\n`);
+    assert.equal(statusApplyRun(cwd, "run-1", { env }).task_status["1"], "materialized");
+
+    const bothAccepted = JSON.parse(fs.readFileSync(statePath, "utf8")) as ApplyRunState;
+    bothAccepted.unit_state.u2!.status = "accepted";
+    fs.writeFileSync(statePath, `${JSON.stringify(bothAccepted, null, 2)}\n`);
+    const accepted = statusApplyRun(cwd, "run-1", { env });
+    assert.equal(accepted.task_status["1"], "accepted");
+    assert.equal(readApplyRun(cwd, "run-1", { env }).task_state["1"]!.frozen_execution_facts, null);
+  });
+
   it("preserves failure facts when state is reconstructed", () => {
     for (const status of ["errored", "timed_out", "closed"] as const) {
       const { cwd, env } = create({ ticket_facts: [{ ticket_id: `ticket-${status}`, status, unit_ids: ["u1"] }] });

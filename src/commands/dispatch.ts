@@ -252,6 +252,9 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
     if (!id) throw new Error(USAGE.trim());
     const timeoutProbeSequence = sub === "timeout" ? stringFlag(flags, "probe-sequence") : undefined;
     if (sub === "timeout" && !timeoutProbeSequence) throw new Error(USAGE.trim());
+    if (sub === "fail" && (!stringFlag(flags, "code")?.trim() || !stringFlag(flags, "message")?.trim())) {
+      throw new Error(USAGE.trim());
+    }
     const status = sub === "fail" ? "errored" : sub === "timeout" ? "timed_out" : "closed";
     const ticket = await finishAndMaybeRelease(cwd, id, flags, {
       status,

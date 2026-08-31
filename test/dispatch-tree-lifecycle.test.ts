@@ -113,6 +113,51 @@ describe("dispatch tree slot lifecycle", () => {
     }
   }));
 
+  it("auto-releases a native failure reported before bind", async () => withHome(async (home) => {
+    const cwd = newCwd();
+    const env = fakeEnv(home, { BATON_SESSION_ID: "tree-pre-bind-native-failure" });
+    try {
+      configureLifecycleRoute(cwd, env);
+      const ticket = queuedTicket(cwd, env);
+      await reserveNext(cwd, { capacity: 1, host: HOST, limit: 1, env });
+      const failed = await finishAgent(cwd, ticket.id, {
+        status: "errored",
+        errorCode: "NATIVE_EXECUTION_FAILED",
+        errorMessage: "native worker failed before returning a handle",
+        host: HOST,
+        env,
+      });
+
+      assert.equal(failed.status, "errored");
+      assert.equal(failed.slot_released_at, failed.finished_at);
+      assert.equal(dispatchSnapshot(cwd, { capacity: 1, host: HOST, env }).active, 0);
+      assert.deepEqual(dispatchSnapshot(cwd, { capacity: 1, host: HOST, env }).awaiting_release, []);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
+  it("releases an already released unbound terminal ticket without a handle", async () => withHome(async (home) => {
+    const cwd = newCwd();
+    const env = fakeEnv(home, { BATON_SESSION_ID: "tree-release-unbound-idempotent" });
+    try {
+      configureLifecycleRoute(cwd, env);
+      const ticket = queuedTicket(cwd, env);
+      ticket.status = "errored";
+      ticket.error = { code: "NATIVE_EXECUTION_FAILED", message: "native worker failed before bind" };
+      ticket.finished_at = ticket.created_at;
+      writeSpawn(cwd, ticket, env);
+      const persisted = readSpawn(cwd, ticket.id, env);
+      assert.equal(persisted.slot_released_at, ticket.finished_at);
+
+      const released = releaseAgent(cwd, ticket.id, { host: HOST, env });
+      assert.equal(released.slot_released_at, ticket.finished_at);
+      assert.equal(released.history.some((entry) => entry.event === "agent_slot_released"), false);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
   it("keeps every terminal state occupied until confirmed release", async () => withHome(async (home) => {
     for (const terminal of ["completed", "errored", "closed", "timed_out"] as const) {
       const cwd = newCwd();

@@ -8,6 +8,7 @@ import { run } from "../src/cli.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { getCliAdapter } from "../src/adapters/registry.js";
+import { markRouteAvailable } from "../src/lib/model-availability.js";
 import { withHome, fakeEnv, testTicketId } from "./home.js";
 import { configureCli } from "./configure.js";
 import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
@@ -33,12 +34,13 @@ function gitRepo(cwd: string): void {
   execFileSync("git", ["commit", "-m", "init"], { cwd });
 }
 
-async function configureManifestHost(cwd: string, env: NodeJS.ProcessEnv, host: "alpha" | "beta"): Promise<void> {
+async function configureManifestHost(cwd: string, env: NodeJS.ProcessEnv, host: "alpha" | "beta"): Promise<string> {
   const catalog = await getCliAdapter(host, env).discoverModels({ env });
   const model = catalog.models[0]?.id;
   if (!model) throw new Error(`${host} manifest catalog returned no models`);
   configureCli(cwd, env, host, [model]);
   publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), { cli: host, host });
+  return model;
 }
 
 describe("baton apply orchestration", () => {
@@ -48,7 +50,9 @@ describe("baton apply orchestration", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       gitRepo(cwd);
-      await configureManifestHost(cwd, env, "alpha");
+      const model = await configureManifestHost(cwd, env, "alpha");
+      // These tests simulate an already verified route to isolate scope behavior.
+      markRouteAvailable(cwd, { host: "alpha", routeId: model }, { env });
       const changeDir = path.join(cwd, "openspec", "changes", "wave-demo");
       fs.mkdirSync(changeDir, { recursive: true });
       const tasksPath = path.join(changeDir, "tasks.md");
@@ -183,7 +187,9 @@ describe("baton apply orchestration", () => {
       const env = fakeEnv(home);
       assert.equal((await command(["init"], { cwd, env })).code, 0);
       gitRepo(cwd);
-      await configureManifestHost(cwd, env, "alpha");
+      const model = await configureManifestHost(cwd, env, "alpha");
+      // These tests simulate an already verified route to isolate scope behavior.
+      markRouteAvailable(cwd, { host: "alpha", routeId: model }, { env });
       const changeDir = path.join(cwd, "openspec", "changes", "shared-split");
       fs.mkdirSync(changeDir, { recursive: true });
       fs.writeFileSync(path.join(changeDir, "tasks.md"), `# Shared split
@@ -282,7 +288,7 @@ describe("baton apply orchestration", () => {
       fs.writeFileSync(path.join(cwd, "src", "lib", "hosts.ts"), "hosts\n");
       execFileSync("git", ["add", "src/lib/config.ts", "src/lib/hosts.ts"], { cwd });
       execFileSync("git", ["commit", "-m", "paths"], { cwd });
-      await configureManifestHost(cwd, env, "alpha");
+      const model = await configureManifestHost(cwd, env, "alpha");
       const changeDir = path.join(cwd, "openspec", "changes", "parallel-complete");
       fs.mkdirSync(changeDir, { recursive: true });
       fs.writeFileSync(path.join(changeDir, "tasks.md"), `# Parallel complete
@@ -292,6 +298,8 @@ describe("baton apply orchestration", () => {
 - [ ] 1.1 implement src/lib/config.ts types
 - [ ] 1.2 implement src/lib/hosts.ts detection
 `);
+      // These tests simulate an already verified route to isolate scope and concurrency behavior.
+      markRouteAvailable(cwd, { host: "alpha", routeId: model }, { env });
       const result = await command([
         "apply", "parallel-complete", "--host", "alpha", "--dispatch", "--json", "--capacity", "4",
         "--unit", "1.1", "--write-path", "src/lib/config.ts",
