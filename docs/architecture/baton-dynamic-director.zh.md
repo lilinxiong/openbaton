@@ -59,6 +59,53 @@ baton spawn/apply
 `coding_models` 列表是策略标签；adapter 目录仍是模型 id 与支持选项的权威。
 adapter、profile、模型、选项、授权或分类不可用时，执行停止。
 
+## 编译后的 OpenSpec apply
+
+OpenSpec apply 是 director 路径中的第二个显式 skill：Codex 使用
+`$baton $openspec-apply-change <change>`，Grok 使用 `/baton
+$openspec-apply-change <change>`。Baton 没有 hook，只有 host 调用显式发生后
+才激活。OpenSpec task ledger 仍是规范事实源。dispatch 前，主 agent 先读取
+apply instructions、返回的每个 `contextFiles`、仓库指导和受影响代码，再编译
+带版本的细粒度计划。计划必须包含精确 task refs、dependencies、read context、
+write paths/operations、命令式 patch recipe、done criteria、validation、
+parent gates 和 task mappings。
+
+计划支持把一个宽任务拆为多个互不冲突 unit，把耦合任务合成一个 patch，并让
+后续与前序重叠的 integration unit 在依赖之后执行。unit 只能是
+`patch-only` 或 `verification-only`。Baton 原子校验并持久化 plan/run，计算
+maximal safe ready frontier，并根据复杂度、上下文、代码 scope、reasoning 和
+执行需求推导每个 unit 的 minimum capability。路由只遍历已配置的 route，且
+严格遵循优先级顺序。Spark 只是第一个候选：当前 session 中能力不足或已耗尽
+时，若后面的已配置 route 合格则静默前进；绝不选择未配置 route。只有没有
+同时满足当前 session 可用和能力足够的 configured candidate 时才通知，且
+`NO_QUALIFIED_CANDIDATE` 必须列出所有候选及排除原因。quota 和 uncallability
+只是当前 session cache，新 session 必须重新核查。
+
+每个 reservation 的 prompt 原样交给带精确模型的新 native worker，立即绑定
+opaque handle，依据真实 liveness 等待，记录一次 terminal result，并在 refill
+前 release；terminal scope 在 release 前继续占用。worker 不得重设计、扩大
+scope、spawn 子 agent、触碰 Git/OpenSpec 或选择模型。只有 parent 在所有
+mapped unit 与 gate 通过后接受 gate 并 reconcile OpenSpec checkbox；checkbox
+完成刻意延后。source staleness、changed contract、scope 变化、安全门阻断的
+部分修改和结构化 `PLAN_INSUFFICIENT` 都返回 director。
+
+编译 run 的 CLI 为：
+
+```text
+baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host <host> --run <run-id> --status --json
+baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+首个计划是 revision `1`；successor 必须保留 selected-task coverage，携带当前
+parent revision/fingerprint，并重新通过 catalog、capability、scope 和
+baseline 校验。`--status` 只读，`--accept-gate` 记录 parent 证据，只有
+`--reconcile` 写 canonical ledger。旧式手工 apply 的显式 scope 与
+`--read-only` 仍兼容；compiled 模式拒绝手工 scope flag。上述失败路径都
+fail closed，不猜测 route，也不接受部分结果。
+
 ## Director 与调度
 
 director 负责讨论、只读分析、分类、依赖排序、授权和仓库 scope。

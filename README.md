@@ -300,6 +300,62 @@ baton dispatch complete TICKET --host grok --text "..." --release --json
 Classification, routing labels, and lifecycle match the Codex host section
 above and [docs/guide.md](docs/guide.md).
 
+## Compiled OpenSpec apply (dual skill)
+
+OpenSpec apply is an explicit two-skill path. In Codex, invoke `$baton` and
+`$openspec-apply-change` together; in Grok, run `/baton` and include
+`$openspec-apply-change` in the same director conversation. Baton is
+hookless, so neither an ordinary OpenSpec request nor a prompt watcher creates
+a ticket. The OpenSpec task ledger remains canonical. The main agent reads
+apply instructions, every returned `contextFiles` file, repository guidance,
+and affected code before compiling a versioned plan.
+
+Each plan records the source snapshot and revision, exact task references and
+dependencies, read context, write paths and allowed operations, an imperative
+patch recipe, done criteria, permitted validation, parent gates, and task
+mappings. A unit is either `patch-only` or `verification-only`. This supports
+mapping one broad task to several disjoint units, mapping coupled tasks to one
+patch, and ordering a later integration unit that overlaps an earlier scope.
+The plan is validated and persisted before Baton computes the maximal safe
+ready frontier.
+
+For every unit, routing derives minimum capability from complexity, context
+size, code scope, reasoning, and execution needs, then walks only the user's
+configured `coding_models` in exact order. Spark is only the first candidate:
+an under-capable or current-session-exhausted Spark is skipped silently when a
+later configured route qualifies. A route outside the profile is never used.
+The user is notified only when no configured route is both available in the
+current session and capable; the `NO_QUALIFIED_CANDIDATE` diagnostic lists every
+candidate and every exclusion reason. Quota and uncallability are session-local
+Baton cache facts; a new session rechecks them.
+
+The parent passes each reservation prompt unchanged to a fresh exact-model
+native worker, binds its opaque handle immediately, waits on real liveness,
+records one terminal result, and releases before refilling. Terminal scopes
+remain held until release. Workers cannot redesign or broaden scope, spawn
+children, touch Git or OpenSpec, or choose models. The parent alone accepts
+gates and reconciles checkboxes after all mapped units and gates pass, so no
+checkbox is completed early.
+
+The compiled run protocol is:
+
+```text
+baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host <host> --run <run-id> --status --json
+baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+The first plan is revision `1`. A successor must use the current run's parent
+revision and fingerprint, preserve selected-task coverage, and pass fresh
+catalog, capability, scope, and baseline checks. `--status` exposes run state;
+`--accept-gate` records parent-owned gate evidence; only `--reconcile` writes
+task conclusions and checkboxes. Source staleness, changed contracts, scope
+changes, safety-blocked partial mutation, and `PLAN_INSUFFICIENT` return to the
+director for a new decision. Legacy manual `baton apply` with explicit scopes
+and `--read-only` remains compatible; compiled mode rejects manual scope flags.
+
 ## First session
 
 Ticket-producing and capacity-sensitive dispatch commands require

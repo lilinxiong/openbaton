@@ -6,6 +6,7 @@ import path from "node:path";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { dispatchSnapshot, releaseAgent, reserveNext } from "../src/lib/dispatch.js";
 import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn, type SpawnTicket } from "../src/lib/spawn.js";
+import { markRouteAvailable } from "../src/lib/model-availability.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { configureCli } from "./configure.js";
 import { fakeEnv, withHome } from "./home.js";
@@ -43,6 +44,10 @@ function prepareDispatch(cwd: string, env: NodeJS.ProcessEnv): void {
       defaultReasoningEffort: "low",
     }],
   }, new Date("2026-08-27T00:00:00.000Z"), { cli: HOST, host: HOST, env });
+  markRouteAvailable(cwd, { host: HOST, routeId: ROUTE }, {
+    now: "2026-08-27T00:00:00.000Z",
+    env,
+  });
 }
 
 function createTicket(
@@ -110,6 +115,7 @@ describe("dispatch tree capacity", () => {
     const treeA = fakeEnv(home, { BATON_SESSION_ID: "tree-a" });
     const treeB = fakeEnv(home, { BATON_SESSION_ID: "tree-b" });
     prepareDispatch(cwd, treeA);
+    markRouteAvailable(cwd, { host: HOST, routeId: ROUTE }, { now: "2026-08-27T00:00:30.000Z", env: treeB });
     const activeA = [0, 1, 2].map((offset) => createTicket(cwd, treeA, "dispatching", offset));
     const queuedB = createTicket(cwd, treeB, "queued", 10);
 
@@ -127,6 +133,7 @@ describe("dispatch tree capacity", () => {
     const treeA = fakeEnv(home, { BATON_SESSION_ID: "tree-a" });
     const treeB = fakeEnv(home, { BATON_SESSION_ID: "tree-b" });
     prepareDispatch(cwd, treeA);
+    markRouteAvailable(cwd, { host: HOST, routeId: ROUTE }, { now: "2026-08-27T00:00:30.000Z", env: treeA });
     [0, 1, 2].forEach((offset) => createTicket(cwd, treeA, "dispatching", offset));
     const queuedA = createTicket(cwd, treeA, "queued", 3);
     const activeB = createTicket(cwd, treeB, "dispatching", 4);
@@ -147,6 +154,7 @@ describe("dispatch tree capacity", () => {
     const treeA = fakeEnv(home, { BATON_SESSION_ID: "tree-a" });
     const treeB = fakeEnv(home, { BATON_SESSION_ID: "tree-b" });
     prepareDispatch(cwd, treeA);
+    markRouteAvailable(cwd, { host: HOST, routeId: ROUTE }, { now: "2026-08-27T00:00:30.000Z", env: treeA });
     [0, 1].forEach((offset) => createTicket(cwd, treeA, "dispatching", offset));
     const terminalA = createTicket(cwd, treeA, "completed", 2);
     const queuedA = createTicket(cwd, treeA, "queued", 3);
@@ -174,6 +182,7 @@ describe("dispatch tree capacity", () => {
     const treeA = fakeEnv(home, { BATON_SESSION_ID: "tree-a" });
     const treeB = fakeEnv(home, { BATON_SESSION_ID: "tree-b" });
     prepareDispatch(cwd, treeA);
+    markRouteAvailable(cwd, { host: HOST, routeId: ROUTE }, { now: "2026-08-27T00:00:30.000Z", env: treeA });
     const directA = createTicket(cwd, treeA, "dispatching", 0, { depth: 1 });
     const directB = createTicket(cwd, treeA, "dispatching", 1, { depth: 1 });
     const nested = createTicket(cwd, treeA, "dispatching", 2, { depth: 2, parentTicketId: directA.id });

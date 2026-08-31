@@ -18,6 +18,16 @@ const TERMINAL = new Set(["completed", "errored", "timed_out", "closed"]);
 const ACTIVE = new Set(["queued", "dispatching", "running"]);
 const LIVENESS_STATES = new Set(["pending_init", "running", "interrupted", "shutdown", "not_found"]);
 const LIVENESS_ACTIVITIES = new Set(["status", "output", "heartbeat"]);
+const NO_QUALIFIED_CODES = [
+  "QUOTA_POOL_EXHAUSTED",
+  "CURRENT_SESSION_QUOTA_EXHAUSTED",
+  "CURRENT_SESSION_UNCALLABLE",
+  "ROUTE_ABSENT_FROM_ACTIVE_CATALOG",
+  "REASONING_CAPABILITY_INSUFFICIENT",
+  "CONTEXT_WINDOW_INSUFFICIENT",
+  "REQUIRED_EXECUTION_CAPABILITY_UNSUPPORTED",
+  "TASK_CAPABILITY_MISMATCH",
+];
 
 try {
   const { host, model, workspace } = parseArgs(process.argv.slice(2));
@@ -78,6 +88,7 @@ function verify({ host, model, workspace }) {
   verifyTaskNumbers(probe);
   verifyDependencyOrdering(probe);
   verifyWorkspace(workspace);
+  const compiledApply = verifyCompiledApplyScenario(runtime, workspace);
 
   return {
     ok: true,
@@ -99,6 +110,7 @@ function verify({ host, model, workspace }) {
         status: ticket.status,
         released: Boolean(ticket.slot_released_at),
       })),
+    compiled_apply: compiledApply,
   };
 }
 
@@ -238,6 +250,118 @@ function verifyDependencyOrdering(probe) {
   const reservedAt = dateOf(reservation?.at);
   assert(Number.isFinite(reservedAt) && reservedAt >= Math.max(...finishes), "probe task 2.1 was dispatched before both dependencies finished");
   assert(dateOf(integration.started_at) >= Math.max(...finishes), "probe task 2.1 started before both dependencies finished");
+}
+
+/**
+ * A compiled scenario is optional for older/manual probe runs.  When the
+ * current dual-skill flow persists one, validate the complete director
+ * contract in one place without changing the legacy five-ticket evidence.
+ */
+function verifyCompiledApplyScenario(runtime, workspace) {
+  const file = path.join(runtime, "compiled-apply-scenario.json");
+  if (!fs.existsSync(file)) return null;
+  const scenario = readJson(file);
+  assert(scenario && typeof scenario === "object" && !Array.isArray(scenario), "compiled apply scenario must be an object");
+  assert(scenario.schema_version === 1, "compiled apply scenario must use schema version 1");
+  const plan = scenario.plan;
+  assert(plan && typeof plan === "object" && !Array.isArray(plan), "compiled apply scenario needs a plan");
+  assert(plan.schema_version === 1, "compiled apply plan must use schema version 1");
+  assert(plan.identity?.change_id === CHANGE, "compiled apply plan must target probe-e2e");
+  const plannedRoot = String(plan.source_snapshot?.repo_root || "");
+  assert(plannedRoot && fs.realpathSync(plannedRoot) === fs.realpathSync(workspace), "compiled apply plan source root must be the disposable workspace");
+  assert(Array.isArray(plan.selected_tasks) && plan.selected_tasks.length > 0, "compiled apply plan needs selected tasks");
+  const units = Array.isArray(plan.units) ? plan.units : [];
+  assert(units.length >= 4, "compiled apply scenario needs split, merged, and integration units");
+  const unitById = new Map(units.map((unit) => [unit?.id, unit]));
+  assert(units.every((unit) => unit && (unit.mode === "patch-only" || unit.mode === "verification-only")), "compiled apply units must be patch-only or verification-only");
+  const patchUnits = units.filter((unit) => unit.mode === "patch-only");
+  assert(patchUnits.length >= 4, "compiled apply scenario needs patch-only units");
+  assert(patchUnits.every((unit) => Array.isArray(unit.write_paths) && unit.write_paths.length > 0 && Array.isArray(unit.allowed_operations) && unit.allowed_operations.length > 0), "patch-only units need write paths and operations");
+  assert(units.filter((unit) => unit.mode === "verification-only").every((unit) => !Object.hasOwn(unit, "write_paths") && !Object.hasOwn(unit, "allowed_operations") && !Object.hasOwn(unit, "patch")), "verification-only units must not carry write scope or patch fields");
+
+  const mappings = Array.isArray(plan.task_mappings) ? plan.task_mappings : [];
+  const split = mappings.find((mapping) => Array.isArray(mapping?.unit_ids) && mapping.unit_ids.length >= 2);
+  assert(split, "compiled apply plan must map one broad task to multiple units");
+  assert(new Set(split.unit_ids).size === split.unit_ids.length && split.unit_ids.every((id) => unitById.has(id)), "split mapping must reference distinct known units");
+  const merged = patchUnits.find((unit) => Array.isArray(unit.task_ids) && unit.task_ids.length >= 2);
+  assert(merged, "compiled apply plan must merge coupled tasks into one patch unit");
+  const overlap = patchUnits.flatMap((left, leftIndex) => patchUnits.slice(leftIndex + 1).map((right) => {
+    const leftPaths = new Set(left.write_paths || []);
+    const shared = (right.write_paths || []).find((item) => leftPaths.has(item));
+    if (!shared) return null;
+    const leftDependsOnRight = Array.isArray(left.depends_on) && left.depends_on.includes(right.id);
+    const rightDependsOnLeft = Array.isArray(right.depends_on) && right.depends_on.includes(left.id);
+    return leftDependsOnRight || rightDependsOnLeft ? { left, right, path: shared } : null;
+  }).filter(Boolean)).find(Boolean);
+  assert(overlap, "later overlapping integration unit must be ordered after its predecessor");
+
+  const prohibitions = Array.isArray(scenario.patch_only_prompt_prohibitions) ? scenario.patch_only_prompt_prohibitions : [];
+  const requiredProhibitions = ["redesign", "broaden scope", "spawn children", "Git", "OpenSpec", "choose models"];
+  for (const phrase of requiredProhibitions) assert(prohibitions.some((item) => String(item).toLowerCase().includes(phrase.toLowerCase())), `patch-only prohibition is missing: ${phrase}`);
+  const patchPrompts = patchUnits.map((unit) => `${unit.prompt || ""} ${unit.patch || ""}`).join("\n").toLowerCase();
+  for (const phrase of requiredProhibitions) assert(patchPrompts.includes(phrase.toLowerCase()), `patch-only prompt must prohibit ${phrase}`);
+
+  const gate = (Array.isArray(plan.parent_gates) ? plan.parent_gates : []).find((item) => item?.id === scenario.parent_gate_id);
+  assert(gate, "compiled apply scenario needs a parent gate");
+  assert(Array.isArray(gate.unit_ids) && gate.unit_ids.length >= 3 && gate.unit_ids.every((id) => unitById.has(id)), "parent gate must aggregate mapped units");
+  const state = scenario.run_state;
+  assert(state && state.current_revision && state.current_fingerprint, "compiled apply scenario needs persisted run revision");
+  assert(state.reconciled === true, "compiled apply scenario run must be reconciled");
+  assert(Object.values(state.unit_status || {}).filter((status) => status === "accepted" || status === "reconciled").length >= gate.unit_ids.length, "parent gate units must be accepted");
+  assert(state.gate_status?.[gate.id] === "accepted" || state.gate_status?.[gate.id] === "reconciled", "parent gate must be accepted");
+  assert(plan.selected_tasks.every((taskId) => state.task_status?.[taskId] === "reconciled"), "all selected tasks must be reconciled");
+  assert(Array.isArray(state.terminal_unreleased_tickets) && state.terminal_unreleased_tickets.length === 0, "compiled apply run must not retain terminal-unreleased tickets");
+
+  const timeline = Array.isArray(scenario.timeline) ? scenario.timeline : [];
+  const terminal = timeline.filter((event) => event?.event === "unit-terminal");
+  const releases = timeline.filter((event) => event?.event === "ticket-released");
+  const gateAccepted = timeline.find((event) => event?.event === "gate-accepted");
+  const refill = timeline.find((event) => event?.event === "refill");
+  const checkbox = timeline.find((event) => event?.event === "checkbox-reconciled");
+  assert(terminal.length && releases.length && gateAccepted && refill && checkbox, "compiled apply timeline is incomplete");
+  const terminalAt = Math.max(...terminal.map((event) => dateOf(event.at)));
+  const releasedAt = Math.max(...releases.map((event) => dateOf(event.at)));
+  const gateAt = dateOf(gateAccepted.at);
+  const refillAt = dateOf(refill.at);
+  const checkboxAt = dateOf(checkbox.at);
+  assert([terminalAt, releasedAt, gateAt, refillAt, checkboxAt].every(Number.isFinite), "compiled apply timeline has invalid timestamps");
+  assert(releases.some((event) => dateOf(event.at) <= refillAt && Array.isArray(event.ticket_ids) && event.ticket_ids.length > 0), "capacity must be released before refill");
+  assert(checkboxAt > terminalAt && checkboxAt > gateAt && checkboxAt > releasedAt, "OpenSpec checkbox completed before parent acceptance/release");
+
+  const routing = scenario.routing;
+  assert(routing && Array.isArray(routing.configured_route_ids) && routing.configured_route_ids.length >= 2, "compiled apply scenario needs configured route order");
+  assert(routing.configured_route_ids[0] === "spark", "Spark must be the first configured candidate");
+  assert(Array.isArray(routing.candidates) && routing.candidates.length === routing.configured_route_ids.length, "route progression must cover every configured route");
+  assert(routing.candidates.every((candidate, index) => candidate?.route_id === routing.configured_route_ids[index]), "route progression must preserve configured order");
+  const spark = routing.candidates[0];
+  assert(spark.status === "excluded" && (spark.reasons || []).some((reason) => /under-capable|session.*exhausted|quota.*exhausted/i.test(String(reason))), "Spark exclusion must be capability or current-session exhaustion");
+  assert(routing.silent_advance === true && routing.selected_route_id && routing.configured_route_ids.includes(routing.selected_route_id) && routing.selected_route_id !== "spark", "a qualified later route must be selected silently");
+  assert(routing.candidates.every((candidate) => routing.configured_route_ids.includes(candidate.route_id)), "routing must not select an unconfigured route");
+
+  const cache = scenario.session_cache;
+  assert(cache?.scope === "current-session-only" && cache.current_session_id !== cache.prior_session_id && cache.new_session_rechecks === true, "quota and uncallability cache must be session-local");
+  assert(cache.prior_session_route === "spark", "prior-session Spark evidence must remain isolated");
+  const noQualified = scenario.no_qualified;
+  assert(noQualified?.code === "NO_QUALIFIED_CANDIDATE", "missing route qualification must use NO_QUALIFIED_CANDIDATE");
+  assert(Array.isArray(noQualified.configured_route_ids) && Array.isArray(noQualified.exclusions), "no-qualified result must include configured routes and exclusions");
+  assert(noQualified.exclusions.length === noQualified.configured_route_ids.length, "no-qualified result must explain every configured route");
+  const exclusionCodes = new Set(noQualified.exclusions.flatMap((item) => item.codes || []));
+  assert(NO_QUALIFIED_CODES.every((code) => exclusionCodes.has(code)), "no-qualified result must include the complete exclusion matrix");
+  assert(noQualified.exclusions.every((item) => noQualified.configured_route_ids.includes(item.route_id)), "no-qualified exclusions must not contain unconfigured routes");
+
+  assert(scenario.manual_compatibility?.legacy_ticket_id && scenario.manual_compatibility.compiled_apply_lineage === false, "manual ticket compatibility evidence is missing");
+  assert(Array.isArray(scenario.active_ticket_ids) && scenario.active_ticket_ids.length === 0, "compiled apply scenario has leaked active tickets");
+  return {
+    run_id: scenario.run_id || state.run_id || null,
+    revision: state.current_revision,
+    split_task: split.task_id,
+    merged_unit: merged.id,
+    overlapping_units: [overlap.left.id, overlap.right.id],
+    parent_gate: gate.id,
+    selected_route: routing.selected_route_id,
+    no_qualified_codes: [...exclusionCodes].sort(),
+    active_ticket_count: scenario.active_ticket_ids.length,
+  };
 }
 
 function verifyWorkspace(workspace) {

@@ -283,6 +283,56 @@ baton dispatch complete TICKET --host grok --text "..." --release --json
 分类、路由标签和生命周期与上面的 Codex 章节以及
 [docs/guide.zh.md](docs/guide.zh.md) 相同。
 
+## 编译后的 OpenSpec apply（双 skill）
+
+OpenSpec apply 是显式的双 skill 路径：在同一个 director 会话中同时调用
+`/baton` 与 `$openspec-apply-change`（Codex 对应 `$baton
+$openspec-apply-change`）。Baton 没有 hook；普通 OpenSpec 请求或 prompt
+监听器都不会自行创建 ticket。OpenSpec 的 task ledger 仍是唯一事实源。
+主 agent 先读取 apply instructions、返回的每个 `contextFiles`、仓库指导和
+受影响代码，然后才编译带版本的计划。
+
+计划记录 source snapshot/revision、精确 task refs 与 dependencies、read
+context、write paths 与 allowed operations、命令式 patch recipe、done criteria、
+permitted validation、parent gates 和 task mappings。每个 unit 只能是
+`patch-only` 或 `verification-only`：前者必须有写入 scope，后者禁止写入
+scope 与 patch 字段。一个宽任务可以映射为多个互不冲突 unit；耦合任务可以
+合并成一个 patch；后续与前序重叠的 integration unit 必须显式排序。Baton
+先校验并持久化计划，再计算 maximal safe ready frontier。
+
+每个 unit 都根据复杂度、上下文大小、代码 scope、所需 reasoning 和执行能力
+推导 minimum capability，然后只按用户配置的 `coding_models` 原顺序路由。
+Spark 只是第一个候选：当前 session 中能力不足或已耗尽时，只要后面的已配置
+route 合格，就静默前进。绝不选择 profile 外的 route。只有没有任何同时满足
+“当前 session 可用”和“能力足够”的已配置 route 时才通知用户；
+`NO_QUALIFIED_CANDIDATE` 必须列出每个候选及每个排除原因。quota 和
+uncallability 只属于当前 Baton session cache，新 session 必须重新检查。
+
+每次 reservation 都要把原 prompt 不变地交给带精确模型的新 native worker，
+立即绑定 opaque handle，依据真实 liveness 等待，记录一次 terminal result，
+并在 refill 前 release；terminal scope 在 release 确认前仍保持占用。worker
+不得重设计、扩大 scope、spawn 子 agent、触碰 Git/OpenSpec 或选择模型。只有
+parent 在所有 mapped unit 与 gate 通过后接受 gate、reconcile task checkbox；
+checkbox 不能提前完成。
+
+编译 run 的命令如下：
+
+```text
+baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host <host> --run <run-id> --status --json
+baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+首个计划是 revision `1`。successor 必须使用当前 run 的 parent revision 和
+fingerprint，保留 selected-task coverage，并重新通过 catalog、capability、
+scope 与 baseline 校验。`--status` 只读报告 run 状态，`--accept-gate` 记录
+parent gate 证据，只有 `--reconcile` 能写入 task conclusion/checkbox。source
+staleness、changed contract、scope 变化、安全门阻断的部分修改和
+`PLAN_INSUFFICIENT` 都应返回 director 重新决策。旧式手工 `baton apply` 的
+显式 scope 与 `--read-only` 仍兼容；compiled 模式拒绝手工 scope flag。
+
 ## 第一次会话
 
 所有会产生 ticket 或对容量敏感的 dispatch 命令都要求 `BATON_SESSION_ID`。

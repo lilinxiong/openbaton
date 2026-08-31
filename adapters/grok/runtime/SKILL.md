@@ -15,6 +15,68 @@ Grok is the selected host. Baton owns classification, exact write scopes,
 reservations, receipts, and lifecycle; this runtime skill does not add hooks or
 invent a second task graph.
 
+## Explicit OpenSpec apply loop
+
+This is a dual-skill path: use `/baton $openspec-apply-change <change>` in the
+same Grok director conversation. Baton is hookless and must not activate for an
+ordinary OpenSpec request unless `/baton` was explicitly run. OpenSpec tasks
+remain canonical. Before dispatch, the Grok main agent reads the apply
+instructions, every returned `contextFiles` file, repository guidance, and
+affected code. It captures and audits the plan's `source_snapshot`, including
+repository revision, task-ledger path and identity/hash, context-file hashes,
+and selected-task fingerprint; missing or stale snapshot evidence fails
+closed. It compiles a versioned fine-grained plan with exact task refs,
+dependencies, read context, write paths and operations, an imperative patch
+recipe, done criteria, validation, parent gates, and task mappings. Units are
+`patch-only` or `verification-only`; broad tasks may split into disjoint units,
+coupled tasks may merge into one patch, and a later overlapping integration
+unit must be explicitly ordered after its predecessor.
+
+Baton validates and persists that plan/run, computes the maximal safe ready
+frontier, and derives each unit's minimum capability (Grok route capability)
+from complexity, context, code scope, reasoning, and native/tool execution
+needs. For every unit, routing walks only the configured `coding_models` in
+exact priority order. For every unverified session-host-route, single-flight
+the first native launch; bind success to fan out. On native launch failure,
+immediately report the exact code and unmodified raw message with
+`dispatch fail`, then release the ticket. Refill the same run only after that
+terminal/release boundary so Baton uses immutable configured successors. Never
+create a separate read-only probe or a new compiled run, and never special-case
+Spark. Silently continue while any configured route remains available and
+capable. Notify only on `NO_QUALIFIED_CANDIDATE`, listing every configured
+candidate and every exclusion reason. Quota, rate-limit, and uncallability
+evidence are session-local Baton cache facts; session evidence never carries to
+a new Grok session, which must recheck its routes.
+
+For every reservation, pass its prompt unchanged to a fresh exact-model Grok
+native worker via a `spawn_subagent` call with `background=true`, `isolation=none`,
+`subagent_type=general-purpose`, and `resume_from` unset (`fork_context=false`).
+Immediately bind the returned opaque `subagent_id`, wait on real activity with
+`get_command_or_subagent_output` for real native liveness, record exactly one terminal result,
+release the ticket before refilling capacity, and keep terminal scopes owned until
+release. Return to the director only for
+source staleness, changed contracts, scope changes, safety-blocked partial
+mutation, or structured `PLAN_INSUFFICIENT`. A worker must not redesign or
+broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
+parent alone accepts gates and reconciles task checkboxes after all mapped units
+and gates pass; never complete a checkbox early.
+
+The compiled CLI operations are explicit and preserve manual compatibility:
+
+```text
+baton apply <change> --host grok --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host grok --run <run-id> --status --json
+baton apply <change> --host grok --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host grok --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host grok --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+Use the run's current revision and fingerprint when appending a successor;
+stale source or changed contracts fail closed. `--status` is observational,
+`--accept-gate` records parent evidence, and only `--reconcile` writes the
+canonical OpenSpec ledger. Manual `baton apply` scope flags remain available
+for legacy callers; compiled apply rejects those flags instead of guessing.
+
 ## Routing and scope
 
 - Discussion and read-only analysis stay in the director session.
@@ -71,8 +133,11 @@ currently available, Baton preserves an existing positive reported value;
 otherwise the profile stores `-1` and Baton uses `[director].max_concurrent`
 (default 4). The root conversation is excluded; direct and nested descendants
 share the same tree-local pool. A separate root conversation has its own
-tree-local capacity; shared workspace safety checks and host/profile quota
-checks still apply across trees.
+tree-local capacity. Shared workspace safety checks still apply across trees,
+but native route availability, quota, rate-limit, and uncallability evidence
+remains session-local and a new session must recheck it. The only provider-wide
+quota input is `provider_quotas` explicitly returned by the active adapter
+catalog; Baton never promotes another session's native failure into that signal.
 Grok `max_depth` is a separate nesting policy: a child cannot spawn another
 child when the host depth ceiling is one.
 

@@ -7,6 +7,8 @@ import { execFileSync } from "node:child_process";
 import {
   batonDir,
   canonicalWorkspaceRoot,
+  compiledApplyRunBodyPath,
+  compiledApplyRunDir,
   CURRENT_RUNTIME_NAMESPACE,
   dispatchLockPath,
   hostDispatchStatePath,
@@ -28,6 +30,23 @@ function gitRepo(prefix: string): string {
 }
 
 describe("global Baton storage paths", () => {
+  it("rejects run ids and revisions that are not single path segments", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-path-segment-"));
+    for (const runId of ["", ".", "..", "../escape", "nested/run", "nested\\run", "bad\u0000id"]) {
+      assert.throws(
+        () => compiledApplyRunDir(cwd, runId),
+        (error: unknown) => (error as { code?: string }).code === "COMPILED_PATH_SEGMENT_INVALID",
+      );
+    }
+    for (const revision of ["", ".", "..", "../2", "2/3", "2\\3", "bad\u0007revision"]) {
+      assert.throws(
+        () => compiledApplyRunBodyPath(cwd, "safe-run", revision),
+        (error: unknown) => (error as { code?: string }).code === "COMPILED_PATH_SEGMENT_INVALID",
+      );
+    }
+    assert.match(compiledApplyRunBodyPath(cwd, "safe-run", "2"), /safe-run\/revisions\/revision-2\.json$/);
+  }));
+
   it("keeps shared cache global and namespaces runtime by canonical Git root", () => withHome((home) => {
     const first = gitRepo("baton-path-first-");
     const nested = path.join(first, "nested", "dir");

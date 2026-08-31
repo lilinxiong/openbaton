@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildCommitReceipt, buildReadOnlyReceipt, buildWriteReceipt, readReceipt, ReceiptError, writeReceipt } from "../src/lib/receipt.js";
+import { buildCommitReceipt, buildReadOnlyReceipt, buildWriteReceipt, readReceipt, ReceiptError, writeReceipt, validateCompiledApplyLineage, validateTicketReceiptLineage } from "../src/lib/receipt.js";
 import { validateIndexControlBaselineMetadata } from "../src/lib/safety.js";
 import { receiptsDir } from "../src/lib/paths.js";
 import { withHome } from "./home.js";
 
 describe("Delegation Receipt", () => {
+  const verificationLineage = { run_id: "run-1", plan_revision: "2", plan_fingerprint: "fp-1", unit_id: "unit-1", task_refs: ["1.1", "1.2"], mode: "verification-only" as const };
+  const patchLineage = { ...verificationLineage, mode: "patch-only" as const };
+
   it("builds a fail-closed immutable read-only authorization snapshot", () => {
     const receipt = buildReadOnlyReceipt({
       ticketId: "spn-0001",
@@ -121,4 +124,41 @@ describe("Delegation Receipt", () => {
     fs.writeFileSync(path.join(receiptsDir(disk), `${persistedCommit.receipt_id}.json`), JSON.stringify(persistedCommit));
     assert.throws(() => readReceipt(disk, persistedCommit.receipt_id), (error) => error instanceof ReceiptError && error.code === "INDEX_CONTROL_BASELINE_INVALID");
   }));
+
+  it("round-trips compiled verification lineage and rejects every malformed dimension", () => withHome(() => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-receipt-compiled-"));
+    const base = buildReadOnlyReceipt({ ticketId: "spn-compiled", card: { id: "alpha/default", strengths: "", route_id: "alpha/default" }, host: "local", compiledApplyLineage: verificationLineage });
+    writeReceipt(cwd, base);
+    const loaded = readReceipt(cwd, base.receipt_id);
+    assert.deepEqual(loaded.compiled_apply_lineage, base.compiled_apply_lineage);
+    assert.equal(Object.isFrozen(loaded.compiled_apply_lineage), true);
+    assert.equal(validateCompiledApplyLineage(verificationLineage), null);
+    assert.equal(validateCompiledApplyLineage({ ...verificationLineage, mode: "future" }), "COMPILED_LINEAGE_UNKNOWN_MODE");
+    assert.equal(validateCompiledApplyLineage({ ...verificationLineage, task_refs: ["1.1", "1.1"] }), "COMPILED_LINEAGE_DUPLICATE_TASK");
+    assert.equal(validateCompiledApplyLineage({ run_id: "run-1" }), "COMPILED_LINEAGE_PARTIAL");
+    assert.equal(validateCompiledApplyLineage({ ...verificationLineage, extra: true }), "COMPILED_LINEAGE_UNKNOWN_FIELD");
+    const ticket = { id: "spn-compiled", model_id: "alpha/default", route_id: "alpha/default", service_tier: null, host: "local", mode: "read-only" as const, read_only: true, compiled_apply_lineage: verificationLineage };
+    assert.equal(validateTicketReceiptLineage(ticket, loaded), null);
+    for (const [field, value] of [["id", "spn-other"], ["host", "remote"], ["model_id", "other"], ["route_id", "other/route"]] as const) {
+      const changed = { ...ticket, [field]: value };
+      assert.match(String(validateTicketReceiptLineage(changed, loaded)), /MISMATCH/);
+    }
+    const changedLineage = { ...ticket, compiled_apply_lineage: { ...verificationLineage, unit_id: "other" } };
+    assert.equal(validateTicketReceiptLineage(changedLineage, loaded), "COMPILED_LINEAGE_MISMATCH");
+    const writeMode = { ...ticket, mode: "write" as const, read_only: false };
+    assert.equal(validateTicketReceiptLineage(writeMode, loaded), "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
+  }));
+
+  it("maps compiled patch lineage only through existing write Receipt authorization", () => {
+    const base = buildReadOnlyReceipt({ ticketId: "spn-patch", card: { id: "k3", strengths: "", route_id: "kimi/k3[1m]" }, compiledApplyLineage: patchLineage });
+    const baseline = {
+      repo_root: "/repo", head: "a".repeat(40), branch: "main", branch_ref: "refs/heads/main",
+      index_path: "/repo/.git/index", index_tree: "b".repeat(40), index_control_checksum: "c".repeat(64), index_control_algorithm: "git-index-control-framed-sha256-v2", index_control_entry_count: 0,
+      staged_paths: [], refs: [], head_reflog_count: 0, head_reflog_checksum: "d".repeat(64), dirty_entries: [], dirty_checksums: {}, captured_at: "2026-08-21T00:00:00.000Z",
+    };
+    const receipt = buildWriteReceipt({ base, baseline, writeAllowlist: ["src/x.ts"], allowedOperations: ["write"] });
+    assert.equal(receipt.execution.mode, "write");
+    assert.deepEqual(receipt.compiled_apply_lineage, patchLineage);
+    assert.throws(() => buildWriteReceipt({ base: buildReadOnlyReceipt({ ticketId: "spn-v", card: { id: "k3", strengths: "" }, compiledApplyLineage: verificationLineage }), baseline, writeAllowlist: ["x"], allowedOperations: ["write"] }), (error) => error instanceof ReceiptError && error.code === "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
+  });
 });

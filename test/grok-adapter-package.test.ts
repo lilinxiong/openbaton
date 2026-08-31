@@ -16,6 +16,7 @@ import { dispatchSnapshot, reserveNext } from "../src/lib/dispatch.js";
 import { loadConfig, saveConfig } from "../src/lib/config.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { buildSpawnTicket, nextSpawnId, writeSpawn } from "../src/lib/spawn.js";
+import { markRouteAvailable } from "../src/lib/model-availability.js";
 import {
   adapterInstallDir,
   installBundledAdaptersAndRecord,
@@ -395,6 +396,10 @@ process.exit(0);
     assert.equal(loadConfig(cwd, { env }).cli.grok?.max_concurrent, 32);
 
     env.BATON_SESSION_ID = "grok-obtained-capacity";
+    markRouteAvailable(cwd, { host: "grok", routeId: "grok-visible" }, {
+      now: "2026-08-30T06:00:00.000Z",
+      env,
+    });
     const now = "2026-08-30T06:00:00.000Z";
     const selection = {
       host: "grok",

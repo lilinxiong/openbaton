@@ -115,6 +115,84 @@ baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-mode
 or `--longctx -` clears that label; a missing label blocks the corresponding
 classified work.
 
+## Compiled OpenSpec apply
+
+OpenSpec apply is an explicit dual-skill workflow. In Codex, invoke
+`$baton $openspec-apply-change <change>`; in Grok, invoke `/baton
+$openspec-apply-change <change>`. Baton is hookless and activates only after
+that explicit host invocation. Ordinary OpenSpec discussion does not create a
+ticket. The OpenSpec task ledger remains canonical and is never delegated to a
+worker.
+
+The main agent first reads the apply instructions, every file returned in
+`contextFiles`, applicable repository guidance, and the affected code. It then
+compiles a versioned, fine-grained plan before creating tickets. The plan
+contains exact task references and dependencies, read context, write paths and
+allowed operations, an imperative patch recipe, done criteria, permitted
+validation, parent gates, and task mappings. Its units are exactly one of:
+
+- `patch-only`: a concrete mutation with non-empty write paths and an
+  operation allowlist;
+- `verification-only`: checks/evidence only, with no write paths or patch
+  fields.
+
+Task mappings are many-to-many by design. For example, one broad task can map
+to two disjoint utility units, two coupled tasks can map to one patch unit, and
+a later integration unit can overlap that patch only when its dependency
+orders it after the earlier unit. The persisted plan and run keep the source
+snapshot, immutable plan fingerprint, current revision, unit/gate state, and
+ticket lineage separate from the task ledger.
+
+Baton validates the whole plan atomically, persists revision `1`, computes the
+maximal safe ready frontier, and derives a per-unit minimum capability from
+complexity, estimated context, code scope, required reasoning, and native/tool
+execution needs. It then walks only the configured `coding_models` in exact
+priority order. Spark is only the first candidate: when Spark is
+under-capable or exhausted in the current session, a later configured route
+may qualify and is selected silently. No unconfigured route is eligible. The
+user is notified only when no configured route is both current-session
+available and capable. In that case the complete
+`NO_QUALIFIED_CANDIDATE` result lists every configured route and every
+candidate exclusion reason (catalog absence, quota, current-session quota or
+uncallability, context, reasoning, execution capability, and task mismatch).
+Quota and uncallability are current Baton session cache facts only; a new
+session rechecks them.
+
+For each reserved unit, the runtime passes the reservation prompt unchanged to
+a fresh native worker with the exact selected model/options, binds the returned
+opaque execution handle immediately, waits on real native liveness, records
+one terminal result, and releases before refilling. A terminal ticket keeps
+its paths owned until release. The worker returns to the director only for
+source staleness, changed contracts, scope changes, safety-blocked partial
+mutation, or structured `PLAN_INSUFFICIENT`. Workers do not redesign or
+broaden scope, spawn children, touch Git/OpenSpec, or choose models.
+
+The parent alone accepts unit evidence and parent gates. It runs a gate only
+after its mapped units are accepted, and reconciles OpenSpec conclusions and
+checkboxes only after every mapped unit and gate passes. A checkbox is never
+marked early. Manual apply remains compatible: legacy `baton apply` can still
+use explicit per-unit scopes or `--read-only`; compiled mode rejects manual
+scope flags rather than guessing a plan.
+
+### Compiled run commands
+
+```text
+baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host <host> --run <run-id> --status --json
+baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+`--status` reports unit, gate, task, terminal-unreleased, and linked-ticket
+state. `--accept-gate` stores sanitized parent-owned evidence. `--reconcile`
+is the only operation that writes the canonical task ledger. A successor plan
+is submitted against the current run's parent revision and fingerprint; it
+must preserve selected-task coverage and pass fresh catalog, routing,
+capability, scope, and baseline checks. Source staleness, changed contracts,
+scope changes, safety-blocked partial mutation, stale successor revisions, and
+`PLAN_INSUFFICIENT` fail closed and return to the director for a new plan.
+
 ## Director, scope, and scheduling
 
 Discussion and read-only analysis stay in the director session. Authorized

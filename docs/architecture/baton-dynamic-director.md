@@ -64,6 +64,59 @@ ordered `coding_models` list are policy labels; the adapter catalog remains the
 authority for model ids and supported options. Execution stops when an adapter,
 profile, model, option, authorization, or classification is not usable.
 
+## Compiled OpenSpec apply
+
+OpenSpec apply is a second, explicit skill in the director path:
+`$baton $openspec-apply-change <change>` in Codex or `/baton
+$openspec-apply-change <change>` in Grok. Baton is hookless and activates only
+after the host invocation. The OpenSpec task ledger remains canonical. Before
+dispatch, the main agent reads apply instructions, every returned
+`contextFiles` file, repository guidance, and affected code, then compiles a
+versioned fine-grained plan. Each plan contains exact task refs, dependencies,
+read context, write paths and operations, imperative patch recipes, done
+criteria, validation, parent gates, and task mappings.
+
+The plan supports a broad task split into disjoint units, coupled tasks merged
+into one patch, and a later overlapping integration unit ordered after its
+predecessor. Units are `patch-only` or `verification-only`. Baton atomically
+validates and persists the plan/run, computes its maximal safe ready frontier,
+and derives each unit's minimum capability from complexity, context, code
+scope, reasoning, and execution needs. It then walks only configured routes in
+exact priority order. Spark is only the first candidate: an under-capable or
+current-session-exhausted Spark is skipped silently when a later configured
+route qualifies. An unconfigured route is never selected. A notification is
+emitted only for a complete `NO_QUALIFIED_CANDIDATE` result, which lists every
+configured candidate and every exclusion reason. Quota and uncallability are
+current-session cache facts; a new session rechecks them.
+
+The parent passes each reservation prompt unchanged to a fresh exact-model
+native worker, binds its opaque handle immediately, waits on real liveness,
+records exactly one terminal result, and releases before refilling. Terminal
+scope remains owned until release. Workers cannot redesign or broaden scope,
+spawn children, touch Git/OpenSpec, or choose models. Only the parent accepts
+gates and reconciles OpenSpec checkboxes after all mapped units and gates pass;
+checkbox completion is deliberately delayed. Source staleness, changed
+contracts, scope changes, safety-blocked partial mutation, and structured
+`PLAN_INSUFFICIENT` return to the director.
+
+The compiled run CLI is:
+
+```text
+baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host <host> --run <run-id> --status --json
+baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+The initial plan is revision `1`; successors preserve selected-task coverage,
+use the current parent revision/fingerprint, and rerun catalog, capability,
+scope, and baseline checks. `--status` is read-only, `--accept-gate` records
+parent evidence, and only `--reconcile` writes the canonical ledger. Legacy
+manual apply with explicit scopes or `--read-only` remains compatible, while
+compiled mode rejects manual scope flags. These failure paths fail closed
+without inventing a route or accepting partial work.
+
 ## Director and scheduling
 
 The director owns discussion, read-only analysis, classification, dependency

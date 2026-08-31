@@ -3,7 +3,15 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnsDir } from "./paths.js";
 import { matchModelCard, requireCardId } from "./cards.js";
-import { buildReadOnlyReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
+import {
+  buildReadOnlyReceipt,
+  normalizeCompiledApplyLineage,
+  validateCompiledApplyLineage,
+  writeReceipt,
+  type CompiledApplyLineage,
+  type DelegationReceipt,
+  type ExecutionMode,
+} from "./receipt.js";
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
 import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 import {
@@ -131,6 +139,8 @@ export interface SpawnTicket extends UnknownRecord {
     required_reasoning_effort?: string | null;
     estimated_context_tokens?: number | null;
   };
+  /** Omitted by legacy/manual tickets; compiled tickets carry this immutable identity. */
+  compiled_apply_lineage?: CompiledApplyLineage;
 }
 
 export function listSpawns(cwd: string, env?: NodeJS.ProcessEnv): SpawnTicket[] {
@@ -176,8 +186,37 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
     throw new Error("spawn ticket must be an object");
   }
   const ticket = structuredClone(value) as SpawnTicket & Record<string, unknown>;
+  const unitRecord = ticket.work_unit as unknown as Record<string, unknown>;
+  if (unitRecord && unitRecord.schema_version === 2 && ticket.compiled_apply_lineage === undefined) {
+    throw new Error("compiled work unit requires compiled apply lineage");
+  }
+  if (ticket.compiled_apply_lineage !== undefined) {
+    const normalized = normalizeCompiledApplyLineage(ticket.compiled_apply_lineage);
+    if (JSON.stringify(normalized) !== JSON.stringify(ticket.compiled_apply_lineage)) {
+      throw new Error("compiled apply lineage is not normalized");
+    }
+    ticket.compiled_apply_lineage = normalized;
+    const unit = unitRecord;
+    if (unit.schema_version !== 2) throw new Error("compiled apply lineage requires a compiled work unit");
+    for (const field of ["run_id", "plan_revision", "plan_fingerprint", "unit_id", "task_refs", "mode"] as const) {
+      if (JSON.stringify(normalized[field]) !== JSON.stringify(unit[field])) throw new Error(`compiled work unit lineage mismatch: ${field}`);
+    }
+    if (normalized.mode === "verification-only" && (ticket.mode !== "read-only" || ticket.read_only !== true)) throw new Error("verification-only ticket must be read-only");
+    if (normalized.mode === "patch-only" && ticket.mode === "read-only" && ticket.read_only !== true) throw new Error("patch-only ticket read_only mismatch");
+  }
   const existing = normalizeExecutionHandle(ticket.execution_handle);
   ticket.execution_handle = existing;
+  // A terminal ticket that never received a native handle never owned a
+  // host slot. Normalize that fact on reads as well as writes so legacy
+  // records cannot retain stale capacity/workspace scope indefinitely.
+  if (!existing
+    && ["completed", "errored", "timed_out", "closed"].includes(String(ticket.status))
+    && !ticket.slot_released_at) {
+    const terminalAt = stringValue(ticket.finished_at)
+      || stringValue(ticket.updated_at)
+      || stringValue(ticket.created_at);
+    if (terminalAt) ticket.slot_released_at = terminalAt;
+  }
   if (ticket.liveness && typeof ticket.liveness === "object" && !Array.isArray(ticket.liveness)) {
     const live = ticket.liveness as unknown as Record<string, unknown>;
     const liveHandle = normalizeExecutionHandle(live.execution_handle);
@@ -189,6 +228,27 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
     }
   }
   return ticket;
+}
+
+/** Pure ticket-side lineage validator; legacy tickets intentionally return null. */
+export function validateSpawnTicketLineage(value: unknown): string | null {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return "COMPILED_LINEAGE_MALFORMED";
+    const ticket = value as SpawnTicket & Record<string, unknown>;
+    if (ticket.compiled_apply_lineage === undefined) {
+      const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+      return unit?.schema_version === 2 ? "COMPILED_LINEAGE_PARTIAL" : null;
+    }
+    normalizeSpawnTicket(ticket);
+    return null;
+  } catch (error) {
+    return error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code) : "COMPILED_LINEAGE_MISMATCH";
+  }
+}
+
+export function assertValidSpawnTicketLineage(ticket: unknown): void {
+  const error = validateSpawnTicketLineage(ticket);
+  if (error) throw new Error(`spawn ticket lineage is invalid: ${error}`);
 }
 
 function isCurrentSpawnRecord(value: unknown): value is SpawnTicket {
@@ -209,6 +269,7 @@ function isCurrentSpawnRecord(value: unknown): value is SpawnTicket {
     && Object.hasOwn(v, "progress") && Object.hasOwn(v, "liveness")
     && Object.hasOwn(v, "selection") && Object.hasOwn(v, "service_tier")
     && validHandle(v.execution_handle)
+    && (v.compiled_apply_lineage === undefined || validateCompiledApplyLineage(v.compiled_apply_lineage) === null)
     && (liveness === null || (typeof liveness === "object" && !Array.isArray(liveness)
       && validHandle((liveness as Record<string, unknown>).execution_handle)));
 }
@@ -309,6 +370,40 @@ interface BuildSpawnTicketOptions {
   selection?: ModelSelectionApproval | null;
   targetHost?: string | null;
   now?: Date | string | number;
+  /** A director-compiled apply identity. Snake/camel aliases are accepted at the boundary. */
+  compiledApplyLineage?: unknown;
+  compiled_apply_lineage?: unknown;
+  compiledLineage?: unknown;
+  compiled_lineage?: unknown;
+  mode?: "patch-only" | "verification-only";
+  executionMode?: "patch-only" | "verification-only";
+  execution_mode?: "patch-only" | "verification-only";
+  runId?: string;
+  run_id?: string;
+  planRevision?: string | number;
+  plan_revision?: string | number;
+  planFingerprint?: string;
+  plan_fingerprint?: string;
+  unitId?: string;
+  unit_id?: string;
+  taskRefs?: readonly string[];
+  task_refs?: readonly string[];
+  satisfiedDependencies?: readonly string[];
+  satisfied_dependencies?: readonly string[];
+  readContext?: readonly string[];
+  read_context?: readonly string[];
+  writePaths?: readonly string[];
+  write_paths?: readonly string[];
+  allowedOperations?: readonly ("write" | "create" | "delete" | "rename" | "chmod")[];
+  allowed_operations?: readonly ("write" | "create" | "delete" | "rename" | "chmod")[];
+  patchRecipe?: string;
+  patch_recipe?: string;
+  completionCriteria?: readonly string[];
+  completion_criteria?: readonly string[];
+  permittedValidation?: readonly string[];
+  permitted_validation?: readonly string[];
+  compiledWorkUnit?: unknown;
+  compiled_work_unit?: unknown;
 }
 
 export function buildSpawnTicket({
@@ -329,6 +424,39 @@ export function buildSpawnTicket({
   selection = null,
   targetHost = selection?.host || null,
   now = new Date(),
+  compiledApplyLineage,
+  compiled_apply_lineage,
+  compiledLineage,
+  compiled_lineage,
+  mode: compiledMode,
+  executionMode,
+  execution_mode,
+  runId,
+  run_id,
+  planRevision,
+  plan_revision,
+  planFingerprint,
+  plan_fingerprint,
+  unitId,
+  unit_id,
+  taskRefs,
+  task_refs,
+  satisfiedDependencies,
+  satisfied_dependencies,
+  readContext,
+  read_context,
+  writePaths,
+  write_paths,
+  allowedOperations,
+  allowed_operations,
+  patchRecipe,
+  patch_recipe,
+  completionCriteria,
+  completion_criteria,
+  permittedValidation,
+  permitted_validation,
+  compiledWorkUnit,
+  compiled_work_unit,
 }: BuildSpawnTicketOptions): SpawnTicket {
   const scope = sessionScope(env);
   const uid = scope.session_uid;
@@ -338,7 +466,54 @@ export function buildSpawnTicket({
   const canonicalId = idMatch && sessionOrdinal > 0 ? sessionTicketId(idMatch[1], idMatch[2], sessionOrdinal) : null;
   if (!sessionOrdinal || canonicalId !== id) throw new Error("ticket id must use the current session uid and padded ordinal");
   const createdAt = (now instanceof Date ? now : new Date(now)).toISOString();
-  const workUnit = compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
+  const suppliedWorkUnit = compiledWorkUnit ?? compiled_work_unit;
+  const suppliedLineage = compiledApplyLineage ?? compiled_apply_lineage ?? compiledLineage ?? compiled_lineage
+    ?? (suppliedWorkUnit && typeof suppliedWorkUnit === "object" ? {
+      run_id: (suppliedWorkUnit as Record<string, unknown>).run_id,
+      plan_revision: (suppliedWorkUnit as Record<string, unknown>).plan_revision,
+      plan_fingerprint: (suppliedWorkUnit as Record<string, unknown>).plan_fingerprint,
+      unit_id: (suppliedWorkUnit as Record<string, unknown>).unit_id,
+      task_refs: (suppliedWorkUnit as Record<string, unknown>).task_refs,
+      mode: (suppliedWorkUnit as Record<string, unknown>).mode,
+    } : undefined);
+  const inferredMode = compiledMode ?? executionMode ?? execution_mode;
+  const lineage = suppliedLineage === undefined && inferredMode === undefined
+    ? undefined
+    : normalizeCompiledApplyLineage(suppliedLineage ?? {
+      run_id: run_id ?? runId,
+      plan_revision: plan_revision ?? planRevision,
+      plan_fingerprint: plan_fingerprint ?? planFingerprint,
+      unit_id: unit_id ?? unitId,
+      task_refs: task_refs ?? taskRefs,
+      mode: inferredMode,
+    });
+  const workUnit = suppliedWorkUnit
+    ? compileWorkUnit(suppliedWorkUnit)
+    : lineage
+    ? compileWorkUnit(description, {
+      kind: "concrete",
+      deliverable: deliverable || description,
+      doneWhen: doneWhen || description,
+      mode: lineage.mode,
+      run_id: lineage.run_id,
+      plan_revision: lineage.plan_revision,
+      plan_fingerprint: lineage.plan_fingerprint,
+      unit_id: lineage.unit_id,
+      task_refs: lineage.task_refs,
+      satisfied_dependencies: satisfied_dependencies ?? satisfiedDependencies ?? [],
+      read_context: read_context ?? readContext ?? [],
+      write_paths: write_paths ?? writePaths ?? [],
+      allowed_operations: allowed_operations ?? allowedOperations ?? [],
+      patch_recipe: patch_recipe ?? patchRecipe ?? description,
+      completion_criteria: completion_criteria ?? completionCriteria ?? [description],
+      permitted_validation: permitted_validation ?? permittedValidation ?? ["read"],
+    })
+    : compileWorkUnit(description, { kind: taskKind, deliverable, doneWhen });
+  if (lineage && workUnit.schema_version === 2) {
+    for (const field of ["run_id", "plan_revision", "plan_fingerprint", "unit_id", "task_refs", "mode"] as const) {
+      if (JSON.stringify(lineage[field]) !== JSON.stringify(workUnit[field])) throw new Error(`compiled work unit lineage mismatch: ${field}`);
+    }
+  }
   const coordination = coordinationFor(workUnit);
   return {
     schema_version: 8,
@@ -374,6 +549,7 @@ export function buildSpawnTicket({
     created_at: createdAt,
     updated_at: createdAt,
     history: [{ event: "ticket_queued", at: createdAt }],
+    ...(lineage ? { compiled_apply_lineage: lineage } : {}),
   };
 }
 

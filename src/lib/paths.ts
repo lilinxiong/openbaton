@@ -10,6 +10,8 @@ export const CONFIG_NAME = "config.toml";
 export const SKILL_NAME = "SKILL.md";
 export const SPAWNS_DIR = "spawns";
 export const RUNS_DIR = "runs";
+/** Compiled OpenSpec apply runs have their own versioned namespace. */
+export const COMPILED_APPLY_RUNS_DIR = "compiled-apply-runs";
 export const SELECTIONS_DIR = "selections";
 export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
@@ -26,6 +28,22 @@ export const WORKSPACES_DIR = "workspaces";
 export const CURRENT_RUNTIME_NAMESPACE = "v2";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const MODEL_AVAILABILITY_NAME = "model-availability.json";
+
+export class CompiledApplyPathError extends Error {
+  readonly code = "COMPILED_PATH_SEGMENT_INVALID";
+  constructor(label: string, value: unknown) {
+    super(`${label} must be one non-empty path segment: ${JSON.stringify(String(value))}`);
+    this.name = "CompiledApplyPathError";
+  }
+}
+
+function compiledPathSegment(label: string, value: unknown): string {
+  const segment = String(value);
+  if (!segment.trim() || segment === "." || segment === ".." || /[/\\\u0000-\u001f\u007f]/u.test(segment)) {
+    throw new CompiledApplyPathError(label, value);
+  }
+  return segment;
+}
 
 /** Host-keyed state names used by the current runtime. */
 export function hostRouteSnapshotName(host: string): string {
@@ -86,6 +104,26 @@ export function spawnsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
 
 export function runsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), RUNS_DIR);
+}
+
+export function compiledApplyRunsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(runsDir(cwd, env), COMPILED_APPLY_RUNS_DIR);
+}
+
+export function compiledApplyRunDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunsDir(cwd, env), compiledPathSegment("run id", runId));
+}
+
+export function compiledApplyRunStatePath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunDir(cwd, runId, env), "state-v1.json");
+}
+
+export function compiledApplyRunBodyPath(cwd: string, runId: string, revision: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunDir(cwd, runId, env), "revisions", `revision-${compiledPathSegment("revision", revision)}.json`);
+}
+
+export function applyRunStateLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunsDir(cwd, env), ".run-state-v1.lock");
 }
 
 export function selectionsDir(cwd: string, env?: NodeJS.ProcessEnv): string {

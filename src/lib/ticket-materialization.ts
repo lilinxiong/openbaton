@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { receiptsDir, spawnsDir } from "./paths.js";
+import { compiledApplyRunsDir, receiptsDir, spawnsDir } from "./paths.js";
 import { buildWriteReceipt, readReceipt, writeReceipt } from "./receipt.js";
 import {
   captureBaselineAsync,
@@ -13,6 +13,7 @@ import {
 import { listSpawns, writeSpawn, type SpawnTicket, type StandalonePlan } from "./spawn.js";
 import { applyCommitBaselineToPlan } from "./ops-dispatch.js";
 import { assertDisjointWriteScopes, writePathsOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
+import { APPLY_RUN_STATE_TEMP_FILE_PREFIX } from "./apply-run.js";
 
 /** Dependencies are injectable so Git/stream/race failures can be tested
  * without weakening the production stable-observation boundary. */
@@ -34,14 +35,28 @@ export interface PendingWriteScope extends WriteScopeDeclaration {
   ticket_id?: string;
 }
 
+/** One immutable plan/Receipt pair supplied to the atomic batch writer. */
+export interface TicketMaterializationBatchEntry {
+  planned: Extract<StandalonePlan, { director_local: false }>;
+  writeAllowlist?: string[];
+  allowedOperations?: SafetyOperation[];
+}
+
+export interface TicketMaterializationBatchOptions extends TicketMaterializationDependencies {
+  env?: NodeJS.ProcessEnv;
+  safety?: AsyncSafetyOptions;
+  /** Called only after every Receipt and ticket has been persisted. */
+  onComplete?: (tickets: SpawnTicket[]) => void | Promise<void>;
+}
+
 function activeWriteScopes(cwd: string, env?: NodeJS.ProcessEnv): PendingWriteScope[] {
   const scopes: PendingWriteScope[] = [];
   for (const ticket of listSpawns(cwd, env)) {
     if (!ticket.receipt_id) continue;
-    if (
-      (ticket.status === "completed" || ticket.status === "errored" || ticket.status === "timed_out" || ticket.status === "closed")
-      && ticket.execution_handle === null
-    ) continue;
+    // A terminal ticket with no native handle never acquired worker-owned
+    // workspace scope. Ignore its historical Receipt even if an older record
+    // predates slot_released_at normalization.
+    if (["completed", "errored", "timed_out", "closed"].includes(ticket.status) && !ticket.execution_handle) continue;
     // A terminal ticket still owns its path until the dispatch slot is
     // explicitly released. This closes the race between completion and the
     // next wave's materialization.
@@ -87,6 +102,28 @@ export function assertWriteScopesAvailable(cwd: string, scopes: PendingWriteScop
 
 function removeIfNew(file: string, existed: boolean): void {
   if (!existed && fs.existsSync(file)) {
+    try { fs.unlinkSync(file); } catch { /* preserve the original materialization error */ }
+  }
+}
+
+function listTemporaryRunStateFiles(cwd: string, env?: NodeJS.ProcessEnv): Set<string> {
+  const root = compiledApplyRunsDir(cwd, env);
+  const found = new Set<string>();
+  const visit = (directory: string): void => {
+    if (!fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(file);
+      else if (entry.name.startsWith(APPLY_RUN_STATE_TEMP_FILE_PREFIX)) found.add(file);
+    }
+  };
+  visit(root);
+  return found;
+}
+
+function removeNewTemporaryRunStateFiles(before: Set<string>, cwd: string, env?: NodeJS.ProcessEnv): void {
+  for (const file of listTemporaryRunStateFiles(cwd, env)) {
+    if (before.has(file)) continue;
     try { fs.unlinkSync(file); } catch { /* preserve the original materialization error */ }
   }
 }
@@ -146,3 +183,80 @@ export async function materializeStandalonePlanAsync(
     throw error;
   }
 }
+
+/**
+ * Persist a compiled frontier as one failure-atomic batch. Baselines are
+ * captured for every write unit before the first artifact is created; each
+ * Receipt is then written immediately before its ticket. Existing standalone
+ * callers continue to use materializeStandalonePlanAsync unchanged.
+ */
+export async function materializeStandalonePlansBatchAsync(
+  cwd: string,
+  entries: TicketMaterializationBatchEntry[],
+  options: TicketMaterializationBatchOptions = {},
+): Promise<SpawnTicket[]> {
+  if (!entries.length) return [];
+  const env = options.env;
+  const safety = options.safety || {};
+  const captureWrite = options.captureBaseline || ((root: string, input: AsyncSafetyOptions) => captureBaselineAsync(root, new Date(), input));
+  const captureCommit = options.captureCommitBaseline || ((root: string, input: AsyncSafetyOptions) => captureCommitBaselineAsync(root, new Date(), input));
+  const receiptWriter = options.writeReceipt || writeReceipt;
+  const spawnWriter = options.writeSpawn || writeSpawn;
+  const temporaryRunStateFiles = listTemporaryRunStateFiles(cwd, env);
+  const scopes: PendingWriteScope[] = entries.map((entry) => {
+    const allowlist = entry.writeAllowlist || [];
+    return { key: entry.planned.ticket.id, ticket_id: entry.planned.ticket.id, write_paths: allowlist };
+  }).filter((scope) => scope.write_paths.length);
+  assertWriteScopesAvailable(cwd, scopes, env);
+
+  // Capture all mutable baselines before writing anything. This is what makes
+  // a failure in a later source/baseline observation leave no leaked pair.
+  const prepared = [] as Array<{ entry: TicketMaterializationBatchEntry; receipt: import("./receipt.js").DelegationReceipt; receiptFile: string; spawnFile: string; receiptExisted: boolean; spawnExisted: boolean }>;
+  for (const entry of entries) {
+    const planned = entry.planned;
+    if (planned.director_local) throw new Error("compiled materialization cannot persist a director-local unit");
+    const writeAllowlist = entry.writeAllowlist || [];
+    const allowedOperations = entry.allowedOperations || ["write", "create"];
+    if (writeAllowlist.length) {
+      const baseline = await captureWrite(cwd, safety);
+      planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline, writeAllowlist, allowedOperations });
+      planned.ticket.mode = "write";
+      planned.ticket.read_only = false;
+      planned.ticket.receipt_id = planned.receipt.receipt_id;
+    } else if (planned.ticket.mode === "commit-only") {
+      const baseline = planned.receipt.commit_baseline || await captureCommit(cwd, safety);
+      assertWriteScopesAvailable(cwd, [{ key: planned.ticket.id, ticket_id: planned.ticket.id, write_paths: baseline.staged_paths }], env);
+      if (!planned.receipt.commit_baseline) applyCommitBaselineToPlan(planned, baseline);
+    }
+    const receiptFile = path.join(receiptsDir(cwd, env), `${planned.receipt.receipt_id}.json`);
+    const spawnFile = path.join(spawnsDir(cwd, env), `${planned.ticket.id}.json`);
+    prepared.push({ entry, receipt: planned.receipt, receiptFile, spawnFile, receiptExisted: fs.existsSync(receiptFile), spawnExisted: fs.existsSync(spawnFile) });
+  }
+
+  const written: typeof prepared = [];
+  const tickets: SpawnTicket[] = [];
+  try {
+    for (const item of prepared) {
+      const planned = item.entry.planned;
+      receiptWriter(cwd, item.receipt, env);
+      // Keep the exact Receipt instance returned by the writer on the plan;
+      // custom writers may normalize it before persistence.
+      planned.receipt = item.receipt;
+      tickets.push(spawnWriter(cwd, planned.ticket, env));
+      written.push(item);
+    }
+    if (options.onComplete) await options.onComplete(tickets);
+    return tickets;
+  } catch (error) {
+    for (const item of [...written, ...prepared.slice(written.length)]) {
+      removeIfNew(item.receiptFile, item.receiptExisted);
+      removeIfNew(item.spawnFile, item.spawnExisted);
+    }
+    removeNewTemporaryRunStateFiles(temporaryRunStateFiles, cwd, env);
+    throw error;
+  }
+}
+
+export const materializeBatchAsync = materializeStandalonePlansBatchAsync;
+export const materializeCompiledApplyBatchAsync = materializeStandalonePlansBatchAsync;
+export const materializePlansBatchAsync = materializeStandalonePlansBatchAsync;
