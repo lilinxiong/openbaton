@@ -11,6 +11,19 @@ const skillFiles = {
 };
 const openspecApplySkill = path.join(root, ".agents", "skills", "openspec-apply-change", "SKILL.md");
 
+function assertCrossTreeRouteContract(text: string, host: string): void {
+  const paragraph = text.split(/\r?\n[\t ]*\r?\n/).find((candidate) => (
+    /A\s+separate\s+root\s+conversation\s+has\s+its\s+own\s+tree-local\s+capacity\./i.test(candidate)
+    && /session's\s+native\s+failure\s+into\s+that\s+signal\./i.test(candidate)
+  ));
+  assert.ok(paragraph, `${host} skill is missing its cross-tree route contract`);
+  assert.match(paragraph, /shared\s+workspace\s+safety\s+checks\s+still\s+apply\s+across\s+trees/i);
+  assert.match(paragraph, /native\s+route\s+availability,\s+quota,\s+rate-limit,\s+and\s+uncallability\s+evidence\s+remains\s+session-local/i);
+  assert.match(paragraph, /new\s+session\s+must\s+recheck\s+it/i);
+  assert.match(paragraph, /provider-wide\s+quota\s+input\s+is\s+`provider_quotas`\s+explicitly\s+returned\s+by\s+the\s+active\s+adapter\s+catalog/i);
+  assert.doesNotMatch(paragraph, /host\/profile quota checks still apply across trees/i);
+}
+
 const commonInvariants: Array<[string, RegExp]> = [
   ["hookless explicit invocation", /hookless[\s\S]{0,260}(?:explicitly|explicit invocation|explicit host)/i],
   ["canonical OpenSpec ledger", /OpenSpec[\s\S]{0,180}(?:canonical|remain canonical|task ledger)/i],
@@ -57,16 +70,14 @@ describe("compiled OpenSpec runtime skill audit", () => {
     assert.match(codex, /app-server[\s\S]{0,180}model\/list/i);
     assert.match(codex, /(?=[\s\S]*task_name)(?=[\s\S]*fork_context=false)/i);
     assert.match(codex, /Codex native child/i);
-    assert.match(codex, /(?=[\s\S]*shared\s+workspace\s+safety)(?=[\s\S]*provider_quotas)(?=[\s\S]*session-local)(?=[\s\S]*new\s+session[\s\S]*recheck)/i);
-    assert.doesNotMatch(codex, /host\/profile quota checks still apply across trees/i);
+    assertCrossTreeRouteContract(codex, "Codex");
 
     const grok = fs.readFileSync(skillFiles.grok, "utf8");
     assert.match(grok, /(?=[\s\S]*ACP)(?=[\s\S]*initialize)(?=[\s\S]*availableModels)/i);
     assert.match(grok, /(?=[\s\S]*spawn_subagent)(?=[\s\S]*background=true)(?=[\s\S]*isolation=none)/i);
     assert.match(grok, /(?=[\s\S]*subagent_id)(?=[\s\S]*get_command_or_subagent_output)/i);
     assert.match(grok, /(?=[\s\S]*resume_from)(?=[\s\S]*unset)/i);
-    assert.match(grok, /(?=[\s\S]*shared\s+workspace\s+safety)(?=[\s\S]*provider_quotas)(?=[\s\S]*session-local)(?=[\s\S]*new\s+session[\s\S]*recheck)/i);
-    assert.doesNotMatch(grok, /host\/profile quota checks still apply across trees/i);
+    assertCrossTreeRouteContract(grok, "Grok");
   });
 
   it("keeps the OpenSpec apply skill outside the Baton integration edit scope", () => {
