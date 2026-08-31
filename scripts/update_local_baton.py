@@ -617,6 +617,8 @@ def _manifest_host_files(home: Path) -> list[Path]:
     try:
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         files = manifest["files"]
+        if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+            raise TypeError("install manifest files must be a list of objects")
         return [Path(item["path"]) for item in files if item.get("kind") == "host-skill"]
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(f"installed manifest is invalid: {manifest_file}") from error

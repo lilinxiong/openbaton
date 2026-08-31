@@ -13,7 +13,7 @@ const SYSTEM_NODE = execFileSync("which", ["node"], {
 }).trim();
 const ISOLATED_SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter);
 
-type PlanMode = "success" | "active" | "conflict" | "invalid" | "stale" | "malformed-preflight" | "malformed-remove" | "malformed-already-absent" | "apply-conflict";
+type PlanMode = "success" | "active" | "conflict" | "invalid" | "stale" | "malformed-preflight" | "malformed-remove" | "malformed-already-absent" | "malformed-manifest" | "apply-conflict";
 type Fixture = {
   root: string;
   checkout: string;
@@ -87,10 +87,11 @@ if (args[0] === "init") {
   fs.mkdirSync(path.join(home, ".grok", "skills", "baton"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "skills", "baton", "SKILL.md"), "codex host skill\\n");
   fs.writeFileSync(path.join(home, ".grok", "skills", "baton", "SKILL.md"), "grok host skill\\n");
-  fs.writeFileSync(path.join(home, ".baton", "install-manifest.json"), JSON.stringify({ files: [
+  const manifestFiles = mode === "malformed-manifest" ? ["not-an-object"] : [
     { kind: "host-skill", host: "codex", path: path.join(home, ".codex", "skills", "baton", "SKILL.md") },
     { kind: "host-skill", host: "grok", path: path.join(home, ".grok", "skills", "baton", "SKILL.md") },
-  ] }));
+  ];
+  fs.writeFileSync(path.join(home, ".baton", "install-manifest.json"), JSON.stringify({ files: manifestFiles }));
   process.exit(0);
 }
 if (args[0] === "version") { console.log("1.0.0"); process.exit(0); }
@@ -393,6 +394,17 @@ describe("isolated local Baton installer", () => {
     assert.match(`${result.stdout}\n${result.stderr}`, /init failed after link/);
     assert.match(`${result.stdout}\n${result.stderr}`, /Recovery \(cleanup has begun\)|repair the link/i);
     assert.equal(logLines(f).some((line) => line === "bun link"), true);
+  });
+
+  it("rejects scalar install-manifest entries through the recovery path", () => {
+    const f = fixture();
+    f.env.FAKE_PLAN_MODE = "malformed-manifest";
+
+    const result = runInstaller(f, ["--skip-install", "--skip-tests"]);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /installed manifest is invalid/);
+    assert.match(`${result.stdout}\n${result.stderr}`, /Recovery \(cleanup has begun\)|repair the link/i);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /AttributeError/);
   });
 
   it("fails before mutation when clean-uninstall preflight has a malformed schema", () => {
