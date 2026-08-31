@@ -34,14 +34,15 @@ Codex; the model list comes from that adapter's live catalog.
 
 ## Source checkout
 
-From a checkout, build and refresh the linked command with:
+From a checkout, build and install the linked command with:
 
 ```bash
 python3 scripts/update_local_baton.py
 ```
 
 The script installs dependencies, runs the repository checks, builds the
-package, links `baton`, and refreshes the shared runtime files. Use
+package, detects the installation state, and completes the appropriate fresh
+or clean-reinstall plan. Use
 `--skip-tests` only when you have explicitly accepted that verification is
 omitted. The day-to-day checkout command is:
 
@@ -49,6 +50,40 @@ omitted. The day-to-day checkout command is:
 bun install
 bun run baton -- <command> ...
 ```
+
+The installer detects fresh versus existing state from the visible `baton`
+command, the `~/.baton` home, and registered host-skill footprints, then
+executes the corresponding plan. A clean-reinstall plan builds and verifies first, runs the
+built CLI's clean-uninstall preflight and apply, removes recognized package
+registrations, links this checkout, runs profile-free `baton init` with
+noninteractive stdin, and verifies the result. The fresh plan omits only the
+cleanup stages.
+
+Package-manager registration is not an independent installation footprint. When
+a visible `baton` command exists, the installer validates its supported Bun/npm
+package registration and provenance before cleanup; it does not independently
+scan package registrations or manifests when no visible command exists.
+
+Use `--dry-run` to render the full selected plan without executing it, including
+cleanup and registration removal. It must not invoke package-manager unlink:
+Bun 1.4.0 package-manager dry-run is unsafe.
+
+The plan stops when active tickets remain, an owned-file/package conflict is
+found, state is invalid or incomplete, or a recognized removal command is
+ambiguous. Resolve the blocker and rerun. Never use `rm -rf ~/.baton`.
+
+After installation, configure a host explicitly (there is no implicit model
+selection during init):
+
+```bash
+baton config --cli <adapter-id> --runner <model-id> --longctx <model-id> --coding-model <model-id>
+```
+
+This writes only `[cli.<adapter-id>]`. Use `-` to clear `runner` or `longctx`,
+and `--coding-model all` only when the complete catalog order is intended. Do
+not use the obsolete `--enable` form. The profile at `~/.baton/config.toml`
+is user-owned; an empty profile is allowed after init but blocks classified
+routing until explicitly configured.
 
 Core has no built-in catalog. An adapter package is discovered from
 `adapter.json` under `~/.baton/adapters/<adapter-id>/` or
