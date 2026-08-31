@@ -241,18 +241,32 @@ def _package_listing(
     except (OSError, subprocess.CalledProcessError):
         return False, set()
     except ValueError:
-        # A successful package-manager invocation with malformed output is not
-        # ownership evidence. Treat it as an empty registration and fail closed.
-        return True, set()
+        # A successful invocation with unparseable output is still unavailable
+        # ownership data. Keep that distinct from a valid empty listing so the
+        # supported filesystem layout can remain the deciding evidence.
+        return False, set()
+    if not isinstance(payload, (dict, list)):
+        return False, set()
     found: set[Path] = set()
 
-    def visit(value: Any) -> None:
+    package_maps = {
+        "dependencies", "devDependencies", "optionalDependencies",
+        "peerDependencies", "transitiveDependencies",
+    }
+
+    def visit(value: Any, inferred_name: str | None = None) -> None:
         if isinstance(value, dict):
-            name, location = value.get("name"), value.get("path", value.get("location"))
+            explicit_name = value.get("name")
+            name = explicit_name if isinstance(explicit_name, str) else inferred_name
+            location = value.get("path", value.get("location"))
             if name == PACKAGE_NAME and isinstance(location, str) and location:
                 found.add(Path(location).expanduser().resolve(strict=False))
-            for child in value.values():
-                visit(child)
+            for key, child in value.items():
+                if key in package_maps and isinstance(child, dict):
+                    for package_name, package_record in child.items():
+                        visit(package_record, package_name)
+                else:
+                    visit(child)
         elif isinstance(value, list):
             for child in value:
                 visit(child)
@@ -300,7 +314,7 @@ def _package_registration(
     # ambiguous executable merely because this is a preview.
     npm_root = _npm_global_root(str(npm), env, runner) if npm else None
     bun_listing_ok, bun_registered = _package_listing([str(bun), "pm", "ls", "-g", "--json"], env, runner) if bun else (False, set())
-    npm_listing_ok, npm_registered = _package_listing([str(npm), "ls", "-g", "--depth=0", "--json"], env, runner) if npm else (False, set())
+    npm_listing_ok, npm_registered = _package_listing([str(npm), "ls", "-g", "--depth=0", "--json", "--long"], env, runner) if npm else (False, set())
     bun_install = Path(env.get("BUN_INSTALL", str(host_home(env) / ".bun"))).expanduser()
     candidates: list[PackageRegistration] = []
     for package_root in roots:
@@ -412,17 +426,27 @@ def run(
     print(f"+ {display_command(command)}", flush=True)
     if dry_run:
         return ""
-    result = invoke(command, env=env, runner=runner, capture=capture, noninteractive=noninteractive, cwd=cwd)
+    try:
+        result = invoke(command, env=env, runner=runner, capture=capture, noninteractive=noninteractive, cwd=cwd)
+    except subprocess.CalledProcessError as error:
+        detail = "\n".join(
+            part.strip() for part in (error.stdout, error.stderr)
+            if isinstance(part, str) and part.strip()
+        )
+        raise RuntimeError(
+            f"command failed ({error.returncode}): {display_command(command)}"
+            + (f"\n{detail}" if detail else "")
+        ) from error
     return result.stdout if capture else ""
 
 
 def _parse_json_output(output: str) -> dict[str, Any]:
     try:
         value = json.loads(output)
-    except ValueError:
+    except ValueError as error:
         start = output.find("{")
         if start < 0:
-            raise RuntimeError("built Baton uninstall output was not valid JSON")
+            raise RuntimeError("built Baton uninstall output was not valid JSON") from error
         try:
             value = json.loads(output[start:])
         except (TypeError, ValueError) as error:
@@ -594,8 +618,8 @@ def _manifest_host_files(home: Path) -> list[Path]:
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         files = manifest["files"]
         return [Path(item["path"]) for item in files if item.get("kind") == "host-skill"]
-    except (OSError, ValueError, KeyError, TypeError):
-        raise RuntimeError(f"installed manifest is invalid: {manifest_file}")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError(f"installed manifest is invalid: {manifest_file}") from error
 
 
 def verify_installation(
@@ -707,8 +731,8 @@ def install(
             )
             if footprint.registration is not None:
                 run(footprint.registration.remove_command, env=values, runner=runner, cwd=repo_root)
+        cleanup_started = True
         run([bun, "link"], env=values, runner=runner, cwd=repo_root)
-        cleanup_started = cleanup_started or footprint.has_prior_installation
         run([str(built_cli), "init"], env=values, runner=runner, noninteractive=True, cwd=repo_root)
         command, version = verify_installation(env=values, repo_root=repo_root, expected_mode=plan.mode, runner=runner)
     except (OSError, subprocess.CalledProcessError, RuntimeError) as error:

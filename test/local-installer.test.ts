@@ -73,6 +73,7 @@ if (args[0] === "uninstall") {
   process.exit(0);
 }
 if (args[0] === "init") {
+  if (process.env.FAKE_FAIL === "init") { console.error("init failed after link"); process.exit(27); }
   const stdin = fs.readFileSync(0, "utf8");
   record("init-stdin=" + JSON.stringify(stdin) + " args=" + args.join(" "));
   fs.mkdirSync(path.join(home, ".baton", "adapters"), { recursive: true });
@@ -266,6 +267,35 @@ describe("isolated local Baton installer", () => {
     assert.ok(unregister >= 0);
     assert.ok(lines.findIndex((line) => line === "bun link") > unregister);
     assert.ok(lines.findIndex((line) => line.startsWith("cli init")) > unregister);
+    assert.ok(lines.some((line) => line === "npm ls -g --depth=0 --json --long"));
+  });
+
+  it("recognizes name-keyed Bun and npm dependency listings", () => {
+    for (const manager of ["bun", "npm"] as const) {
+      const f = fixture();
+      if (manager === "bun") setupPriorInstall(f);
+      else setupPriorNpmInstall(f);
+      const packageRoot = manager === "bun"
+        ? path.join(f.home, ".bun", "install", "global", "node_modules", "@zhouliuya", "openbaton")
+        : path.join(f.env.FAKE_NPM_ROOT as string, "@zhouliuya", "openbaton");
+      f.env.FAKE_PM_JSON = JSON.stringify({
+        dependencies: { "@zhouliuya/openbaton": { version: "0.9.0", path: packageRoot } },
+      });
+
+      const result = runInstaller(f, ["--skip-install", "--skip-tests", "--dry-run"]);
+      assert.equal(result.status, 0, `${manager}: ${result.stderr}`);
+      assert.match(result.stdout, /clean-reinstall/i);
+    }
+  });
+
+  it("treats unparseable package listings as unavailable instead of valid empty listings", () => {
+    const f = fixture();
+    setupPriorInstall(f);
+    f.env.FAKE_PM_JSON = "not-json";
+
+    const result = runInstaller(f, ["--skip-install", "--skip-tests", "--dry-run"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /clean-reinstall/i);
   });
 
   it("preserves the old runtime and link for dependency, check, or build failures", () => {
@@ -348,7 +378,21 @@ describe("isolated local Baton installer", () => {
       const lines = logLines(f);
       assert.equal(lines.some((line) => line.includes("bun remove") || line.includes("npm uninstall") || line === "bun link"), false, mode);
       assert.equal(lines.some((line) => line.includes("--clean --yes")), mode === "stale");
+      if (mode === "stale") {
+        assert.match(`${result.stdout}\n${result.stderr}`, /UNINSTALL_PLAN_STALE: target bytes changed/);
+      }
     }
+  });
+
+  it("reports recovery guidance when fresh installation fails after linking", () => {
+    const f = fixture();
+    f.env.FAKE_FAIL = "init";
+
+    const result = runInstaller(f, ["--skip-install", "--skip-tests"]);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /init failed after link/);
+    assert.match(`${result.stdout}\n${result.stderr}`, /Recovery \(cleanup has begun\)|repair the link/i);
+    assert.equal(logLines(f).some((line) => line === "bun link"), true);
   });
 
   it("fails before mutation when clean-uninstall preflight has a malformed schema", () => {
