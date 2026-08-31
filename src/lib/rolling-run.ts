@@ -14,14 +14,27 @@ import {
   assertTaskSeal,
   assertTaskSourceDescriptor,
   canonicalizeRolling,
+  fingerprintGateVersion,
   fingerprintPlanDelta,
   fingerprintTaskSeal,
   fingerprintTaskSourceDescriptor,
+  fingerprintUnitVersion,
   type PlanDelta,
   type TaskManifestEntry,
   type TaskSeal,
   type TaskSourceDescriptor,
 } from "./rolling-plan.js";
+import {
+  validatePlanDeltaAgainstFacts,
+  type PlanDeltaValidationContext,
+} from "./rolling-delta.js";
+import {
+  deriveRollingLifecycle,
+  validateTaskSealAgainstFacts,
+  type RollingTaskLifecycle,
+  type RollingTaskLifecycleState,
+  type RollingTaskStatus,
+} from "./rolling-lifecycle.js";
 import {
   rollingRunAcceptedDocumentPath,
   rollingRunCheckpointPath,
@@ -118,13 +131,45 @@ export interface RollingRunReadOptions { env?: NodeJS.ProcessEnv; host?: string;
 export class RollingRunError extends Error {
   readonly code: string;
   readonly retryable: boolean;
-  constructor(message: string, code: string, retryable = false) {
+  readonly diagnostics?: readonly { code: string; message: string; path?: string; refs?: string[] }[];
+  constructor(message: string, code: string, retryable = false, diagnostics?: readonly { code: string; message: string; path?: string; refs?: string[] }[]) {
     super(message);
     this.name = "RollingRunError";
     this.code = code;
     this.retryable = retryable;
+    this.diagnostics = diagnostics;
   }
 }
+
+/**
+ * The expected append sequence is a storage compare token, not semantic
+ * lineage.  Expose a typed retryable outcome so callers can mechanically
+ * rebase the unchanged delta and retry after a concurrent append while the
+ * legacy `ROLLING_SEQUENCE_MISMATCH` code remains intact.
+ */
+export class RollingStorageRaceError extends RollingRunError {
+  readonly expected_append_sequence: number;
+  readonly current_append_sequence: number;
+  readonly expected_sequence: number;
+  readonly current_sequence: number;
+  readonly storage_race = true as const;
+
+  constructor(expected_append_sequence: number, current_append_sequence: number) {
+    super(
+      `rolling append sequence is stale (expected ${expected_append_sequence}, current ${current_append_sequence})`,
+      "ROLLING_SEQUENCE_MISMATCH",
+      true,
+    );
+    this.name = "RollingStorageRaceError";
+    this.expected_append_sequence = expected_append_sequence;
+    this.current_append_sequence = current_append_sequence;
+    this.expected_sequence = expected_append_sequence;
+    this.current_sequence = current_append_sequence;
+  }
+}
+
+export const RollingSequenceMismatchError = RollingStorageRaceError;
+export const RollingAppendSequenceRaceError = RollingStorageRaceError;
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -289,6 +334,61 @@ function readIdentityFromFacts(cwd: string, runId: string, env?: NodeJS.ProcessE
   return identity;
 }
 
+function deltaPayloads(facts: readonly RollingFact[]): PlanDelta[] {
+  return facts.filter((fact) => fact.kind === "delta" && record(fact.payload)).map((fact) => fact.payload as PlanDelta);
+}
+
+function deltaIdempotencyFingerprint(value: PlanDelta): string {
+  const copy = structuredClone(value) as PlanDelta;
+  // These values are injected only for the compact phase-1 compatibility
+  // facade.  Ignore the injected marker when comparing a replay with the
+  // original compact transport document.
+  for (const unit of copy.unit_versions || []) {
+    if (Array.isArray(unit.completion_criteria) && unit.completion_criteria.length === 1 && unit.completion_criteria[0] === "phase-1 compatibility contract") delete unit.completion_criteria;
+    if (Array.isArray(unit.permitted_validation) && unit.permitted_validation.length === 1 && unit.permitted_validation[0] === "phase-1 compatibility validation") delete unit.permitted_validation;
+  }
+  return fingerprintPlanDelta(copy);
+}
+
+function deltaValidationFacts(identity: RollingRunIdentity, facts: readonly RollingFact[], proposed: PlanDelta): PlanDeltaValidationContext {
+  const accepted_deltas = deltaPayloads(facts);
+  const manifest = new Map<string, TaskManifestEntry>();
+  for (const delta of accepted_deltas) {
+    for (const entry of [...(delta.manifest_additions || []), ...(delta.manifest_refreshes || [])]) {
+      if (record(entry) && nonEmpty(entry.task_key)) manifest.set(entry.task_key, entry);
+    }
+  }
+
+  // Phase-1 callers were allowed to append a plan before a manifest page was
+  // available.  Preserve that API by treating an entirely absent manifest as
+  // an unknown source boundary; as soon as a real entry exists, references are
+  // checked strictly by the semantic validator.
+  const proposedManifest = [...(proposed.manifest_additions || []), ...(proposed.manifest_refreshes || [])];
+  const hasProposedManifest = proposedManifest.some((entry) => record(entry) && nonEmpty(entry.task_key));
+  if (manifest.size === 0 && !hasProposedManifest) {
+    const taskKeys = new Set<string>();
+    for (const unit of proposed.unit_versions || []) for (const taskKey of unit.task_keys || []) if (nonEmpty(taskKey)) taskKeys.add(taskKey);
+    for (const gate of proposed.gate_versions || []) for (const taskKey of gate.task_keys || []) if (nonEmpty(taskKey)) taskKeys.add(taskKey);
+    for (const coverage of proposed.task_coverage || []) if (record(coverage) && nonEmpty(coverage.task_key)) taskKeys.add(coverage.task_key);
+    for (const taskKey of taskKeys) manifest.set(taskKey, {
+      schema_version: 1,
+      task_key: taskKey,
+      source_kind: identity.source_kind as TaskManifestEntry["source_kind"],
+      source_ref: { task_key: taskKey, compatibility: true },
+      display_id: taskKey,
+      title: taskKey,
+      source_fingerprint: "0".repeat(64),
+      source_state: "pending",
+      discovery_sequence: 0,
+    });
+  }
+  return {
+    manifest_entries: [...manifest.values()],
+    accepted_deltas,
+    facts: [...facts],
+  };
+}
+
 function appendLocked(input: RollingRunAppendInput, normalized: { kind: RollingFactKind; idempotency_key: string; fact_id: string; document_id: string; payload: unknown; document: unknown }): RollingCheckpoint {
   const env = input.env || process.env;
   const identity = readIdentityFromFacts(input.cwd, input.runId, env);
@@ -298,28 +398,101 @@ function appendLocked(input: RollingRunAppendInput, normalized: { kind: RollingF
     try { validateSessionScope(identity.session_uid, env); } catch (cause) { throw new RollingRunError((cause as Error).message, "ROLLING_SESSION_MISMATCH"); }
   }
   const facts = parseFacts(input.cwd, input.runId, env);
-  const expected = input.expected_append_sequence ?? input.append_sequence;
   const current = facts.length ? facts[facts.length - 1]!.append_sequence : 0;
-  if (expected !== undefined && expected !== current) error(`rolling append sequence is stale (expected ${expected}, current ${current})`, "ROLLING_SEQUENCE_MISMATCH", true);
   const existing = facts.find((fact) => fact.idempotency_key === normalized.idempotency_key);
   if (existing) {
-    if (existing.kind !== normalized.kind || existing.payload_fingerprint !== documentFingerprint(normalized.payload)) error("rolling idempotency key conflicts with an accepted fact", "ROLLING_IDEMPOTENCY_CONFLICT");
+    const payloadHash = documentFingerprint(normalized.payload);
+    const documentHash = documentFingerprint(normalized.document);
+    const semanticDeltaMatch = existing.kind === "delta" && normalized.kind === "delta"
+      && record(existing.payload) && record(normalized.payload)
+      && deltaIdempotencyFingerprint(existing.payload as unknown as PlanDelta) === deltaIdempotencyFingerprint(normalized.payload as unknown as PlanDelta);
+    const payloadMatches = existing.payload_fingerprint === payloadHash || semanticDeltaMatch;
+    const documentMatches = existing.document_fingerprint === documentHash || semanticDeltaMatch;
+    if (existing.kind !== normalized.kind || !payloadMatches || !documentMatches) {
+      error("rolling idempotency key conflicts with an accepted fact", "ROLLING_IDEMPOTENCY_CONFLICT");
+    }
+    if (!factDocumentMatches(input.cwd, input.runId, existing, env)) error(`accepted document missing or corrupt: ${existing.document_id}`, "ROLLING_STATE_CORRUPT");
     return derive(identity, facts);
   }
   if (facts.some((fact) => fact.fact_id === normalized.fact_id)) error("rolling fact id conflicts with an accepted fact", "ROLLING_FACT_ID_CONFLICT");
+
+  const expected = input.expected_append_sequence ?? input.append_sequence
+    ?? (normalized.kind === "delta" && record(normalized.payload) && sequence(normalized.payload.prepared_from_append_sequence)
+      ? normalized.payload.prepared_from_append_sequence
+      : undefined);
+  if (expected !== undefined && expected !== current) throw new RollingStorageRaceError(expected, current);
+
   if (normalized.kind === "delta") {
-    try { normalized.payload = assertPlanDelta(normalized.payload); }
-    catch (cause) { throw new RollingRunError(`invalid rolling delta: ${(cause as Error).message}`, "ROLLING_DELTA_INVALID"); }
+    try {
+      const shaped = assertPlanDelta(normalized.payload);
+      const fixedFacts = deltaValidationFacts(identity, facts, shaped);
+      const semanticInput = structuredClone(shaped) as PlanDelta;
+      // The phase-1 storage facade accepted a compact unit contract when no
+      // source manifest had been discovered yet.  Keep that compatibility
+      // boundary while enforcing the complete contract for every manifest-
+      // anchored rolling delta.
+      const compatibilityManifest = Array.isArray(fixedFacts.manifest_entries) && fixedFacts.manifest_entries.length > 0
+        && fixedFacts.manifest_entries.every((entry) => record(entry.source_ref) && entry.source_ref.compatibility === true);
+      const originalUnits = new Map((shaped.unit_versions || []).map((unit) => [`${unit.unit_key}@${unit.version}`, unit]));
+      if (compatibilityManifest) {
+        for (const unit of semanticInput.unit_versions || []) {
+          if (!Array.isArray(unit.completion_criteria) || unit.completion_criteria.length === 0) unit.completion_criteria = ["phase-1 compatibility contract"];
+          if (!Array.isArray(unit.permitted_validation) || unit.permitted_validation.length === 0) unit.permitted_validation = ["phase-1 compatibility validation"];
+        }
+      }
+      const semantic = validatePlanDeltaAgainstFacts(semanticInput, fixedFacts);
+      if (!semantic.valid) {
+        const detail = semantic.diagnostics.map((item) => `${item.code}: ${item.message}`).join("; ");
+        throw new RollingRunError(`invalid rolling delta: ${detail}`, "ROLLING_DELTA_INVALID", false, semantic.diagnostics);
+      }
+      const candidate = structuredClone(semantic.value || shaped) as PlanDelta;
+      if (compatibilityManifest) {
+        for (const unit of candidate.unit_versions || []) {
+          const original = originalUnits.get(`${unit.unit_key}@${unit.version}`);
+          if (!original || !Array.isArray(original.completion_criteria) || original.completion_criteria.length === 0) delete unit.completion_criteria;
+          if (!original || !Array.isArray(original.permitted_validation) || original.permitted_validation.length === 0) delete unit.permitted_validation;
+        }
+      }
+      for (const unit of candidate.unit_versions || []) unit.fingerprint = fingerprintUnitVersion(unit);
+      for (const gate of candidate.gate_versions || []) gate.fingerprint = fingerprintGateVersion(gate);
+      candidate.fingerprint = fingerprintPlanDelta(candidate);
+      normalized.payload = candidate;
+      // A delta's accepted control document is its canonical semantic value.
+      // This prevents a transport-only spelling (for example `./src/a.ts`)
+      // from being a second document for the same fact.
+      normalized.document = candidate;
+    } catch (cause) {
+      if (cause instanceof RollingRunError && cause.code === "ROLLING_DELTA_INVALID") throw cause;
+      throw new RollingRunError(`invalid rolling delta: ${(cause as Error).message}`, "ROLLING_DELTA_INVALID");
+    }
   }
   if (normalized.kind === "seal") {
-    try { normalized.payload = assertTaskSeal(normalized.payload); }
-    catch (cause) { throw new RollingRunError(`invalid rolling seal: ${(cause as Error).message}`, "ROLLING_SEAL_INVALID"); }
+    try {
+      const shaped = assertTaskSeal(normalized.payload);
+      const semantic = validateTaskSealAgainstFacts(shaped, { facts });
+      if (!semantic.valid) {
+        const detail = semantic.diagnostics.map((item) => `${item.code}: ${item.message}`).join("; ");
+        throw new RollingRunError(`invalid rolling seal: ${detail}`, "ROLLING_SEAL_INVALID", false, semantic.diagnostics);
+      }
+      normalized.payload = semantic.value || shaped;
+      // Seal validation canonicalizes version lists.  Persist that same
+      // value as the accepted document so a failed validation cannot leave a
+      // transport-only seal behind and retries remain idempotent.
+      normalized.document = normalized.payload;
+    } catch (cause) {
+      if (cause instanceof RollingRunError && cause.code === "ROLLING_SEAL_INVALID") throw cause;
+      throw new RollingRunError(`invalid rolling seal: ${(cause as Error).message}`, "ROLLING_SEAL_INVALID");
+    }
   }
   const documentFile = rollingRunAcceptedDocumentPath(input.cwd, input.runId, normalized.document_id, env);
   const documentHash = documentFingerprint(normalized.document);
+  let createdDocument = false;
   if (fs.existsSync(documentFile)) {
     if (!factDocumentMatches(input.cwd, input.runId, { document_id: normalized.document_id, document_fingerprint: documentHash } as RollingFact, env)) error("accepted document identity conflicts", "ROLLING_DOCUMENT_CONFLICT");
-  } else atomicJson(documentFile, normalized.document);
+  } else {
+    atomicJson(documentFile, normalized.document);
+    createdDocument = true;
+  }
   const next: Omit<RollingFact, "fingerprint"> = {
     schema_version: ROLLING_FACT_SCHEMA_VERSION,
     append_sequence: current + 1,
@@ -335,7 +508,7 @@ function appendLocked(input: RollingRunAppendInput, normalized: { kind: RollingF
   const fact: RollingFact = { ...next, fingerprint: factFingerprint(next) };
   try { writeFacts(input.cwd, input.runId, [...facts, fact], env); }
   catch (cause) {
-    if (!facts.some((item) => item.document_id === normalized.document_id)) try { fs.unlinkSync(documentFile); } catch { /* best effort */ }
+    if (createdDocument) try { fs.unlinkSync(documentFile); } catch { /* best effort */ }
     throw cause;
   }
   const checkpoint = derive(identity, [...facts, fact]);
@@ -401,7 +574,12 @@ export function appendRollingPlanDelta(input: RollingPlanDeltaAppendInput): Roll
 }
 
 export function appendRollingSeal(input: RollingRunAppendInput & { seal: TaskSeal }): RollingCheckpoint {
-  const seal = assertTaskSeal(input.seal);
+  let seal: TaskSeal;
+  try { seal = assertTaskSeal(input.seal); }
+  catch (cause) {
+    const diagnostics = (cause as { diagnostics?: readonly { code: string; message: string; path?: string; refs?: string[] }[] }).diagnostics;
+    throw new RollingRunError(`invalid rolling seal: ${(cause as Error).message}`, "ROLLING_SEAL_INVALID", false, diagnostics);
+  }
   const copied = structuredClone(seal) as TaskSeal;
   if (!copied.fingerprint) copied.fingerprint = fingerprintTaskSeal(copied);
   return appendRollingFact({ ...input, kind: "seal", idempotency_key: `seal:${copied.task_key}`, document_id: `seal-${copied.task_key}`, payload: copied, document: copied });
@@ -444,18 +622,30 @@ export const readRollingRun = readRollingExecutionRun;
 export const readRollingExecutionRunState = readRollingExecutionRun;
 
 export interface RollingRunStatus extends RollingCheckpoint {
-  status: "unplanned" | "open" | "sealed" | "reconciled";
-  task_status: Record<string, "unplanned" | "planned" | "open" | "sealed">;
+  status: RollingTaskLifecycleState;
+  /** Phase-1 compatibility map: an open task is still spelled `planned`. */
+  task_status: Record<string, RollingTaskStatus>;
+  /** Source-neutral lifecycle projection for rolling callers. */
+  task_lifecycle: Record<string, RollingTaskLifecycle>;
+  lifecycle_status: Record<string, RollingTaskLifecycleState>;
+  task_states: Record<string, RollingTaskLifecycleState>;
 }
 export function statusRollingExecutionRun(cwd: string, runId: string, options: RollingRunReadOptions = {}): RollingRunStatus {
   const run = readRollingExecutionRun(cwd, runId, options);
-  const task_status: RollingRunStatus["task_status"] = {};
-  for (const entry of run.manifest_entries) task_status[entry.task_key] = "unplanned";
-  for (const delta of run.accepted_deltas) for (const coverage of delta.task_coverage) if (task_status[coverage.task_key] === "unplanned") task_status[coverage.task_key] = "planned";
-  for (const seal of run.seals) task_status[seal.task_key] = "sealed";
-  const statuses = Object.values(task_status);
-  const status = statuses.length === 0 ? "unplanned" : statuses.every((value) => value === "sealed") ? "sealed" : statuses.some((value) => value === "planned") ? "open" : "unplanned";
-  return { ...run, status, task_status };
+  const lifecycle = deriveRollingLifecycle({
+    manifest_entries: run.manifest_entries,
+    accepted_deltas: run.accepted_deltas,
+    seals: run.seals,
+    facts: run.facts,
+  });
+  return {
+    ...run,
+    status: lifecycle.status,
+    task_status: lifecycle.task_status,
+    task_lifecycle: lifecycle.task_lifecycle,
+    lifecycle_status: lifecycle.lifecycle_status,
+    task_states: lifecycle.task_states,
+  };
 }
 export const statusRollingRun = statusRollingExecutionRun;
 
