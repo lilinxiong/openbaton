@@ -28,7 +28,12 @@ export type OpenSpecErrorCode =
   | "CONTEXT_PATH_INVALID"
   | "TASK_LEDGER_MISSING"
   | "TASK_NUMBER_MISSING"
-  | "TASK_NUMBER_AMBIGUOUS";
+  | "TASK_NUMBER_AMBIGUOUS"
+  | "TASK_MAPPING_MISSING"
+  | "TASK_MAPPING_DUPLICATE"
+  | "TASK_MAPPING_CONTRADICTORY"
+  | "TASK_LEDGER_CHANGED"
+  | "LEDGER_LOCKED";
 
 export type OpenSpecConclusion = string;
 
@@ -93,6 +98,25 @@ export interface OpenSpecSelectedTask {
   number: string;
   description: string;
   section: string;
+  /** OpenSpec's transient apply identity; never used for reconciliation. */
+  applyId?: string;
+  apply_id?: string;
+  /** OpenSpec's transient ordinal; never used for reconciliation. */
+  applyOrdinal?: number;
+  apply_ordinal?: number;
+}
+
+/** A validated mapping between one CLI task and one Markdown task number. */
+export interface OpenSpecApplyTask {
+  number: string;
+  description: string;
+  section: string;
+  status: OpenSpecTaskStatus;
+  done: boolean;
+  applyId: string;
+  apply_id: string;
+  applyOrdinal?: number;
+  apply_ordinal?: number;
 }
 
 /**
@@ -114,6 +138,8 @@ export interface OpenSpecApplyInstructions {
   /** Alias useful to plan consumers that call this a selected-task set. */
   selectedTaskNumbers: string[];
   selectedTasks: OpenSpecSelectedTask[];
+  /** All mapped Markdown tasks, including completed tasks when the CLI returns them. */
+  applyTasks?: OpenSpecApplyTask[];
   selectedTaskSnapshotFingerprint: string;
   selectedTaskFingerprint: string;
   taskLedger: OpenSpecTaskLedgerIdentity;
@@ -212,6 +238,64 @@ function splitTaskNumber(body: string): Pick<OpenSpecTask, "number" | "descripti
     }
   }
   return { number: "", description: text };
+}
+
+function applyTaskNumber(body: string): string {
+  const text = String(body || "").trim();
+  const match = text.match(/^([0-9]+(?:\.[0-9]+)*)\s+/);
+  return match ? match[1] : "";
+}
+
+function applyOrdinal(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function projectApplyTasks(parsedTasks: OpenSpecTask[], rawTasks: unknown): OpenSpecApplyTask[] {
+  if (!Array.isArray(rawTasks)) throw new OpenSpecError("OpenSpec apply instructions missing tasks", "APPLY_INSTRUCTIONS_INVALID");
+  const byNumber = new Map<string, OpenSpecTask>();
+  for (const task of parsedTasks) {
+    if (task.number) byNumber.set(task.number, task);
+  }
+  const mapped: OpenSpecApplyTask[] = [];
+  const numbers = new Set<string>();
+  const ids = new Map<string, string>();
+  for (const raw of rawTasks) {
+    if (!raw || typeof raw !== "object") throw new OpenSpecError("OpenSpec apply instructions returned malformed tasks", "APPLY_INSTRUCTIONS_INVALID");
+    const value = raw as Record<string, unknown>;
+    if (typeof value.id !== "string" && typeof value.id !== "number") throw new OpenSpecError("OpenSpec apply instructions returned malformed tasks", "APPLY_INSTRUCTIONS_INVALID");
+    if (typeof value.description !== "string" || typeof value.done !== "boolean") throw new OpenSpecError("OpenSpec apply instructions returned malformed tasks", "APPLY_INSTRUCTIONS_INVALID");
+    const number = applyTaskNumber(value.description);
+    if (!number) throw new OpenSpecError(`OpenSpec task description has no Markdown task number: ${value.description}`, "TASK_NUMBER_MISSING");
+    const task = byNumber.get(number);
+    if (!task) throw new OpenSpecError(`OpenSpec task mapping has no Markdown entry: ${number}`, "TASK_MAPPING_MISSING");
+    const explicitNumber = [value.number, value.task_number, value.markdown_number, value.markdownNumber]
+      .find((item) => typeof item === "string" && item.trim()) as string | undefined;
+    if (explicitNumber && explicitNumber.trim() !== number) throw new OpenSpecError(`OpenSpec task mapping is contradictory for apply id ${String(value.id)}`, "TASK_MAPPING_CONTRADICTORY");
+    if (numbers.has(number)) throw new OpenSpecError(`OpenSpec task mapping is duplicated: ${number}`, "TASK_MAPPING_DUPLICATE");
+    const id = String(value.id);
+    const previous = ids.get(id);
+    if (previous && previous !== number) throw new OpenSpecError(`OpenSpec apply id ${id} maps to both ${previous} and ${number}`, "TASK_MAPPING_CONTRADICTORY");
+    ids.set(id, number);
+    const explicitOrdinal = applyOrdinal(value.ordinal ?? value.apply_ordinal ?? value.applyOrdinal);
+    const idOrdinal = applyOrdinal(value.id);
+    if (explicitOrdinal !== undefined && idOrdinal !== undefined && explicitOrdinal !== idOrdinal) {
+      throw new OpenSpecError(`OpenSpec apply ordinal contradicts apply id ${id}`, "TASK_MAPPING_CONTRADICTORY");
+    }
+    const ordinal = explicitOrdinal ?? idOrdinal;
+    // The CLI and the Markdown ledger are two views of the same completion
+    // state. Keep the mapping bidirectional so either side cannot silently
+    // bless stale or partially updated task state.
+    if (task.status === "pending" && value.done) throw new OpenSpecError(`OpenSpec task completion contradicts pending Markdown task: ${number}`, "TASK_MAPPING_CONTRADICTORY");
+    if (task.status === "done" && !value.done) throw new OpenSpecError(`OpenSpec task completion contradicts completed Markdown task: ${number}`, "TASK_MAPPING_CONTRADICTORY");
+    numbers.add(number);
+    mapped.push({ number, description: task.description, section: task.section, status: task.status, done: value.done, applyId: id, apply_id: id, ...(ordinal === undefined ? {} : { applyOrdinal: ordinal, apply_ordinal: ordinal }) });
+  }
+  return mapped;
 }
 
 function stableJson(value: unknown): string {
@@ -391,15 +475,19 @@ export function resolveOpenSpecApplyInstructions(
     if (numbers.has(task.number)) throw new OpenSpecError(`OpenSpec task number is ambiguous: ${task.number}`, "TASK_NUMBER_AMBIGUOUS");
     numbers.add(task.number);
   }
-  if (!Array.isArray(output.tasks)) throw new OpenSpecError("OpenSpec apply instructions missing tasks", "APPLY_INSTRUCTIONS_INVALID");
-  for (const task of output.tasks) {
-    if (!task || typeof task !== "object" || typeof (task as Record<string, unknown>).id !== "string" || typeof (task as Record<string, unknown>).description !== "string" || typeof (task as Record<string, unknown>).done !== "boolean") {
-      throw new OpenSpecError("OpenSpec apply instructions returned malformed tasks", "APPLY_INSTRUCTIONS_INVALID");
-    }
-  }
+  const applyTasks = projectApplyTasks(parsedTasks, output.tasks);
+  const applyByNumber = new Map(applyTasks.map((task) => [task.number, task]));
   const selectedTasks = parsedTasks
     .filter((task) => task.status === "pending")
-    .map((task) => ({ number: task.number, description: task.description, section: task.section }));
+    .map((task) => {
+      const apply = applyByNumber.get(task.number);
+      return {
+        number: task.number,
+        description: task.description,
+        section: task.section,
+        ...(apply ? { applyId: apply.applyId, apply_id: apply.apply_id, ...(apply.applyOrdinal === undefined ? {} : { applyOrdinal: apply.applyOrdinal, apply_ordinal: apply.apply_ordinal }) } : {}),
+      };
+    });
   const pendingTaskNumbers = selectedTasks.map((task) => task.number);
   const contextFileHashes: Record<string, string> = {};
   for (const file of contextFiles) contextFileHashes[file.path] = file.sha256;
@@ -408,7 +496,11 @@ export function resolveOpenSpecApplyInstructions(
     : Array.isArray(output.operationGuidance) && output.operationGuidance.every((item) => typeof item === "string")
       ? output.operationGuidance as string[]
       : (() => { throw new OpenSpecError("OpenSpec operationGuidance must be a string array", "APPLY_INSTRUCTIONS_INVALID"); })();
-  const selectedTaskSnapshotFingerprint = crypto.createHash("sha256").update(stableJson(selectedTasks), "utf8").digest("hex");
+  // apply id/ordinal are transient CLI diagnostics. They are retained on the
+  // projection for observability, but must not invalidate the semantic task
+  // snapshot when the CLI reallocates them.
+  const fingerprintedSelectedTasks = selectedTasks.map(({ number, description, section }) => ({ number, description, section }));
+  const selectedTaskSnapshotFingerprint = crypto.createHash("sha256").update(stableJson(fingerprintedSelectedTasks), "utf8").digest("hex");
   const taskLedger: OpenSpecTaskLedgerIdentity = { path: taskLedgerFile.path, identity: taskLedgerFile.path, sha256: taskLedgerFile.sha256, fingerprint: taskLedgerFile.sha256 };
   return {
     changeName,
@@ -421,6 +513,7 @@ export function resolveOpenSpecApplyInstructions(
     pendingTaskNumbers,
     selectedTaskNumbers: [...pendingTaskNumbers],
     selectedTasks,
+    applyTasks,
     selectedTaskSnapshotFingerprint,
     selectedTaskFingerprint: selectedTaskSnapshotFingerprint,
     taskLedger,
