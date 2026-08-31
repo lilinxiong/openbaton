@@ -17,11 +17,20 @@ import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 import { getCliAdapter } from "../adapters/index.js";
 import type { UnknownRecord } from "../types.js";
 import { dispatchLockPath, spawnsDir, workspaceId } from "./paths.js";
-import { readReceipt, writeReceipt, type DelegationReceipt, type ExecutionMode } from "./receipt.js";
+import {
+  assertValidTicketReceiptLineage,
+  normalizeCompiledApplyLineage,
+  readReceipt,
+  writeReceipt,
+  type CompiledApplyLineage,
+  type DelegationReceipt,
+  type ExecutionMode,
+} from "./receipt.js";
 import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, type AsyncSafetyOptions, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
+import { deriveMinimumModelRequirements } from "./selection.js";
 import { cliProfileForHost, configuredCodingModelsForHost, loadConfig } from "./config.js";
 import { parseHostId, type HostId } from "./hosts.js";
 import {
@@ -39,6 +48,14 @@ import {
 } from "./model-availability.js";
 import { withOwnedLock, withOwnedLockAsync, type OwnedLock, type OwnedLockOptions } from "./owned-lock.js";
 import { resolveAgentTreeCapacity, type EffectiveAgentTreeCapacity } from "./agent-tree-capacity.js";
+import {
+  readApplyRun,
+  readApplyRunPlanBody,
+  type ApplyRunState,
+  type ApplyRunTicketFact,
+} from "./apply-run.js";
+import { acceptApplyUnit, type ApplyAcceptanceResult } from "./apply-reconcile.js";
+import type { ApplyExecutionPlan, ApplyPlanUnit } from "./apply-plan.js";
 
 export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
@@ -451,9 +468,17 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
       if (catalog.cli !== profileHost) {
         code = "CLI_CATALOG_HOST_MISMATCH";
         message = `ticket ${ticket.id} requires a ${profileHost} catalog snapshot`;
-      } else if (!configuredCodingModelsForHost(config, profileHost).includes(ticket.route_id)) {
-        code = "CLI_MODEL_NOT_CONFIGURED";
-        message = `ticket ${ticket.id} model ${ticket.route_id} is not in cli.${profileHost}.coding_models`;
+      } else {
+        const configured = configuredCodingModelsForHost(config, profileHost);
+        const configuredRoute = isCompiledApplyTicket(ticket)
+          ? configured.some((item) => item === ticket.route_id
+            || item === ticket.model_id
+            || routeVariantBase(item).base === ticket.route_id)
+          : configured.includes(ticket.route_id);
+        if (!configuredRoute) {
+          code = "CLI_MODEL_NOT_CONFIGURED";
+          message = `ticket ${ticket.id} model ${ticket.route_id} is not in cli.${profileHost}.coding_models`;
+        }
       }
     }
     if (!code && !route) {
@@ -497,6 +522,21 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
         code = "COMMIT_BASELINE_STALE";
         message = verdict.violations.map((item) => item.code).join(", ");
       }
+    }
+  }
+  if (!code && isCompiledApplyTicket(ticket)) {
+    try {
+      const compiled = validateCompiledTicket(cwd, ticket, host, env);
+      if (compiled) {
+        const readiness = compiledUnitReady(compiled);
+        if (!readiness.ready) {
+          code = readiness.code || "COMPILED_DEPENDENCY_BLOCKED";
+          message = readiness.message || `ticket ${ticket.id} is not ready in its compiled ApplyRun`;
+        }
+      }
+    } catch (error) {
+      code = error instanceof DispatchError ? error.code : "COMPILED_LINEAGE_MISMATCH";
+      message = error instanceof Error ? error.message : String(error);
     }
   }
   if (!code) return null;
@@ -556,6 +596,317 @@ function ticketTargetHost(ticket: SpawnTicket, env: NodeJS.ProcessEnv = process.
   const captured = ticket.target_host || ticket.dispatch_host || ticket.host || ticket.selection?.host;
   if (captured) return requireHost(String(captured), env);
   throw new DispatchError(`ticket ${ticket.id} has no captured host`, "HOST_REQUIRED", { ticketId: ticket.id });
+}
+
+interface CompiledApplyContext {
+  lineage: CompiledApplyLineage;
+  state: ApplyRunState;
+  plan: ApplyExecutionPlan;
+  unit: ApplyPlanUnit;
+  receipt: DelegationReceipt;
+  /** A successor is allowed to continue after a quota-only predecessor. */
+  quotaSuccessor?: boolean;
+}
+
+/** Stable comparison for immutable compiled protocol fields. */
+function stableCompiledValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableCompiledValue).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableCompiledValue(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sortedCompiledStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean).sort();
+}
+
+function sameCompiledStrings(left: unknown, right: unknown): boolean {
+  return stableCompiledValue(sortedCompiledStrings(left)) === stableCompiledValue(sortedCompiledStrings(right));
+}
+
+function isCompiledApplyTicket(ticket: SpawnTicket): boolean {
+  const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+  return ticket.compiled_apply_lineage !== undefined || unit?.schema_version === 2;
+}
+
+function compiledApplyError(ticket: SpawnTicket, message: string, code = "COMPILED_LINEAGE_MISMATCH"): DispatchError {
+  return new DispatchError(`ticket ${ticket.id} compiled apply contract is invalid: ${message}`, code, { ticketId: ticket.id });
+}
+
+function compiledLineageForTicket(ticket: SpawnTicket): CompiledApplyLineage | null {
+  if (!isCompiledApplyTicket(ticket)) return null;
+  const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+  if (!unit || unit.schema_version !== 2 || ticket.compiled_apply_lineage === undefined) {
+    throw compiledApplyError(ticket, "schema-v2 work unit and compiled_apply_lineage are both required");
+  }
+  try {
+    const lineage = normalizeCompiledApplyLineage(ticket.compiled_apply_lineage);
+    for (const field of ["run_id", "plan_revision", "plan_fingerprint", "unit_id", "task_refs", "mode"] as const) {
+      if (stableCompiledValue(lineage[field]) !== stableCompiledValue(unit[field])) {
+        throw compiledApplyError(ticket, `work-unit lineage mismatch in ${field}`);
+      }
+    }
+    if (unit.kind !== "concrete" || ticket.coordination?.mode !== "terminal-only") {
+      throw compiledApplyError(ticket, "compiled units must be concrete terminal-only workers");
+    }
+    return lineage;
+  } catch (error) {
+    if (error instanceof DispatchError) throw error;
+    throw compiledApplyError(ticket, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function compiledTicketFacts(cwd: string, runId: string, env: NodeJS.ProcessEnv): ApplyRunTicketFact[] {
+  const facts: ApplyRunTicketFact[] = [];
+  const candidates = listSpawns(cwd, env);
+  const supersededTicketIds = new Set(
+    candidates
+      .filter((candidate) => {
+        if (!candidate.successor_id || candidate.successor_reason !== "QUOTA_EXHAUSTED_SUCCESSOR_CREATED") return false;
+        const successor = candidates.find((item) => item.id === candidate.successor_id);
+        if (!successor || successor.successor_from_ticket_id !== candidate.id) return false;
+        try {
+          const left = normalizeCompiledApplyLineage(candidate.compiled_apply_lineage);
+          const right = normalizeCompiledApplyLineage(successor.compiled_apply_lineage);
+          return left.run_id === right.run_id && left.unit_id === right.unit_id;
+        } catch {
+          return false;
+        }
+      })
+      .map((candidate) => candidate.id),
+  );
+  for (const candidate of candidates) {
+    // A quota successor replaces the failed predecessor for ApplyRun state
+    // reconstruction. Keeping both facts would rank the predecessor's
+    // failure above the successor's later acceptance and make a successfully
+    // retried unit appear failed again.
+    if (supersededTicketIds.has(candidate.id)) continue;
+    const rawLineage = candidate.compiled_apply_lineage;
+    if (rawLineage === undefined) continue;
+    let lineage: CompiledApplyLineage;
+    try {
+      lineage = normalizeCompiledApplyLineage(rawLineage);
+    } catch {
+      continue;
+    }
+    if (lineage.run_id !== runId) continue;
+    const status = candidate.status === "done" ? "completed" : candidate.status;
+    if (!(status === "queued" || status === "dispatching" || status === "running"
+      || status === "completed" || status === "errored" || status === "timed_out" || status === "closed")) continue;
+    facts.push({
+      ticket_id: candidate.id,
+      status,
+      run_id: lineage.run_id,
+      host: candidate.host || candidate.dispatch_host || candidate.target_host || candidate.selection?.host || undefined,
+      session_uid: candidate.session_uid,
+      unit_ids: [lineage.unit_id],
+      task_ids: [...lineage.task_refs],
+      model_id: candidate.model_id || undefined,
+      receipt_id: candidate.receipt_id || undefined,
+      result: candidate.conclusion || undefined,
+      slot_released_at: candidate.slot_released_at || null,
+    });
+  }
+  return facts;
+}
+
+function acceptedApplyRunState(value: unknown): boolean {
+  return value === "accepted" || value === "reconciled";
+}
+
+function compiledUnitReady(context: CompiledApplyContext): { ready: boolean; code?: string; message?: string } {
+  const current = context.state.unit_state[context.unit.id];
+  if (!current) return { ready: false, code: "COMPILED_UNIT_NOT_FOUND", message: `run has no unit ${context.unit.id}` };
+  if (current.status === "accepted" || current.status === "reconciled") {
+    return { ready: false, code: "COMPILED_UNIT_ALREADY_ACCEPTED", message: `unit ${context.unit.id} is already accepted` };
+  }
+  if (current.status === "superseded" || current.superseded) {
+    return { ready: false, code: "COMPILED_UNIT_SUPERSEDED", message: `unit ${context.unit.id} was superseded` };
+  }
+  if ((current.status === "blocked" || current.status === "failed") && !context.quotaSuccessor) {
+    return { ready: false, code: "COMPILED_UNIT_BLOCKED", message: `unit ${context.unit.id} is blocked and requires semantic replanning` };
+  }
+  const acceptedUnit = (id: string) => acceptedApplyRunState(context.state.unit_state[id]?.status);
+  const acceptedGate = (id: string) => acceptedApplyRunState(context.state.gate_state[id]?.status);
+  for (const dependency of context.unit.depends_on || []) {
+    if (!acceptedUnit(dependency)) {
+      return { ready: false, code: "COMPILED_DEPENDENCY_BLOCKED", message: `unit ${context.unit.id} waits for unit ${dependency}` };
+    }
+  }
+  for (const gateId of context.unit.parent_gate_ids || []) {
+    if (!acceptedGate(gateId)) {
+      return { ready: false, code: "COMPILED_GATE_BLOCKED", message: `unit ${context.unit.id} waits for gate ${gateId}` };
+    }
+  }
+  return { ready: true };
+}
+
+/**
+ * Validate the complete immutable edge between a compiled ticket, its
+ * schema-v2 work unit, Receipt, and the current ApplyRun revision. This is
+ * deliberately called again at bind/finish: a reservation is not a license
+ * to use a ticket whose on-disk contract was edited while it was pending.
+ */
+function validateCompiledTicket(
+  cwd: string,
+  ticket: SpawnTicket,
+  host: HostId,
+  env: NodeJS.ProcessEnv,
+  receiptOverride?: DelegationReceipt,
+): CompiledApplyContext | null {
+  const lineage = compiledLineageForTicket(ticket);
+  if (!lineage) return null;
+  let state: ApplyRunState;
+  let plan: ApplyExecutionPlan;
+  try {
+    const quotaSuccessor = Boolean(ticket.successor_from_ticket_id && ticket.successor_reason === "QUOTA_EXHAUSTED");
+    // ApplyRun freezes one execution ticket per materialized unit. A quota
+    // successor retries that immutable unit only after clean reconciliation;
+    // exclude the failed predecessor facts while validating the successor so
+    // the run reader does not mistake the retry for lineage tampering.
+    const predecessorTicketId = quotaSuccessor ? ticket.successor_from_ticket_id : undefined;
+    const facts = compiledTicketFacts(cwd, lineage.run_id, env).filter((fact) => fact.ticket_id !== ticket.id
+      && fact.ticket_id !== predecessorTicketId);
+    // The in-memory ticket can be a successor candidate or a just-terminal
+    // result which has not been persisted yet. Include it only when it is a
+    // valid current-format status so ApplyRun can reconstruct lifecycle state.
+    const status = ticket.status === "done" ? "completed" : ticket.status;
+    if (!quotaSuccessor && (status === "queued" || status === "dispatching" || status === "running"
+      || status === "completed" || status === "errored" || status === "timed_out" || status === "closed")) {
+      facts.push({
+        ticket_id: ticket.id,
+        status,
+        run_id: lineage.run_id,
+        host: ticket.host || ticket.dispatch_host || ticket.target_host || ticket.selection?.host || host,
+        session_uid: ticket.session_uid,
+        unit_ids: [lineage.unit_id],
+        task_ids: [...lineage.task_refs],
+        model_id: ticket.model_id,
+        receipt_id: ticket.receipt_id || undefined,
+        result: ticket.conclusion || undefined,
+        slot_released_at: ticket.slot_released_at || null,
+      });
+    }
+    state = readApplyRun(cwd, lineage.run_id, { env, ticket_facts: facts });
+    plan = readApplyRunPlanBody(cwd, lineage.run_id, state.current_revision, env);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code || "") : "";
+    if (code === "RUN_FILE_MISSING" || code === "RUN_NOT_FOUND") throw compiledApplyError(ticket, "ApplyRun is missing", "COMPILED_RUN_NOT_FOUND");
+    throw compiledApplyError(ticket, error instanceof Error ? error.message : String(error));
+  }
+  if (state.run_id !== lineage.run_id
+    || state.session_uid !== ticket.session_uid
+    || state.host !== host
+    || state.current_revision !== lineage.plan_revision
+    || state.current_fingerprint !== lineage.plan_fingerprint) {
+    throw compiledApplyError(ticket, "ticket lineage does not match the current ApplyRun revision");
+  }
+  const unit = plan.units.find((candidate) => candidate.id === lineage.unit_id);
+  if (!unit) throw compiledApplyError(ticket, `run plan has no unit ${lineage.unit_id}`);
+  if (unit.mode !== lineage.mode || !sameCompiledStrings(unit.task_ids, lineage.task_refs)) {
+    throw compiledApplyError(ticket, "ticket task references or execution mode do not match the run plan");
+  }
+  const workUnit = ticket.work_unit as unknown as Record<string, unknown>;
+  const expectedObjective = String(unit.description || unit.id).trim();
+  if (String(workUnit.objective || "").trim() !== expectedObjective) {
+    throw compiledApplyError(ticket, "work-unit objective does not match the run plan");
+  }
+  if (String(workUnit.deliverable || "").trim() !== expectedObjective
+    || String(workUnit.done_when || "").trim() !== expectedObjective) {
+    throw compiledApplyError(ticket, "work-unit deliverable or completion condition does not match the run plan");
+  }
+  const expectedDependencies = [...(unit.depends_on || []), ...(unit.parent_gate_ids || [])];
+  if (!sameCompiledStrings(workUnit.satisfied_dependencies, expectedDependencies)) {
+    throw compiledApplyError(ticket, "work-unit satisfied dependencies do not match the run plan");
+  }
+  const planRecord = unit as unknown as Record<string, unknown>;
+  const expectedReadContext = Array.isArray(planRecord.read_context)
+    ? planRecord.read_context
+    : Array.isArray(planRecord.readContext)
+      ? planRecord.readContext
+      : Array.isArray(planRecord.read_paths)
+        ? planRecord.read_paths
+        : Array.isArray(planRecord.readPaths)
+          ? planRecord.readPaths
+          : [];
+  if (!sameCompiledStrings(workUnit.read_context, expectedReadContext)) {
+    throw compiledApplyError(ticket, "work-unit read context does not match the run plan", "COMPILED_SCOPE_MISMATCH");
+  }
+  if (!sameCompiledStrings(workUnit.write_paths, unit.write_paths || [])) {
+    throw compiledApplyError(ticket, "work-unit write scope does not match the run plan", "COMPILED_SCOPE_MISMATCH");
+  }
+  if (!sameCompiledStrings(workUnit.allowed_operations, unit.allowed_operations || [])) {
+    throw compiledApplyError(ticket, "work-unit operations do not match the run plan", "COMPILED_SCOPE_MISMATCH");
+  }
+  const expectedPatchRecipe = String(unit.patch || unit.prompt || expectedObjective).trim();
+  if (String(workUnit.patch_recipe || "").trim() !== expectedPatchRecipe) {
+    throw compiledApplyError(ticket, "work-unit patch recipe does not match the run plan");
+  }
+  const expectedCompletion = lineage.mode === "verification-only"
+    ? (unit.verification || ["validation completed"])
+    : [unit.description || "patch completed"];
+  if (!sameCompiledStrings(workUnit.completion_criteria, expectedCompletion)
+    || !sameCompiledStrings(workUnit.permitted_validation, unit.verification || ["read"])) {
+    throw compiledApplyError(ticket, "work-unit completion or validation contract does not match the run plan");
+  }
+  if (workUnit.coordination !== "terminal-only") {
+    throw compiledApplyError(ticket, "compiled work units must use terminal-only coordination");
+  }
+  const expectedMode: ExecutionMode = lineage.mode === "patch-only" ? "write" : "read-only";
+  if (ticket.mode !== expectedMode || ticket.read_only !== (expectedMode === "read-only")) {
+    throw compiledApplyError(ticket, `ticket execution mode must be ${expectedMode}`, "COMPILED_EXECUTION_MODE_MISMATCH");
+  }
+  if (!ticket.receipt_id) throw compiledApplyError(ticket, "compiled ticket requires a Receipt", "RECEIPT_REQUIRED");
+  let receipt: DelegationReceipt;
+  try {
+    receipt = receiptOverride || readReceipt(cwd, ticket.receipt_id, env);
+    assertValidTicketReceiptLineage({
+      ...ticket,
+      target_host: ticket.target_host || host,
+    }, receipt);
+  } catch (error) {
+    if (error instanceof DispatchError) throw error;
+    throw compiledApplyError(ticket, error instanceof Error ? error.message : String(error));
+  }
+  if (receipt.ticket_id !== ticket.id || receipt.receipt_id !== ticket.receipt_id) {
+    throw compiledApplyError(ticket, "Receipt ticket identity does not match", "COMPILED_RECEIPT_MISMATCH");
+  }
+  const catalog = readRouteSnapshot(cwd, { host, env });
+  const catalogRoute = catalog?.routes.find((candidate) => candidate.route_id === ticket.route_id);
+  if (!catalog || !catalogRoute || catalogRoute.disabled || (receipt.route.provider || null) !== (catalogRoute.provider || null)) {
+    throw compiledApplyError(ticket, "captured route is absent, disabled, or owned by another provider", "COMPILED_ROUTE_MISMATCH");
+  }
+  if (receipt.host !== host || ticket.selection?.host !== host
+    || !ticket.selection
+    || !receipt.selection
+    || stableCompiledValue(ticket.selection) !== stableCompiledValue(receipt.selection)
+    || ticket.selection.selected_model_id !== ticket.model_id
+    || ticket.selection.selected_model_id !== receipt.route.card_id
+    || ticket.route_id !== receipt.route.route_id
+    || (ticket.reasoning_effort || null) !== (receipt.route.reasoning_effort || null)
+    || (ticket.service_tier || null) !== (receipt.route.service_tier || null)) {
+    throw compiledApplyError(ticket, "selection, host, route, or model does not match the Receipt", "COMPILED_ROUTE_MISMATCH");
+  }
+  if (lineage.mode === "patch-only") {
+    if (receipt.execution.mode !== "write"
+      || !receipt.baseline
+      || !sameCompiledStrings(receipt.scope.write_allowlist, unit.write_paths || [])
+      || !sameCompiledStrings(receipt.scope.allowed_operations.filter((item) => item !== "read" && item !== "commit"), unit.allowed_operations || [])
+      || receipt.scope.allowed_operations.includes("read")
+      || receipt.scope.allowed_operations.includes("commit")) {
+      throw compiledApplyError(ticket, "Receipt write scope or operations do not match the run plan", "COMPILED_SCOPE_MISMATCH");
+    }
+  } else if (receipt.execution.mode !== "read-only"
+    || receipt.baseline !== null
+    || receipt.commit_baseline !== null
+    || receipt.scope.write_allowlist.length !== 0
+    || stableCompiledValue(receipt.scope.allowed_operations) !== stableCompiledValue(["read"])) {
+    throw compiledApplyError(ticket, "verification-only Receipt carries write authority", "COMPILED_SCOPE_MISMATCH");
+  }
+  return { lineage, state, plan, unit, receipt, quotaSuccessor: Boolean(ticket.successor_from_ticket_id && ticket.successor_reason === "QUOTA_EXHAUSTED") };
 }
 
 function ticketMatchesHost(ticket: SpawnTicket, host: HostId, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -633,13 +984,44 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
         blocked.push({ ticket_id: ticket.id, code: "HOST_MISMATCH", message: `ticket ${ticket.id} targets ${ticketHost}, not ${targetHost}` });
         continue;
       }
+      let compiledContext: CompiledApplyContext | null = null;
+      // Dependency/gate backpressure is not a terminal ticket failure. Keep
+      // the compiled unit queued so an independent frontier can continue and
+      // a later acceptance can make it eligible without changing its scope.
+      if (isCompiledApplyTicket(ticket)) {
+        try {
+          compiledContext = validateCompiledTicket(cwd, ticket, targetHost, env);
+          if (compiledContext) {
+            const readiness = compiledUnitReady(compiledContext);
+            if (!readiness.ready) {
+              blocked.push({
+                ticket_id: ticket.id,
+                code: readiness.code || "COMPILED_DEPENDENCY_BLOCKED",
+                message: readiness.message || `ticket ${ticket.id} is not ready in its compiled ApplyRun`,
+              });
+              continue;
+            }
+          }
+        } catch {
+          // The full contract error is persisted by rejectUndispatchable
+          // below; only dependency/gate backpressure is deliberately kept in
+          // the queue here.
+        }
+      }
       const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions);
       if (rejected) {
         blocked.push(rejected);
-        if (rejected.code === "MODEL_QUOTA_EXHAUSTED") {
-          await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
-          writeSpawn(cwd, ticket, env);
+        let successorId: string | null = null;
+        if (rejected.code === "MODEL_QUOTA_EXHAUSTED"
+          || isSessionUncallable({ errorCode: ticket.error?.code, message: ticket.error?.message })) {
+          successorId = await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions, compiledContext);
         }
+        if (compiledContext) {
+          ticket.compiled_acceptance = successorId
+            ? { accepted: false, code: "SUCCESSOR_CREATED", evidence: `successor ${successorId}` }
+            : acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.error?.message || rejected.message, env);
+        }
+        writeSpawn(cwd, ticket, env);
         continue;
       }
       const availability = availabilityForRoute(cwd, { host: targetHost, routeId: ticket.route_id! }, at, env);
@@ -739,6 +1121,7 @@ export function bindAgent(cwd: string, id: string, {
         { ticketId: id, currentStatus: ticket.status, nextStatus: "running" },
       );
     }
+    if (isCompiledApplyTicket(ticket)) validateCompiledTicket(cwd, ticket, targetHost, env);
     const handle = executionHandle || null;
     if (!handle || !handle.value.trim()) throw new DispatchError(`ticket ${id} has no native execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
     const expectedKind = getCliAdapter(host, env).host.executionHandleKind;
@@ -987,6 +1370,92 @@ interface FinishOptions {
   dispatchLock?: DispatchLockOptions;
 }
 
+interface PlanInsufficientEvidence {
+  code: "PLAN_INSUFFICIENT";
+  file: string;
+  symbol: string;
+  missing_decision: string;
+}
+
+function sanitizedPlanEvidence(value: unknown, limit = 240): string {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+/** Parse only the worker's structured insufficiency result. */
+function planInsufficientEvidence(value: unknown): PlanInsufficientEvidence | null {
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  if (String(record.code || "").trim().toUpperCase() !== "PLAN_INSUFFICIENT") return null;
+  return {
+    code: "PLAN_INSUFFICIENT",
+    file: sanitizedPlanEvidence(record.file),
+    symbol: sanitizedPlanEvidence(record.symbol),
+    missing_decision: sanitizedPlanEvidence(record.missing_decision ?? record.missingDecision),
+  };
+}
+
+function attachPlanInsufficientEvidence(ticket: SpawnTicket, evidence: PlanInsufficientEvidence, at: string): void {
+  // These fields are deliberately diagnostic-only. They are not fed back into
+  // the plan or used to widen the worker's scope.
+  ticket.plan_insufficient_evidence = structuredClone(evidence);
+  ticket.semantic_replan_reason = "PLAN_INSUFFICIENT";
+  ticket.replan_reason = "PLAN_INSUFFICIENT";
+  ticket.successor_reason = "PLAN_INSUFFICIENT";
+  ticket.replan_required = true;
+  history(ticket, "semantic_replan_required", at, { reason: "PLAN_INSUFFICIENT", evidence: structuredClone(evidence) });
+}
+
+function compiledSafetyVerdict(ticket: SpawnTicket): UnknownRecord | undefined {
+  return ticket.safety_verdict;
+}
+
+function acceptCompiledTerminal(
+  cwd: string,
+  ticket: SpawnTicket,
+  context: CompiledApplyContext | null,
+  at: string,
+  result: string | null,
+  env: NodeJS.ProcessEnv,
+): ApplyAcceptanceResult | null {
+  if (!context) return null;
+  const acceptance = acceptApplyUnit({
+    cwd,
+    env,
+    runId: context.lineage.run_id,
+    unitId: context.lineage.unit_id,
+    host: context.state.host,
+    ticketId: ticket.id,
+    receiptId: ticket.receipt_id || undefined,
+    revision: context.lineage.plan_revision,
+    fingerprint: context.lineage.plan_fingerprint,
+    taskRefs: context.lineage.task_refs,
+    mode: context.lineage.mode,
+    terminalStatus: ticket.status,
+    safetyVerdict: compiledSafetyVerdict(ticket),
+    result: result || ticket.conclusion || undefined,
+    ticket,
+    receipt: context.receipt,
+  });
+  if (!acceptance.accepted && acceptance.code === "PLAN_INSUFFICIENT") {
+    ticket.semantic_replan_reason = "PLAN_INSUFFICIENT";
+    ticket.replan_reason = "PLAN_INSUFFICIENT";
+    ticket.replan_required = true;
+    if (!ticket.plan_insufficient_evidence) {
+      ticket.successor_reason = "PLAN_INSUFFICIENT";
+      history(ticket, "semantic_replan_required", at, { reason: "PLAN_INSUFFICIENT", evidence: acceptance.evidence });
+    }
+  }
+  return acceptance;
+}
+
 function availabilityOutcome(
   cwd: string,
   ticket: SpawnTicket,
@@ -1019,6 +1488,21 @@ function availabilityOutcome(
         remaining_percent: outcome.remainingPercent ?? null,
       };
     }
+    if (isSessionUncallable(outcome)) {
+      const record = markRouteExhausted(cwd, { host, routeId: ticket.route_id }, {
+        reason: outcome.errorCode || "MODEL_SESSION_UNCALLABLE",
+        resetAt: null,
+        now: at,
+        env: outcome.env,
+      });
+      return {
+        status: record.status,
+        reason: record.reason,
+        reset_at: record.reset_at,
+        next_probe_at: record.next_probe_at,
+        remaining_percent: outcome.remainingPercent ?? null,
+      };
+    }
     if (outcome.success || positiveRemaining) {
       const record = markRouteAvailable(cwd, { host, routeId: ticket.route_id }, { now: at, env: outcome.env });
       return { status: record.status, reason: null, reset_at: null, next_probe_at: null };
@@ -1026,6 +1510,7 @@ function availabilityOutcome(
     return null;
   } catch (error) {
     const durable = isConfirmedQuotaExhaustion(outcome)
+      || isSessionUncallable(outcome)
       || (typeof outcome.remainingPercent === "number" && outcome.remainingPercent <= 0)
       || outcome.success === true
       || (typeof outcome.remainingPercent === "number" && outcome.remainingPercent > 0);
@@ -1040,28 +1525,256 @@ function availabilityOutcome(
   }
 }
 
-function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv = process.env): { route: ExecutableRoute; routeId: string } | null {
-  if (!ticket.route_id || ticket.mode !== "write" || !ticket.receipt_id) return null;
+/** Exact native callability failures are session-local route evidence. */
+function isSessionUncallable(input: { errorCode?: string | null; message?: string | null }): boolean {
+  const code = String(input.errorCode || "").trim().toUpperCase();
+  if (/^(?:MODEL|ROUTE|NATIVE|EXECUTION)_(?:UNCALLABLE|UNAVAILABLE|UNREACHABLE|NOT_CALLABLE|NOT_AVAILABLE)$/.test(code)) return true;
+  if (["MODEL_NOT_FOUND", "SESSION_UNCALLABLE", "CLI_UNCALLABLE"].includes(code)) return true;
+  return /(?:model|route|native|session|cli).*(?:uncallable|not callable|unavailable|unreachable)/i.test(String(input.message || ""));
+}
+
+interface SuccessorRouteCandidate {
+  route: ExecutableRoute;
+  routeId: string;
+  exclusions: Array<{ model_id: string; route_id: string; codes: string[]; reasons: string[] }>;
+}
+
+function compiledRoutingRequirements(ticket: SpawnTicket, context?: CompiledApplyContext | null): Record<string, unknown> {
+  const ticketRequirements = ticket.routing_requirements as unknown as Record<string, unknown> | undefined;
+  const unitRequirements = context?.unit as unknown as Record<string, unknown> | undefined;
+  const prompt = String(context?.unit.prompt || context?.unit.description || ticket.prompt || ticket.description || "").trim();
+  let derived: Record<string, unknown> = {};
+  if (context) {
+    try {
+      // Compiled materialization derives this same minimum contract during
+      // selection. Re-derive it for a native successor because the selected
+      // model is the only field allowed to change across a retry. Legacy
+      // tickets retain their historical route-only successor behavior.
+      derived = deriveMinimumModelRequirements(prompt, {
+        native_execution: true,
+        tool: true,
+      }) as unknown as Record<string, unknown>;
+    } catch {
+      // An older compiled record may not carry enough task text to derive
+      // requirements. Its persisted ticket requirements remain authoritative.
+    }
+  }
+  return {
+    ...derived,
+    ...(unitRequirements?.minimum_requirements && typeof unitRequirements.minimum_requirements === "object"
+      ? unitRequirements.minimum_requirements as Record<string, unknown> : {}),
+    ...(ticketRequirements || {}),
+  };
+}
+
+function routeVariantBase(routeId: string): { base: string; effort: string | null } {
+  const at = routeId.lastIndexOf("@");
+  return at > 0 ? { base: routeId.slice(0, at), effort: routeId.slice(at + 1) || null } : { base: routeId, effort: null };
+}
+
+const SUCCESSOR_EFFORT_RANK: Record<string, number> = {
+  none: 0,
+  minimal: 1,
+  low: 2,
+  medium: 3,
+  high: 4,
+  xhigh: 5,
+  max: 6,
+  ultra: 7,
+};
+
+function successorEffort(value: unknown): string | null {
+  const normalized = String(value || "").trim().toLowerCase().replaceAll(/[_ ]+/g, "-");
+  return Object.hasOwn(SUCCESSOR_EFFORT_RANK, normalized) ? normalized : null;
+}
+
+function successorCapability(value: unknown): string {
+  const normalized = String(value || "").trim().toLowerCase().replaceAll(/[_ ]+/g, "-");
+  if (["native", "native-exec", "execution-handle", "native-child"].includes(normalized)) return "native-execution";
+  if (["tool", "tools", "tooling", "function-calling"].includes(normalized)) return "tool-use";
+  if (["readonly", "read"].includes(normalized)) return "read-only";
+  if (["commit", "commitonly"].includes(normalized)) return "commit-only";
+  return normalized;
+}
+
+function routeCapabilitySets(route: ExecutableRoute): { supported: Set<string>; unsupported: Set<string>; known: boolean } {
+  const record = route as unknown as Record<string, unknown>;
+  const supported = new Set<string>();
+  const unsupported = new Set<string>();
+  let known = false;
+  const addList = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    known = true;
+    for (const item of value) {
+      const itemRecord = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : null;
+      const capability = successorCapability(itemRecord?.id || itemRecord?.name || itemRecord?.capability || itemRecord?.kind || item);
+      if (!capability) continue;
+      if (itemRecord && (itemRecord.supported === false || itemRecord.available === false || itemRecord.enabled === false)) unsupported.add(capability);
+      else supported.add(capability);
+    }
+  };
+  const addObject = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    known = true;
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      const capability = successorCapability(key);
+      if (!capability) continue;
+      if (item === true || (item && typeof item === "object" && (item as Record<string, unknown>).supported === true)) supported.add(capability);
+      else if (item === false || (item && typeof item === "object" && ((item as Record<string, unknown>).supported === false || (item as Record<string, unknown>).available === false))) unsupported.add(capability);
+    }
+  };
+  addList(record.execution_capabilities ?? record.executionCapabilities);
+  addList(record.capabilities);
+  addList(record.tools ?? record.supported_tools ?? record.supportedTools);
+  addObject(record.capabilities);
+  addObject(record.execution_capabilities ?? record.executionCapabilities);
+  addObject(record.execution);
+  addObject(record.supports);
+  const native = record.supports_native_execution ?? record.supportsNativeExecution ?? record.supports_native ?? record.supportsNative;
+  if (native === true) supported.add("native-execution");
+  if (native === false) unsupported.add("native-execution");
+  const tool = record.supports_tool_use ?? record.supportsToolUse ?? record.supports_tools ?? record.supportsTools
+    ?? record.supports_tool ?? record.supportsTool ?? record.tool_use ?? record.toolUse ?? record.tool;
+  if (tool === true) supported.add("tool-use");
+  if (tool === false) unsupported.add("tool-use");
+  if (route.native === true) supported.add("native-execution");
+  return { supported, unsupported, known };
+}
+
+function providerQuotaExhausted(snapshot: { provider_quotas?: Array<{ provider: string; windows: Array<{ remaining_percent: number }> }> }, provider: string | null): boolean {
+  if (!provider) return false;
+  const quota = snapshot.provider_quotas?.find((item) => item.provider === provider);
+  return Boolean(quota?.windows?.some((window) => Number.isFinite(window.remaining_percent) && window.remaining_percent <= 0));
+}
+
+function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv = process.env, context?: CompiledApplyContext | null): SuccessorRouteCandidate | null {
+  const compiled = isCompiledApplyTicket(ticket);
+  if (!ticket.route_id || (!compiled && ticket.mode !== "write") || !ticket.receipt_id) return null;
   const receipt = readReceipt(cwd, ticket.receipt_id, env);
-  if (!receipt.baseline) return null;
+  if (ticket.mode === "write" && !receipt.baseline) return null;
+  if (compiled && ticket.mode === "read-only" && receipt.baseline !== null) return null;
   const host = ticketTargetHost(ticket, env);
   const config = loadConfig(cwd, { env });
-  const configured = configuredCodingModelsForHost(config, host);
-  const currentIndex = configured.indexOf(ticket.route_id);
-  if (currentIndex < 0) return null;
-  const snapshot = readRouteSnapshot(cwd, { host, env });
-  if (!snapshot) return null;
-  for (const routeId of configured.slice(currentIndex + 1)) {
-    const route = snapshot.routes.find((item) => !item.disabled && item.route_id === routeId);
-    if (!route) continue;
-    const requiredEffort = ticket.routing_requirements?.required_reasoning_effort || ticket.reasoning_effort || null;
-    if (requiredEffort && route.reasoning_efforts.length > 0 && !route.reasoning_efforts.includes(requiredEffort)) continue;
-    const estimatedContext = Number(ticket.routing_requirements?.estimated_context_tokens);
-    if (Number.isFinite(estimatedContext) && estimatedContext > 0 && route.context_window !== null && route.context_window < estimatedContext) continue;
-    const availability = availabilityForRoute(cwd, { host, routeId }, at, env);
-    if ((availability.status === "exhausted" || availability.status === "probe_due") && !availability.probe_available) continue;
-    return { route, routeId };
+  const configured = [...configuredCodingModelsForHost(config, host)];
+  const currentIndex = configured.findIndex((item) => item === ticket.route_id || routeVariantBase(item).base === ticket.route_id);
+  const exclusions: SuccessorRouteCandidate["exclusions"] = [];
+  if (currentIndex < 0) {
+    for (const configuredId of configured) {
+      exclusions.push({ model_id: configuredId, route_id: routeVariantBase(configuredId).base, codes: ["CURRENT_ROUTE_NOT_CONFIGURED"], reasons: ["the failed ticket route is not in the configured coding route order"] });
+    }
+    (ticket as unknown as UnknownRecord).successor_exclusion_matrix = exclusions;
+    return null;
   }
+  const snapshot = readRouteSnapshot(cwd, { host, env });
+  const requirements = compiledRoutingRequirements(ticket, context);
+  const requiredEffort = String(requirements.required_reasoning_effort
+    || requirements.requiredReasoningEffort
+    || requirements.reasoning_effort
+    || requirements.reasoning
+    || ticket.reasoning_effort
+    || "").trim() || null;
+  const estimatedContext = Number(requirements.estimated_context_tokens
+    ?? requirements.estimatedContextTokens
+    ?? requirements.estimated_context
+    ?? requirements.context_tokens);
+  const requiredCapabilities = (requirements.required_execution_capabilities
+    || requirements.requiredExecutionCapabilities
+    || requirements.execution_capabilities
+    || requirements.executionCapabilities);
+  const requiredCapabilityNames = Array.isArray(requiredCapabilities)
+    ? requiredCapabilities.map(String).map((item) => item.trim().toLowerCase().replaceAll(/[_ ]+/g, "-")).filter(Boolean)
+    : [];
+  const configuredLater = configured.slice(currentIndex + 1);
+  if (!snapshot) {
+    for (const routeId of configured) exclusions.push({ model_id: routeId, route_id: routeVariantBase(routeId).base, codes: ["ROUTE_ABSENT_FROM_ACTIVE_CATALOG"], reasons: ["active CLI catalog snapshot is missing"] });
+    (ticket as unknown as UnknownRecord).successor_exclusion_matrix = exclusions;
+    return null;
+  }
+  // Keep the failed/current route and every earlier configured route in the
+  // diagnostic matrix as well. The successor scan below then appends each
+  // later candidate in the exact user-configured order.
+  for (let index = 0; index <= currentIndex; index += 1) {
+    const configuredId = configured[index]!;
+    const variant = routeVariantBase(configuredId);
+    const route = snapshot.routes.find((item) => item.route_id === configuredId || item.route_id === variant.base);
+    if (index < currentIndex) {
+      exclusions.push({ model_id: configuredId, route_id: variant.base, codes: ["HIGHER_PRIORITY_ROUTE_FAILED"], reasons: ["a higher-priority configured route was selected before this retry"] });
+      continue;
+    }
+    const availability = route ? availabilityForRoute(cwd, { host, routeId: route.route_id }, at, env) : null;
+    const failedCode = !route
+      ? "ROUTE_ABSENT_FROM_ACTIVE_CATALOG"
+      : isSessionUncallable({ errorCode: ticket.error?.code, message: ticket.error?.message })
+        ? "CURRENT_SESSION_UNCALLABLE"
+        : availability?.status === "exhausted" || availability?.status === "probe_due"
+          ? "CURRENT_SESSION_QUOTA_EXHAUSTED"
+          : "NATIVE_ROUTE_FAILURE";
+    exclusions.push({
+      model_id: configuredId,
+      route_id: variant.base,
+      codes: [failedCode],
+      reasons: [!route ? "route is absent from the active CLI catalog" : ticket.error?.message || "the selected route failed at the native execution surface"],
+    });
+  }
+  for (const configuredId of configuredLater) {
+    const variant = routeVariantBase(configuredId);
+    const route = snapshot.routes.find((item) => item.route_id === configuredId || item.route_id === variant.base);
+    const modelId = configuredId;
+    const codes: string[] = [];
+    const reasons: string[] = [];
+    if (!route) {
+      codes.push("ROUTE_ABSENT_FROM_ACTIVE_CATALOG"); reasons.push("route is absent from the active CLI catalog");
+    } else if (route.disabled) {
+      codes.push("ROUTE_DISABLED"); reasons.push("route is disabled in the active CLI catalog");
+    } else {
+      const requiredEffortValue = successorEffort(requiredEffort);
+      const requiredEffortRank = requiredEffortValue ? SUCCESSOR_EFFORT_RANK[requiredEffortValue] : 0;
+      const supportedEfforts = route.reasoning_efforts.map((item) => successorEffort(item) || String(item).trim().toLowerCase());
+      const candidateEffort = successorEffort(variant.effort || route.default_reasoning_effort || ticket.reasoning_effort);
+      const candidateEffortRank = candidateEffort ? SUCCESSOR_EFFORT_RANK[candidateEffort] || 0 : 0;
+      const exactVariantUnsupported = Boolean(variant.effort && supportedEfforts.length && !supportedEfforts.includes(variant.effort.toLowerCase()));
+      const unsupportedDefault = Boolean(!variant.effort && supportedEfforts.length
+        && (!candidateEffort || !supportedEfforts.includes(candidateEffort)));
+      const belowMinimum = Boolean(requiredEffort && (
+        (candidateEffort && candidateEffortRank < requiredEffortRank)
+        || (!candidateEffort && supportedEfforts.length && !supportedEfforts.some((item) => (SUCCESSOR_EFFORT_RANK[item] || 0) >= requiredEffortRank))
+      ));
+      if (exactVariantUnsupported || belowMinimum || Boolean(requiredEffort && !requiredEffortValue
+        && variant.effort && variant.effort !== requiredEffort) || unsupportedDefault) {
+        codes.push("REASONING_CAPABILITY_INSUFFICIENT"); reasons.push(`required reasoning effort ${requiredEffort} is not supported`);
+      }
+      if (Number.isFinite(estimatedContext) && estimatedContext > 0 && route.context_window !== null && route.context_window < estimatedContext) {
+        codes.push("CONTEXT_WINDOW_INSUFFICIENT"); reasons.push(`context window ${route.context_window} is smaller than ${estimatedContext}`);
+      }
+      const capabilities = routeCapabilitySets(route);
+      for (const rawCapability of requiredCapabilityNames) {
+        const capability = successorCapability(rawCapability);
+        if (!capability) continue;
+        if (capabilities.unsupported.has(capability)
+          || (capabilities.known && !capabilities.supported.has(capability))
+          || (capability === "native-execution" && route.native !== true)) {
+          codes.push("REQUIRED_EXECUTION_CAPABILITY_UNSUPPORTED"); reasons.push(`${capability} is not supported by the route`);
+        }
+      }
+      if (providerQuotaExhausted(snapshot, route.provider)) {
+        codes.push("QUOTA_POOL_EXHAUSTED"); reasons.push(`${route.provider || "provider"} quota pool is exhausted`);
+      }
+      const availability = availabilityForRoute(cwd, { host, routeId: route.route_id }, at, env);
+      if ((availability.status === "exhausted" || availability.status === "probe_due") && !availability.probe_available) {
+        const uncallable = isSessionUncallable({ errorCode: availability.reason, message: availability.reason });
+        codes.push(uncallable ? "CURRENT_SESSION_UNCALLABLE" : "CURRENT_SESSION_QUOTA_EXHAUSTED");
+        reasons.push(availability.reason || "route is unavailable in the current Baton session");
+      }
+    }
+    if (codes.length) {
+      exclusions.push({ model_id: modelId, route_id: variant.base, codes: [...new Set(codes)], reasons: [...new Set(reasons)] });
+      continue;
+    }
+    exclusions.push({ model_id: modelId, route_id: variant.base, codes: ["AVAILABLE"], reasons: ["later configured route satisfies the captured requirements"] });
+    (ticket as unknown as UnknownRecord).successor_exclusion_matrix = exclusions;
+    return { route, routeId: configuredId, exclusions };
+  }
+  (ticket as unknown as UnknownRecord).successor_exclusion_matrix = exclusions;
   return null;
 }
 
@@ -1080,34 +1793,60 @@ function nextSuccessorOrdinal(cwd: string, ticket: SpawnTicket, env: NodeJS.Proc
   return ordinal;
 }
 
-async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}): Promise<string | null> {
-  if (ticket.mode !== "write" || !ticket.receipt_id) {
+async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}, compiledContext?: CompiledApplyContext | null): Promise<string | null> {
+  const compiled = isCompiledApplyTicket(ticket);
+  if ((!compiled && ticket.mode !== "write") || !ticket.receipt_id) {
     ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
     return null;
   }
   const receipt = readReceipt(cwd, ticket.receipt_id, env);
-  if (!receipt.baseline) {
+  if (ticket.mode === "write" && !receipt.baseline) {
     ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
     return null;
   }
-  const noMutation = await auditWorktreeAsync(cwd, receipt.baseline, { write_allowlist: [], allowed_operations: [] }, safetyOptions);
-  if (!noMutation.accepted) {
-    ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
-    return null;
+  const candidate = successorRouteForTicket(cwd, ticket, at, env, compiledContext);
+  if (ticket.mode === "write") {
+    const noMutation = await auditWorktreeAsync(cwd, receipt.baseline!, { write_allowlist: [], allowed_operations: [] }, safetyOptions);
+    if (!noMutation.accepted) {
+      ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
+      (ticket as unknown as UnknownRecord).successor_safety_verdict = noMutation as unknown as UnknownRecord;
+      const matrix = candidate?.exclusions || ((ticket as unknown as UnknownRecord).successor_exclusion_matrix as SuccessorRouteCandidate["exclusions"] | undefined) || [];
+      (ticket as unknown as UnknownRecord).successor_exclusion_matrix = matrix.map((entry) => ({
+        ...entry,
+        codes: [...new Set([...entry.codes, "SAFETY_RECONCILIATION_UNRESOLVED"])],
+        reasons: [...entry.reasons, "authorized partial-write safety reconciliation was not accepted"],
+      }));
+      return null;
+    }
   }
-  const candidate = successorRouteForTicket(cwd, ticket, at, env);
   if (!candidate) {
     ticket.successor_reason = "NO_SUCCESSOR_ROUTE";
     return null;
+  }
+  if (compiled) {
+    try {
+      // A successor is still a queued unit, but the effective host capacity
+      // is an authorization requirement and must be known again at retry
+      // time. Do not mint a successor from a stale/unknown capacity view.
+      requiredCapacity(resolvedCapacity(cwd, ticketTargetHost(ticket, env), env));
+    } catch (error) {
+      ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
+      (ticket as unknown as UnknownRecord).successor_exclusion_matrix = candidate.exclusions.map((entry) => ({
+        ...entry,
+        codes: [...new Set([...entry.codes, "CAPACITY_UNAVAILABLE"])],
+        reasons: [...entry.reasons, error instanceof Error ? error.message : "effective host capacity is unavailable"],
+      }));
+      return null;
+    }
   }
   // Successors belong to the originating session even if the environment
   // changed while reconciliation was running.
   const successorOrdinal = nextSuccessorOrdinal(cwd, ticket, env);
   const successorId = sessionTicketId("spn", ticket.session_uid, successorOrdinal);
   const route = candidate.route;
-  const reasoningEffort = ticket.reasoning_effort && route.reasoning_efforts.includes(ticket.reasoning_effort)
-    ? ticket.reasoning_effort
-    : route.default_reasoning_effort;
+  const candidateVariant = routeVariantBase(candidate.routeId);
+  const reasoningEffort = candidateVariant.effort
+    || (ticket.reasoning_effort && route.reasoning_efforts.includes(ticket.reasoning_effort) ? ticket.reasoning_effort : route.default_reasoning_effort);
   const serviceTier = ticket.service_tier
     && (route.service_tiers.includes(ticket.service_tier) || route.additional_speed_tiers.includes(ticket.service_tier))
     ? ticket.service_tier
@@ -1118,8 +1857,8 @@ async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string
     approved_at: at,
     confirmed_by: "baton-recommendation" as const,
     catalog_fingerprint: readRouteSnapshot(cwd, { host: ticketTargetHost(ticket, env), env })?.fingerprint || ticket.selection.catalog_fingerprint,
-    recommended_model_id: route.route_id,
-    selected_model_id: route.route_id,
+    recommended_model_id: candidate.routeId,
+    selected_model_id: candidate.routeId,
     service_tier: serviceTier,
     changed_by_user: false,
   } : null;
@@ -1131,7 +1870,7 @@ async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string
   successor.id = successorId;
   successor.session_uid = ticket.session_uid;
   successor.session_ordinal = successorOrdinal;
-  successor.model_id = route.route_id;
+  successor.model_id = candidate.routeId;
   successor.route_id = route.route_id;
   successor.reasoning_effort = reasoningEffort;
   successor.service_tier = serviceTier;
@@ -1174,13 +1913,35 @@ async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at: string
   successorReceipt.ticket_id = successor.id;
   successorReceipt.route = {
     ...successorReceipt.route,
-    card_id: route.route_id,
+    card_id: candidate.routeId,
     route_id: route.route_id,
     reasoning_effort: reasoningEffort,
     service_tier: serviceTier,
     provider: route.provider,
   };
   successorReceipt.selection = selection;
+  if (compiled) {
+    // The candidate is a new authorization edge, not an implicit fallback.
+    // Re-run the complete ticket/Receipt/run validation before either
+    // successor artifact is persisted.
+    try {
+      validateCompiledTicket(cwd, successor, ticketTargetHost(successor, env), env, successorReceipt);
+    } catch (error) {
+      const code = error instanceof DispatchError ? error.code : "SUCCESSOR_VALIDATION_FAILED";
+      const message = error instanceof Error ? error.message : "successor authorization validation failed";
+      ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
+      (ticket as unknown as UnknownRecord).successor_exclusion_matrix = candidate.exclusions.map((entry) => (
+        entry.model_id === candidate.routeId
+          ? {
+            ...entry,
+            codes: [...new Set([...entry.codes.filter((item) => item !== "AVAILABLE"), code])],
+            reasons: [...new Set([...entry.reasons, message])],
+          }
+          : entry
+      ));
+      return null;
+    }
+  }
   writeReceipt(cwd, successorReceipt, env);
   writeSpawn(cwd, successor, env);
   ticket.successor_id = successor.id;
@@ -1215,6 +1976,9 @@ export async function finishAgent(cwd: string, id: string, {
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
+    const compiledContext = isCompiledApplyTicket(ticket)
+      ? validateCompiledTicket(cwd, ticket, ticketTargetHost(ticket, env), env)
+      : null;
     if (terminal === "timed_out") {
       const expectedSequence = Number(probeSequence);
       const probe = ticket.liveness;
@@ -1284,6 +2048,10 @@ export async function finishAgent(cwd: string, id: string, {
         if (hostError && isConfirmedQuotaExhaustion({ errorCode: hostError.code, message: hostError.message })) {
           ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
         }
+        if (compiledContext) {
+          const acceptance = acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.error.message, env);
+          ticket.compiled_acceptance = acceptance;
+        }
         writeSpawn(cwd, ticket, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
@@ -1322,15 +2090,25 @@ export async function finishAgent(cwd: string, id: string, {
         if (hostError && isConfirmedQuotaExhaustion({ errorCode: hostError.code, message: hostError.message })) {
           ticket.successor_reason = "SUCCESSOR_REQUIRES_RECONCILIATION";
         }
+        if (compiledContext) {
+          const acceptance = acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.error.message, env);
+          ticket.compiled_acceptance = acceptance;
+        }
         writeSpawn(cwd, ticket, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
       }
     }
+    const structuredInsufficiency = compiledContext
+      ? planInsufficientEvidence(conclusion) || planInsufficientEvidence(errorMessage)
+      : null;
     if (terminal === "completed") {
+      const insufficient = structuredInsufficiency;
       const clean = sanitizeConclusion(conclusion);
       if (!clean.ok) throw new DispatchError("error" in clean ? clean.error : "invalid conclusion", "HYGIENE", { ticketId: id });
-      if (ticket.openspec && typeof ticket.openspec.tasks_path === "string" && typeof ticket.openspec.number === "string") {
+      // Compiled units report only to the parent acceptance API. Manual
+      // OpenSpec tickets retain the historical one-ticket writeback path.
+      if (!compiledContext && ticket.openspec && typeof ticket.openspec.tasks_path === "string" && typeof ticket.openspec.number === "string") {
         const current = fs.readFileSync(ticket.openspec.tasks_path, "utf8");
         const updated = writeTaskConclusionByNumber(current, ticket.openspec.number, clean.conclusion);
         fs.writeFileSync(ticket.openspec.tasks_path, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8");
@@ -1338,13 +2116,23 @@ export async function finishAgent(cwd: string, id: string, {
       transition(ticket, expected, terminal as TicketStatus, { at, event: "agent_completed" });
       ticket.conclusion = clean.conclusion;
       ticket.error = null;
+      if (insufficient) {
+        attachPlanInsufficientEvidence(ticket, insufficient, at);
+        ticket.error = { code: "PLAN_INSUFFICIENT", message: JSON.stringify(insufficient) };
+      }
     } else {
       if (!hostError) throw new DispatchError("invalid terminal status: " + terminal, "INVALID_TERMINAL_STATUS", { ticketId: id });
+      const insufficient = structuredInsufficiency;
       transition(ticket, expected, terminal as TicketStatus, { at, event: "agent_" + terminal, detail: { error_code: hostError.code } });
       ticket.error = { code: hostError.code, message: hostError.message };
       if (conclusion) {
         const clean = sanitizeConclusion(conclusion);
         if (clean.ok) ticket.conclusion = clean.conclusion;
+      }
+      if (insufficient) {
+        attachPlanInsufficientEvidence(ticket, insufficient, at);
+        ticket.plan_insufficient_host_error = structuredClone(hostError);
+        ticket.error = { code: "PLAN_INSUFFICIENT", message: JSON.stringify(insufficient) };
       }
     }
     ticket.finished_at = at;
@@ -1357,15 +2145,24 @@ export async function finishAgent(cwd: string, id: string, {
       env,
     });
     if (availability) ticket.quota_diagnostic = availability;
-    if (terminal !== "completed" && hostError && isConfirmedQuotaExhaustion({
+    let successorId: string | null = null;
+    if (terminal !== "completed" && hostError && !structuredInsufficiency && (isConfirmedQuotaExhaustion({
       errorCode: hostError.code,
       message: hostError.message,
       remainingPercent,
-    })) {
+    }) || isSessionUncallable({ errorCode: hostError?.code, message: hostError?.message }))) {
       // availabilityOutcome either durably records the route state or throws
       // MODEL_AVAILABILITY_WRITE_FAILED. Never create a successor from an
       // unpersisted quota decision.
-      await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
+      successorId = await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions, compiledContext);
+    }
+    if (compiledContext) {
+      if (terminal !== "completed" && successorId) {
+        ticket.compiled_acceptance = { accepted: false, code: "SUCCESSOR_CREATED", evidence: `successor ${successorId}` };
+      } else {
+        const acceptance = acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.conclusion, env);
+        ticket.compiled_acceptance = acceptance;
+      }
     }
     writeSpawn(cwd, ticket, env);
     updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at, env);

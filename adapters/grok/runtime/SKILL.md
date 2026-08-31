@@ -15,6 +15,59 @@ Grok is the selected host. Baton owns classification, exact write scopes,
 reservations, receipts, and lifecycle; this runtime skill does not add hooks or
 invent a second task graph.
 
+## Explicit OpenSpec apply loop
+
+This is a dual-skill path: use `/baton $openspec-apply-change <change>` in the
+same Grok director conversation. Baton is hookless and must not activate for an
+ordinary OpenSpec request unless `/baton` was explicitly run. OpenSpec tasks
+remain canonical. Before dispatch, the Grok main agent reads the apply
+instructions, every returned `contextFiles` file, repository guidance, and
+affected code. It compiles a versioned fine-grained plan with exact task refs,
+dependencies, read context, write paths and operations, an imperative patch
+recipe, done criteria, validation, parent gates, and task mappings. Units are
+`patch-only` or `verification-only`; broad tasks may split into disjoint units,
+coupled tasks may merge into one patch, and a later overlapping integration
+unit must be explicitly ordered after its predecessor.
+
+Baton validates and persists the plan/run, computes the maximal safe ready
+frontier, and derives each unit's minimum capability (Grok route capability) from complexity,
+context, code scope, reasoning, and native/tool execution needs. It walks only
+the configured `coding_models` in exact priority order. Spark is only the
+first candidate: silently advance when it is under-capable or exhausted in the
+current session and a later configured route qualifies. Never use an
+unconfigured route. Notify only when no configured route is both current-session
+available and capable, and include every configured candidate's exclusion
+reason in the complete `NO_QUALIFIED_CANDIDATE` result. Quota and uncallability
+are session-local Baton cache facts; a new Grok session rechecks them.
+
+For every reservation, pass its prompt unchanged to a fresh exact-model Grok
+native worker via a `spawn_subagent` call with `background=true`, `isolation=none`,
+`subagent_type=general-purpose`, and `resume_from` unset (`fork_context=false`).
+Immediately bind the returned opaque `subagent_id`, wait on real activity with
+`get_command_or_subagent_output` for real native liveness, record exactly one terminal result, and
+release before refilling. Keep terminal scopes owned until release. Return to
+the director only for source staleness, changed contracts, scope changes,
+safety-blocked partial mutation, or structured `PLAN_INSUFFICIENT`. A worker
+must not redesign or broaden scope, spawn children, touch Git or OpenSpec, or
+choose a model. The parent alone accepts gates and reconciles task checkboxes
+after all mapped units and gates pass; never complete a checkbox early.
+
+The compiled CLI operations are explicit and preserve manual compatibility:
+
+```text
+baton apply <change> --host grok --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host grok --run <run-id> --status --json
+baton apply <change> --host grok --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host grok --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host grok --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+Use the run's current revision and fingerprint when appending a successor;
+stale source or changed contracts fail closed. `--status` is observational,
+`--accept-gate` records parent evidence, and only `--reconcile` writes the
+canonical OpenSpec ledger. Manual `baton apply` scope flags remain available
+for legacy callers; compiled apply rejects those flags instead of guessing.
+
 ## Routing and scope
 
 - Discussion and read-only analysis stay in the director session.

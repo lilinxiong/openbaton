@@ -108,6 +108,67 @@ baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-mode
 `--coding-model all` 选择目录里所有 picker 可见的模型。`--runner -` 或
 `--longctx -` 会清空对应标签；标签缺失时，对应分类的工作会被拦住。
 
+## 编译后的 OpenSpec apply
+
+OpenSpec apply 是显式的双 skill 流程：Codex 中使用
+`$baton $openspec-apply-change <change>`，Grok 中使用 `/baton
+$openspec-apply-change <change>`。Baton 没有 hook，只有显式调用 host skill
+后才会激活；普通 OpenSpec 讨论不会创建 ticket。OpenSpec task ledger 仍是
+规范事实源，绝不会交给 worker。
+
+主 agent 先读取 apply instructions、返回的每个 `contextFiles`、适用的仓库
+指导和受影响代码，然后再创建 ticket。它编译带版本的细粒度计划，包含精确
+task refs 与 dependencies、read context、write paths 与 allowed operations、
+命令式 patch recipe、done criteria、permitted validation、parent gates 和
+task mappings。unit 只能是以下两种之一：
+
+- `patch-only`：具体修改，必须有非空 write paths 与 operation allowlist；
+- `verification-only`：只产生检查/证据，禁止 write paths 与 patch 字段。
+
+task mapping 支持多对多：一个宽任务可以拆成两个互不冲突的 utility unit，
+多个耦合任务可以合成一个 patch，后续与它重叠的 integration unit 只有在
+依赖明确排序后才可执行。持久化的 plan/run 将 source snapshot、不可变
+fingerprint、当前 revision、unit/gate 状态和 ticket lineage 与 task ledger
+分开保存。
+
+Baton 原子校验并持久化整份计划，建立 revision `1`，计算 maximal safe ready
+frontier，并根据复杂度、估算上下文、代码 scope、所需 reasoning 及
+native/tool 执行需求推导每个 unit 的 minimum capability。随后只沿用户配置的
+`coding_models` 原顺序选择。Spark 只是第一个候选：如果当前 session 中
+Spark 能力不足或已耗尽，而后面的已配置 route 合格，就静默前进。绝不使用
+profile 外的 route。只有没有任何同时满足“当前 session 可用”和“能力足够”的
+已配置 route 时才通知用户；此时完整的 `NO_QUALIFIED_CANDIDATE` 结果必须
+列出每个 configured route 及每个候选的排除原因（目录缺失、quota、当前
+session quota/uncallable、context、reasoning、execution capability、task
+不匹配）。quota 与 uncallability 只是当前 Baton session cache，新 session
+必须重新检查。
+
+每个 reservation 都要把 prompt 原样交给带精确模型/选项的新 native worker，
+立即绑定返回的 opaque execution handle，依据真实 native liveness 等待，记录
+一次 terminal result，并在 refill 前 release。terminal ticket 的 scope 在
+release 确认前继续占用。worker 不得重设计、扩大 scope、spawn 子 agent、触碰
+Git/OpenSpec 或选择模型。只有 parent 在所有 mapped unit 与 gate 通过后接受
+gate、reconcile task conclusion/checkbox；checkbox 不能提前勾选。
+
+### 编译 run 命令
+
+```text
+baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host <host> --run <run-id> --status --json
+baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+首个计划是 revision `1`。successor 必须针对当前 run 的 parent revision 和
+fingerprint，保留 selected-task coverage，并重新通过 catalog、routing、
+capability、scope 与 baseline 校验。`--status` 报告 run 状态，`--accept-gate`
+写入 parent gate 证据，只有 `--reconcile` 能写 canonical task ledger。source
+staleness、changed contract、scope 变化、安全门阻断的部分修改、过期 successor
+revision 和 `PLAN_INSUFFICIENT` 都 fail closed，返回 director 重新编译。
+旧式手工 `baton apply` 的显式 scope 与 `--read-only` 仍保持兼容；compiled 模式
+拒绝手工 scope flag，不猜测计划。
+
 ## Director、scope 与调度
 
 讨论和只读分析留在 director。已授权的实现单元与分类后的机械单元使用所

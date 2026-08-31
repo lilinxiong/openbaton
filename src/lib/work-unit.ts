@@ -1,12 +1,37 @@
 export type WorkUnitKind = "concrete" | "deliberative";
 export type CoordinationMode = "terminal-only" | "checkpointed";
+export type CompiledWorkUnitMode = "patch-only" | "verification-only";
+export type WorkUnitOperation = "write" | "create" | "delete" | "rename" | "chmod";
 
 export interface WorkUnitContract {
-  schema_version: 1;
+  schema_version: 1 | 2;
   kind: WorkUnitKind;
   objective: string;
   deliverable: string;
   done_when: string;
+}
+
+/**
+ * A director-compiled execution contract.  Compiled contracts are immutable
+ * snapshots: a worker may consume them, but cannot change the plan or scope
+ * it was given.
+ */
+export interface CompiledWorkUnitContract extends WorkUnitContract {
+  schema_version: 2;
+  mode: CompiledWorkUnitMode;
+  run_id: string;
+  plan_revision: string;
+  plan_fingerprint: string;
+  unit_id: string;
+  task_refs: readonly string[];
+  satisfied_dependencies: readonly string[];
+  read_context: readonly string[];
+  write_paths: readonly string[];
+  allowed_operations: readonly WorkUnitOperation[];
+  patch_recipe: string;
+  completion_criteria: readonly string[];
+  permitted_validation: readonly string[];
+  coordination: "terminal-only";
 }
 
 export interface CoordinationPolicy {
@@ -15,15 +40,147 @@ export interface CoordinationPolicy {
 }
 
 export interface CompileWorkUnitOptions {
-  kind: WorkUnitKind;
+  kind?: WorkUnitKind;
   deliverable?: string | null;
   doneWhen?: string | null;
+  /** Set this to compile a bounded patch or verification contract. */
+  mode?: CompiledWorkUnitMode;
+  executionMode?: CompiledWorkUnitMode;
+  execution_mode?: CompiledWorkUnitMode;
+  runId?: string;
+  run_id?: string;
+  planRevision?: string | number;
+  plan_revision?: string | number;
+  planFingerprint?: string;
+  plan_fingerprint?: string;
+  unitId?: string;
+  unit_id?: string;
+  taskRefs?: readonly string[];
+  task_refs?: readonly string[];
+  satisfiedDependencies?: readonly string[];
+  satisfied_dependencies?: readonly string[];
+  readContext?: readonly string[];
+  read_context?: readonly string[];
+  writePaths?: readonly string[];
+  write_paths?: readonly string[];
+  allowedOperations?: readonly WorkUnitOperation[];
+  allowed_operations?: readonly WorkUnitOperation[];
+  patchRecipe?: string;
+  patch_recipe?: string;
+  completionCriteria?: readonly string[];
+  completion_criteria?: readonly string[];
+  permittedValidation?: readonly string[];
+  permitted_validation?: readonly string[];
 }
 
-export function compileWorkUnit(description: unknown, options: CompileWorkUnitOptions): WorkUnitContract {
+export interface CompileCompiledWorkUnitOptions extends Omit<CompileWorkUnitOptions, "kind" | "mode" | "executionMode" | "execution_mode"> {
+  mode: CompiledWorkUnitMode;
+  executionMode?: CompiledWorkUnitMode;
+  execution_mode?: CompiledWorkUnitMode;
+  objective?: string;
+  description?: string;
+}
+
+function nonEmpty(value: unknown, field: string): string {
+  const result = String(value ?? "").trim();
+  if (!result) throw new Error(`compiled work unit ${field} is required`);
+  return result;
+}
+
+function strings(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`compiled work unit ${field} must be an array`);
+  return value.map((entry) => nonEmpty(entry, `${field} entries`));
+}
+
+function optionalStrings(value: unknown, field: string): string[] {
+  if (value === undefined || value === null) return [];
+  return strings(value, field);
+}
+
+function freezeDeep<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) freezeDeep(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export function compileCompiledWorkUnit(
+  description: unknown,
+  options: CompileCompiledWorkUnitOptions,
+): CompiledWorkUnitContract {
+  const mode = options.mode;
+  if (mode !== "patch-only" && mode !== "verification-only") {
+    throw new Error("compiled work unit mode is required and must be patch-only or verification-only");
+  }
+
+  const writePaths = optionalStrings(options.write_paths ?? options.writePaths, "write_paths");
+  const allowedOperations = optionalStrings(options.allowed_operations ?? options.allowedOperations, "allowed_operations") as WorkUnitOperation[];
+  const validOperations = new Set<WorkUnitOperation>(["write", "create", "delete", "rename", "chmod"]);
+  if (allowedOperations.some((operation) => !validOperations.has(operation))) {
+    throw new Error("compiled work unit allowed_operations contains an unsupported operation");
+  }
+  if (mode === "patch-only" && (!writePaths.length || !allowedOperations.length)) {
+    throw new Error("patch-only work unit requires non-empty write_paths and allowed_operations");
+  }
+  if (mode === "verification-only" && (writePaths.length || allowedOperations.length)) {
+    throw new Error("verification-only work unit forbids write_paths and allowed_operations");
+  }
+
+  const objective = nonEmpty(description ?? options.objective, "objective");
+  const taskRefs = strings(options.task_refs ?? options.taskRefs, "task_refs");
+  const readContext = strings(options.read_context ?? options.readContext, "read_context");
+  const completionCriteria = strings(options.completion_criteria ?? options.completionCriteria, "completion_criteria");
+  const permittedValidation = strings(options.permitted_validation ?? options.permittedValidation, "permitted_validation");
+  const contract: CompiledWorkUnitContract = {
+    schema_version: 2,
+    kind: "concrete",
+    objective,
+    deliverable: nonEmpty(options.deliverable, "deliverable"),
+    done_when: nonEmpty(options.doneWhen, "done_when"),
+    mode,
+    run_id: nonEmpty(options.run_id ?? options.runId, "run_id"),
+    plan_revision: nonEmpty(options.plan_revision ?? options.planRevision, "plan_revision"),
+    plan_fingerprint: nonEmpty(options.plan_fingerprint ?? options.planFingerprint, "plan_fingerprint"),
+    unit_id: nonEmpty(options.unit_id ?? options.unitId, "unit_id"),
+    task_refs: taskRefs,
+    satisfied_dependencies: optionalStrings(options.satisfied_dependencies ?? options.satisfiedDependencies, "satisfied_dependencies"),
+    read_context: readContext,
+    write_paths: writePaths,
+    allowed_operations: allowedOperations,
+    patch_recipe: nonEmpty(options.patch_recipe ?? options.patchRecipe, "patch_recipe"),
+    completion_criteria: completionCriteria,
+    permitted_validation: permittedValidation,
+    coordination: "terminal-only",
+  };
+  return freezeDeep(contract);
+}
+
+/** Compile either the legacy schema-1 unit or a versioned bounded unit. */
+export function compileWorkUnit(
+  description: unknown,
+  options?: CompileWorkUnitOptions,
+): WorkUnitContract | CompiledWorkUnitContract {
+  // Accepting the object form keeps the compiled contract useful to callers
+  // that already have a single plan record to pass around.
+  if (options === undefined && description && typeof description === "object") {
+    const input = description as CompileCompiledWorkUnitOptions;
+    if (input.mode || input.executionMode || input.execution_mode) {
+      return compileCompiledWorkUnit(input.objective ?? input.description, {
+        ...input,
+        mode: input.mode ?? input.executionMode ?? input.execution_mode!,
+      });
+    }
+  }
   const objective = String(description || "").trim();
   if (!objective) throw new Error("work unit objective is required");
   const kind = options?.kind;
+  if (options?.mode || options?.executionMode || options?.execution_mode) {
+    return compileCompiledWorkUnit(objective, {
+      ...options,
+      mode: options.mode ?? options.executionMode ?? options.execution_mode!,
+    });
+  }
   if (kind !== "concrete" && kind !== "deliberative") {
     throw new Error("work unit kind is required and must be concrete or deliberative");
   }
@@ -42,7 +199,22 @@ export function compileWorkUnit(description: unknown, options: CompileWorkUnitOp
   };
 }
 
+export function compilePatchOnlyWorkUnit(
+  description: string,
+  options: Omit<CompileCompiledWorkUnitOptions, "mode">,
+): CompiledWorkUnitContract {
+  return compileCompiledWorkUnit(description, { ...options, mode: "patch-only" });
+}
+
+export function compileVerificationOnlyWorkUnit(
+  description: string,
+  options: Omit<CompileCompiledWorkUnitOptions, "mode">,
+): CompiledWorkUnitContract {
+  return compileCompiledWorkUnit(description, { ...options, mode: "verification-only" });
+}
+
 export function coordinationFor(unit: WorkUnitContract): CoordinationPolicy {
+  if ("mode" in unit) return { mode: "terminal-only", progress_interval_ms: null };
   return unit.kind === "deliberative"
     ? { mode: "checkpointed", progress_interval_ms: 60_000 }
     : { mode: "terminal-only", progress_interval_ms: null };
@@ -66,6 +238,39 @@ export function buildWorkerPrompt(basePrompt: string, unit: WorkUnitContract, co
   } else {
     lines.push("coordination: terminal-only; return one short conclusion when complete.");
   }
-  lines.push("Do not spawn child agents.");
+  if ("mode" in unit) {
+    const compiled = unit as CompiledWorkUnitContract;
+    lines.push(
+      "",
+      "[Baton compiled execution contract]",
+      `schema_version: ${compiled.schema_version}`,
+      `objective: ${compiled.objective}`,
+      `deliverable: ${compiled.deliverable}`,
+      `done_when: ${compiled.done_when}`,
+      `mode: ${compiled.mode}`,
+      `run_id: ${compiled.run_id}`,
+      `plan_revision: ${compiled.plan_revision}`,
+      `plan_fingerprint: ${compiled.plan_fingerprint}`,
+      `unit_id: ${compiled.unit_id}`,
+      `task_refs: ${compiled.task_refs.join(", ")}`,
+      `satisfied_dependencies: ${compiled.satisfied_dependencies.join(", ")}`,
+      `read_context: ${compiled.read_context.join(", ")}`,
+      `write_paths: ${compiled.write_paths.join(", ")}`,
+      `allowed_operations: ${compiled.allowed_operations.join(", ")}`,
+      `patch_recipe: ${compiled.patch_recipe}`,
+      `completion_criteria: ${compiled.completion_criteria.join("; ")}`,
+      `permitted_validation: ${compiled.permitted_validation.join("; ")}`,
+      `coordination: ${compiled.coordination}`,
+      "",
+      "Imperative policy:",
+      "Follow the contract exactly. Do not spawn child agents, change the plan, stage, commit, branch, rebase, or modify OpenSpec, Receipt, dispatch, or CLI artifacts.",
+      compiled.mode === "patch-only"
+        ? "Write only the exact write_paths, and use only the listed allowed_operations; do not write any other path."
+        : "Perform verification only; do not write, create, delete, rename, chmod, stage, commit, or otherwise mutate any file.",
+      "If the recipe or a required decision is missing, stop. Return exactly one structured JSON object with code PLAN_INSUFFICIENT and string fields file, symbol, and missing_decision: {\"code\":\"PLAN_INSUFFICIENT\",\"file\":\"...\",\"symbol\":\"...\",\"missing_decision\":\"...\"}.",
+    );
+  } else {
+    lines.push("Do not spawn child agents.");
+  }
   return lines.join("\n");
 }

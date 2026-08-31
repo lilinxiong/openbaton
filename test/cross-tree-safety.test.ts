@@ -5,9 +5,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { auditWorktree } from "../src/lib/safety.js";
-import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "../src/lib/ticket-materialization.js";
-import { planStandaloneSpawn, type StandalonePlan } from "../src/lib/spawn.js";
+import { assertWriteScopesAvailable, materializeStandalonePlanAsync, materializeStandalonePlansBatchAsync } from "../src/lib/ticket-materialization.js";
+import { planStandaloneSpawn, writeSpawn, type StandalonePlan } from "../src/lib/spawn.js";
 import { readReceipt } from "../src/lib/receipt.js";
+import { compiledApplyRunsDir } from "../src/lib/paths.js";
 import { fakeEnv, withHome } from "./home.js";
 
 const CARD = {
@@ -63,6 +64,34 @@ async function materializeWrite(
 }
 
 describe("cross-tree workspace safety", () => {
+  it("rolls back only newly-created artifacts when a frontier batch write fails", async () => {
+    await withHome(async (home) => {
+      const cwd = repository();
+      const env = fakeEnv(home, { BATON_SESSION_ID: "cross-tree-batch-rollback" });
+      try {
+        const first = plan(cwd, env);
+        const second = plan(cwd, env);
+        const secondId = first.ticket.id.replace(/-\d{4}$/u, "-0002");
+        second.ticket.id = secondId;
+        second.ticket.receipt_id = second.receipt.receipt_id = `rcpt-${secondId}-a1`;
+        let writes = 0;
+        await assert.rejects(materializeStandalonePlansBatchAsync(cwd, [
+          { planned: first, writeAllowlist: ["owned.txt"], allowedOperations: ["write"] },
+          { planned: second, writeAllowlist: ["chmod.txt"], allowedOperations: ["chmod"] },
+        ], {
+          env,
+          writeSpawn: (root, ticket, currentEnv) => {
+            writes += 1;
+            if (writes === 2) throw new Error("injected batch write failure");
+            return writeSpawn(root, ticket, currentEnv);
+          },
+        }), /injected batch write failure/);
+        assert.equal(fs.existsSync(path.join(cwd, ".baton", "receipts", `${first.receipt.receipt_id}.json`)), false);
+      } finally {
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  });
   it("keeps independent tree capacity from allowing overlapping write, rename, delete, or chmod ownership", async () => {
     await withHome(async (home) => {
       const cases: Array<{
@@ -92,6 +121,27 @@ describe("cross-tree workspace safety", () => {
         } finally {
           fs.rmSync(cwd, { recursive: true, force: true });
         }
+      }
+    });
+  });
+
+  it("keeps a terminal-unreleased write ticket blocking an overlapping tree", async () => {
+    await withHome(async (home) => {
+      const cwd = repository();
+      const ownerEnv = fakeEnv(home, { BATON_SESSION_ID: "terminal-unreleased-owner" });
+      const contenderEnv = fakeEnv(home, { BATON_SESSION_ID: "terminal-unreleased-contender" });
+      try {
+        const owner = await materializeWrite(cwd, ownerEnv, ["owned.txt"], ["write"]);
+        owner.ticket.status = "completed";
+        owner.ticket.slot_released_at = null;
+        writeSpawn(cwd, owner.ticket, ownerEnv);
+        assert.throws(
+          () => assertWriteScopesAvailable(cwd, [{ key: "contender", write_paths: ["owned.txt"] }], contenderEnv),
+          /WRITE_SCOPE_CONFLICT/,
+          "terminal completion must not release a write scope before explicit slot release",
+        );
+      } finally {
+        fs.rmSync(cwd, { recursive: true, force: true });
       }
     });
   });
@@ -151,6 +201,42 @@ describe("cross-tree workspace safety", () => {
           /WRITE_SCOPE_CONFLICT/,
           "an independent tree must not claim an actively owned staged path",
         );
+      } finally {
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it("on batch completion failure removes only newly-created run-state temp files", async () => {
+    await withHome(async (home) => {
+      const cwd = repository();
+      const env = fakeEnv(home, { BATON_SESSION_ID: "batch-on-complete-failure" });
+      const runDir = path.join(compiledApplyRunsDir(cwd, env), "run-state");
+      const preExisting = path.join(runDir, "state-v1.json.tmp-existing");
+      const createdDuringCompletion = path.join(runDir, "state-v1.json.tmp-created");
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(preExisting, "pre-existing\n", "utf8");
+      try {
+        const first = plan(cwd, env);
+        const second = plan(cwd, env);
+        second.ticket.id = first.ticket.id.replace(/-\d{4}$/u, "-0002");
+        second.ticket.receipt_id = second.receipt.receipt_id = `rcpt-${second.ticket.id}-a1`;
+        await assert.rejects(
+          materializeStandalonePlansBatchAsync(cwd, [
+            { planned: first, writeAllowlist: [], allowedOperations: [] },
+            { planned: second, writeAllowlist: [], allowedOperations: [] },
+          ], {
+            env,
+            onComplete: () => {
+              fs.writeFileSync(createdDuringCompletion, "created\n", "utf8");
+              throw new Error("injected onComplete failure");
+            },
+          }),
+          /injected onComplete failure/,
+        );
+        assert.equal(fs.existsSync(preExisting), true);
+        assert.equal(fs.readFileSync(preExisting, "utf8"), "pre-existing\n");
+        assert.equal(fs.existsSync(createdDuringCompletion), false);
       } finally {
         fs.rmSync(cwd, { recursive: true, force: true });
       }

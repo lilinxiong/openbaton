@@ -10,6 +10,8 @@ export const CONFIG_NAME = "config.toml";
 export const SKILL_NAME = "SKILL.md";
 export const SPAWNS_DIR = "spawns";
 export const RUNS_DIR = "runs";
+/** Compiled OpenSpec apply runs have their own versioned namespace. */
+export const COMPILED_APPLY_RUNS_DIR = "compiled-apply-runs";
 export const SELECTIONS_DIR = "selections";
 export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
@@ -86,6 +88,26 @@ export function spawnsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
 
 export function runsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), RUNS_DIR);
+}
+
+export function compiledApplyRunsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(runsDir(cwd, env), COMPILED_APPLY_RUNS_DIR);
+}
+
+export function compiledApplyRunDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunsDir(cwd, env), String(runId));
+}
+
+export function compiledApplyRunStatePath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunDir(cwd, runId, env), "state-v1.json");
+}
+
+export function compiledApplyRunBodyPath(cwd: string, runId: string, revision: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunDir(cwd, runId, env), "revisions", `revision-${String(revision)}.json`);
+}
+
+export function applyRunStateLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(compiledApplyRunsDir(cwd, env), ".run-state-v1.lock");
 }
 
 export function selectionsDir(cwd: string, env?: NodeJS.ProcessEnv): string {

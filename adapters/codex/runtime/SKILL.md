@@ -13,6 +13,57 @@ Codex is the selected host. Baton owns classification, exact write scopes,
 reservations, receipts, and lifecycle; this runtime skill does not add hooks or
 invent a second task graph.
 
+## Explicit OpenSpec apply loop
+
+This is a dual-skill path: use `$baton $openspec-apply-change <change>` in the
+same Codex director conversation. Baton remains hookless and must not activate
+for an ordinary OpenSpec request unless `$baton` was explicitly invoked.
+OpenSpec tasks are canonical. Before dispatch, the Codex main agent reads the
+apply instructions, every returned `contextFiles` file, repository guidance,
+and affected code. It then compiles a versioned fine-grained plan whose units
+carry exact task refs, dependencies, read context, write paths and operations,
+an imperative patch recipe, done criteria, validation, parent gates, and task
+mappings. Units are `patch-only` or `verification-only`; a broad task may be
+split into disjoint units, coupled tasks may be merged into one patch, and a
+later overlapping integration unit must be ordered after its predecessor.
+
+Baton validates and persists that plan/run, computes the maximal safe ready
+frontier, and derives each unit's minimum capability (Codex route capability) from complexity,
+context, code scope, reasoning, and native/tool execution needs. It walks only
+the configured `coding_models` in exact priority order. Spark is only the
+first candidate: silently advance when it is under-capable or exhausted in the
+current session and a later configured route qualifies. Never use an
+unconfigured route. Notify only when no configured route is both current-session
+available and capable, and include every candidate's exclusion reason in the
+`NO_QUALIFIED_CANDIDATE` result. Quota and uncallability are session-local
+Baton cache facts; a new Codex session rechecks them.
+
+For every reservation, pass its prompt unchanged to a fresh exact-model Codex
+native worker (the native child, `fork_context=false`), immediately bind the returned opaque
+`task_name`, wait on real native liveness/activity, record exactly one terminal result,
+and release before refilling. Keep terminal scopes owned until release. Return
+to the director only for source staleness, changed contracts, scope changes,
+safety-blocked partial mutation, or structured `PLAN_INSUFFICIENT`. A worker
+must not redesign or broaden scope, spawn children, touch Git or OpenSpec, or
+choose a model. The parent alone accepts gates and reconciles task checkboxes
+after all mapped units and gates pass; never complete a checkbox early.
+
+The compiled CLI operations are explicit and preserve manual compatibility:
+
+```text
+baton apply <change> --host codex --plan-file <plan.json> [--dispatch] --json
+baton apply <change> --host codex --run <run-id> --status --json
+baton apply <change> --host codex --run <run-id> --accept-gate <gate-id> --text "..." --json
+baton apply <change> --host codex --run <run-id> --reconcile [--task <number>] --json
+baton apply <change> --host codex --run <run-id> --plan-file <successor.json> [--dispatch] --json
+```
+
+Use the run's current revision and fingerprint when appending a successor;
+stale source or changed contracts fail closed. `--status` is observational,
+`--accept-gate` records parent evidence, and only `--reconcile` writes the
+canonical OpenSpec ledger. Manual `baton apply` scope flags remain available
+for legacy callers; compiled apply rejects those flags instead of guessing.
+
 ## Routing and scope
 
 - Discussion and read-only analysis stay in the director session.
@@ -42,7 +93,7 @@ baton dispatch complete TICKET --host codex --text "short conclusion" --release 
 
 Reserve first (`baton dispatch next --host codex --json`), pass the reservation
 prompt unchanged to the native Codex child API, immediately bind its returned
-`task_name` as the opaque `task_name=...` handle, wait on native activity, record
+`task_name` as the opaque `task_name=...` handle, wait on native liveness/activity, record
 exactly one terminal result, and release before refilling capacity. A capacity
 backpressure response defers the same reservation without changing its model.
 

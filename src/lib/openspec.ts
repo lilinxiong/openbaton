@@ -5,6 +5,7 @@
  * baton only reads those artifacts and writes conclusions / checkbox flips
  * after a card-routed worker finishes.
  */
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -20,7 +21,14 @@ export type OpenSpecErrorCode =
   | "AMBIGUOUS_CHANGE"
   | "TASK_ID_NOT_FOUND"
   | "TASK_ID_AMBIGUOUS"
-  | "TASK_WRITEBACK_FAILED";
+  | "TASK_WRITEBACK_FAILED"
+  | "APPLY_INSTRUCTIONS_FAILED"
+  | "APPLY_INSTRUCTIONS_INVALID"
+  | "CONTEXT_FILE_MISSING"
+  | "CONTEXT_PATH_INVALID"
+  | "TASK_LEDGER_MISSING"
+  | "TASK_NUMBER_MISSING"
+  | "TASK_NUMBER_AMBIGUOUS";
 
 export type OpenSpecConclusion = string;
 
@@ -55,6 +63,73 @@ export interface OpenSpecCommandResult {
 }
 
 export type OpenSpecRunner = (command: string, args: string[], cwd: string) => OpenSpecCommandResult;
+
+/** A concrete artifact path returned by OpenSpec, together with its byte hash. */
+export interface OpenSpecContextFile {
+  artifact: string;
+  path: string;
+  sha256: string;
+}
+
+/** The identity of the canonical tasks ledger for a selected change. */
+export interface OpenSpecTaskLedgerIdentity {
+  path: string;
+  /** The path is the ledger identity; content changes are represented by sha256. */
+  identity: string;
+  sha256: string;
+  fingerprint?: string;
+}
+
+/** Read the current identity of an OpenSpec task ledger without invoking the
+ * CLI.  Reconciliation uses this immediately before its atomic write. */
+export function readTaskLedgerIdentity(tasksPath: string): OpenSpecTaskLedgerIdentity {
+  if (!fs.existsSync(tasksPath)) throw new OpenSpecError(`OpenSpec task ledger not found: ${tasksPath}`, "TASK_LEDGER_MISSING");
+  const resolved = path.resolve(tasksPath);
+  const sha256 = sha256Bytes(resolved);
+  return { path: resolved, identity: resolved, sha256, fingerprint: sha256 };
+}
+
+export interface OpenSpecSelectedTask {
+  number: string;
+  description: string;
+  section: string;
+}
+
+/**
+ * Read-only, typed projection of `openspec instructions apply --json`.
+ * OpenSpec remains the owner of workflow state; this value is only a source
+ * snapshot for a Baton plan and never writes or derives OpenSpec state.
+ */
+export interface OpenSpecApplyInstructions {
+  changeName: string;
+  schema: string;
+  schemaName: string;
+  changeRoot: string;
+  /** Alias retained for parity with the OpenSpec CLI field. */
+  changeDir: string;
+  /** Concrete paths in deterministic artifact/path order. */
+  contextFiles: OpenSpecContextFile[];
+  contextFileHashes: Record<string, string>;
+  pendingTaskNumbers: string[];
+  /** Alias useful to plan consumers that call this a selected-task set. */
+  selectedTaskNumbers: string[];
+  selectedTasks: OpenSpecSelectedTask[];
+  selectedTaskSnapshotFingerprint: string;
+  selectedTaskFingerprint: string;
+  taskLedger: OpenSpecTaskLedgerIdentity;
+  taskLedgerIdentity: string;
+  instruction: string;
+  /** Alias retaining the distinction from static schema instructions. */
+  dynamicInstruction: string;
+  context?: string;
+  operationGuidance?: string[];
+}
+
+export interface OpenSpecApplyResolveOptions {
+  change?: string | null;
+  cli?: string | null;
+  runner?: OpenSpecRunner;
+}
 
 export class OpenSpecError extends Error {
   readonly code: OpenSpecErrorCode;
@@ -139,6 +214,227 @@ function splitTaskNumber(body: string): Pick<OpenSpecTask, "number" | "descripti
   return { number: "", description: text };
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Bytes(file: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function pathIsWithin(target: string, root: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function concretePath(candidate: unknown, projectRoot: string, changeRoot: string, label: string): string {
+  if (typeof candidate !== "string" || !candidate.trim()) {
+    throw new OpenSpecError(`OpenSpec returned an invalid context path: ${label}`, "CONTEXT_PATH_INVALID");
+  }
+  const resolved = path.resolve(candidate);
+  // A context may be a change artifact or a project-level instruction, but it
+  // must never escape the selected project. realpath also closes symlink escapes.
+  let isFile = false;
+  try {
+    isFile = fs.existsSync(resolved) && fs.statSync(resolved).isFile();
+  } catch {
+    isFile = false;
+  }
+  if (!isFile) {
+    throw new OpenSpecError(`OpenSpec context file not found: ${resolved}`, "CONTEXT_FILE_MISSING");
+  }
+  let real = resolved;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch {
+    throw new OpenSpecError(`OpenSpec context file cannot be resolved: ${resolved}`, "CONTEXT_FILE_MISSING");
+  }
+  if (!pathIsWithin(real, projectRoot)) {
+    throw new OpenSpecError(`OpenSpec context path is outside the project boundary: ${resolved}`, "CONTEXT_PATH_INVALID");
+  }
+  // Keep this explicit in the contract: changeRoot is checked by the caller,
+  // while projectRoot is the outer boundary for project-level context files.
+  void changeRoot;
+  return resolved;
+}
+
+function defaultOpenSpecRunner(command: string, args: string[], cwd: string): OpenSpecCommandResult {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  return { status: result.status, stdout: result.stdout || "", stderr: result.stderr || "" };
+}
+
+function selectedChangeName(cwd: string, requested: string | null | undefined): string {
+  if (requested) return requested;
+  const names = listChangeNames(cwd);
+  if (names.length === 1) return names[0];
+  if (names.length === 0) throw new OpenSpecError("no OpenSpec change found", "NO_CHANGE");
+  throw new OpenSpecError(`multiple OpenSpec changes: ${names.join(", ")}`, "AMBIGUOUS_CHANGE");
+}
+
+/**
+ * Resolve the OpenSpec-owned apply context through its CLI. This deliberately
+ * does not infer workflow state: the CLI output and its tasks ledger remain
+ * authoritative, while Baton only snapshots concrete files and task identity.
+ */
+export function resolveOpenSpecApplyInstructions(
+  cwd: string,
+  change: string,
+  options?: Omit<OpenSpecApplyResolveOptions, "change">,
+): OpenSpecApplyInstructions;
+export function resolveOpenSpecApplyInstructions(
+  cwd: string,
+  options: OpenSpecApplyResolveOptions,
+): OpenSpecApplyInstructions;
+export function resolveOpenSpecApplyInstructions(
+  cwd: string,
+  changeOrOptions: string | OpenSpecApplyResolveOptions,
+  suppliedOptions: Omit<OpenSpecApplyResolveOptions, "change"> = {},
+): OpenSpecApplyInstructions {
+  const options: OpenSpecApplyResolveOptions = typeof changeOrOptions === "string"
+    ? { ...suppliedOptions, change: changeOrOptions }
+    : changeOrOptions;
+  const change = selectedChangeName(cwd, options.change);
+  const cli = options.cli === undefined ? openspecCliAvailable() : options.cli;
+  if (!cli) throw new OpenSpecError("OpenSpec CLI is not available", "NOT_FOUND");
+  const runner = options.runner || defaultOpenSpecRunner;
+  let commandResult: OpenSpecCommandResult;
+  try {
+    commandResult = runner(cli, ["instructions", "apply", "--change", change, "--json"], cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new OpenSpecError(`OpenSpec apply instructions failed: ${message}`, "APPLY_INSTRUCTIONS_FAILED");
+  }
+  if (!commandResult || commandResult.status !== 0) {
+    const message = String(commandResult?.stderr || commandResult?.stdout || "").trim();
+    throw new OpenSpecError(message || `openspec instructions apply exited ${commandResult?.status ?? "unknown"}`, "APPLY_INSTRUCTIONS_FAILED");
+  }
+  let raw: unknown;
+  try {
+    const stdout = typeof commandResult.stdout === "string" ? commandResult.stdout.trim() : "";
+    if (!stdout) throw new Error("empty output");
+    raw = JSON.parse(stdout);
+  } catch {
+    throw new OpenSpecError("OpenSpec apply instructions returned malformed JSON", "APPLY_INSTRUCTIONS_INVALID");
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new OpenSpecError("OpenSpec apply instructions must be a JSON object", "APPLY_INSTRUCTIONS_INVALID");
+  }
+  const output = raw as Record<string, unknown>;
+  const stringField = (key: string): string => {
+    const value = output[key];
+    if (typeof value !== "string" || !value.trim()) throw new OpenSpecError(`OpenSpec apply instructions missing ${key}`, "APPLY_INSTRUCTIONS_INVALID");
+    return value;
+  };
+  const changeName = stringField("changeName");
+  const schemaName = stringField("schemaName");
+  const outputChangeRoot = stringField("changeDir");
+  const instruction = stringField("instruction");
+  if (changeName !== change) throw new OpenSpecError(`OpenSpec returned a different change: ${changeName}`, "APPLY_INSTRUCTIONS_INVALID");
+
+  const projectRoot = fs.realpathSync(cwd);
+  const expectedChangeRoot = resolveChangeDir(cwd, change);
+  if (!expectedChangeRoot) throw new OpenSpecError(`cannot resolve OpenSpec change: ${change}`, "NO_CHANGE");
+  const resolvedChangeRoot = path.resolve(outputChangeRoot);
+  if (!fs.existsSync(resolvedChangeRoot)) {
+    throw new OpenSpecError(`OpenSpec change root is outside the project boundary: ${resolvedChangeRoot}`, "CONTEXT_PATH_INVALID");
+  }
+  let expectedReal: string;
+  let outputReal: string;
+  try {
+    expectedReal = fs.realpathSync(expectedChangeRoot);
+    outputReal = fs.realpathSync(resolvedChangeRoot);
+  } catch {
+    throw new OpenSpecError(`OpenSpec change root cannot be resolved: ${resolvedChangeRoot}`, "CONTEXT_PATH_INVALID");
+  }
+  if (expectedReal !== outputReal || !pathIsWithin(outputReal, projectRoot)) {
+    throw new OpenSpecError(`OpenSpec returned an unexpected change root: ${resolvedChangeRoot}`, "CONTEXT_PATH_INVALID");
+  }
+
+  const rawContext = output.contextFiles;
+  if (!rawContext || typeof rawContext !== "object" || Array.isArray(rawContext)) {
+    throw new OpenSpecError("OpenSpec apply instructions missing contextFiles", "CONTEXT_FILE_MISSING");
+  }
+  const contextFiles: OpenSpecContextFile[] = [];
+  const seenPaths = new Set<string>();
+  for (const artifact of Object.keys(rawContext as Record<string, unknown>).sort()) {
+    const paths = (rawContext as Record<string, unknown>)[artifact];
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new OpenSpecError(`OpenSpec context artifact has no files: ${artifact}`, "CONTEXT_FILE_MISSING");
+    }
+    const resolvedPaths = paths.map((candidate) => concretePath(candidate, projectRoot, outputReal, artifact)).sort();
+    for (const file of resolvedPaths) {
+      if (seenPaths.has(file)) throw new OpenSpecError(`OpenSpec context file is duplicated: ${file}`, "CONTEXT_PATH_INVALID");
+      seenPaths.add(file);
+      contextFiles.push({ artifact, path: file, sha256: sha256Bytes(file) });
+    }
+  }
+  if (contextFiles.length === 0) throw new OpenSpecError("OpenSpec apply instructions returned no context files", "CONTEXT_FILE_MISSING");
+  const taskFiles = contextFiles.filter((file) => file.artifact === "tasks" || path.basename(file.path).toLowerCase() === "tasks.md");
+  if (taskFiles.length !== 1 || !taskFiles[0] || !pathIsWithin(fs.realpathSync(taskFiles[0].path), outputReal)) {
+    throw new OpenSpecError("OpenSpec apply instructions must return exactly one tasks ledger under the selected change", "TASK_LEDGER_MISSING");
+  }
+  const taskLedgerFile = taskFiles[0];
+  const taskText = fs.readFileSync(taskLedgerFile.path, "utf8");
+  const parsedTasks = parseTasks(taskText);
+  if (parsedTasks.length === 0) throw new OpenSpecError(`no tasks found in ${taskLedgerFile.path}`, "EMPTY");
+  const numbers = new Set<string>();
+  for (const task of parsedTasks) {
+    if (!task.number) {
+      if (task.status === "pending") throw new OpenSpecError("OpenSpec pending task has no stable task number", "TASK_NUMBER_MISSING");
+      continue;
+    }
+    if (numbers.has(task.number)) throw new OpenSpecError(`OpenSpec task number is ambiguous: ${task.number}`, "TASK_NUMBER_AMBIGUOUS");
+    numbers.add(task.number);
+  }
+  if (!Array.isArray(output.tasks)) throw new OpenSpecError("OpenSpec apply instructions missing tasks", "APPLY_INSTRUCTIONS_INVALID");
+  for (const task of output.tasks) {
+    if (!task || typeof task !== "object" || typeof (task as Record<string, unknown>).id !== "string" || typeof (task as Record<string, unknown>).description !== "string" || typeof (task as Record<string, unknown>).done !== "boolean") {
+      throw new OpenSpecError("OpenSpec apply instructions returned malformed tasks", "APPLY_INSTRUCTIONS_INVALID");
+    }
+  }
+  const selectedTasks = parsedTasks
+    .filter((task) => task.status === "pending")
+    .map((task) => ({ number: task.number, description: task.description, section: task.section }));
+  const pendingTaskNumbers = selectedTasks.map((task) => task.number);
+  const contextFileHashes: Record<string, string> = {};
+  for (const file of contextFiles) contextFileHashes[file.path] = file.sha256;
+  const operationGuidance = output.operationGuidance === undefined
+    ? undefined
+    : Array.isArray(output.operationGuidance) && output.operationGuidance.every((item) => typeof item === "string")
+      ? output.operationGuidance as string[]
+      : (() => { throw new OpenSpecError("OpenSpec operationGuidance must be a string array", "APPLY_INSTRUCTIONS_INVALID"); })();
+  const selectedTaskSnapshotFingerprint = crypto.createHash("sha256").update(stableJson(selectedTasks), "utf8").digest("hex");
+  const taskLedger: OpenSpecTaskLedgerIdentity = { path: taskLedgerFile.path, identity: taskLedgerFile.path, sha256: taskLedgerFile.sha256, fingerprint: taskLedgerFile.sha256 };
+  return {
+    changeName,
+    schema: schemaName,
+    schemaName,
+    changeRoot: outputReal,
+    changeDir: outputReal,
+    contextFiles,
+    contextFileHashes,
+    pendingTaskNumbers,
+    selectedTaskNumbers: [...pendingTaskNumbers],
+    selectedTasks,
+    selectedTaskSnapshotFingerprint,
+    selectedTaskFingerprint: selectedTaskSnapshotFingerprint,
+    taskLedger,
+    taskLedgerIdentity: taskLedger.identity,
+    instruction,
+    dynamicInstruction: instruction,
+    ...(typeof output.context === "string" ? { context: output.context } : {}),
+    ...(operationGuidance !== undefined ? { operationGuidance } : {}),
+  };
+}
+
+export const resolveOpenSpecApply = resolveOpenSpecApplyInstructions;
+export const readOpenSpecApplyInstructions = resolveOpenSpecApplyInstructions;
+
 export function loadTasksFromChangeDir(changeDir: string): OpenSpecChange {
   if (!fs.existsSync(changeDir) || !fs.statSync(changeDir).isDirectory()) {
     throw new OpenSpecError(`OpenSpec change directory not found: ${changeDir}`, "NOT_FOUND");
@@ -186,6 +482,40 @@ export function writeTaskConclusionByNumber(tasksMd: string, number: string, con
   const updated = writeTaskConclusion(tasksMd, matches[0].line_index, conclusion);
   if (updated == null) throw new OpenSpecError(`OpenSpec task writeback failed: ${number}`, "TASK_WRITEBACK_FAILED");
   return updated;
+}
+
+/**
+ * Apply several task conclusions to one source snapshot.  Line positions are
+ * resolved from the original parse and edits are made bottom-up, so this is
+ * suitable for a parent-owned failure-atomic ledger write.  Existing done
+ * tasks are left untouched and duplicate/missing numbers fail closed.
+ */
+export function writeTaskConclusions(tasksMd: string, conclusions: ReadonlyMap<string, OpenSpecConclusion> | Record<string, OpenSpecConclusion>): string {
+  const entries = conclusions instanceof Map ? [...conclusions.entries()] : Object.entries(conclusions);
+  if (entries.length === 0) return String(tasksMd);
+  const tasks = parseTasks(tasksMd);
+  const byNumber = new Map<string, OpenSpecTask>();
+  for (const task of tasks) {
+    if (!task.number) continue;
+    if (byNumber.has(task.number)) throw new OpenSpecError(`OpenSpec task number is ambiguous: ${task.number}`, "TASK_ID_AMBIGUOUS");
+    byNumber.set(task.number, task);
+  }
+  const seen = new Set<string>();
+  const resolved = entries.map(([number, conclusion]) => {
+    if (seen.has(number)) throw new OpenSpecError(`OpenSpec task number is ambiguous: ${number}`, "TASK_ID_AMBIGUOUS");
+    seen.add(number);
+    const task = byNumber.get(number);
+    if (!task) throw new OpenSpecError(`OpenSpec task number not found: ${number}`, "TASK_ID_NOT_FOUND");
+    if (task.status !== "pending") throw new OpenSpecError(`OpenSpec task is not pending: ${number}`, "TASK_WRITEBACK_FAILED");
+    return { task, conclusion };
+  }).sort((left, right) => right.task.line_index - left.task.line_index);
+  let result = String(tasksMd);
+  for (const { task, conclusion } of resolved) {
+    const next = writeTaskConclusion(result, parseTasks(result).find((item) => item.number === task.number)?.line_index ?? -1, conclusion);
+    if (next === null) throw new OpenSpecError(`OpenSpec task writeback failed: ${task.number}`, "TASK_WRITEBACK_FAILED");
+    result = next;
+  }
+  return result;
 }
 
 function leadingWhitespace(line: string): string {

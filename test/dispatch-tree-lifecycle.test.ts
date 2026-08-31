@@ -12,6 +12,9 @@ import {
   reportAgentProbe,
   reserveNext,
 } from "../src/lib/dispatch.js";
+import { createApplyRun, readApplyRun } from "../src/lib/apply-run.js";
+import { materializeCompiledApplyFrontier } from "../src/lib/compiled-apply.js";
+import { spawnsDir } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn, type SpawnTicket } from "../src/lib/spawn.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
@@ -225,6 +228,82 @@ describe("dispatch tree slot lifecycle", () => {
       assert.deepEqual(deferred.selection, before.selection);
       assert.equal(deferred.session_uid, before.session_uid);
       assert.equal(dispatchSnapshot(cwd, { capacity: 1, host: HOST, env }).active, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
+  it("keeps compiled verification parent-owned and never synthesizes safety acceptance", async () => withHome(async (home) => {
+    const cwd = newCwd();
+    const env = fakeEnv(home, { BATON_SESSION_ID: "tree-compiled-parent-owned" });
+    try {
+      configureLifecycleRoute(cwd, env);
+      const tasksPath = path.join(cwd, "openspec", "changes", "demo", "tasks.md");
+      fs.mkdirSync(path.dirname(tasksPath), { recursive: true });
+      const beforeTasks = "## Work\n\n- [ ] 1.1 Verify\n";
+      fs.writeFileSync(tasksPath, beforeTasks);
+      const plan = {
+        schema_version: 1 as const,
+        identity: { plan_id: "compiled-parent-owned", change_id: "demo" },
+        source_snapshot: { repo_root: cwd, revision: "head", tasks_path: tasksPath },
+        selected_tasks: ["1.1"],
+        units: [{ id: "u1", mode: "verification-only" as const, task_ids: ["1.1"], description: "verify parent-owned", prompt: "verify parent-owned", verification: ["read"] }],
+      };
+      createApplyRun({ cwd, env, runId: "compiled-parent-owned", host: HOST, plan });
+      const card = { id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "verification", native: true, tool: true };
+      const materialized = await materializeCompiledApplyFrontier({
+        cwd, env, host: HOST, runId: "compiled-parent-owned", capacity: 1,
+        cards: [card], automaticCards: [card], codingModels: [ROUTE],
+      });
+      assert.equal(materialized.materialized.length, 1);
+      const ticket = materialized.materialized[0]!;
+      ticket.openspec = { tasks_path: tasksPath, number: "1.1" };
+      writeSpawn(cwd, ticket, env);
+      const reserved = await reserveNext(cwd, { capacity: 1, host: HOST, limit: 1, env });
+      assert.deepEqual(reserved.reserved.map((item) => item.ticket_id), [ticket.id]);
+      const bound = bindAgent(cwd, ticket.id, {
+        executionHandle: { kind: "alpha-task", value: "compiled-parent-owned", source: "native-return" },
+        host: HOST, env,
+      });
+      const finished = await finishAgent(cwd, bound.id, { status: "completed", conclusion: "verification result", host: HOST, env });
+      assert.equal(finished.status, "completed");
+      assert.equal(finished.safety_verdict, undefined);
+      assert.equal(finished.compiled_acceptance?.accepted, true);
+      assert.equal(fs.readFileSync(tasksPath, "utf8"), beforeTasks);
+      assert.equal(readApplyRun(cwd, "compiled-parent-owned", { env }).unit_state.u1?.status, "accepted");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
+  it("rejects a tampered compiled lineage before native bind", async () => withHome(async (home) => {
+    const cwd = newCwd();
+    const env = fakeEnv(home, { BATON_SESSION_ID: "tree-compiled-lineage-tamper" });
+    try {
+      configureLifecycleRoute(cwd, env);
+      const plan = {
+        schema_version: 1 as const,
+        identity: { plan_id: "compiled-lineage-tamper", change_id: "demo" },
+        source_snapshot: { repo_root: cwd, revision: "head" },
+        selected_tasks: ["1.1"],
+        units: [{ id: "u1", mode: "verification-only" as const, task_ids: ["1.1"], description: "verify tamper", prompt: "verify tamper", verification: ["read"] }],
+      };
+      createApplyRun({ cwd, env, runId: "compiled-lineage-tamper", host: HOST, plan });
+      const card = { id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "verification", native: true, tool: true };
+      const materialized = await materializeCompiledApplyFrontier({
+        cwd, env, host: HOST, runId: "compiled-lineage-tamper", capacity: 1,
+        cards: [card], automaticCards: [card], codingModels: [ROUTE],
+      });
+      const ticket = materialized.materialized[0]!;
+      const file = path.join(spawnsDir(cwd, env), `${ticket.id}.json`);
+      const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+      raw.compiled_apply_lineage.plan_fingerprint = "tampered-fingerprint";
+      raw.work_unit.plan_fingerprint = "tampered-fingerprint";
+      fs.writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`);
+      const blocked = await reserveNext(cwd, { capacity: 1, host: HOST, limit: 1, env });
+      assert.equal(blocked.reserved.length, 0);
+      assert.equal(blocked.blocked[0]?.code, "COMPILED_LINEAGE_MISMATCH");
+      assert.equal(readSpawn(cwd, ticket.id, env).status, "errored");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

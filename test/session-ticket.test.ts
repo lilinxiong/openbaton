@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildSpawnTicket, nextSpawnId, nextSpawnIds, sessionUid, sessionTicketId, writeSpawn, listSpawns, readSpawn } from "../src/lib/spawn.js";
+import { buildSpawnTicket, nextSpawnId, nextSpawnIds, sessionUid, sessionTicketId, writeSpawn, listSpawns, readSpawn, validateSpawnTicketLineage } from "../src/lib/spawn.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 import { run } from "../src/cli.js";
 import { withHome, TEST_SESSION_ID, TEST_SESSION_UID, testTicketId, fakeEnv } from "./home.js";
@@ -63,4 +63,23 @@ describe("session-scoped ticket ids", () => {
     assert.equal(sessionUid({ BATON_SESSION_ID: TEST_SESSION_ID }), TEST_SESSION_UID);
     assert.equal(sessionTicketId("spn", TEST_SESSION_UID, 1), testTicketId("spn", 1));
   });
+
+  it("round-trips compiled apply lineage and leaves manual tickets legacy-compatible", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-session-compiled-"));
+    const env = fakeEnv(home, { BATON_SESSION_ID: "compiled" });
+    const id = nextSpawnId(cwd, "spn", env);
+    const compiled = buildSpawnTicket({
+      cwd, env, id, description: "verify", prompt: "verify", modelId: "alpha/default", routeId: "alpha/default", taskKind: "concrete",
+      compiledApplyLineage: { run_id: "run-1", plan_revision: "2", plan_fingerprint: "fp-1", unit_id: "unit-1", task_refs: ["1.1", "1.2"], mode: "verification-only" },
+    });
+    assert.equal(compiled.work_unit.schema_version, 2);
+    assert.equal(validateSpawnTicketLineage(compiled), null);
+    assert.equal(Object.isFrozen(compiled.compiled_apply_lineage), true);
+    assert.equal(Object.isFrozen(compiled.compiled_apply_lineage?.task_refs), true);
+    writeSpawn(cwd, compiled, env);
+    assert.deepEqual(readSpawn(cwd, id, env).compiled_apply_lineage, compiled.compiled_apply_lineage);
+    const manual = ticket(cwd, env, nextSpawnId(cwd, "spn", env));
+    assert.equal(manual.compiled_apply_lineage, undefined);
+    assert.equal(validateSpawnTicketLineage(manual), null);
+  }));
 });
