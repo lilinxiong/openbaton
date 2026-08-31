@@ -29,7 +29,7 @@ import {
   withDispatchReservationEnvelope,
   type DispatchReservationIdentity,
 } from "./dispatch-reservation.js";
-import { withActivationLock, withActivationLockAsync, resolveActivation, type ActivationLockOptions } from "./activation.js";
+import { withActivationLockAsync, type ActivationLockOptions } from "./activation.js";
 import {
   availabilityForRoute,
   claimRouteProbe,
@@ -448,9 +448,9 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
       // Validate the ticket's captured host profile; never borrow another CLI.
       const profileHost = capturedHost!;
       const profile = cliProfileForHost(config, profileHost);
-      if (!profile.enabled || catalog.cli !== profileHost) {
-        code = "CLI_CONFIG_DISABLED";
-        message = `ticket ${ticket.id} requires the ${profileHost} configuration to be enabled`;
+      if (catalog.cli !== profileHost) {
+        code = "CLI_CATALOG_HOST_MISMATCH";
+        message = `ticket ${ticket.id} requires a ${profileHost} catalog snapshot`;
       } else if (!configuredCodingModelsForHost(config, profileHost).includes(ticket.route_id)) {
         code = "CLI_MODEL_NOT_CONFIGURED";
         message = `ticket ${ticket.id} model ${ticket.route_id} is not in cli.${profileHost}.coding_models`;
@@ -537,7 +537,13 @@ function resolvedCapacity(cwd: string, host: HostId | undefined, env: NodeJS.Pro
     // operation limit; the host resolver remains authoritative when config is
     // unavailable.
   }
-  return resolveAgentTreeCapacity({ host: adapter?.host, config, currentOperationLimit: operationLimit, session: sessionUid(env), env });
+  return resolveAgentTreeCapacity({
+    host: adapter?.host,
+    config,
+    currentOperationLimit: operationLimit,
+    session: sessionUid(env),
+    env,
+  });
 }
 
 function requiredCapacity(value: EffectiveAgentTreeCapacity): number {
@@ -609,24 +615,6 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
     let available = Math.max(0, max - active);
     const reserved: DispatchSpec[] = [];
     const blocked: Array<{ ticket_id: string; code: string; message: string }> = [];
-    let activationChecked = false;
-    const ensureActivation = (): void => {
-      if (activationChecked) return;
-      activationChecked = true;
-      const activation = resolveActivation(cwd, { env, host: targetHost });
-      if (!activation.valid) {
-        throw new DispatchError(
-          `cannot reserve dispatches while activation is invalid: ${activation.reason || "unknown"}`,
-          "ACTIVATION_INVALID",
-        );
-      }
-      if (!activation.effective_enabled) {
-        throw new DispatchError(
-          `cannot reserve dispatches while ${targetHost} activation is disabled: ${activation.reason || "unknown"}`,
-          "ACTIVATION_DISABLED",
-        );
-      }
-    };
     for (const ticket of tickets) {
       if (ticket.status !== "queued" || available <= 0 || reserved.length >= maxTake) continue;
       requireCurrentTicket(ticket);
@@ -645,7 +633,6 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
         blocked.push({ ticket_id: ticket.id, code: "HOST_MISMATCH", message: `ticket ${ticket.id} targets ${ticketHost}, not ${targetHost}` });
         continue;
       }
-      ensureActivation();
       const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions);
       if (rejected) {
         blocked.push(rejected);
@@ -1581,7 +1568,12 @@ export function dispatchWorkspaceCapacitySnapshots(
   const currentMs = instant(now).getTime();
   return [...groups.values()].sort((a, b) => a.host.localeCompare(b.host) || a.session_uid.localeCompare(b.session_uid)).map((group) => {
     const adapter = getCliAdapter(group.host, env);
-    const resolved = resolveAgentTreeCapacity({ host: adapter?.host, config, session: group.session_uid, env });
+    const resolved = resolveAgentTreeCapacity({
+      host: adapter?.host,
+      config,
+      session: group.session_uid,
+      env,
+    });
     const active = group.tickets.filter(holdsHostSlot);
     const counts: Partial<Record<TicketStatus, number>> = {};
     for (const ticket of group.tickets) counts[ticket.status] = (counts[ticket.status] || 0) + 1;

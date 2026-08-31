@@ -50,7 +50,7 @@ execFileSync("git", ["-c", "user.email=gs@example.invalid", "-c", "user.name=GS"
 process.stdout.write(`HOME=${home}\nWORK=${work}\nADAPTER=${adapter}\n`);
 
 baton(["init", "--cli", "sample-adapter"], repoRoot);
-baton(["config", "--cli", "sample-adapter", "--runner", "sample-model", "--longctx", "sample-model", "--coding-model", "sample-model", "--enable"], repoRoot);
+baton(["config", "--cli", "sample-adapter", "--runner", "sample-model", "--longctx", "sample-model", "--coding-model", "sample-model"], repoRoot);
 baton(["models", "refresh", "--host", "sample-adapter"], repoRoot);
 const matchOut = baton(["match", "tiny typo in one file", "--host", "sample-adapter"], repoRoot);
 if (!matchOut.includes("sample-model")) {

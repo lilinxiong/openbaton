@@ -24,6 +24,7 @@ const host = requiredOption(options, "host");
 const model = requiredOption(options, "model");
 assertToken(host, "host");
 assertToken(model, "model");
+const batonInvocation = invocationForHost(host);
 if (model.lastIndexOf("@") > 0) fail("model must be the picker-visible route id without an @effort suffix");
 assertRepository();
 requireCommand("openspec", ["--version"], "Install OpenSpec before running the probe.");
@@ -46,7 +47,7 @@ if (validation.status !== 0) {
 
 const absoluteWorkspace = fs.realpathSync(workspace);
 const sessionId = process.env.BATON_SESSION_ID?.trim() || crypto.randomUUID();
-const prompts = renderPrompts({ absoluteWorkspace, host, model, sessionId });
+const prompts = renderPrompts({ absoluteWorkspace, host, model, sessionId, batonInvocation });
 const document = [
   "# Baton probe-e2e prompts",
   "",
@@ -80,17 +81,24 @@ if (options.output) {
 }
 process.stdout.write(document);
 
-function renderPrompts({ absoluteWorkspace, host: targetHost, model: selectedModel, sessionId: sameSession }) {
+function renderPrompts({ absoluteWorkspace, host: targetHost, model: selectedModel, sessionId: sameSession, batonInvocation: invocation }) {
   const variables = {
     ABSOLUTE_WORKSPACE: absoluteWorkspace,
     HOST: targetHost,
     MODEL: selectedModel,
     SESSION_ID: sameSession,
+    BATON_INVOCATION: invocation,
   };
   return {
     standalone: renderRequest("STANDALONE_REQUEST.txt", variables),
     openspec: renderRequest("OPENSPEC_REQUEST.txt", variables),
   };
+}
+
+function invocationForHost(targetHost) {
+  if (targetHost === "codex") return "$baton";
+  if (targetHost === "grok") return "/baton";
+  fail(`unsupported probe host ${targetHost}; expected codex or grok`);
 }
 
 function renderRequest(name, variables) {

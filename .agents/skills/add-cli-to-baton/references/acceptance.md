@@ -12,12 +12,12 @@ repository evidence separate.
   catalog shapes; pagination, visibility, duplicate ids, empty and malformed
   responses, timeout; exact ids and metadata; and adapter-owned discovery.
 - Init/config tests prove one selected profile, no unselected profiles, scoped
-  enablement, reported limits, live catalog choices, runtime-skill installation,
+  reported limits, live catalog choices, runtime-skill installation,
   and interactive plus non-interactive paths. Require one user-selected
   picker-visible model before any ticket/native call and prove that its route id
   is persisted as `runner`, `longctx`, and the sole coding allowlist entry by
   the single `baton config --cli <target> --runner <model> --longctx <model>
-  --coding-model <model> --enable --json` operation.
+  --coding-model <model> --json` operation.
 - Matching and lifecycle tests prove allowlist-only selection, invalid model
   rejection, one root session identity preserved unchanged by every descendant
   and control-plane call, reservation, Receipt, binding, terminal, release,
@@ -39,7 +39,7 @@ repository evidence separate.
 ## Native and ticket acceptance
 
 1. Install the manifest package in an isolated home. Confirm `baton init` lists
-   it, queries its live catalog, and persists only its enabled profile.
+   it, queries its live catalog, and persists only its selected profile.
 2. Select one exact catalog model and create a ticket with explicit host and
    complete read-only/write scope as applicable.
 3. Reserve it using the root session identity, call the adapter's native child

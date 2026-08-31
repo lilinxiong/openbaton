@@ -9,19 +9,22 @@ schema_version = 2
 # pool. Apply and DispatchQueue expose this value only as the legacy
 # `planning_max_concurrent` planning metadata. Runtime dispatch capacity is
 # resolved separately from the host capability, policy, and operation limit,
-# and is reported by tree-local dispatch snapshots. A selected [cli.<id>] may
-# override either policy field when its discovery response reports a value.
+# and is reported by tree-local dispatch snapshots. A selected [cli.<id>]
+# stores that CLI's reported concurrent limit; -1 means discovery could not
+# report one and runtime uses this director default.
 max_concurrent = 4
 max_depth = 1
 
 # init/config writes only profiles the user selected. Within a profile,
-# max_concurrent/max_depth are omitted when the adapter did not report them.
+# max_concurrent is a positive integer when the CLI reported a limit, or -1
+# (0 is accepted as the same sentinel) when discovery could not. max_depth
+# is omitted when unreported.
 
 # Execution classification is supplied by the director workflow contract.
 # Operation labels are audit metadata, never a routing table.
 
 # A selected [cli.<id>] profile also stores:
-# enabled = true
 # runner = "<model-id>"
 # longctx = "<model-id>"
 # coding_models = ["<model-id>"] # ordered priority
+# max_concurrent = 16 # reported CLI limit, or -1 when unknown

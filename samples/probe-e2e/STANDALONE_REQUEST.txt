@@ -1,4 +1,4 @@
-$baton Complete this ordinary multi-task implementation request in the same main conversation.
+{{BATON_INVOCATION}} Complete this ordinary multi-task implementation request in the same main conversation.
 
 Absolute workspace: {{ABSOLUTE_WORKSPACE}}
 Baton host: {{HOST}}

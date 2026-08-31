@@ -57,6 +57,29 @@ describe("root agent tree capacity resolver", () => {
     assert.equal(source(treeB, "host_limit")?.applied, true);
   });
 
+  it("lets a persisted live CLI limit replace the manifest fallback", () => {
+    const result = resolveAgentTreeCapacity({
+      host: host("grok", 16),
+      config: {
+        schema_version: 2,
+        director: { max_concurrent: 4, max_depth: 1 },
+        cli: {
+          grok: {
+            runner: "grok",
+            longctx: "grok",
+            coding_models: ["grok"],
+            max_concurrent: 32,
+          },
+        },
+      },
+    });
+
+    assert.equal(result.capacity, 32);
+    assert.deepEqual(result.capacity_sources, [
+      { kind: "host_limit", value: 32, applied: true },
+    ]);
+  });
+
   it("uses configured policy when the host limit is unknown and stays unknown otherwise", () => {
     const unknownHost = {
       ...host("opaque", 0),
@@ -110,7 +133,7 @@ describe("root agent tree capacity resolver", () => {
     );
   });
 
-  it("falls back to three Codex subagents when a manifest omits its quota", () => {
+  it("treats an omitted manifest quota as unknown rather than a guessed host limit", () => {
     const sourceDirectory = path.resolve(import.meta.dir, "../adapters/codex");
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "baton-codex-capacity-"));
     const temporaryAdapter = path.join(temporaryRoot, "codex");
@@ -123,8 +146,9 @@ describe("root agent tree capacity resolver", () => {
 
     const env = { ...process.env, BATON_ADAPTER_PATHS: temporaryAdapter };
     const adapter = getCliAdapter("codex", env);
-    assert.equal(adapter.host.defaultMaxConcurrent, 3);
-    assert.equal(resolveAgentTreeCapacity({ host: adapter.host }).capacity, 3);
+    assert.equal(Number.isNaN(adapter.host.defaultMaxConcurrent), true);
+    assert.equal(resolveAgentTreeCapacity({ host: adapter.host }).capacity, null);
+    assert.equal(resolveAgentTreeCapacity({ host: adapter.host, configuredPolicy: 4 }).capacity, 4);
   });
 
   it("keeps max_depth separate from the subagent capacity", () => {

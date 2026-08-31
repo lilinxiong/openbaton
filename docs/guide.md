@@ -77,15 +77,21 @@ max_concurrent = 3
 max_depth = 1
 
 [cli.sample-adapter]
-enabled = true
 runner = "<model-id>"
 longctx = "<model-id>"
 coding_models = ["<model-id>", "<another-model-id>"]
+max_concurrent = 3
 ```
 
-`director.max_concurrent` is the configured per-root-tree policy limit for
-active subagents (excluding the root), not a workspace-wide pool. A known host
-limit always bounds it. `max_depth` is an independent descendant-depth policy.
+`[cli.<id>].max_concurrent` is that CLI's reported per-root-tree subagent
+ceiling. Discovery writes the live catalog value, else the adapter manifest
+quota, else preserves an existing positive reported value. Only when none of
+those sources is available does it write `-1`; `0` also normalizes to unknown.
+At runtime a positive profile value is the resolved host limit and replaces
+the manifest fallback. `director.max_concurrent` applies only while that host
+limit is unknown; it is not a workspace-wide pool. `max_depth` is an
+independent descendant-depth policy. A live depth value replaces the manifest
+depth, which otherwise replaces the director fallback.
 
 `runner` and `longctx` are routing labels. `coding_models` is an ordered
 allowlist and its order is the Coding priority. Automatic selection uses only
@@ -96,13 +102,13 @@ checks them again against the captured catalog.
 
 There is no interactive model-choice step during execution. An unavailable or
 invalid adapter, model, effort, service tier, authorization, or classification
-stops before native execution. Baton never chooses outside the enabled profile
-or invents a model option.
+stops before native execution. Baton never chooses outside the configured
+profile or invents a model option.
 
 Non-interactive config can also set labels in one command:
 
 ```text
-baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model> --enable
+baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model>
 ```
 
 `--coding-model all` selects every picker-visible catalog row. `--runner -`
@@ -199,7 +205,7 @@ user-global `~/.baton` directory. Worktree files remain the caller's files.
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>

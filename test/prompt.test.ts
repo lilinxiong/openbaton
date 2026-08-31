@@ -116,7 +116,7 @@ describe("terminal select prompts", () => {
     assert.equal((tty.stdin as NodeJS.ReadStream).isRaw, false);
 
     const second = tty.prompt.select({
-      message: "Enable this beta configuration?",
+      message: "Select runner",
       choices: [
         { value: true, label: "yes" },
         { value: false, label: "no" },

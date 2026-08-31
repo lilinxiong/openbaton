@@ -10,7 +10,7 @@ and let the user choose exactly one. Persist that route as all three profile
 fields in one operation:
 
 ```text
-baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --enable --json
+baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --json
 ```
 
 Create the workspace and paste-ready prompt document from the OpenBaton source
@@ -34,7 +34,8 @@ Prompt 1 creates two independent files through Baton:
 
 The standalone request is kept in `STANDALONE_REQUEST.txt`.
 
-Prompt 2 invokes `$baton $openspec-apply-change probe-e2e` and dispatches
+Bootstrap uses `$baton` for Codex and `/baton` for Grok. Prompt 2 invokes the
+host-specific Baton skill followed by `$openspec-apply-change probe-e2e`, then dispatches
 OpenSpec tasks `1.1` and `1.2` in parallel, followed by integration task `2.1`.
 The OpenSpec request is kept in `OPENSPEC_REQUEST.txt`. Bootstrap injects the
 same absolute workspace, host, model, and session identity into both requests.

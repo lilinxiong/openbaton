@@ -22,14 +22,12 @@ baton config
 ```
 
 `baton config` is a guided TTY flow: arrow keys select, space toggles CLIs
-and the Coding-model order. It asks which adapter to enable, then `runner`,
+and the Coding-model order. It asks which adapter to configure, then `runner`,
 `longctx`, and `coding_models`. Pass flags only to skip the prompts.
 
 ![Select CLI](assets/config/01-select-cli.png)
 
 ![Select Coding models](assets/config/03-select-coding-models.png)
-
-![Enable the profile](assets/config/04-enable.png)
 
 These captures use the in-repo `sample-adapter`. The prompts are the same for
 Codex; the model list comes from that adapter's live catalog.
@@ -117,51 +115,49 @@ baton init --cli codex
 
 `baton init --cli codex` installs bundled adapters and host skills. The Codex
 adapter manifest (`adapters/codex/adapter.json`) copies `runtime/SKILL.md` to
-`.codex/skills/baton/SKILL.md`. That is how Codex sees Baton.
+`.codex/skills/baton/SKILL.md` and its companion policy to
+`.codex/skills/baton/agents/openai.yaml`. That is how Codex sees Baton and
+keeps implicit invocation disabled.
 
 Then run `baton config --cli codex`. On a TTY it is a guided flow: arrow keys
-select, space toggles. It walks through `runner`, `longctx`, Coding-model
-priority, and whether to enable the profile. Model ids come from the live
-Codex CLI catalog (`BATON_CODEX_PATH` if Codex is not on `PATH`).
+select, space toggles. It walks through `runner`, `longctx`, and Coding-model
+priority. Model ids come from the live Codex CLI catalog (`BATON_CODEX_PATH`
+if Codex is not on `PATH`).
 
 Flags skip the prompts for non-interactive use and write only `[cli.codex]`:
 
 ```bash
-baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id>
 ```
 
-Turn activation on or off with:
+Ticket commands need `BATON_SESSION_ID` (opaque; hashed to `session_uid`). The
+Codex director creates one before the first control-plane call.
 
-```bash
-baton enable|disable all|curproject --host codex
-```
+### Triggering Baton (`$baton` only)
 
-When activation is effectively disabled, `spawn` and `apply` create no tickets
-(bypass). Ticket commands need `BATON_SESSION_ID` (opaque; hashed to
-`session_uid`). The Codex director creates one before the first control-plane
-call.
+The installed host skill does **not** auto-load. Codex applies its rules only
+when you explicitly mention `$baton`. Ordinary conversation, implementation
+requests, and implied intent must not load the skill or follow its routing
+rules.
 
-### When Baton auto-triggers (current version)
+The installed `agents/openai.yaml` sets `policy.allow_implicit_invocation` to
+`false`, while explicit `$baton` invocation remains available through Codex's
+skill picker.
 
-This is **current-version** behavior. Later versions are not intended to
-auto-trigger.
-
-After init installs `.codex/skills/baton/SKILL.md` and the Codex profile is
-enabled with activation on, the Codex director conversation follows that skill:
+When `$baton` is used and the Codex profile is configured:
 
 - Discussion and read-only analysis stay in the Codex director session. These
   do **not** create Baton tickets.
-- Authorized implementation, mechanical, long-context, and OpenSpec units are
-  supposed to go through Baton (`spawn`/`apply` plus a native Codex child),
-  not be implemented inline in the director.
+- Authorized implementation, mechanical, long-context, and OpenSpec units go
+  through Baton (`spawn`/`apply` plus a native Codex child), not inline in
+  the director.
 
-That skill-following is the current auto-trigger. The auto path still requires
-a director **structured classification**. Baton does not infer a route from
-prose. Missing classification blocks ticket creation on an enabled host.
+`$baton` still requires a director **structured classification**. Baton does
+not infer a route from prose. Missing classification blocks ticket creation.
 
-### Manual trigger
+### CLI commands
 
-You or the director can run the CLI yourselves:
+You or the director can also run the CLI yourselves:
 
 ```bash
 export BATON_SESSION_ID="<opaque-session>"
@@ -180,7 +176,7 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 
 ### What runs where
 
-`--classification` is required on an enabled host:
+`--classification` is required:
 `mechanical|long-context|implementation|analysis|discussion|general`.
 
 - `discussion` / `analysis` → director only. No worker ticket.
@@ -196,6 +192,78 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 `--operation` is audit metadata only; it never selects a route.
 
 Deep lifecycle stays in [docs/guide.md](docs/guide.md).
+
+## Using Baton inside Grok
+
+### Setup
+
+```bash
+npm install -g @zhouliuya/openbaton
+# or from a checkout: bun run baton -- <command> ...
+baton init --cli grok
+```
+
+`baton init --cli grok` installs bundled adapters and host skills. The Grok
+adapter manifest (`adapters/grok/adapter.json`) copies `runtime/SKILL.md` to
+`.grok/skills/baton/SKILL.md`. That is how Grok sees Baton.
+
+Then run `baton config --cli grok`. On a TTY it is a guided flow: arrow keys
+select, space toggles. It walks through `runner`, `longctx`, and Coding-model
+priority. Model ids come from the live Grok ACP catalog (`BATON_GROK_PATH`
+if Grok is not on `PATH`).
+
+Flags skip the prompts for non-interactive use and write only `[cli.grok]`:
+
+```bash
+baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id>
+```
+
+Ticket commands need `BATON_SESSION_ID` (opaque; hashed to `session_uid`). The
+Grok director creates one before the first control-plane call.
+
+### Triggering Baton (`/baton` only)
+
+The installed host skill does **not** auto-load. Grok applies its rules only
+when you explicitly run `/baton`. Ordinary conversation, implementation
+requests, and implied intent must not load the skill or follow its routing
+rules.
+
+The skill frontmatter sets `disable-model-invocation: true` so the host cannot
+invoke it automatically, and `user-invocable: true` so `/baton` remains the
+slash command.
+
+When `/baton` is used and the Grok profile is configured:
+
+- Discussion and read-only analysis stay in the Grok director session. These
+  do **not** create Baton tickets.
+- Authorized implementation, mechanical, long-context, and OpenSpec units go
+  through Baton (`spawn`/`apply` plus a native Grok child), not inline in
+  the director.
+
+`/baton` still requires a director **structured classification**. Baton does
+not infer a route from prose. Missing classification blocks ticket creation.
+
+### CLI commands
+
+You or the director can also run the CLI yourselves:
+
+```bash
+export BATON_SESSION_ID="<opaque-session>"
+baton models refresh --host grok
+baton match "<work description>" --host grok
+baton spawn "<request>" --host grok --classification <class> [--write-path ...]
+baton dispatch next --host grok --json
+# bind the Grok native handle:
+baton dispatch bind TICKET --host grok --execution-handle subagent_id=GROK_SUBAGENT_ID --json
+baton dispatch complete TICKET --host grok --text "..." --release --json
+```
+
+`baton apply` plans an OpenSpec change. `--dispatch` needs per-unit
+`--write-path` or `--read-only`. Without OpenSpec, use `spawn`.
+`baton match` discloses the preferred model without creating work.
+
+Classification, routing labels, and lifecycle match the Codex host section
+above and [docs/guide.md](docs/guide.md).
 
 ## First session
 
@@ -216,7 +284,7 @@ baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --rel
 `baton apply` plans an OpenSpec change. `--dispatch` requires per-unit
 `--write-path` or `--read-only`. Without OpenSpec, use `baton spawn`.
 
-Automatic routing uses only the enabled profile's `coding_models` allowlist,
+Automatic routing uses only the configured profile's `coding_models` allowlist,
 the live catalog, task shape, supported reasoning options, service-tier
 metadata, route health, and capacity evidence.
 
@@ -224,7 +292,7 @@ metadata, route health, and capacity evidence.
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
@@ -248,4 +316,3 @@ keeps workspace ticket inventory but groups capacity under `capacity_trees`.
 - [Architecture diagram](docs/architecture/openbaton-architecture.html)
 - [Layered runtime](docs/architecture/openbaton-layered-architecture.html)
 - [Runtime skill](SKILL.md)
-

@@ -6,7 +6,9 @@ import { describe, it } from "bun:test";
 import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
 import { initProject } from "../src/commands/init.js";
+import { runConfig } from "../src/commands/config.js";
 import { runHost } from "../src/commands/host.js";
+import { loadConfig } from "../src/lib/config.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
@@ -68,6 +70,7 @@ describe("external Codex adapter package", () => {
     assert.equal(manifests[0].native.execution_handle_kind, "task_name");
     assert.equal(manifests[0].quota.max_concurrent_subagents, 3);
     assert.equal(getCliAdapter("codex", env).host.defaultMaxConcurrent, 3);
+    assert.equal(getCliAdapter("codex", env).host.defaultMaxDepth, 1);
   });
 
   it("detects Codex from CODEX_THREAD_ID without sandbox or adapter-path signals", () => {
@@ -105,10 +108,33 @@ describe("external Codex adapter package", () => {
     assert.equal(catalog.models.some((model) => model.id === "hidden"), false);
   });
 
+  it("persists the adapter-measured Codex limit onto [cli.codex]", async () => {
+    const { cwd, env } = isolatedEnv();
+    fs.mkdirSync(path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
+    fs.cpSync(packageSource, path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
+    env.BATON_CODEX_PATH = fakeCodexExecutable();
+    await initProject(cwd, { env });
+    const output: string[] = [];
+    const code = await runConfig(
+      ["--cli", "codex", "--runner", "gpt-visible", "--longctx", "gpt-visible", "--coding-model", "gpt-visible", "--json"],
+      { cwd, env, stdout: { write: (chunk) => output.push(String(chunk)) } },
+    );
+    assert.equal(code, 0, output.join(""));
+    const payload = JSON.parse(output.join(""));
+    assert.equal(payload.max_concurrent_subagents, 3);
+    assert.equal(payload.max_concurrent_subagents_source, "adapter");
+    assert.equal(payload.max_depth, 1);
+    assert.equal(payload.max_depth_source, "adapter");
+    assert.equal(loadConfig(cwd, { env }).cli.codex?.max_concurrent, 3);
+    assert.equal(loadConfig(cwd, { env }).cli.codex?.max_depth, 1);
+    assert.match(fs.readFileSync(configPath(cwd, { env }), "utf8"), /max_concurrent = 3/);
+    assert.match(fs.readFileSync(configPath(cwd, { env }), "utf8"), /max_depth = 1/);
+  });
+
   it("records adapter ownership and preserves a modified package on update", () => {
     const { home, cwd, env } = isolatedEnv();
     const first = installBundledAdaptersAndRecord(cwd, ["codex"], env);
-    assert.equal(first.installed.length, 1);
+    assert.ok(first.installed.some((line) => line.includes("codex")));
     const destination = adapterInstallDir("codex", env);
     const before = readInstallManifest(env);
     assert.ok(before?.files.some((entry) => entry.kind === "adapter-package" && entry.path === path.resolve(destination)));
@@ -116,10 +142,10 @@ describe("external Codex adapter package", () => {
     fs.appendFileSync(catalogFile, "\n// user change\n");
     const original = fs.readFileSync(catalogFile, "utf8");
     const second = installBundledAdaptersAndRecord(cwd, ["codex"], env);
-    assert.equal(second.conflicts.length, 1);
+    assert.ok(second.conflicts.some((line) => line.includes("codex")));
     assert.equal(fs.readFileSync(catalogFile, "utf8"), original);
-    assert.equal(readInstallManifest(env)?.files.find((entry) => entry.kind === "adapter-package")?.fingerprint,
-      before?.files.find((entry) => entry.kind === "adapter-package")?.fingerprint);
+    assert.equal(readInstallManifest(env)?.files.find((entry) => entry.path === path.resolve(destination))?.fingerprint,
+      before?.files.find((entry) => entry.path === path.resolve(destination))?.fingerprint);
     assert.equal(fs.existsSync(installManifestPath(env)), true);
     assert.ok(home);
   });
@@ -145,13 +171,16 @@ describe("external Codex adapter package", () => {
     const sourceManifest = path.join(packageSource, "adapter.json");
     const installedManifest = path.join(installedPackage, "adapter.json");
     const sourceRuntimeSkill = path.join(packageSource, "runtime", "SKILL.md");
+    const sourceRuntimePolicy = path.join(packageSource, "runtime", "agents", "openai.yaml");
     const installedRuntimeSkill = path.join(installedPackage, "runtime", "SKILL.md");
     const installedHostSkill = hostSkillDest("codex", { cwd, env });
+    const installedHostPolicy = path.join(path.dirname(installedHostSkill), "agents", "openai.yaml");
     const installedSharedSkill = skillPath(cwd, { env });
     const installedConfig = configPath(cwd, { env });
     assert.deepEqual(fs.readFileSync(installedManifest), fs.readFileSync(sourceManifest));
     assert.deepEqual(fs.readFileSync(installedRuntimeSkill), fs.readFileSync(sourceRuntimeSkill));
     assert.deepEqual(fs.readFileSync(installedHostSkill), fs.readFileSync(sourceRuntimeSkill));
+    assert.deepEqual(fs.readFileSync(installedHostPolicy), fs.readFileSync(sourceRuntimePolicy));
     assert.deepEqual(fs.readFileSync(installedSharedSkill), fs.readFileSync(path.join(repoRoot, "SKILL.md")));
     assert.deepEqual(
       parseToml(fs.readFileSync(installedConfig, "utf8")),
@@ -163,15 +192,27 @@ describe("external Codex adapter package", () => {
     assert.doesNotMatch(sourceManifestText, /"max_concurrent"\s*:/);
     assert.match(sourceRuntimeText, /root agent tree/);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
+    assert.match(sourceRuntimeText, /\$baton/);
+    assert.doesNotMatch(sourceRuntimeText, /^disable-model-invocation:/m);
+    assert.doesNotMatch(sourceRuntimeText, /^user-invocable:/m);
+    assert.match(fs.readFileSync(sourceRuntimePolicy, "utf8"), /allow_implicit_invocation:\s*false/);
+    assert.ok(readInstallManifest(env)?.files.some((entry) =>
+      entry.kind === "host-skill" && entry.host === "codex" && entry.path === path.resolve(installedHostPolicy)));
   });
 
-  it("plans safe host and clean removal of an owned adapter package", () => {
+  it("plans safe host and clean removal of an owned adapter package", async () => {
     const { cwd, env } = isolatedEnv();
-    installBundledAdaptersAndRecord(cwd, ["codex"], env);
+    await initProject(cwd, { env });
     const destination = adapterInstallDir("codex", env);
     const surgical = buildUninstallPlan({ cwd, env, hosts: ["codex"] });
     const target = surgical.targets.find((item) => item.path.endsWith("/.baton/adapters/codex"));
     assert.equal(target?.action, "remove");
+    const policy = surgical.targets.find((item) => item.path.endsWith("/.codex/skills/baton/agents/openai.yaml"));
+    assert.equal(policy?.action, "remove");
+    const policyPath = path.join(env.HOME!, ".codex", "skills", "baton", "agents", "openai.yaml");
+    fs.appendFileSync(policyPath, "# user change\n");
+    const policyConflict = buildUninstallPlan({ cwd, env, hosts: ["codex"] });
+    assert.equal(policyConflict.targets.find((item) => item.path === policy?.path)?.action, "conflict");
     const clean = buildUninstallPlan({ cwd, env, clean: true, dry_run: true });
     assert.ok(clean.targets.some((item) => item.path === target?.path && item.action === "remove"));
     fs.appendFileSync(path.join(destination, "catalog.mjs"), "\n// modified\n");

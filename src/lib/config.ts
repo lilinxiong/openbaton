@@ -9,6 +9,8 @@ import type { CliId } from "../adapters/registry.js";
 export const DEFAULT_MAX_CONCURRENT = 4;
 export const DEFAULT_MAX_DEPTH = 1;
 export const CONFIG_SCHEMA_VERSION = 2;
+/** Persisted in `[cli.<id>]` when discovery did not report a concurrent limit. */
+export const UNKNOWN_MAX_CONCURRENT = -1;
 
 export interface DirectorSettings {
   max_concurrent: number;
@@ -16,12 +18,11 @@ export interface DirectorSettings {
 }
 
 export interface CliProfileSettings {
-  enabled: boolean;
   runner: string;
   longctx: string;
   /** Ordered Coding routes. Array order is the user's priority. */
   coding_models: string[];
-  /** CLI-reported values. Missing fields inherit director limits. */
+  /** Positive integer, or -1/0/missing for unknown (falls back to director). */
   max_concurrent?: number;
   max_depth?: number;
 }
@@ -57,7 +58,6 @@ export function emptyConfig(): Config {
 
 export function emptyCliProfile(): CliProfileSettings {
   return {
-    enabled: false,
     runner: "",
     longctx: "",
     coding_models: [],
@@ -88,15 +88,42 @@ function positiveInteger(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
+/** A usable concurrent ceiling. Unknown sentinels and missing values stay unset. */
+export function reportedConcurrentLimit(value: unknown): number | undefined {
+  return positiveInteger(value);
+}
+
+/**
+ * Persistable `[cli.<id>].max_concurrent`. Positive integers are reported
+ * limits; `0` and `-1` normalize to `UNKNOWN_MAX_CONCURRENT`.
+ */
+export function persistedConcurrentLimit(value: unknown): number | undefined {
+  const reported = reportedConcurrentLimit(value);
+  if (reported !== undefined) return reported;
+  if (typeof value !== "number" && typeof value !== "string") return undefined;
+  if (typeof value === "string" && !value.trim()) return undefined;
+  const parsed = Number(value);
+  if (parsed === 0 || parsed === UNKNOWN_MAX_CONCURRENT) return UNKNOWN_MAX_CONCURRENT;
+  return undefined;
+}
+
+/** First reported candidate, otherwise the unknown sentinel. */
+export function persistableCliMaxConcurrent(...candidates: unknown[]): number {
+  for (const candidate of candidates) {
+    const reported = reportedConcurrentLimit(candidate);
+    if (reported !== undefined) return reported;
+  }
+  return UNKNOWN_MAX_CONCURRENT;
+}
+
 function normalizeCliProfile(value: unknown): CliProfileSettings {
   const profile = isUnknownRecord(value) ? value : {};
   const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
   const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
   const codingModels = stringList(profile.coding_models);
-  const maxConcurrent = positiveInteger(profile.max_concurrent);
+  const maxConcurrent = persistedConcurrentLimit(profile.max_concurrent);
   const maxDepth = positiveInteger(profile.max_depth);
   return {
-    enabled: profile.enabled === true,
     runner: rawRunner,
     longctx: rawLongctx,
     coding_models: codingModels,
@@ -153,8 +180,7 @@ export function cliProfileForHost(config: Pick<Config, "cli">, host: CliId): Cli
 }
 
 export function configuredCodingModelsForHost(config: Pick<Config, "cli">, host: CliId): string[] {
-  const profile = cliProfileForHost(config, host);
-  return profile.enabled ? [...profile.coding_models] : [];
+  return [...cliProfileForHost(config, host).coding_models];
 }
 
 function serializeConfig(cfg: Config): UnknownRecord {
@@ -162,7 +188,6 @@ function serializeConfig(cfg: Config): UnknownRecord {
   for (const [id, profile] of Object.entries(cfg.cli)) {
     if (!profile) continue;
     profiles[id] = {
-      enabled: profile.enabled,
       runner: profile.runner,
       longctx: profile.longctx,
       coding_models: profile.coding_models,
@@ -219,7 +244,7 @@ export function effectiveMaxConcurrentForHost(
   _env: NodeJS.ProcessEnv = process.env,
 ): number {
   if (!host) return cfg.director.max_concurrent;
-  return cfg.cli[host]?.max_concurrent ?? cfg.director.max_concurrent;
+  return reportedConcurrentLimit(cfg.cli[host]?.max_concurrent) ?? cfg.director.max_concurrent;
 }
 
 /** Host-specific depth when reported, otherwise director limits. */

@@ -33,7 +33,7 @@ npm run build
 BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
   baton init
 BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
-  baton config --cli sample-adapter --enable
+  baton config --cli sample-adapter
 BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
   baton models refresh --host sample-adapter
 ```
@@ -43,7 +43,7 @@ BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
 ```bash
 sample_home="$(mktemp -d)"
 HOME="$sample_home" BATON_ADAPTER_PATHS="$PWD/samples/manifest-example" \
-  baton config --cli sample-adapter --enable
+  baton config --cli sample-adapter
 ```
 
 结果应只包含所选的 `cli.sample-adapter` profile，以及该软件包自己

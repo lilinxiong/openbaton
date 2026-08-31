@@ -22,14 +22,12 @@ baton config
 ```
 
 `baton config` 是带引导的 TTY 流程：方向键选择，空格切换 CLI 和
-Coding 模型优先级。它会问要启用哪个 adapter，再问 `runner`、`longctx`
+Coding 模型优先级。它会问要配置哪个 adapter，再问 `runner`、`longctx`
 和 `coding_models`。只有跳过引导时才需要加 flag。
 
 ![选择 CLI](assets/config/01-select-cli.png)
 
 ![选择 Coding 模型](assets/config/03-select-coding-models.png)
-
-![是否启用](assets/config/04-enable.png)
 
 截图用的是仓库里的 `sample-adapter`。换 Codex 时引导一样，模型列表来自
 该 adapter 的实时目录。
@@ -112,47 +110,44 @@ baton init --cli codex
 
 `baton init --cli codex` 会安装捆绑的 adapter 和 host skills。Codex
 adapter 的 manifest（`adapters/codex/adapter.json`）把 `runtime/SKILL.md`
-复制到 `.codex/skills/baton/SKILL.md`。Codex 就是这样看到 Baton 的。
+复制到 `.codex/skills/baton/SKILL.md`，并把配套 policy 复制到
+`.codex/skills/baton/agents/openai.yaml`。Codex 通过它们发现 Baton，并
+禁用隐式调用。
 
 然后运行 `baton config --cli codex`。在 TTY 里这是引导流程：方向键选择，
-空格切换。它会依次问 `runner`、`longctx`、Coding 模型优先级，以及是否
-启用这个 profile。模型 id 来自实时 Codex CLI 目录（找不到 Codex 时可设
-`BATON_CODEX_PATH`）。
+空格切换。它会依次问 `runner`、`longctx` 和 Coding 模型优先级。模型 id
+来自实时 Codex CLI 目录（找不到 Codex 时可设 `BATON_CODEX_PATH`）。
 
 非交互写入时才用 flag，并且只写 `[cli.codex]`：
 
 ```bash
-baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id> --enable
+baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model <model-id>
 ```
 
-用下面的命令打开或关闭 activation：
-
-```bash
-baton enable|disable all|curproject --host codex
-```
-
-activation 实际关闭时，`spawn` 和 `apply` 不会创建 ticket（bypass）。
 会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
 `session_uid`）。Codex director 会在第一次控制平面调用之前创建它。
 
-### 何时自动触发（仅当前版本）
+### 如何触发 Baton（仅 `$baton`）
 
-这是**当前版本**的行为。后续版本不打算再自动触发。
+已安装的 host skill **不会**自动加载。只有你显式提及 `$baton` 时，Codex
+才会应用其中的规则。普通对话、实现请求或隐含意图都不得加载该 skill，
+也不得跟随其中的路由规则。
 
-init 安装 `.codex/skills/baton/SKILL.md`，并且 Codex profile 已启用、
-activation 打开之后，Codex director 对话会遵循该 skill：
+安装的 `agents/openai.yaml` 把 `policy.allow_implicit_invocation` 设置为
+`false`；通过 Codex skill picker 显式调用 `$baton` 仍然可用。
+
+使用 `$baton`，并且 Codex profile 已配置之后：
 
 - 讨论和只读分析留在 Codex director 会话里。这些**不会**创建 Baton
   ticket。
 - 已授权的 implementation、mechanical、long-context 和 OpenSpec unit
-  应当走 Baton（`spawn`/`apply` 加上 Codex 原生子），而不是在 director
+  走 Baton（`spawn`/`apply` 加上 Codex 原生子），而不是在 director
   里直接实现。
 
-这种 skill 跟随就是当前的自动触发。自动路径仍然要求 director 给出
-**结构化 classification**。Baton 不会从自由文本里推断路由。已启用 host
-上缺少 classification 时，会阻止创建 ticket。
+`$baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
+自由文本里推断路由。缺少 classification 时，会阻止创建 ticket。
 
-### 手动触发
+### CLI 命令
 
 你或 director 也可以自己跑 CLI：
 
@@ -173,7 +168,7 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 
 ### 分类如何落到路由
 
-已启用 host 上必须提供 `--classification`：
+必须提供 `--classification`：
 `mechanical|long-context|implementation|analysis|discussion|general`。
 
 - `discussion` / `analysis` → 只留在 director。没有 worker ticket。
@@ -189,6 +184,76 @@ baton dispatch complete TICKET --host codex --text "..." --release --json
 `--operation` 只是审计元数据，从不选择路由。
 
 完整生命周期见 [docs/guide.zh.md](docs/guide.zh.md)。
+
+## 在 Grok 里使用 Baton
+
+### 准备
+
+```bash
+npm install -g @zhouliuya/openbaton
+# 或在 checkout 中：bun run baton -- <command> ...
+baton init --cli grok
+```
+
+`baton init --cli grok` 会安装捆绑的 adapter 和 host skills。Grok
+adapter 的 manifest（`adapters/grok/adapter.json`）把 `runtime/SKILL.md`
+复制到 `.grok/skills/baton/SKILL.md`。Grok 就是这样看到 Baton 的。
+
+然后运行 `baton config --cli grok`。在 TTY 里这是引导流程：方向键选择，
+空格切换。它会依次问 `runner`、`longctx` 和 Coding 模型优先级。模型 id
+来自实时 Grok ACP 目录（找不到 Grok 时可设 `BATON_GROK_PATH`）。
+
+非交互写入时才用 flag，并且只写 `[cli.grok]`：
+
+```bash
+baton config --cli grok --runner <model-id> --longctx <model-id> --coding-model <model-id>
+```
+
+会产生 ticket 的命令需要 `BATON_SESSION_ID`（不透明；会被哈希成
+`session_uid`）。Grok director 会在第一次控制平面调用之前创建它。
+
+### 如何触发 Baton（仅 `/baton`）
+
+已安装的 host skill **不会**自动加载。只有你显式输入 `/baton` 时，Grok
+才会应用其中的规则。普通对话、实现请求或隐含意图都不得加载该 skill，
+也不得跟随其中的路由规则。
+
+skill 的 frontmatter 设置了 `disable-model-invocation: true`，因此 host
+不能自动调用它；同时设置 `user-invocable: true`，因此 `/baton` 仍是
+斜杠命令。
+
+使用 `/baton`，并且 Grok profile 已配置之后：
+
+- 讨论和只读分析留在 Grok director 会话里。这些**不会**创建 Baton
+  ticket。
+- 已授权的 implementation、mechanical、long-context 和 OpenSpec unit
+  走 Baton（`spawn`/`apply` 加上 Grok 原生子），而不是在 director
+  里直接实现。
+
+`/baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
+自由文本里推断路由。缺少 classification 时，会阻止创建 ticket。
+
+### CLI 命令
+
+你或 director 也可以自己跑 CLI：
+
+```bash
+export BATON_SESSION_ID="<opaque-session>"
+baton models refresh --host grok
+baton match "<work description>" --host grok
+baton spawn "<request>" --host grok --classification <class> [--write-path ...]
+baton dispatch next --host grok --json
+# 绑定 Grok 原生 handle：
+baton dispatch bind TICKET --host grok --execution-handle subagent_id=GROK_SUBAGENT_ID --json
+baton dispatch complete TICKET --host grok --text "..." --release --json
+```
+
+`baton apply` 用于规划 OpenSpec 变更。`--dispatch` 必须为每个 unit 提供
+`--write-path` 或 `--read-only`。没有 OpenSpec 时使用 `spawn`。
+`baton match` 会披露首选模型，但不会创建工作。
+
+分类、路由标签和生命周期与上面的 Codex 章节以及
+[docs/guide.zh.md](docs/guide.zh.md) 相同。
 
 ## 第一次会话
 
@@ -208,14 +273,14 @@ baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --rel
 `baton apply` 用于规划 OpenSpec 变更。`--dispatch` 必须为每个 unit 提供
 `--write-path` 或 `--read-only`。没有 OpenSpec 时使用 `baton spawn`。
 
-自动路由只使用已启用 profile 的 `coding_models` allowlist、实时目录、任务
+自动路由只使用已配置 profile 的 `coding_models` allowlist、实时目录、任务
 形状、adapter 支持的推理选项、服务层信息、路由健康和容量事实。
 
 ## 常用命令
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
@@ -239,4 +304,3 @@ ticket inventory，但在 `capacity_trees` 下按 tree 分组。
 - [架构图](docs/architecture/openbaton-architecture.html)
 - [分层运行图](docs/architecture/openbaton-layered-architecture.html)
 - [运行时 skill](SKILL.md)
-

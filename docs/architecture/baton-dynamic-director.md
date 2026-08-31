@@ -53,7 +53,7 @@ baton init
 baton spawn/apply
   -> resolve the selected adapter
   -> classify and scope units in the director
-  -> choose from the enabled coding_models order
+  -> choose from the configured coding_models order
   -> validate model/options against the catalog
   -> create a Receipt and ticket
   -> reserve and hand off to native execution

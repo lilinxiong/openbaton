@@ -79,11 +79,10 @@ values are inert rollback residue, and active records without a valid
 ## Profiles and routing
 
 Manifest discovery drives `baton init` and `baton config`; only the explicitly
-selected `cli.<id>` profile is created. Enablement, runner, long-context,
-coding allowlist, and limits are scoped to that adapter. Missing or disabled
-profiles, missing catalogs, unsupported options, invalid authorization, and
-unresolved classification stop before native execution without borrowing
-another profile.
+selected `cli.<id>` profile is created. Runner, long-context, coding allowlist,
+and limits are scoped to that adapter. Missing profiles, missing catalogs,
+unsupported options, invalid authorization, and unresolved classification stop
+before native execution without borrowing another profile.
 
 The director classifies every executable request before dispatch. Discussion and
 read-only analysis stay in the director; authorized implementation and declared

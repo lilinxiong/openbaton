@@ -45,7 +45,7 @@ the adapter package.
    `runner`, `longctx`, and the sole entry in the coding allowlist with:
 
    ```text
-   baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --enable --json
+   baton config --cli <target> --runner <model> --longctx <model> --coding-model <model> --json
    ```
 
    Do not silently choose a default, add aliases, or persist another model.
@@ -128,7 +128,7 @@ is never rewritten and quota is never reset.
 ## Completion
 
 Claim `PASS` only with SDK conformance, isolated build/package checks, manifest
-discovery, init/enable persistence, native exact-model proof, invalid-model
+discovery, init/config persistence, native exact-model proof, invalid-model
 rejection, both same-conversation live inputs, terminal/release proof,
 separate quota-successor fixture evidence, no leaked tickets, and an exact
 changed-path audit. Report static, package, catalog, native, and ticket evidence

@@ -78,7 +78,7 @@ export function listOpsRouteChoices(
   try {
     const config = loadConfig(cwd, { env });
     const cli = cliProfileForHost(config, host);
-    if (cli.enabled && snapshot?.cli === host) {
+    if (snapshot?.cli === host) {
       // runner/longctx are execution-class labels, not Coding priority
       // entries. They are included here only so mechanical/long-context
       // dispatch can resolve their configured route independently.

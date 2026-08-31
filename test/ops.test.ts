@@ -106,7 +106,7 @@ describe("configured mechanical operations", () => {
       const catalog = await manifestCatalog(ALPHA, env);
       const model = modelId(catalog);
       const out = capture();
-      const selects: unknown[] = [model, model, true];
+      const selects: unknown[] = [model, model];
       const multiSelects: unknown[][] = [[ALPHA], [model]];
       const code = await runConfig([], {
         cwd,
@@ -136,10 +136,11 @@ describe("configured mechanical operations", () => {
 
       const config = loadConfig(cwd, { env });
       assert.deepEqual(config.cli[ALPHA], {
-        enabled: true,
         runner: model,
         longctx: model,
         coding_models: [model],
+        max_concurrent: 2,
+        max_depth: 3,
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -158,7 +159,7 @@ describe("configured mechanical operations", () => {
       const betaCatalog = await manifestCatalog(BETA, env);
       const alphaModel = modelId(alphaCatalog);
       const betaModel = modelId(betaCatalog);
-      const selects: unknown[] = [alphaModel, alphaModel, true, betaModel, "", true];
+      const selects: unknown[] = [alphaModel, alphaModel, betaModel, ""];
       const multiSelects: unknown[][] = [[ALPHA, BETA], [alphaModel], [betaModel]];
       const out = capture();
       assert.equal(await runConfig([], {
@@ -187,20 +188,19 @@ describe("configured mechanical operations", () => {
       assert.doesNotMatch(out.text(), /\bactive:/);
 
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli[ALPHA]?.enabled, true);
-      assert.equal(config.cli[BETA]?.enabled, true);
       assert.equal(config.director.max_concurrent, 4);
       assert.deepEqual(config.cli[ALPHA], {
-        enabled: true,
         runner: alphaModel,
         longctx: alphaModel,
         coding_models: [alphaModel],
+        max_concurrent: 2,
+        max_depth: 3,
       });
       assert.deepEqual(config.cli[BETA], {
-        enabled: true,
         runner: betaModel,
         longctx: "",
         coding_models: [betaModel],
+        max_concurrent: 5,
       });
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -236,7 +236,6 @@ describe("configured mechanical operations", () => {
         "--runner", model,
         "--longctx", "-",
         "--coding-model", model,
-        "--enable",
       ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(catalog) }), 0);
       assert.deepEqual(loadConfig(cwd, { env }).cli[ALPHA]?.coding_models, [model]);
       const removed = capture();
@@ -245,7 +244,7 @@ describe("configured mechanical operations", () => {
     });
   });
 
-  it("enables the Beta profile without a global active selection", async () => {
+  it("configures the Beta profile without a global active selection", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-beta-"));
       const env = fakeEnv(home);
@@ -258,12 +257,10 @@ describe("configured mechanical operations", () => {
         "--runner", model,
         "--longctx", "-",
         "--coding-model", model,
-        "--enable",
       ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(catalog) }), 0);
-      assert.match(out.text(), /cli: beta \(enabled\)/);
+      assert.match(out.text(), /cli: beta/);
       assert.doesNotMatch(out.text(), /\bactive:/);
       const config = loadConfig(cwd, { env });
-      assert.equal(config.cli[BETA]?.enabled, true);
       assert.equal(config.director.max_concurrent, 4);
       const parsed = parseToml(fs.readFileSync(path.join(home, ".baton", "config.toml"), "utf8"));
       assert.equal(Object.hasOwn((parsed.cli as Record<string, unknown>), "active"), false);
@@ -282,7 +279,6 @@ describe("configured mechanical operations", () => {
         "--runner", model,
         "--longctx", model,
         "--coding-model", model,
-        "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }), 0);
       const available = cards(cwd, ALPHA);
       const runner = listOpsRouteChoices(cwd, "runner", available, { env, host: ALPHA }).map((choice) => choice.route_id);
@@ -322,7 +318,6 @@ describe("configured mechanical operations", () => {
         "--runner", model,
         "--longctx", model,
         "--coding-model", "all",
-        "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }), 0);
       const available = cards(cwd, ALPHA);
 
@@ -385,7 +380,6 @@ describe("configured mechanical operations", () => {
         "--runner", model,
         "--longctx", model,
         "--coding-model", "all",
-        "--enable",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }), 0);
 
       const out = capture();
@@ -418,7 +412,7 @@ describe("configured mechanical operations", () => {
       assert.equal(config.cli[ALPHA], undefined);
       assert.equal(cliProfileForHost(config, ALPHA).runner, "");
       assert.equal(cliProfileForHost(config, ALPHA).longctx, "");
-      config.cli[ALPHA] = { enabled: true, runner: "", longctx: "", coding_models: [] };
+      config.cli[ALPHA] = { runner: "", longctx: "", coding_models: [] };
       saveConfig(cwd, config, { env });
       const available = cards(cwd, ALPHA);
       for (const classification of ["mechanical", "long-context"] as const) {
@@ -444,7 +438,7 @@ describe("configured mechanical operations", () => {
     });
   });
 
-  it("does not invent a model when an unclassified profile is disabled", async () => {
+  it("does not invent a model without a director classification", async () => {
     await withHome(async (home) => {
       const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-unclassified-"));
       const env = fakeEnv(home);
@@ -453,41 +447,16 @@ describe("configured mechanical operations", () => {
       const model = modelId(catalog);
       assert.equal(await runConfig([
         "--cli", ALPHA, "--runner", model, "--longctx", "-",
-        "--coding-model", "all", "--disable",
+        "--coding-model", "all",
       ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }), 0);
-      assert.equal(loadConfig(cwd, { env }).cli[ALPHA]?.enabled, false);
 
       const out = capture();
-      const code = await run(["spawn", "implement the parser module", "--host", ALPHA], {
+      assert.equal(await run(["spawn", "implement the parser module", "--host", ALPHA], {
         cwd, env, stdout: out, stderr: out,
-      });
-      const text = out.text();
-      assert.ok(
-        code === 0 && /bypassed|ACTIVATION_DISABLED/i.test(text)
-          || code === 1 && /MODEL_RECOMMENDATION_UNAVAILABLE|no automatic configured candidate/i.test(text),
-        text,
-      );
-      assert.doesNotMatch(text, /alpha-model|beta-model/);
+      }), 1, out.text());
+      assert.match(out.text(), /CLASSIFICATION_REQUIRED/);
+      assert.doesNotMatch(out.text(), /alpha-model|beta-model/);
       assert.deepEqual(spawnTicketFiles(cwd), []);
-    });
-  });
-
-  it("returns no candidates when the manifest profile is disabled", async () => {
-    await withHome(async (home) => {
-      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-disabled-"));
-      const env = fakeEnv(home);
-      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
-      const catalog = await manifestCatalog(ALPHA, env);
-      const model = modelId(catalog);
-      assert.equal(await runConfig([
-        "--cli", ALPHA, "--runner", model, "--longctx", "-",
-        "--coding-model", "all", "--disable",
-      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }), 0);
-      publishManifestCatalog(cwd, ALPHA, catalog);
-      assert.deepEqual(listOpsRouteChoices(cwd, "runner", cards(cwd, ALPHA), { env, host: ALPHA }), []);
-      assert.equal(resolveOpsDispatch(cwd, "run checks", cards(cwd, ALPHA), {
-        env, host: ALPHA, classification: { kind: "mechanical", operation: "verification" },
-      }).kind, "blocked");
     });
   });
 });

@@ -6,7 +6,6 @@ import { runRoutes } from "./commands/routes.js";
 import { runConversation } from "./commands/conversation.js";
 import { runHost } from "./commands/host.js";
 import { cliPromptChoices, runConfig } from "./commands/config.js";
-import { runActivation } from "./commands/activation.js";
 import { runUninstall } from "./commands/uninstall.js";
 import {
   approveRecommendedSelection,
@@ -34,7 +33,7 @@ import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./li
 import { buildRouteCandidates, readRouteSnapshot } from "./lib/routes.js";
 import { cardsForAutomaticSelection } from "./lib/route-health.js";
 import { availabilityForRoute } from "./lib/model-availability.js";
-import { resolveActivation, withActivationLockAsync } from "./lib/activation.js";
+import { withActivationLockAsync } from "./lib/activation.js";
 import {
   buildSelectionUnit,
   createSelectionProposal,
@@ -84,7 +83,7 @@ function resolvedCards(cwd: string, env: NodeJS.ProcessEnv, host: ReturnType<typ
   const allowed = new Set(configuredCodingModelsForHost(cfg, host));
   if (!allowed.size) return [];
   const snapshot = readRouteSnapshot(cwd, { host, env });
-  if (!snapshot || snapshot.cli !== host || !profile.enabled) return [];
+  if (!snapshot || snapshot.cli !== host) return [];
   return buildRouteCandidates(cwd, { host, env })
     .map((candidate) => candidate.card)
     .filter((card) => card.route_id && allowed.has(card.route_id));
@@ -107,37 +106,11 @@ function runtimeHost(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv): Retur
   return resolveRuntimeHost({ cwd, env, explicitHost: stringFlag(flags, "host") });
 }
 
-function batonProfileEnabled(cwd: string, env: NodeJS.ProcessEnv, host: ReturnType<typeof parseHostId>): boolean {
-  try {
-    return cliProfileForHost(loadConfig(cwd, { env }), host).enabled;
-  } catch {
-    return false;
-  }
-}
-
-function requireActivation(cwd: string, env: NodeJS.ProcessEnv, host: CliId): ReturnType<typeof resolveActivation> {
-  const activation = resolveActivation(cwd, { env, host });
-  if (!activation.valid) {
-    const error = new Error(`ACTIVATION_INVALID: ${activation.reason || "activation state is invalid"}`) as CodedError;
-    error.code = "ACTIVATION_INVALID";
-    throw error;
-  }
-  return activation;
-}
-
-function activationBypass(stdout: WritableLike, activation: ReturnType<typeof resolveActivation>, json: boolean): number {
-  const payload = { bypassed: true, reason: "ACTIVATION_DISABLED", activation, tickets: [] };
-  if (json) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
-  else stdout.write(`bypassed: Baton activation is disabled for ${activation.host}; no tickets created\n`);
-  return 0;
-}
-
 function directorOnlyClassification(classification: ReturnType<typeof normalizeAgentTaskClassification>): boolean {
   return classification?.kind === "discussion" || classification?.kind === "analysis";
 }
 
 function validateClassificationContract(
-  hostEnabled: boolean,
   classification: ReturnType<typeof normalizeAgentTaskClassification>,
   unitDefinitions: Array<{ key: string; description: string }>,
   unitClassifications: Map<string, ReturnType<typeof normalizeAgentTaskClassification>>,
@@ -147,15 +120,14 @@ function validateClassificationContract(
   for (const key of [...unitClassifications.keys(), ...unitOperations.keys()]) {
     if (!knownUnits.has(key)) throw new Error(`CLASSIFICATION_UNIT_UNKNOWN: ${key} is not a declared --unit`);
   }
-  if (!hostEnabled) return;
   if (!unitDefinitions.length) {
-    if (!classification) throw new Error("CLASSIFICATION_REQUIRED: enabled Baton host requires a director classification before ticket creation");
+    if (!classification) throw new Error("CLASSIFICATION_REQUIRED: Baton requires a director classification before ticket creation");
     return;
   }
   for (const unit of unitDefinitions) {
     const unitClassification = unitClassifications.get(unit.key) || null;
     if (!classification && !unitClassification) {
-      throw new Error(`CLASSIFICATION_REQUIRED: enabled Baton host requires a classification for unit ${unit.key} before ticket creation`);
+      throw new Error(`CLASSIFICATION_REQUIRED: Baton requires a classification for unit ${unit.key} before ticket creation`);
     }
     if (classification && unitClassification && classification.kind !== unitClassification.kind) {
       throw new Error(`CLASSIFICATION_CONFLICT: request=${classification.kind} unit=${unit.key}:${unitClassification.kind}`);
@@ -188,8 +160,7 @@ Usage:
   baton cards [--host ${HOSTS}] [--provider ID] [--json]
   baton host detect [--json]               resolve invoking host from runtime signals
   baton config [--cli ${HOSTS}] [--runner MODEL|-] [--longctx MODEL|-]
-               [--coding-model MODEL|all] [--enable|--disable]
-  baton enable|disable all|curproject --host ${HOSTS} [--json]
+               [--coding-model MODEL|all]
   baton uninstall [--host ${HOSTS}] [--dry-run]
   baton uninstall --clean [--dry-run] [--yes]
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
@@ -217,7 +188,7 @@ Usage:
   Apply/queue planning metadata is separate from runtime capacity; status JSON
   keeps workspace ticket inventory under spawns and tree capacity under
   capacity_trees (there is no aggregate workspace available value)
-  baton status [--host ${HOSTS}] [--json]  activation, Coding routes, queue + OpenSpec status
+  baton status [--host ${HOSTS}] [--json]  Coding routes, queue + OpenSpec status
   baton help | --help | -h
   baton version | --version | -v
 `;
@@ -259,9 +230,6 @@ export async function run(argv: string[], {
         return cmdMatch(args, cwd, stdout, env);
       case "config":
         return await runConfig(args, { cwd, stdout, stdin: streamStdin, env, adapterProvider, prompt });
-      case "enable":
-      case "disable":
-        return runActivation([cmd, ...args], { cwd, stdout, env });
       case "uninstall":
         return await runUninstall(args, { cwd, stdout, env, interactive: injectedStdin !== undefined || isInteractiveIo(streamStdin, stdout), confirm: async () => {
           if (injectedStdin !== undefined) return /^y(?:es)?$/i.test(injectedStdin.trim());
@@ -365,7 +333,7 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     return 0;
   }
   if (models.length === 0) {
-    stdout.write("no enabled Coding models. Run: baton config\n");
+    stdout.write("no Coding models are configured. Run: baton config\n");
     return 0;
   }
   stdout.write(`cards: ${models.length}\n`);
@@ -419,13 +387,10 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   });
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
-  const activation = requireActivation(cwd, env, host);
-  if (!activation.effective_enabled) return activationBypass(stdout, activation, Boolean(flags.json));
   const text = positionalText(args);
   if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]");
   const allCards = resolvedCards(cwd, env, host);
   const codingModels = codingModelsForHost(cwd, env, host);
-  const hostEnabled = batonProfileEnabled(cwd, env, host);
   const classificationFlag = parseClassificationFlags(flags);
   const unitClassifications = parseClassificationAssignments(multiFlag(flags, "unit-classification"), "--unit-classification");
   const unitOperations = parseOperationAssignments(multiFlag(flags, "unit-operation"), "--unit-operation");
@@ -437,7 +402,7 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
   const standaloneScopes = parseStandaloneWriteScopes(args, unitDefinitions);
   const writePathsEarly = standaloneScopes.globalPaths;
   const writeOperationsEarly = standaloneScopes.globalOperations;
-  validateClassificationContract(hostEnabled, classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
+  validateClassificationContract(classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
   const explicitModel = null;
   if (unitDefinitions.length) {
     if (writePathsEarly.length && unitDefinitions.length > 1) {
@@ -540,8 +505,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
     }
     if (pendingDispatches.length) {
       await withActivationLockAsync(cwd, env, async () => {
-        const current = requireActivation(cwd, env, host);
-        if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
         const sameWaveScopes = [
           ...pendingDispatches
             .filter((item) => item.scope?.mode === "write")
@@ -574,8 +537,6 @@ async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: 
       env,
     }) : null;
     const approval = proposal ? await withActivationLockAsync(cwd, env, async () => {
-      const current = requireActivation(cwd, env, host);
-      if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
       return await approveRecommendedSelection({ cwd, proposal, cards: allCards, env });
     }, { host, scope: "both" }) : null;
     const createdTickets = dispatched.length > 0 || Boolean(approval?.tickets.length);
@@ -613,8 +574,6 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
   });
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
-  const activation = requireActivation(cwd, env, host);
-  if (!activation.effective_enabled) return activationBypass(stdout, activation, Boolean(flags.json));
   const change = firstPositionalArg(args);
   const cards = resolvedCards(cwd, env, host);
   const codingModels = codingModelsForHost(cwd, env, host);
@@ -690,8 +649,6 @@ async function cmdApply(args: string[], cwd: string, stdout: WritableLike, env: 
     env,
   });
   const approval = await withActivationLockAsync(cwd, env, async () => {
-    const current = requireActivation(cwd, env, host);
-    if (!current.effective_enabled) throw new Error("ACTIVATION_DISABLED: activation changed before ticket creation");
     return await approveRecommendedSelection({ cwd, proposal, cards, env });
   }, { host, scope: "both" });
   const createdTickets = Boolean(approval?.tickets.length);
@@ -738,7 +695,6 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   const queued = spawns.filter((s) => s.status === "queued").length;
   const dispatching = spawns.filter((s) => s.status === "dispatching").length;
   const terminal = spawns.filter((s) => ["completed", "errored", "timed_out", "closed", "done"].includes(s.status)).length;
-  const activation = resolveActivation(cwd, { env, host });
   const configuredDispatchRoutes = [...new Set([...
     cliProfile.coding_models,
     cliProfile.runner,
@@ -746,16 +702,10 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   ].filter(Boolean))];
   const availableDispatchRoutes = configuredDispatchRoutes.filter((routeId) =>
     snapshot?.routes.some((route) => route.route_id === routeId && !route.disabled));
-  const coreDispatchReady = Boolean(activation.valid && activation.effective_enabled && cliProfile.enabled && snapshot && availableDispatchRoutes.length > 0);
-  const coreDispatchReason = !activation.valid
-    ? "ACTIVATION_INVALID"
-    : !activation.effective_enabled
-      ? "ACTIVATION_DISABLED"
-      : !cliProfile.enabled
-        ? "HOST_PROFILE_DISABLED"
-        : !snapshot
-          ? "ROUTE_SNAPSHOT_MISSING"
-          : !availableDispatchRoutes.length ? "CONFIGURED_ROUTES_UNAVAILABLE" : "READY";
+  const coreDispatchReady = Boolean(snapshot && availableDispatchRoutes.length > 0);
+  const coreDispatchReason = !snapshot
+    ? "ROUTE_SNAPSHOT_MISSING"
+    : !availableDispatchRoutes.length ? "CONFIGURED_ROUTES_UNAVAILABLE" : "READY";
   const codingAvailability = cliProfile.coding_models.map((routeId) => {
     const state = availabilityForRoute(cwd, { host, routeId }, new Date(), env);
     const catalogRoute = snapshot?.routes.find((route) => route.route_id === routeId);
@@ -799,7 +749,6 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
   if (flags.json) {
     stdout.write(`${JSON.stringify({
       host,
-      activation,
       core_dispatch_ready: coreDispatchReady,
       core_dispatch_reason: coreDispatchReason,
       coding_dispatch_ready: codingDispatchReady,
@@ -821,13 +770,12 @@ function cmdStatus(args: string[], cwd: string, stdout: WritableLike, env: NodeJ
     return 0;
   }
   stdout.write("baton status\n");
-  stdout.write(`  activation: global=${activation.global_enabled ?? "invalid"} project=${activation.project_enabled ?? "invalid"} effective=${activation.effective_enabled ? "enabled" : "disabled"} provenance=${activation.provenance}${activation.reason ? ` reason=${activation.reason}` : ""}\n`);
   stdout.write(`  core dispatch: ${coreDispatchReady ? "ready" : "not-ready"} (${coreDispatchReason})\n`);
   stdout.write(`  Coding priority: ${cliProfile.coding_models.length ? cliProfile.coding_models.join(" > ") : "(none)"} (${codingDispatchReason})\n`);
   for (const route of codingAvailability) stdout.write(`    ${route.route_id}: ${route.status}; ${route.eligibility_code} (${route.eligibility_reason})${route.next_probe_at ? `; probe ${route.next_probe_at}` : ""}\n`);
   stdout.write(`  cards: ${cards.length} configured CLI model/effort candidates (${executableCards} executable)\n`);
   stdout.write("  model selection: automatic (no runtime confirmation UI)\n");
-  stdout.write(`  cli: ${host} (${cliProfile.enabled ? "enabled" : "disabled"})\n`);
+  stdout.write(`  cli: ${host}\n`);
   stdout.write(`  max_depth: ${effectiveMaxDepthForHost(cfg, host)}\n`);
   stdout.write("  capacity trees:\n");
   stdout.write("    scope: per host + session_uid; root excluded; descendants share one pool\n");

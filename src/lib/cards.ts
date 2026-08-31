@@ -78,7 +78,7 @@ export function matchModelCard(text: unknown, cards: ModelCard[]): { model_id: s
   const eligible = ordered.map((item) => item.card);
   if (eligible.length === 0) {
     throw new CardMatchError(
-      "no enabled CLI Coding models are configured. Run `baton config`.",
+      "no CLI Coding models are configured. Run `baton config`.",
       { code: "NO_CARDS" },
     );
   }

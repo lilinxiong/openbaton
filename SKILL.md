@@ -1,9 +1,15 @@
 ---
 name: baton
-description: "Use Baton for approved multi-unit execution and structured change application. Baton is a manifest-driven, CLI-neutral scheduler; keep discussion and read-only analysis in the director session."
+description: "Baton runtime for approved multi-unit execution. Invoke only with /baton; discussion and read-only analysis stay in the director session."
+disable-model-invocation: true
+user-invocable: true
 ---
 
 # Baton runtime
+
+This skill is slash-command only. Apply these rules only after the user
+explicitly ran `/baton`. Do not load or follow this skill from ordinary
+conversation, implementation requests, or implied intent.
 
 Baton is a scheduling and policy layer. External adapter packages describe a
 CLI, its catalog, native child execution surface, runtime skill, and capacity
@@ -17,9 +23,9 @@ packages; this skill never names or assumes a built-in adapter.
   created and runs through the selected adapter's native child execution API.
 - A `mechanical` unit uses the configured `runner` route; a `long-context` unit
   uses `longctx`. Operation labels are audit metadata, never route selectors.
-- Missing authorization, an unresolved classification, a missing adapter, or a
-  disabled profile stops before ticket creation. Do not infer a route from
-  prose or another adapter.
+- Missing authorization, an unresolved classification, or a missing adapter
+  stops before ticket creation. Do not infer a route from prose or another
+  adapter.
 - A structured change tool may provide decomposition and dependencies. Baton
   schedules its ready units but does not create a second task graph.
 
@@ -57,11 +63,12 @@ At each dispatch or refill, calculate the maximal safe ready frontier: every
 order-ready unit whose scope is complete, pairwise disjoint, and within the
 selected adapter's tree-local runtime capacity. Fill every available slot.
 Section order only breaks otherwise equivalent choices; it is not a reason to
-serialize. `director.max_concurrent` is a configured policy input, while any
-`planning_max_concurrent` value emitted by Apply or the director queue is
-legacy director planning metadata. Neither planning field is a runtime
-snapshot; runtime capacity comes from the current `(host, session_uid)`
-resolver.
+serialize. `[cli.<id>].max_concurrent` is that CLI's reported tree limit
+(or `-1` when unknown). `director.max_concurrent` is the fallback policy
+when the CLI did not report one, while any `planning_max_concurrent` value
+emitted by Apply or the director queue is legacy director planning metadata.
+Neither planning field is a runtime snapshot; runtime capacity comes from
+the current `(host, session_uid)` resolver.
 
 ## Ticket identity and lifecycle
 
@@ -118,14 +125,14 @@ and no other repository operation.
 
 Do not dispatch a ticket without its Receipt, exact model, session identity,
 scope, and reservation. Do not inherit the parent model, choose outside the
-enabled adapter profile, or refill before release. A polling interval is not a
+configured adapter profile, or refill before release. A polling interval is not a
 worker failure; terminal state comes from the native execution handle.
 
 ## Useful command shapes
 
 ```text
 baton init
-baton config --cli <adapter-id> --enable
+baton config --cli <adapter-id>
 baton models refresh --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>

@@ -20,6 +20,8 @@ const HOST_SIGNAL_KEYS = [
   "BATON_HOST",
   "ALPHA_HOST",
   "BETA_HOST",
+  "CODEX_THREAD_ID",
+  "GROK_SESSION_ID",
 ];
 
 function withoutHostSignals(env) {

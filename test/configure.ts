@@ -20,11 +20,10 @@ export function configureCli(
   env: NodeJS.ProcessEnv,
   cli: CliId,
   models: string[],
-  { runner = "", longctx = "", enabled = true }: { runner?: string; longctx?: string; enabled?: boolean } = {},
+  { runner = "", longctx = "" }: { runner?: string; longctx?: string } = {},
 ): void {
   const config = fs.existsSync(configPath(cwd, { env })) ? loadConfig(cwd, { env }) : emptyConfig();
   config.cli[cli] = {
-    enabled,
     runner,
     longctx,
     coding_models: [...new Set([...models, runner, longctx].filter(Boolean))],

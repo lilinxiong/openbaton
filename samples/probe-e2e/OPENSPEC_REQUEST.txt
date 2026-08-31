@@ -1,4 +1,4 @@
-$baton $openspec-apply-change probe-e2e
+{{BATON_INVOCATION}} $openspec-apply-change probe-e2e
 
 Continue in this same main conversation and workspace after the standalone request.
 Absolute workspace: {{ABSOLUTE_WORKSPACE}}

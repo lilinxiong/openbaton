@@ -8,6 +8,7 @@ import { describe, it } from "bun:test";
 
 const root = path.resolve(import.meta.dir, "..");
 const verifier = path.join(root, "samples", "verify-probe.mjs");
+const bootstrap = path.join(root, "samples", "bootstrap-probe.mjs");
 
 describe("probe-e2e verifier", () => {
   it("accepts current-format evidence and rejects config or liveness mismatches", () => {
@@ -31,6 +32,24 @@ describe("probe-e2e verifier", () => {
     const second = runVerifier(fixture);
     assert.notEqual(second.status, 0);
     assert.match(`${second.stderr}${second.stdout}`, /liveness handle does not match/i);
+  });
+
+  it("renders the host-specific Baton invocation syntax", () => {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "baton-probe-bootstrap-bin-"));
+    write(fakeBin, "openspec", "#!/bin/sh\nexit 0\n", 0o755);
+    const env = { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}` };
+
+    for (const [host, invocation] of [["codex", "$baton"], ["grok", "/baton"]] as const) {
+      const result = spawnSync("bun", [bootstrap, "--host", host, "--model", "probe-model"], {
+        cwd: root,
+        env,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, new RegExp(`${invocation.replace("$", "\\$")} Complete this ordinary`));
+      assert.match(result.stdout, new RegExp(`${invocation.replace("$", "\\$")} \\$openspec-apply-change probe-e2e`));
+      assert.doesNotMatch(result.stdout, /\{\{BATON_INVOCATION\}\}/);
+    }
   });
 });
 
@@ -75,7 +94,6 @@ function makeFixture() {
     "max_concurrent = 3",
     "max_depth = 1",
     "[cli.codex]",
-    "enabled = true",
     `runner = "${model}"`,
     `longctx = "${model}"`,
     `coding_models = [\"${model}\"]`,

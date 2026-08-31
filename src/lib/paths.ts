@@ -26,7 +26,6 @@ export const WORKSPACES_DIR = "workspaces";
 export const CURRENT_RUNTIME_NAMESPACE = "v2";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const MODEL_AVAILABILITY_NAME = "model-availability.json";
-export const PROJECT_SETTINGS_NAME = "project-settings.toml";
 
 /** Host-keyed state names used by the current runtime. */
 export function hostRouteSnapshotName(host: string): string {
@@ -119,19 +118,13 @@ export function dispatchLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), TMP_DIR, "dispatch.lock");
 }
 
-/** Project-scoped host activation settings in the canonical v2 workspace. */
-export function projectSettingsPath(cwd: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(batonDir(cwd, env), PROJECT_SETTINGS_NAME);
-}
-
-/** Shared activation/reservation boundary for one canonical workspace. */
+/** Shared reservation boundary for one canonical workspace. */
 export function activationLockPath(cwd: string, env?: NodeJS.ProcessEnv, host?: string): string {
   const suffix = host ? `activation-${String(host).trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "-") || "unknown"}.lock` : "activation.lock";
   return path.join(batonDir(cwd, env), TMP_DIR, suffix);
 }
 
-/** Host-scoped global activation lock. Reservation and global/project changes
- * acquire this before the workspace lock, so cross-project operations share a
+/** Host-scoped global reservation lock. Cross-project operations share a
  * single ordering boundary per invoking CLI. */
 export function globalActivationLockPath(host: string, env?: NodeJS.ProcessEnv): string {
   const normalized = String(host || "").trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "-") || "unknown";

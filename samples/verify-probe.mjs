@@ -113,7 +113,7 @@ function verifyConfig(home, host, routeId) {
   }
   const cli = parsed?.cli && typeof parsed.cli === "object" ? parsed.cli : {};
   const profile = cli[host];
-  assert(profile && typeof profile === "object" && profile.enabled === true, `cli.${host} must be enabled`);
+  assert(profile && typeof profile === "object", `cli.${host} profile must exist`);
   const coding = Array.isArray(profile.coding_models) ? profile.coding_models.map(String) : [];
   assert(profile.runner === routeId, `cli.${host}.runner must equal ${routeId}`);
   assert(profile.longctx === routeId, `cli.${host}.longctx must equal ${routeId}`);
@@ -122,7 +122,7 @@ function verifyConfig(home, host, routeId) {
   for (const [configuredHost, value] of Object.entries(cli)) {
     if (configuredHost === host || !value || typeof value !== "object") continue;
     const other = value;
-    if (other.enabled === true && Array.isArray(other.coding_models) && other.coding_models.length > 0) {
+    if (Array.isArray(other.coding_models) && other.coding_models.length > 0) {
       throw new Error(`only cli.${host} may have configured coding models`);
     }
   }
