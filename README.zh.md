@@ -34,8 +34,8 @@ Coding 模型优先级。它会问要配置哪个 adapter，再问 `runner`、`l
 
 ## 源码 checkout
 
-在源码目录执行以下脚本，可以安装依赖、运行检查、构建、链接 `baton`，
-并刷新共享运行时文件：
+在源码目录执行以下脚本，可以安装依赖、运行检查、构建，并根据 footprint
+完成首次安装或干净重装的完整流程：
 
 ```bash
 python3 scripts/update_local_baton.py
@@ -47,6 +47,34 @@ python3 scripts/update_local_baton.py
 bun install
 bun run baton -- <command> ...
 ```
+
+安装脚本根据 PATH 上可见的 `baton` 命令、`~/.baton` home，以及已注册且存在的
+host-skill footprint 判断首次安装还是已有安装。干净重装计划会先构建并验证，再由构建出的 CLI
+执行 clean-uninstall 预检与应用，移除已识别的软件包注册，link 当前 checkout，
+用非交互 stdin 运行不带参数的 `baton init`，最后验证结果。首次安装计划只省略
+清理阶段。
+
+package-manager 注册不会独立构成安装 footprint。只有存在可见的 `baton` 命令时，
+安装脚本才会校验其受支持的 Bun/npm 软件包注册及 provenance；没有可见命令时，
+不会独立扫描 package 注册或 manifest 来判定安装模式。
+
+`--dry-run` 会完整打印当前 fresh 或 clean-reinstall 计划（包括清理和注册移除），
+但不执行任何步骤；不得调用 package-manager unlink，因为 Bun 1.4.0 的 package-
+manager dry-run 不安全。
+
+若存在活动 ticket、文件或软件包归属冲突、非法/不完整状态，或无法唯一确定已识别
+注册的移除命令，计划会阻断。解决报告的阻断后再重跑；不要用 `rm -rf ~/.baton`。
+
+安装完成后显式配置 host（init 不会隐式选择模型）：
+
+```bash
+baton config --cli <adapter-id> --runner <model-id> --longctx <model-id> --coding-model <model-id>
+```
+
+该命令只写入 `[cli.<adapter-id>]`。用 `-` 清空 `runner` 或 `longctx`；只有明确
+需要完整目录顺序时才使用 `--coding-model all`。不要使用过时的 `--enable`。
+`~/.baton/config.toml` 中的 profile 由用户拥有；init 后允许为空，但在显式配置前
+会阻断带 classification 的路由。
 
 Baton core 不内置目录。adapter 软件包通过 `~/.baton/adapters/<adapter-id>/` 下的
 `adapter.json` 发现，或由 `BATON_ADAPTER_PATHS` 指定。执行阶段没有交互式
