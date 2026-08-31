@@ -124,12 +124,19 @@ function verificationOnlyReadOnly(ticket: Partial<SpawnTicket>, receipt: Delegat
 function terminalSuccess(ticket: Partial<SpawnTicket> | undefined, input: ApplyUnitAcceptanceInput): boolean {
   return (ticket?.status === "completed" || input.terminalStatus === "completed") && !String(ticket?.error?.code || "").trim();
 }
-function ownsTaskLedger(value: string, ledger: string): boolean {
-  const normalized = value.replaceAll("\\", "/").toLowerCase();
-  return normalized === ledger.replaceAll("\\", "/").toLowerCase()
-    || normalized === "tasks.md"
-    || normalized.endsWith("/tasks.md")
-    || normalized.includes("/openspec/changes/");
+function ownsTaskLedger(cwd: string, value: string, ledger: string): boolean {
+  const normalizedLedger = path.resolve(cwd, ledger).replaceAll("\\", "/").toLowerCase();
+  return value.split(/\s*->\s*/u).some((part) => {
+    const declared = part.replaceAll("\\", "/").toLowerCase();
+    const normalized = path.resolve(cwd, part).replaceAll("\\", "/").toLowerCase();
+    const wildcard = normalized.search(/[*?\[]/u);
+    const scope = (wildcard >= 0 ? normalized.slice(0, wildcard) : normalized).replace(/\/+$/u, "");
+    return normalized === normalizedLedger
+      || Boolean(scope && normalizedLedger.startsWith(`${scope}/`))
+      || declared === "tasks.md"
+      || declared.endsWith("/tasks.md")
+      || declared.includes("/openspec/changes/");
+  });
 }
 function taskLedgerPath(state: ApplyRunState, supplied: string | undefined, cwd: string, plan: ApplyExecutionPlan): string {
   if (supplied) return path.resolve(cwd, supplied);
@@ -207,8 +214,8 @@ export function acceptApplyUnit(input: ApplyUnitAcceptanceInput): ApplyAcceptanc
     if (!ticketId || !receiptId || !ticket || !receipt) throw new ApplyReconcileError("compiled unit requires ticket and Receipt evidence", "UNIT_LINEAGE_MISMATCH");
     const ledger = taskLedgerPath(state, undefined, input.cwd, plan);
     const unit = plan.units.find((item) => item.id === input.unitId)!;
-    if ((unit.write_paths || []).some((item) => ownsTaskLedger(item, ledger))
-      || (receipt.scope?.write_allowlist || []).some((item) => ownsTaskLedger(item, ledger))) {
+    if ((unit.write_paths || []).some((item) => ownsTaskLedger(input.cwd, item, ledger))
+      || (receipt.scope?.write_allowlist || []).some((item) => ownsTaskLedger(input.cwd, item, ledger))) {
       throw new ApplyReconcileError("compiled worker may not own the OpenSpec task ledger", "SAFETY_NOT_ACCEPTED");
     }
     const actualLineage = ticket.compiled_apply_lineage; const receiptLineage = receipt?.compiled_apply_lineage;

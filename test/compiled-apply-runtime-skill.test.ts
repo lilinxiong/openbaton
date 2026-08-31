@@ -15,6 +15,7 @@ const commonInvariants: Array<[string, RegExp]> = [
   ["hookless explicit invocation", /hookless[\s\S]{0,260}(?:explicitly|explicit invocation|explicit host)/i],
   ["canonical OpenSpec ledger", /OpenSpec[\s\S]{0,180}(?:canonical|remain canonical|task ledger)/i],
   ["apply context and affected code", /(?=[\s\S]*apply\s+instructions)(?=[\s\S]*contextFiles)(?=[\s\S]*(?:repository guidance|repo guidance))(?=[\s\S]*affected\s+code)/i],
+  ["captured source snapshot", /(?=[\s\S]*(?:capture|captures)[\s\S]{0,80}(?:audit|audits))(?=[\s\S]*source_snapshot)(?=[\s\S]*(?:revision|repository revision))(?=[\s\S]*(?:task-ledger|task ledger))(?=[\s\S]*(?:hash|fingerprint))(?=[\s\S]*(?:stale|fails closed))/i],
   ["versioned fine-grained plan", /versioned[\s\S]{0,120}fine-grained plan/i],
   ["compiled plan fields", /(?=[\s\S]*task refs)(?=[\s\S]*dependencies)(?=[\s\S]*read context)(?=[\s\S]*write paths)(?=[\s\S]*(?:allowed operations|operations))(?=[\s\S]*(?:patch recipe|patch-only))(?=[\s\S]*(?:done criteria|completion criteria))(?=[\s\S]*(?:validation|permitted validation))(?=[\s\S]*(?:gates|parent gates))(?=[\s\S]*(?:task mappings|mappings))/i],
   ["patch and verification modes", /patch-only[\s\S]{0,260}verification-only/i],

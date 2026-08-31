@@ -759,10 +759,10 @@ function validateCompiledTicket(
 ): CompiledApplyContext | null {
   const lineage = compiledLineageForTicket(ticket);
   if (!lineage) return null;
+  const quotaSuccessor = Boolean(ticket.successor_from_ticket_id && ticket.successor_reason === "QUOTA_EXHAUSTED");
   let state: ApplyRunState;
   let plan: ApplyExecutionPlan;
   try {
-    const quotaSuccessor = Boolean(ticket.successor_from_ticket_id && ticket.successor_reason === "QUOTA_EXHAUSTED");
     // ApplyRun freezes one execution ticket per materialized unit. A quota
     // successor retries that immutable unit only after clean reconciliation;
     // exclude the failed predecessor facts while validating the successor so
@@ -906,7 +906,31 @@ function validateCompiledTicket(
     || stableCompiledValue(receipt.scope.allowed_operations) !== stableCompiledValue(["read"])) {
     throw compiledApplyError(ticket, "verification-only Receipt carries write authority", "COMPILED_SCOPE_MISMATCH");
   }
-  return { lineage, state, plan, unit, receipt, quotaSuccessor: Boolean(ticket.successor_from_ticket_id && ticket.successor_reason === "QUOTA_EXHAUSTED") };
+  return { lineage, state, plan, unit, receipt, quotaSuccessor };
+}
+
+function rejectCompiledTicketValidation(cwd: string, ticket: SpawnTicket, error: unknown, at: string, env: NodeJS.ProcessEnv): never {
+  const failure = error instanceof DispatchError
+    ? error
+    : new DispatchError(error instanceof Error ? error.message : String(error), "COMPILED_TICKET_INVALID", { ticketId: ticket.id });
+  if (ticket.status === "dispatching" || ticket.status === "running") {
+    transition(ticket, ["dispatching", "running"], "errored", {
+      at,
+      event: "compiled_validation_failed",
+      detail: { error_code: failure.code },
+    });
+    ticket.error = { code: failure.code, message: failure.message };
+    ticket.conclusion = null;
+    ticket.finished_at = at;
+    ticket.compiled_acceptance = { accepted: false, code: failure.code, evidence: failure.message };
+    ticket.slot_released_at = at;
+    history(ticket, "agent_slot_released", at, {
+      ...(ticket.execution_handle ? { execution_handle: ticket.execution_handle } : {}),
+      reason: "compiled_validation_failed",
+    });
+    writeSpawn(cwd, ticket, env);
+  }
+  throw failure;
 }
 
 function ticketMatchesHost(ticket: SpawnTicket, host: HostId, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -1121,7 +1145,10 @@ export function bindAgent(cwd: string, id: string, {
         { ticketId: id, currentStatus: ticket.status, nextStatus: "running" },
       );
     }
-    if (isCompiledApplyTicket(ticket)) validateCompiledTicket(cwd, ticket, targetHost, env);
+    if (isCompiledApplyTicket(ticket)) {
+      try { validateCompiledTicket(cwd, ticket, targetHost, env); }
+      catch (error) { rejectCompiledTicketValidation(cwd, ticket, error, at, env); }
+    }
     const handle = executionHandle || null;
     if (!handle || !handle.value.trim()) throw new DispatchError(`ticket ${id} has no native execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
     const expectedKind = getCliAdapter(host, env).host.executionHandleKind;
@@ -1733,7 +1760,7 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
       const candidateEffort = successorEffort(variant.effort || route.default_reasoning_effort || ticket.reasoning_effort);
       const candidateEffortRank = candidateEffort ? SUCCESSOR_EFFORT_RANK[candidateEffort] || 0 : 0;
       const exactVariantUnsupported = Boolean(variant.effort && supportedEfforts.length && !supportedEfforts.includes(variant.effort.toLowerCase()));
-      const unsupportedDefault = Boolean(!variant.effort && supportedEfforts.length
+      const unsupportedDefault = Boolean(requiredEffort && !variant.effort && supportedEfforts.length
         && (!candidateEffort || !supportedEfforts.includes(candidateEffort)));
       const belowMinimum = Boolean(requiredEffort && (
         (candidateEffort && candidateEffortRank < requiredEffortRank)
@@ -1741,7 +1768,9 @@ function successorRouteForTicket(cwd: string, ticket: SpawnTicket, at: string, e
       ));
       if (exactVariantUnsupported || belowMinimum || Boolean(requiredEffort && !requiredEffortValue
         && variant.effort && variant.effort !== requiredEffort) || unsupportedDefault) {
-        codes.push("REASONING_CAPABILITY_INSUFFICIENT"); reasons.push(`required reasoning effort ${requiredEffort} is not supported`);
+        const label = variant.effort ? "configured" : "required";
+        const effort = variant.effort || requiredEffortValue || requiredEffort;
+        codes.push("REASONING_CAPABILITY_INSUFFICIENT"); reasons.push(`${label} reasoning effort ${effort} is not supported`);
       }
       if (Number.isFinite(estimatedContext) && estimatedContext > 0 && route.context_window !== null && route.context_window < estimatedContext) {
         codes.push("CONTEXT_WINDOW_INSUFFICIENT"); reasons.push(`context window ${route.context_window} is smaller than ${estimatedContext}`);
@@ -1976,9 +2005,11 @@ export async function finishAgent(cwd: string, id: string, {
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
-    const compiledContext = isCompiledApplyTicket(ticket)
-      ? validateCompiledTicket(cwd, ticket, ticketTargetHost(ticket, env), env)
-      : null;
+    let compiledContext: CompiledApplyContext | null = null;
+    if (isCompiledApplyTicket(ticket)) {
+      try { compiledContext = validateCompiledTicket(cwd, ticket, ticketTargetHost(ticket, env), env); }
+      catch (error) { rejectCompiledTicketValidation(cwd, ticket, error, at, env); }
+    }
     if (terminal === "timed_out") {
       const expectedSequence = Number(probeSequence);
       const probe = ticket.liveness;

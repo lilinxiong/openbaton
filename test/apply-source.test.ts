@@ -78,6 +78,32 @@ describe("compiled apply source observations", () => {
     assert.match(source.fingerprint, /^[0-9a-f]{64}$/);
   });
 
+  it("retains the kind role alias instead of replacing it with the default role", async () => {
+    const source = await captureCompiledApplySourceFacts(request({
+      units: [{ id: "unit-kind", inputs: [{ path: "src/input.ts", kind: "write" }] }],
+    }));
+    assert.deepEqual(source.units[0]?.inputs[0]?.roles, ["write"]);
+  });
+
+  it("captures task-ledger bytes when only tasks_path declares the ledger", async () => {
+    const ledgerPath = `${root}/openspec/tasks.md`;
+    const ledger = "## Work\n\n- [ ] 2.3 Capture ledger\n";
+    const source = await captureCompiledApplySourceFacts(request({
+      openSpec: {
+        contextFiles: [],
+        contextFileHashes: {},
+        selectedTaskNumbers: ["2.3"],
+        tasks_path: ledgerPath,
+      },
+      readOpenSpec: undefined,
+      readBytes: async (absolutePath: string) => absolutePath === ledgerPath ? Buffer.from(ledger) : Buffer.from("input-v1\n"),
+    }));
+    assert.equal(source.open_spec.task_ledger?.path, ledgerPath);
+    assert.match(source.open_spec.task_ledger?.sha256 || "", /^[0-9a-f]{64}$/);
+    assert.deepEqual(source.open_spec.selected_task_numbers, ["2.3"]);
+    assert.match(source.open_spec.selected_task_snapshot_fingerprint, /^[0-9a-f]{64}$/);
+  });
+
   it("detects OpenSpec context and selected-task identity changes", async () => {
     const state = request();
     const baseline = await captureCompiledApplySourceFacts(state);

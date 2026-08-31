@@ -302,8 +302,9 @@ above and [docs/guide.md](docs/guide.md).
 
 ## Compiled OpenSpec apply (dual skill)
 
-OpenSpec apply is an explicit two-skill path: invoke `$baton` and
-`$openspec-apply-change` together in the same director conversation. Baton is
+OpenSpec apply is an explicit two-skill path. In Codex, invoke `$baton` and
+`$openspec-apply-change` together; in Grok, run `/baton` and include
+`$openspec-apply-change` in the same director conversation. Baton is
 hookless, so neither an ordinary OpenSpec request nor a prompt watcher creates
 a ticket. The OpenSpec task ledger remains canonical. The main agent reads
 apply instructions, every returned `contextFiles` file, repository guidance,

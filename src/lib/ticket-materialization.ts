@@ -13,6 +13,7 @@ import {
 import { listSpawns, writeSpawn, type SpawnTicket, type StandalonePlan } from "./spawn.js";
 import { applyCommitBaselineToPlan } from "./ops-dispatch.js";
 import { assertDisjointWriteScopes, writePathsOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
+import { APPLY_RUN_STATE_TEMP_FILE_PREFIX } from "./apply-run.js";
 
 /** Dependencies are injectable so Git/stream/race failures can be tested
  * without weakening the production stable-observation boundary. */
@@ -109,7 +110,7 @@ function listTemporaryRunStateFiles(cwd: string, env?: NodeJS.ProcessEnv): Set<s
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) visit(file);
-      else if (entry.name.includes("state-v1.json.tmp-")) found.add(file);
+      else if (entry.name.startsWith(APPLY_RUN_STATE_TEMP_FILE_PREFIX)) found.add(file);
     }
   };
   visit(root);

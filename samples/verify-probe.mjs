@@ -309,7 +309,7 @@ function verifyCompiledApplyScenario(runtime, workspace) {
   assert(state.reconciled === true, "compiled apply scenario run must be reconciled");
   assert(Object.values(state.unit_status || {}).filter((status) => status === "accepted" || status === "reconciled").length >= gate.unit_ids.length, "parent gate units must be accepted");
   assert(state.gate_status?.[gate.id] === "accepted" || state.gate_status?.[gate.id] === "reconciled", "parent gate must be accepted");
-  assert(Object.values(state.task_status || {}).every((status) => status === "reconciled"), "all mapped tasks must be reconciled");
+  assert(plan.selected_tasks.every((taskId) => state.task_status?.[taskId] === "reconciled"), "all selected tasks must be reconciled");
   assert(Array.isArray(state.terminal_unreleased_tickets) && state.terminal_unreleased_tickets.length === 0, "compiled apply run must not retain terminal-unreleased tickets");
 
   const timeline = Array.isArray(scenario.timeline) ? scenario.timeline : [];

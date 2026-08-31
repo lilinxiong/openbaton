@@ -116,14 +116,11 @@ function validStatus(value: unknown): value is ModelAvailabilityStatus {
   return value === "available" || value === "exhausted" || value === "probe_due";
 }
 
-function normalizeRecord(value: unknown): ModelAvailabilityRecord | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const item = value as Record<string, unknown>;
-  if (!validSessionUid(item.session_uid)) return null;
+function normalizeAvailabilityFields(item: Record<string, unknown>, requireHashedScope: boolean): HistoricalModelAvailabilityRecord | null {
   const host = normalizedHost(String(item.host || ""));
   const routeId = normalizedRoute(String(item.route_id || ""));
   const scope = String(item.account_scope || "").trim();
-  if (!host || !routeId || !/^[0-9a-f]{64}$/.test(scope) || !validStatus(item.status)) return null;
+  if (!host || !routeId || !scope || (requireHashedScope && !/^[0-9a-f]{64}$/.test(scope)) || !validStatus(item.status)) return null;
   const attempts = Number(item.probe_attempts);
   const optionalTimestamp = (value: unknown): value is string | null => value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
   const optionalOwner = (value: unknown): value is string | null => value === null || typeof value === "string";
@@ -133,7 +130,6 @@ function normalizeRecord(value: unknown): ModelAvailabilityRecord | null {
   if (!optionalOwner(item.probe_lease_owner) || !optionalTimestamp(item.probe_lease_until)) return null;
   if (!Number.isFinite(attempts) || attempts < 0 || !Number.isInteger(attempts)) return null;
   return {
-    session_uid: item.session_uid,
     host,
     account_scope: scope,
     route_id: routeId,
@@ -148,34 +144,17 @@ function normalizeRecord(value: unknown): ModelAvailabilityRecord | null {
   };
 }
 
-function normalizeHistoricalRecord(value: unknown): HistoricalModelAvailabilityRecord | null {
+function normalizeRecord(value: unknown): ModelAvailabilityRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
-  const host = normalizedHost(String(item.host || ""));
-  const routeId = normalizedRoute(String(item.route_id || ""));
-  const scope = String(item.account_scope || "").trim();
-  if (!host || !routeId || !scope || !validStatus(item.status)) return null;
-  const attempts = Number(item.probe_attempts);
-  const optionalTimestamp = (value: unknown): value is string | null => value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
-  const optionalOwner = (value: unknown): value is string | null => value === null || typeof value === "string";
-  if (typeof item.reason !== "string" && item.reason !== null) return null;
-  if (typeof item.observed_at !== "string" || !item.observed_at.trim() || !Number.isFinite(Date.parse(item.observed_at))) return null;
-  if (!optionalTimestamp(item.reset_at) || !optionalTimestamp(item.next_probe_at)) return null;
-  if (!optionalOwner(item.probe_lease_owner) || !optionalTimestamp(item.probe_lease_until)) return null;
-  if (!Number.isFinite(attempts) || attempts < 0 || !Number.isInteger(attempts)) return null;
-  return {
-    host,
-    account_scope: scope,
-    route_id: routeId,
-    status: item.status,
-    reason: String(item.reason || "").trim() || null,
-    observed_at: item.observed_at.trim(),
-    reset_at: String(item.reset_at || "").trim() || null,
-    next_probe_at: String(item.next_probe_at || "").trim() || null,
-    probe_attempts: attempts,
-    probe_lease_owner: String(item.probe_lease_owner || "").trim() || null,
-    probe_lease_until: String(item.probe_lease_until || "").trim() || null,
-  };
+  if (!validSessionUid(item.session_uid)) return null;
+  const common = normalizeAvailabilityFields(item, true);
+  return common ? { session_uid: item.session_uid, ...common } : null;
+}
+
+function normalizeHistoricalRecord(value: unknown): HistoricalModelAvailabilityRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return normalizeAvailabilityFields(value as Record<string, unknown>, false);
 }
 
 export function readModelAvailability(cwd: string, env?: NodeJS.ProcessEnv): ModelAvailabilityStore {

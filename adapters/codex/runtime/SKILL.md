@@ -20,8 +20,11 @@ same Codex director conversation. Baton remains hookless and must not activate
 for an ordinary OpenSpec request unless `$baton` was explicitly invoked.
 OpenSpec tasks are canonical. Before dispatch, the Codex main agent reads the
 apply instructions, every returned `contextFiles` file, repository guidance,
-and affected code. It then compiles a versioned fine-grained plan whose units
-carry exact task refs, dependencies, read context, write paths and operations,
+and affected code. It captures and audits the plan's `source_snapshot`,
+including repository revision, task-ledger path and identity/hash,
+context-file hashes, and selected-task fingerprint; missing or stale snapshot
+evidence fails closed. It then compiles a versioned fine-grained plan whose
+units carry exact task refs, dependencies, read context, write paths and operations,
 an imperative patch recipe, done criteria, validation, parent gates, and task
 mappings. Units are `patch-only` or `verification-only`; a broad task may be
 split into disjoint units, coupled tasks may be merged into one patch, and a

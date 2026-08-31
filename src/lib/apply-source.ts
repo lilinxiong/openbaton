@@ -439,7 +439,7 @@ interface NormalizedDeclaration {
 function normalizeDeclaration(repoRoot: string, value: string | ApplySourceInputDeclaration, defaultRole: ApplySourceInputRole): NormalizedDeclaration {
   const source: ApplySourceInputDeclaration = typeof value === "string" ? { path: value, role: defaultRole } : value;
   const roles = normalizeRoles(source);
-  if (!source.role && !source.roles) roles.splice(0, roles.length, defaultRole);
+  if (!source.role && !source.kind && !source.roles) roles.splice(0, roles.length, defaultRole);
   const origin = originOf(source);
   const predecessor = predecessorReference(source);
   if (origin === "predecessor-produced" && !predecessor) {
@@ -579,8 +579,9 @@ function normalizeTaskLedger(value: ApplySourceOpenSpecIdentity): ApplySourceTas
   const fingerprint = typeof raw === "object" && raw !== null ? stringValue(raw.fingerprint) : undefined;
   const tasksPath = stringValue(value.tasks_path) || stringValue(value.tasksPath);
   if (!pathValue && !identity && !tasksPath && !sha && !fingerprint) return null;
+  const resolvedPath = pathValue || tasksPath;
   return {
-    ...(pathValue ? { path: normalizedContextPath(pathValue) } : {}),
+    ...(resolvedPath ? { path: normalizedContextPath(resolvedPath) } : {}),
     ...(identity ? { identity } : {}),
     ...(sha ? { sha256: sha } : {}),
     ...(fingerprint ? { fingerprint } : {}),

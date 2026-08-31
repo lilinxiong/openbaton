@@ -173,6 +173,8 @@ describe("compiled apply CLI", () => {
     assert.deepEqual(body.task_ids, ["1.1"]);
     assert.equal(body.eligibility[0].eligible, true);
     assert.match(fs.readFileSync(f.tasksPath, "utf8"), /- \[x\] 1\.1/);
+    assert.equal(body.conclusions["1.1"], `reconciled run run-gate revision ${body.revision}`);
+    assert.match(fs.readFileSync(f.tasksPath, "utf8"), new RegExp(`conclusion: ${body.conclusions["1.1"]}`));
   });
 
   it("keeps a unit visible with every configured-route exclusion when no route qualifies", async () => {

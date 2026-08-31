@@ -195,7 +195,6 @@ describe("capability-routed selection", () => {
     assert.equal(result.recommended_model_id, null);
     assert.ok(result.candidates.every((item) => item.diagnostics.some((diagnostic) => diagnostic.code === "CONTEXT_WINDOW_INSUFFICIENT")));
     assert.ok(result.candidates.some((item) => item.diagnostics.some((diagnostic) => diagnostic.code === "REQUIRED_EXECUTION_CAPABILITY_UNSUPPORTED")));
-    assert.ok(result.candidates.some((item) => item.diagnostics.some((diagnostic) => diagnostic.code === "CONTEXT_WINDOW_INSUFFICIENT")));
   }));
 
   it("derives and persists stable minimum requirements with explicit evidence", () => withHome((home) => {

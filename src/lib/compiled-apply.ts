@@ -26,6 +26,7 @@ import {
 import {
   appendApplyRun,
   createApplyRun,
+  persistApplyRunTicketFacts,
   readApplyRun,
   readApplyRunPlanBody,
   type ApplyRunState,
@@ -58,7 +59,6 @@ import {
   type TicketMaterializationBatchEntry,
   type TicketMaterializationBatchOptions,
 } from "./ticket-materialization.js";
-import { compiledApplyRunStatePath } from "./paths.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 
 export interface CompiledApplyIngestionOptions {
@@ -467,9 +467,7 @@ export async function materializeCompiledApplyFrontier(input: CompiledApplyFront
   assertWriteScopesAvailable(input.cwd, scopes, env);
   const materialized = entries.length ? await materializeStandalonePlansBatchAsync(input.cwd, entries, { ...input.materialization, env, onComplete: async (tickets) => {
     const latestFacts = tickets.map((ticket) => ({ ticket_id: ticket.id, status: "queued" as const, run_id: runId, host: input.host, session_uid: run.session_uid, unit_ids: [ticket.compiled_apply_lineage!.unit_id], task_ids: [...ticket.compiled_apply_lineage!.task_refs], model_id: ticket.model_id, receipt_id: ticket.receipt_id || undefined }));
-    const updated = readApplyRun(input.cwd, runId, { env, ticket_facts: [...facts, ...latestFacts] });
-    const file = compiledApplyRunStatePath(input.cwd, runId, env); const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
-    fs.writeFileSync(temp, `${JSON.stringify(updated, null, 2)}\n`, { encoding: "utf8", mode: 0o600 }); fs.renameSync(temp, file);
+    persistApplyRunTicketFacts(input.cwd, runId, [...facts, ...latestFacts], env);
   } }) : [];
   const finalRun = readApplyRun(input.cwd, runId, { env, ticket_facts: [...facts, ...materialized.map((ticket) => ({ ticket_id: ticket.id, status: "queued" as const, run_id: runId, host: input.host, session_uid: run.session_uid, unit_ids: [ticket.compiled_apply_lineage!.unit_id], task_ids: [...ticket.compiled_apply_lineage!.task_refs], model_id: ticket.model_id, receipt_id: ticket.receipt_id || undefined }))] });
   return { run_id: runId, revision: run.current_revision, fingerprint: run.current_fingerprint, candidates: frontier, selected: entries.map((entry) => entry.planned.ticket.compiled_apply_lineage!.unit_id), materialized, blocked,

@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyPlanFingerprint,
+  ApplyPlanValidationError,
   assertValidApplyExecutionPlan,
   buildFrontierConflictGraph,
   deriveDependencyReadyUndispatchedUnits,
@@ -78,6 +79,15 @@ describe("apply execution plan schema", () => {
     const value = basePlan();
     assert.deepEqual(remainingCriticalPath(value), { u1: 1, u2: 1 });
     assert.deepEqual(remainingCriticalPath({ ...value, units: value.units.slice().reverse() }), { u1: 1, u2: 1 });
+  });
+
+  it("reports malformed unit entries through validation instead of throwing a TypeError", () => {
+    const malformed = { ...basePlan(), units: [null] };
+    assert.throws(
+      () => parseApplyExecutionPlan(JSON.stringify(malformed)),
+      (error: unknown) => error instanceof ApplyPlanValidationError
+        && error.diagnostics.some((item) => item.code === "INVALID_UNIT"),
+    );
   });
 
   it("retains normalized write scope overlaps as scheduling edges without invalidating unordered units", () => {
@@ -242,6 +252,21 @@ describe("frontier conflict graph", () => {
     assert.deepEqual(graph.conflicts.get("u1"), []);
   });
 
+  it("normalizes wildcard paths before deriving their conflict prefix", () => {
+    const plan = frontierPlan([
+      { id: "dot", mode: "patch-only", task_ids: ["t1"], write_paths: ["./src/*.ts"], allowed_operations: ["write"] },
+      { id: "dotHit", mode: "patch-only", task_ids: ["t2"], write_paths: ["src/file.ts"], allowed_operations: ["write"] },
+      { id: "slashes", mode: "patch-only", task_ids: ["t3"], write_paths: ["src//nested/*.ts"], allowed_operations: ["write"] },
+      { id: "slashesHit", mode: "patch-only", task_ids: ["t4"], write_paths: ["src/nested/file.ts"], allowed_operations: ["write"] },
+      { id: "parent", mode: "patch-only", task_ids: ["t5"], write_paths: ["src/area/../*.ts"], allowed_operations: ["write"] },
+      { id: "parentHit", mode: "patch-only", task_ids: ["t6"], write_paths: ["src/another.ts"], allowed_operations: ["write"] },
+    ]);
+    const graph = buildFrontierConflictGraph(plan, plan.units.map((unit) => unit.id));
+    assert.ok(graph.conflicts.get("dot")?.includes("dotHit"));
+    assert.ok(graph.conflicts.get("slashes")?.includes("slashesHit"));
+    assert.ok(graph.conflicts.get("parent")?.includes("parentHit"));
+  });
+
   it("tracks active ownership conflicts and ignores inactive ownership", () => {
     const plan = frontierPlan([
       { id: "u1", mode: "patch-only", task_ids: ["t1"], write_paths: ["src/locked.ts"], allowed_operations: ["write"] },
@@ -374,6 +399,18 @@ describe("independent-set selection", () => {
     });
 
     assert.deepEqual(result, ["node-0", "node-2", "node-4", "node-6", "node-8", "node-10", "node-12", "node-14"]);
+  });
+
+  it("fails closed when the exact-search safety bound is exhausted", () => {
+    const frontier = ["a", "b", "c", "d", "e"];
+    const graph = new Map<string, string[]>([
+      ["a", ["b", "c", "d"]], ["b", ["a", "e"]], ["c", ["a", "e"]],
+      ["d", ["a", "e"]], ["e", ["b", "c", "d"]],
+    ]);
+    assert.throws(
+      () => selectIndependentSet(frontier, graph, { capacity: 5, maxSearchNodes: 1 }),
+      (error: unknown) => (error as { code?: string }).code === "APPLY_FRONTIER_SEARCH_LIMIT",
+    );
   });
 });
 

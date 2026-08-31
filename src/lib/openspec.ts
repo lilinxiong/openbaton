@@ -466,7 +466,8 @@ export function writeTaskConclusion(
   const lines = String(tasksMd).split(/\r?\n/);
   if (lineIndex < 0 || lineIndex >= lines.length) return null;
   const line = lines[lineIndex];
-  const replaced = line.replace(/^- \[[ ]\]/, "- [x]");
+  const replaced = line.replace(/^(\s*)- \[[ ]\]/, "$1- [x]");
+  if (replaced === line) return null;
   lines[lineIndex] = replaced;
   const indent = `${leadingWhitespace(line)}  - conclusion: ${singleLine(conclusion)}`;
   const already = lineIndex + 1 < lines.length && /^\s+- conclusion:/.test(lines[lineIndex + 1]);
@@ -514,6 +515,10 @@ export function writeTaskConclusions(tasksMd: string, conclusions: ReadonlyMap<s
     const next = writeTaskConclusion(result, parseTasks(result).find((item) => item.number === task.number)?.line_index ?? -1, conclusion);
     if (next === null) throw new OpenSpecError(`OpenSpec task writeback failed: ${task.number}`, "TASK_WRITEBACK_FAILED");
     result = next;
+  }
+  const completed = new Map(parseTasks(result).map((task) => [task.number, task.status]));
+  for (const [number] of entries) {
+    if (completed.get(number) !== "done") throw new OpenSpecError(`OpenSpec task writeback failed: ${number}`, "TASK_WRITEBACK_FAILED");
   }
   return result;
 }

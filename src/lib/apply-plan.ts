@@ -130,6 +130,14 @@ export class ApplyPlanValidationError extends Error {
   }
 }
 
+export class ApplyPlanSearchError extends Error {
+  readonly code = "APPLY_FRONTIER_SEARCH_LIMIT";
+  constructor(limit: number) {
+    super(`exact apply frontier search exceeded ${limit} nodes`);
+    this.name = "ApplyPlanSearchError";
+  }
+}
+
 export type ApplyPlanScopeKind = "path" | "wildcard" | "rename-source" | "rename-target";
 
 export interface ApplyPlanScopeFact {
@@ -177,6 +185,8 @@ export interface ApplyPlanIndependentSetOptions {
   capacity?: number;
   criticalPathByUnit?: Record<string, number>;
   excludedUnitIds?: readonly string[];
+  /** Fail closed instead of silently returning a suboptimal frontier. */
+  maxSearchNodes?: number;
 }
 
 export interface ApplyPlanIndependentSetResult {
@@ -231,8 +241,8 @@ function pathOverlap(left: string, right: string): boolean {
 function normalizeScopePath(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
-  const wildcard = trimmed.search(/[*?\[]/);
   const value = path.posix.normalize(trimmed.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, ""));
+  const wildcard = value.search(/[*?\[]/);
   const withoutWildcard = wildcard >= 0 ? value.slice(0, wildcard).replace(/\/+$/, "") : value;
   const normalized = path.posix.normalize(withoutWildcard || ".");
   return normalized === "." ? "." : normalized;
@@ -321,6 +331,17 @@ function isBetterCandidate(left: string[], right: string[], critical: Record<str
     if (leftOrder !== rightOrder) return leftOrder < rightOrder;
   }
   return false;
+}
+
+function isLexEarlier(left: readonly string[], right: readonly string[], order: readonly string[]): boolean {
+  if (right.length === 0) return left.length > 0;
+  const index = new Map(order.map((id, at) => [id, at]));
+  for (let at = 0; at < Math.min(left.length, right.length); at += 1) {
+    const leftOrder = index.get(left[at]!) ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = index.get(right[at]!) ?? Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder < rightOrder;
+  }
+  return left.length < right.length;
 }
 
 function buildDependencyMaps(plan: ApplyExecutionPlan) {
@@ -461,13 +482,43 @@ export function selectIndependentSet(frontier: readonly string[], conflictGraph:
     return true;
   };
 
-  let best: string[] = [];
+  const score = (ids: readonly string[]): number => ids.reduce((total, id) => {
+    const value = criticalPathByUnit[id];
+    return total + (Number.isFinite(value) ? value : 0);
+  }, 0);
+  const greedy: string[] = [];
+  const greedySet = new Set<string>();
+  for (const unitId of candidateUnits) {
+    if (greedy.length >= maxCapacity) break;
+    if (canSelect(unitId, greedySet)) { greedy.push(unitId); greedySet.add(unitId); }
+  }
+  let best: string[] = greedy;
   const chosenSet = new Set<string>();
+  const configuredLimit = Number(options.maxSearchNodes);
+  const maxSearchNodes = Number.isFinite(configuredLimit) && configuredLimit > 0 ? Math.floor(configuredLimit) : 1_000_000;
+  let searchedNodes = 0;
   const backtrack = (startAt: number, chosen: string[]) => {
-    const remaining = candidateUnits.length - startAt;
-    if (chosen.length + remaining < best.length) return;
+    searchedNodes += 1;
+    if (searchedNodes > maxSearchNodes) throw new ApplyPlanSearchError(maxSearchNodes);
+    if (isBetterCandidate(chosen, best, criticalPathByUnit, order)) best = [...chosen];
+    const compatible = candidateUnits.slice(startAt).filter((unitId) => canSelect(unitId, chosenSet));
+    const needed = Math.min(maxCapacity - chosen.length, compatible.length);
+    const maximumCardinality = chosen.length + needed;
+    if (maximumCardinality < best.length) return;
+    if (maximumCardinality === best.length) {
+      const optimisticScore = score(chosen) + compatible
+        .map((id) => Number.isFinite(criticalPathByUnit[id]) ? criticalPathByUnit[id]! : 0)
+        .sort((left, right) => right - left)
+        .slice(0, needed)
+        .reduce((total, value) => total + value, 0);
+      const bestScore = score(best);
+      if (optimisticScore < bestScore) return;
+      if (optimisticScore === bestScore) {
+        const lexLowerBound = sortByPlanOrder([...chosen, ...compatible.slice(0, needed)], order);
+        if (!isLexEarlier(lexLowerBound, best, order)) return;
+      }
+    }
     if (startAt >= candidateUnits.length || chosen.length === maxCapacity) {
-      if (isBetterCandidate(chosen, best, criticalPathByUnit, order)) best = [...chosen];
       return;
     }
     const next = candidateUnits[startAt]!;
@@ -530,11 +581,13 @@ function reachable(edges: Map<string, string[]>, from: string, target: string): 
 }
 
 function criticalPath(plan: ApplyExecutionPlan): Record<string, number> {
-  const units = new Map(plan.units.map((unit) => [unit.id, unit]));
-  const done = new Set(plan.units.filter((unit) => unit.runtime_state === "succeeded").map((unit) => unit.id));
+  const validUnits = (Array.isArray(plan.units) ? plan.units : [])
+    .filter((unit): unit is ApplyPlanUnit => record(unit) && string(unit.id));
+  const units = new Map(validUnits.map((unit) => [unit.id, unit]));
+  const done = new Set(validUnits.filter((unit) => unit.runtime_state === "succeeded").map((unit) => unit.id));
   const dependents = new Map<string, string[]>();
-  for (const unit of plan.units) {
-    for (const dependency of unit.depends_on || []) {
+  for (const unit of validUnits) {
+    for (const dependency of Array.isArray(unit.depends_on) ? unit.depends_on.filter(string) : []) {
       const linked = dependents.get(dependency);
       if (linked) linked.push(unit.id);
       else dependents.set(dependency, [unit.id]);

@@ -61,6 +61,28 @@ describe("compiled apply run persistence", () => {
     assert.equal(readApplyRunPlanBody(cwd, "run-1", "1", env).units[0]!.description, "original");
   });
 
+  it("removes a newly written revision body when the state update fails", () => {
+    const { cwd, env, result } = create();
+    const statePath = compiledApplyRunStatePath(cwd, "run-1", env);
+    const revisionPath = compiledApplyRunBodyPath(cwd, "run-1", "2", env);
+    const rename = fs.renameSync;
+    const failure = new Error("injected state write failure");
+    fs.renameSync = ((source: fs.PathLike, destination: fs.PathLike) => {
+      if (String(destination) === statePath) throw failure;
+      return rename(source, destination);
+    }) as typeof fs.renameSync;
+    try {
+      assert.throws(
+        () => appendApplyRun({ cwd, env, runId: "run-1", host: "codex", plan: plan("successor"), parent_revision: result.current_revision, parent_fingerprint: result.current_fingerprint }),
+        failure,
+      );
+    } finally {
+      fs.renameSync = rename;
+    }
+    assert.equal(fs.existsSync(revisionPath), false);
+    assert.equal(appendApplyRun({ cwd, env, runId: "run-1", host: "codex", plan: plan("successor"), parent_revision: result.current_revision, parent_fingerprint: result.current_fingerprint }).current_revision, "2");
+  });
+
   it("does not infer acceptance from completed ticket facts", () => {
     const { cwd, env } = create({ ticket_facts: [{ ticket_id: "ticket-1", status: "running", unit_ids: ["u1"], model_id: "gpt" }] });
     assert.equal(readApplyRun(cwd, "run-1", { env }).unit_state.u1!.status, "running");

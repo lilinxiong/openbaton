@@ -763,12 +763,13 @@ function reconcileResult(input: CompiledApplyInvocation, host: HostId): Compiled
     throw coded(error, "RECONCILE_ELIGIBILITY_FAILED");
   }
   let reconciled;
+  const evidence = `reconciled run ${runId} revision ${state.current_revision}`;
   try {
-    reconciled = reconcileApplyRun({ cwd: input.cwd, env: input.env, runId, tasksPath, task: input.task || undefined });
+    reconciled = reconcileApplyRun({ cwd: input.cwd, env: input.env, runId, tasksPath, task: input.task || undefined, evidence });
   } catch (error) {
     throw coded(error, "RECONCILE_FAILED");
   }
-  const conclusions = Object.fromEntries(reconciled.task_ids.map((task) => [task, `reconciled run ${runId} revision ${state.current_revision}`]));
+  const conclusions = Object.fromEntries(reconciled.task_ids.map((task) => [task, evidence]));
   return {
     code: "COMPILED_APPLY_RECONCILED",
     operation: "reconcile",

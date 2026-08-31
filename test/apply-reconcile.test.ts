@@ -8,7 +8,7 @@ import { acceptApplyGate, acceptApplyUnit, deriveApplyTaskEligibility, reconcile
 import { compiledApplyRunStatePath } from "../src/lib/paths.js";
 import type { ApplyExecutionPlan } from "../src/lib/apply-plan.js";
 
-function fixture(options: { sourceSnapshot?: Record<string, unknown>; ticketFacts?: any[]; unitMode?: "patch-only" | "verification-only" } = {}) {
+function fixture(options: { sourceSnapshot?: Record<string, unknown>; ticketFacts?: any[]; unitMode?: "patch-only" | "verification-only"; unitWritePaths?: string[] } = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-reconcile-"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-reconcile-home-"));
   const env = { ...process.env, HOME: home, BATON_SESSION_ID: "reconcile-session" };
@@ -18,7 +18,7 @@ function fixture(options: { sourceSnapshot?: Record<string, unknown>; ticketFact
     schema_version: 1, identity: { plan_id: "plan", change_id: "demo" }, source_snapshot: { repo_root: cwd, revision: "head" }, selected_tasks: ["1.1", "1.2"],
     units: [options.unitMode === "verification-only"
       ? { id: "u1", mode: "verification-only", task_ids: ["1.1"], verification: ["inspect"] }
-      : { id: "u1", mode: "patch-only", task_ids: ["1.1"], write_paths: ["src/a.ts"], allowed_operations: ["write"], patch: "apply" }],
+      : { id: "u1", mode: "patch-only", task_ids: ["1.1"], write_paths: options.unitWritePaths || ["src/a.ts"], allowed_operations: ["write"], patch: "apply" }],
     parent_gates: [{ id: "g1", task_ids: ["1.2"], unit_ids: ["u1"] }],
   };
   if (options.sourceSnapshot) plan.source_snapshot = { ...plan.source_snapshot, ...options.sourceSnapshot } as ApplyExecutionPlan["source_snapshot"];
@@ -114,6 +114,19 @@ describe("compiled apply parent acceptance", () => {
     const result = acceptApplyUnit({ cwd: f.cwd, env: f.env, runId: "run", unitId: "u1", ticketId: ticket.id, receiptId: receipt.receipt_id, ticket, receipt });
     assert.equal(result.accepted, false);
     assert.equal(result.code, "SAFETY_NOT_ACCEPTED");
+  });
+
+  it("rejects a relative write scope that resolves to a custom task ledger", () => {
+    const ledger = path.join("custom", "checklist.md");
+    const f = fixture({ sourceSnapshot: { tasks_path: ledger }, unitWritePaths: [ledger] });
+    const runState = JSON.parse(fs.readFileSync(compiledApplyRunStatePath(f.cwd, "run", f.env), "utf8"));
+    const lineage = { run_id: "run", plan_revision: "1", plan_fingerprint: runState.current_fingerprint, unit_id: "u1", task_refs: ["1.1"], mode: "patch-only" as const };
+    const ticket = { id: "ticket-ledger", status: "completed", receipt_id: "receipt-ledger", model_id: "model", compiled_apply_lineage: lineage, safety_verdict: { accepted: true, violations: [] }, conclusion: "done" } as any;
+    const receipt = { ticket_id: ticket.id, receipt_id: ticket.receipt_id, compiled_apply_lineage: lineage, scope: { write_allowlist: [ledger] } } as any;
+    assert.throws(
+      () => acceptApplyUnit({ cwd: f.cwd, env: f.env, runId: "run", unitId: "u1", ticketId: ticket.id, receiptId: receipt.receipt_id, ticket, receipt }),
+      (error: unknown) => (error as { code?: string }).code === "SAFETY_NOT_ACCEPTED",
+    );
   });
 
   it("rejects a verification-only Receipt with write authority", () => {

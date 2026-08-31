@@ -117,7 +117,7 @@ export interface SelectionCandidate {
   selection_reason: string;
   /** Canonical reason; selection_code keeps older callers source-compatible. */
   diagnostic_code?: SelectionDiagnosticCode;
-  diagnostics?: SelectionDiagnostic[];
+  diagnostics: SelectionDiagnostic[];
   exclusion_reasons?: SelectionDiagnostic[];
   exclusion_codes?: SelectionDiagnosticCode[];
   selection_diagnostics?: SelectionDiagnostic[];
@@ -173,7 +173,7 @@ export interface SelectionProposal {
   source_fingerprint: string;
   units: SelectionUnit[];
   /** Deterministic unit-keyed copy retained at proposal scope for audit. */
-  minimum_requirements?: Record<string, MinimumModelRequirements>;
+  minimum_requirements: Record<string, MinimumModelRequirements>;
   quota_pools: SelectionQuotaPool[];
   task_exclusions: TaskCapabilityExclusion[];
   payload: UnknownRecord;

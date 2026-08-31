@@ -155,6 +155,14 @@ describe("parseTasks + writeTaskConclusion", () => {
     assert.equal(parseTasks(updated).find((task) => task.number === "2.1")?.status, "done");
   });
 
+  it("preserves indentation while completing a nested pending task", () => {
+    const source = "## Work\n\n  - [ ] 2.1 Nested target\n";
+    const updated = writeTaskConclusionByNumber(source, "2.1", "nested accepted");
+    assert.match(updated, /^  - \[x\] 2\.1 Nested target$/m);
+    assert.match(updated, /^    - conclusion: nested accepted$/m);
+    assert.equal(parseTasks(updated).find((task) => task.number === "2.1")?.status, "done");
+  });
+
   it("fails closed for missing or duplicate task numbers", () => {
     assert.throws(() => writeTaskConclusionByNumber("- [ ] 1.1 One", "2.1", "x"), (error) => error instanceof OpenSpecError && error.code === "TASK_ID_NOT_FOUND");
     assert.throws(() => writeTaskConclusionByNumber("- [ ] 2.1 One\n- [ ] 2.1 Two", "2.1", "x"), (error) => error instanceof OpenSpecError && error.code === "TASK_ID_AMBIGUOUS");

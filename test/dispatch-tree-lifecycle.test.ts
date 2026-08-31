@@ -12,7 +12,7 @@ import {
   reportAgentProbe,
   reserveNext,
 } from "../src/lib/dispatch.js";
-import { createApplyRun, readApplyRun } from "../src/lib/apply-run.js";
+import { appendApplyRun, createApplyRun, readApplyRun } from "../src/lib/apply-run.js";
 import { materializeCompiledApplyFrontier } from "../src/lib/compiled-apply.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
@@ -304,6 +304,76 @@ describe("dispatch tree slot lifecycle", () => {
       assert.equal(blocked.reserved.length, 0);
       assert.equal(blocked.blocked[0]?.code, "COMPILED_LINEAGE_MISMATCH");
       assert.equal(readSpawn(cwd, ticket.id, env).status, "errored");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
+  it("terminalizes and releases a reserved compiled ticket when bind detects lineage drift", async () => withHome(async (home) => {
+    const cwd = newCwd();
+    const env = fakeEnv(home, { BATON_SESSION_ID: "tree-compiled-bind-lineage-drift" });
+    try {
+      configureLifecycleRoute(cwd, env);
+      const plan = {
+        schema_version: 1 as const,
+        identity: { plan_id: "compiled-bind-lineage-drift", change_id: "demo" },
+        source_snapshot: { repo_root: cwd, revision: "head" },
+        selected_tasks: ["1.1"],
+        units: [{ id: "u1", mode: "verification-only" as const, task_ids: ["1.1"], prompt: "verify", verification: ["read"] }],
+      };
+      createApplyRun({ cwd, env, runId: "compiled-bind-lineage-drift", host: HOST, plan });
+      const card = { id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "verification", native: true, tool: true };
+      const materialized = await materializeCompiledApplyFrontier({ cwd, env, host: HOST, runId: "compiled-bind-lineage-drift", capacity: 1, cards: [card], automaticCards: [card], codingModels: [ROUTE] });
+      const ticket = materialized.materialized[0]!;
+      await reserveNext(cwd, { capacity: 1, host: HOST, limit: 1, env });
+      const file = path.join(spawnsDir(cwd, env), `${ticket.id}.json`);
+      const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, any>;
+      raw.compiled_apply_lineage.plan_fingerprint = "drifted-fingerprint";
+      raw.work_unit.plan_fingerprint = "drifted-fingerprint";
+      fs.writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`);
+      assert.throws(
+        () => bindAgent(cwd, ticket.id, { executionHandle: { kind: "alpha-task", value: "drifted", source: "native-return" }, host: HOST, env }),
+        (error: unknown) => (error as { code?: string }).code === "COMPILED_LINEAGE_MISMATCH",
+      );
+      const failed = readSpawn(cwd, ticket.id, env);
+      assert.equal(failed.status, "errored");
+      assert.ok(failed.slot_released_at);
+      assert.equal(failed.compiled_acceptance?.accepted, false);
+      assert.equal(dispatchSnapshot(cwd, { capacity: 1, host: HOST, env }).active, 0);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
+  it("terminalizes and releases a running compiled ticket when finish detects a newer revision", async () => withHome(async (home) => {
+    const cwd = newCwd();
+    const env = fakeEnv(home, { BATON_SESSION_ID: "tree-compiled-finish-revision-drift" });
+    try {
+      configureLifecycleRoute(cwd, env);
+      const plan = {
+        schema_version: 1 as const,
+        identity: { plan_id: "compiled-finish-revision-drift", change_id: "demo" },
+        source_snapshot: { repo_root: cwd, revision: "head" },
+        selected_tasks: ["1.1"],
+        units: [{ id: "u1", mode: "verification-only" as const, task_ids: ["1.1"], prompt: "verify", verification: ["read"] }],
+      };
+      createApplyRun({ cwd, env, runId: "compiled-finish-revision-drift", host: HOST, plan });
+      const card = { id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "verification", native: true, tool: true };
+      const materialized = await materializeCompiledApplyFrontier({ cwd, env, host: HOST, runId: "compiled-finish-revision-drift", capacity: 1, cards: [card], automaticCards: [card], codingModels: [ROUTE] });
+      const ticket = materialized.materialized[0]!;
+      await reserveNext(cwd, { capacity: 1, host: HOST, limit: 1, env });
+      bindAgent(cwd, ticket.id, { executionHandle: { kind: "alpha-task", value: "revision-drift", source: "native-return" }, host: HOST, env });
+      const current = readApplyRun(cwd, "compiled-finish-revision-drift", { env });
+      appendApplyRun({ cwd, env, runId: "compiled-finish-revision-drift", host: HOST, plan, parent_revision: current.current_revision, parent_fingerprint: current.current_fingerprint });
+      await assert.rejects(
+        finishAgent(cwd, ticket.id, { status: "completed", conclusion: "done", host: HOST, env }),
+        (error: unknown) => (error as { code?: string }).code === "COMPILED_LINEAGE_MISMATCH",
+      );
+      const failed = readSpawn(cwd, ticket.id, env);
+      assert.equal(failed.status, "errored");
+      assert.ok(failed.slot_released_at);
+      assert.equal(failed.compiled_acceptance?.accepted, false);
+      assert.equal(dispatchSnapshot(cwd, { capacity: 1, host: HOST, env }).active, 0);
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

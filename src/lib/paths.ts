@@ -29,6 +29,22 @@ export const CURRENT_RUNTIME_NAMESPACE = "v2";
 export const ROUTE_HEALTH_NAME = "route-health.json";
 export const MODEL_AVAILABILITY_NAME = "model-availability.json";
 
+export class CompiledApplyPathError extends Error {
+  readonly code = "COMPILED_PATH_SEGMENT_INVALID";
+  constructor(label: string, value: unknown) {
+    super(`${label} must be one non-empty path segment: ${JSON.stringify(String(value))}`);
+    this.name = "CompiledApplyPathError";
+  }
+}
+
+function compiledPathSegment(label: string, value: unknown): string {
+  const segment = String(value);
+  if (!segment.trim() || segment === "." || segment === ".." || /[/\\\u0000-\u001f\u007f]/u.test(segment)) {
+    throw new CompiledApplyPathError(label, value);
+  }
+  return segment;
+}
+
 /** Host-keyed state names used by the current runtime. */
 export function hostRouteSnapshotName(host: string): string {
   return `cli-models-${String(host).trim().toLowerCase()}.json`;
@@ -95,7 +111,7 @@ export function compiledApplyRunsDir(cwd: string, env?: NodeJS.ProcessEnv): stri
 }
 
 export function compiledApplyRunDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(compiledApplyRunsDir(cwd, env), String(runId));
+  return path.join(compiledApplyRunsDir(cwd, env), compiledPathSegment("run id", runId));
 }
 
 export function compiledApplyRunStatePath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
@@ -103,7 +119,7 @@ export function compiledApplyRunStatePath(cwd: string, runId: string, env?: Node
 }
 
 export function compiledApplyRunBodyPath(cwd: string, runId: string, revision: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(compiledApplyRunDir(cwd, runId, env), "revisions", `revision-${String(revision)}.json`);
+  return path.join(compiledApplyRunDir(cwd, runId, env), "revisions", `revision-${compiledPathSegment("revision", revision)}.json`);
 }
 
 export function applyRunStateLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {

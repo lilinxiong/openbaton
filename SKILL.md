@@ -33,6 +33,9 @@ The director follows this loop for every explicit apply request:
    `contextFiles` entry, the applicable repository guidance, and the affected
    code before deciding scope or dispatch. A missing, blocked, stale, or
    ambiguous apply context stops the loop.
+   It must capture and audit the plan's `source_snapshot`, including repository
+   revision, task-ledger path and identity/hash, context-file hashes, and
+   selected-task fingerprint. Missing or stale snapshot evidence fails closed.
 2. It compiles a versioned, fine-grained plan containing exact task refs
    (`task_refs`/`task_ids`), dependencies, read context, write paths and
    allowed operations, an imperative patch recipe, done criteria, permitted validation,
