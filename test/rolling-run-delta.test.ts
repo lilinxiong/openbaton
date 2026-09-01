@@ -11,7 +11,7 @@ import {
   RollingRunError,
   RollingStorageRaceError,
 } from "../src/lib/rolling-run.js";
-import { rollingRunAcceptedDocumentPath, rollingRunCheckpointPath, rollingRunFactLogPath } from "../src/lib/paths.js";
+import { rollingRunDeltaDocumentPath, rollingRunCheckpointPath, rollingRunFactLogPath } from "../src/lib/paths.js";
 import type { PlanDelta, TaskManifestEntry, TaskSourceDescriptor } from "../src/lib/rolling-plan.js";
 
 const hash = "a".repeat(64);
@@ -124,7 +124,7 @@ describe("rolling delta ingestion and immutable supersession", () => {
     );
     assert.equal(fs.readFileSync(rollingRunFactLogPath(f.cwd, "run-1", f.env), "utf8"), beforeLog);
     assert.equal(fs.readFileSync(rollingRunCheckpointPath(f.cwd, "run-1", f.env), "utf8"), beforeCheckpoint);
-    assert.equal(fs.existsSync(rollingRunAcceptedDocumentPath(f.cwd, "run-1", "delta-bad", f.env)), false);
+    assert.equal(fs.existsSync(rollingRunDeltaDocumentPath(f.cwd, "run-1", "bad", f.env)), false);
     assert.equal(readRollingExecutionRun(f.cwd, "run-1", { env: f.env }).accepted_deltas.length, 1);
   });
 
@@ -142,7 +142,7 @@ describe("rolling delta ingestion and immutable supersession", () => {
         && cause.current_append_sequence === 1,
     );
     assert.equal(fs.readFileSync(rollingRunFactLogPath(f.cwd, "run-1", f.env), "utf8"), beforeLog);
-    assert.equal(fs.existsSync(rollingRunAcceptedDocumentPath(f.cwd, "run-1", "delta-race", f.env)), false);
+    assert.equal(fs.existsSync(rollingRunDeltaDocumentPath(f.cwd, "run-1", "race", f.env)), false);
   });
 
   it("makes identical accepted deltas idempotent even after sequence advancement", () => {

@@ -12,7 +12,7 @@ import {
   statusRollingExecutionRun,
   RollingRunError,
 } from "../src/lib/rolling-run.js";
-import { rollingRunAcceptedDocumentPath, rollingRunCheckpointPath, rollingRunFactLogPath } from "../src/lib/paths.js";
+import { rollingRunAcceptedDocumentPath, rollingRunCheckpointPath, rollingRunDeltaDocumentPath, rollingRunFactLogPath } from "../src/lib/paths.js";
 import { captureUnitLocalInputs } from "../src/lib/rolling-inputs.js";
 import { deriveRollingLifecycle, type RollingLifecycleContext } from "../src/lib/rolling-lifecycle.js";
 import type {
@@ -208,7 +208,7 @@ function assertRejectedDelta(
   assert.ok(failure.diagnostics?.some((item) => item.code === diagnostic), `${diagnostic}: ${JSON.stringify(failure.diagnostics)}`);
   assert.equal(fs.readFileSync(factLog, "utf8"), beforeLog);
   assert.equal(fs.readFileSync(checkpoint, "utf8"), beforeCheckpoint);
-  assert.equal(fs.existsSync(rollingRunAcceptedDocumentPath(f.cwd, runId, `delta-${rejected.delta_id}`, f.env)), false);
+  assert.equal(fs.existsSync(rollingRunDeltaDocumentPath(f.cwd, runId, rejected.delta_id, f.env)), false);
 }
 
 function assertFirstWindowStillAccepted(f: ReturnType<typeof fixture>, untouchedCount = 0): void {

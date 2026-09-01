@@ -85,6 +85,10 @@ describe("global Baton storage paths", () => {
     assert.equal(rollingRunAcceptedDocumentsDir(repo, runId), path.join(root, "accepted-documents"));
     assert.equal(rollingRunAcceptedDocumentPath(repo, runId, "doc-1"), path.join(root, "accepted-documents", "doc-1.json"));
     assert.equal(rollingRunDeltaDocumentPath(repo, runId, "delta-1"), path.join(root, "accepted-documents", "delta-delta-1.json"));
+    assert.throws(
+      () => rollingRunAcceptedDocumentPath(repo, runId, "delta-delta-1"),
+      (error: unknown) => (error as { code?: string }).code === ROLLING_PATH_SEGMENT_INVALID,
+    );
     assert.equal(rollingRunCheckpointPath(repo, runId), path.join(root, "checkpoint.json"));
     assert.equal(rollingRunLockPath(repo, runId), path.join(root, ".lock"));
     assert.ok(!fs.existsSync(path.join(repo, ".baton")));

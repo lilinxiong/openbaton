@@ -39,6 +39,7 @@ import {
 import {
   rollingRunAcceptedDocumentPath,
   rollingRunCheckpointPath,
+  rollingRunDeltaDocumentPath,
   rollingRunFactLogPath,
   rollingRunLockPath,
   rollingRunRoot,
@@ -262,7 +263,10 @@ function parseFacts(cwd: string, runId: string, env?: NodeJS.ProcessEnv): Rollin
     if (!record(value) || value.schema_version !== ROLLING_FACT_SCHEMA_VERSION || !sequence(value.append_sequence)
       || !nonEmpty(value.fact_id) || !nonEmpty(value.idempotency_key) || !nonEmpty(value.kind) || !nonEmpty(value.document_id)
       || !nonEmpty(value.document_fingerprint) || !nonEmpty(value.payload_fingerprint) || !nonEmpty(value.recorded_at)
-      || !nonEmpty(value.fingerprint)) error("malformed rolling fact", "ROLLING_STATE_CORRUPT");
+      || !nonEmpty(value.fingerprint)
+      || (value.kind === "delta"
+        ? !String(value.document_id).startsWith("delta-") || String(value.document_id).length === "delta-".length
+        : String(value.document_id).startsWith("delta-"))) error("malformed rolling fact", "ROLLING_STATE_CORRUPT");
     const fact = value as unknown as RollingFact;
     const { fingerprint: _fingerprint, ...without } = fact;
     if (fact.fingerprint !== factFingerprint(without)) error("rolling fact fingerprint mismatch", "ROLLING_STATE_CORRUPT");
@@ -277,8 +281,13 @@ function writeFacts(cwd: string, runId: string, facts: RollingFact[], env?: Node
   const text = facts.map((fact) => `${canonicalizeRolling(fact)}\n`).join("");
   atomicBytes(rollingRunFactLogPath(cwd, runId, env), Buffer.from(text, "utf8"));
 }
+function rollingFactDocumentPath(cwd: string, runId: string, fact: Pick<RollingFact, "kind" | "document_id">, env?: NodeJS.ProcessEnv): string {
+  return fact.kind === "delta"
+    ? rollingRunDeltaDocumentPath(cwd, runId, fact.document_id.slice("delta-".length), env)
+    : rollingRunAcceptedDocumentPath(cwd, runId, fact.document_id, env);
+}
 function factDocumentMatches(cwd: string, runId: string, fact: RollingFact, env?: NodeJS.ProcessEnv): boolean {
-  const file = rollingRunAcceptedDocumentPath(cwd, runId, fact.document_id, env);
+  const file = rollingFactDocumentPath(cwd, runId, fact, env);
   if (!fs.existsSync(file)) return false;
   try { return documentFingerprint(JSON.parse(fs.readFileSync(file, "utf8"))) === fact.document_fingerprint; } catch { return false; }
 }
@@ -505,11 +514,11 @@ function appendLocked(input: RollingRunAppendInput, normalized: { kind: RollingF
       throw new RollingRunError(`invalid rolling seal: ${(cause as Error).message}`, "ROLLING_SEAL_INVALID");
     }
   }
-  const documentFile = rollingRunAcceptedDocumentPath(input.cwd, input.runId, normalized.document_id, env);
+  const documentFile = rollingFactDocumentPath(input.cwd, input.runId, normalized, env);
   const documentHash = documentFingerprint(normalized.document);
   let createdDocument = false;
   if (fs.existsSync(documentFile)) {
-    if (!factDocumentMatches(input.cwd, input.runId, { document_id: normalized.document_id, document_fingerprint: documentHash } as RollingFact, env)) error("accepted document identity conflicts", "ROLLING_DOCUMENT_CONFLICT");
+    if (!factDocumentMatches(input.cwd, input.runId, { kind: normalized.kind, document_id: normalized.document_id, document_fingerprint: documentHash } as RollingFact, env)) error("accepted document identity conflicts", "ROLLING_DOCUMENT_CONFLICT");
   } else {
     atomicJson(documentFile, normalized.document);
     createdDocument = true;
@@ -549,6 +558,11 @@ function appendInput(input: RollingRunAppendInput): { kind: RollingFactKind; ide
   const document_id = input.document_id || fact.document_id || (kind === "delta" && record(payload) && nonEmpty(payload.delta_id) ? `delta-${payload.delta_id}` : `${kind}-${sha(payload).slice(0, 32)}`);
   const document = input.document !== undefined ? input.document : payload;
   if (![idempotency_key, fact_id, document_id].every(nonEmpty)) error("rolling fact identities are required", "ROLLING_FACT_INVALID");
+  if (kind === "delta"
+    ? !document_id.startsWith("delta-") || document_id.length === "delta-".length
+    : document_id.startsWith("delta-")) {
+    error("the delta- document namespace is reserved for delta facts", "ROLLING_FACT_INVALID");
+  }
   return { kind, idempotency_key, fact_id, document_id, payload, document };
 }
 

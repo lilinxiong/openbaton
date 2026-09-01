@@ -14,7 +14,7 @@ import {
   RollingRunError,
 } from "../src/lib/rolling-run.js";
 import { createApplyRun } from "../src/lib/apply-run.js";
-import { rollingRunAcceptedDocumentPath, rollingRunCheckpointPath, rollingRunFactLogPath } from "../src/lib/paths.js";
+import { rollingRunAcceptedDocumentPath, rollingRunCheckpointPath, rollingRunDeltaDocumentPath, rollingRunFactLogPath } from "../src/lib/paths.js";
 import type { PlanDelta, TaskSourceDescriptor } from "../src/lib/rolling-plan.js";
 
 const hash = "a".repeat(64);
@@ -117,7 +117,7 @@ describe("rolling run v2 append storage", () => {
     try { assert.throws(() => appendRollingPlanDelta({ cwd, env, runId: "run-1", expected_append_sequence: 0, delta: delta() })); }
     finally { fs.renameSync = original; }
     assert.equal(readRollingExecutionRun(cwd, "run-1", { env }).append_sequence, 0);
-    assert.equal(fs.existsSync(rollingRunAcceptedDocumentPath(cwd, "run-1", "delta-delta-1", env)), false);
+    assert.equal(fs.existsSync(rollingRunDeltaDocumentPath(cwd, "run-1", "delta-1", env)), false);
   });
 
   it("binds session and host identity and fails closed on corrupt state", () => {

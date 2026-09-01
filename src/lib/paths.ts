@@ -220,7 +220,9 @@ export function rollingRunAcceptedDocumentsDir(cwd: string, runId: string, env?:
 
 /** Canonical path for one immutable accepted document. */
 export function rollingRunAcceptedDocumentPath(cwd: string, runId: string, documentId: string, env?: NodeJS.ProcessEnv): string {
-  return path.join(rollingRunAcceptedDocumentsDir(cwd, runId, env), `${rollingPathSegment("document id", documentId)}.json`);
+  const id = rollingPathSegment("document id", documentId);
+  if (id.startsWith("delta-")) throw new RollingRunPathError("document id", documentId);
+  return path.join(rollingRunAcceptedDocumentsDir(cwd, runId, env), `${id}.json`);
 }
 
 /** Canonical path for a delta document, retaining the delta identity in its filename. */
