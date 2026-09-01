@@ -48,10 +48,14 @@ candidate and every exclusion reason. Quota, rate-limit, and uncallability
 evidence are session-local Baton cache facts; session evidence never carries to
 a new Grok session, which must recheck its routes.
 
-For every reservation, pass its prompt unchanged to a fresh exact-model Grok
-native worker via a `spawn_subagent` call with `background=true`, `isolation=none`,
+Grok does not currently guarantee a native child cwd, so it advertises
+`exact_execution_root=false`. An `isolated-worktree` reservation must fail
+closed as adapter-incompatible before any `spawn_subagent` call; do not fall
+back to shared execution. Only an explicitly shared reservation may pass its
+prompt unchanged to a fresh exact-model Grok native worker via a
+`spawn_subagent` call with `background=true`, `isolation=none`,
 `subagent_type=general-purpose`, and `resume_from` unset (`fork_context=false`).
-Immediately bind the returned opaque `subagent_id`, wait on real activity with
+For that shared worker, immediately bind the returned opaque `subagent_id`, wait on real activity with
 `get_command_or_subagent_output` for real native liveness, record exactly one terminal result,
 release the ticket before refilling capacity, and keep terminal scopes owned until
 release. Return to the director only for
@@ -159,9 +163,10 @@ for legacy callers; compiled apply rejects those flags instead of guessing.
 
 The adapter's ACP `initialize` `modelState.availableModels` response is the
 only model authority. Use the exact picker-visible id and reasoning effort;
-hidden rows and aliases are not selectable. The selected model is passed to the
-native Grok child call with a fresh context (`resume_from` unset,
-`fork_context=false`).
+hidden rows and aliases are not selectable. The selected model is passed only
+to a shared native Grok child with a fresh context (`resume_from` unset,
+`fork_context=false`). Isolated execution remains unsupported until the native
+subagent API guarantees the requested cwd.
 
 The current Baton CLI uses an opaque generic execution handle:
 
@@ -171,15 +176,16 @@ baton dispatch probe TICKET --host grok --execution-handle subagent_id=GROK_SUBA
 baton dispatch complete TICKET --host grok --text "short conclusion" --release --json
 ```
 
-Reserve first (`baton dispatch next --host grok --json`), pass the reservation
-prompt unchanged to Grok `spawn_subagent` with `background=true`,
+Reserve only explicit shared work (`baton dispatch next --host grok --json`),
+pass the reservation prompt unchanged to Grok `spawn_subagent` with `background=true`,
 `isolation=none`, `subagent_type=general-purpose`, and `model` set to the exact
 selected route id. Immediately bind the returned `subagent_id` as the opaque
 `subagent_id=...` handle, wait on native activity with
 `get_command_or_subagent_output`, record exactly one terminal result, and
 release before refilling capacity. Cancel with `kill_command_or_subagent`.
 A capacity backpressure response defers the same reservation without changing
-its model. An unknown model must fail without inheriting the parent model.
+its model. An unknown model must fail without inheriting the parent model. An
+isolated reservation is incompatible and must never reach this call.
 
 The root Grok conversation creates one opaque `BATON_SESSION_ID` before its
 first control-plane call. Every descendant and every control-plane operation

@@ -46,11 +46,23 @@ candidate and every exclusion reason. Quota, rate-limit, and uncallability
 evidence are session-local Baton cache facts; session evidence never carries to
 a new Codex session, which must recheck its routes.
 
-For every reservation, pass its prompt unchanged to a fresh exact-model Codex
-native worker (the native child, `fork_context=false`), immediately bind the returned opaque
-`task_name`, wait on real native liveness/activity, record exactly one terminal result,
-release the ticket before refilling capacity, and keep terminal scopes owned until
-release. Return to the director only for
+For an `isolated-worktree` reservation, pass its prompt unchanged on stdin to
+one fresh `codex exec --json` child. Launch the child with the tool workdir set
+to the reservation's `execution_root` and with `-C` set to that same absolute
+root. Select the child with the reserved `ticket.route_id` via `--model`; when
+the ticket has a `reasoning_effort`, pass that separate value through Codex's
+`model_reasoning_effort` config. Never pass the composite model selection id as
+the model argument. Keep the process live, parse its early JSONL
+`thread.started` event, and bind the returned thread/task id together with the
+complete five-field exact-root acknowledgement before treating the worker as
+started. A missing id, exited process, root mismatch, or failed bind is a
+native launch failure. Never use `spawn_agent` for isolated execution.
+
+Only an explicitly shared reservation may use the native `spawn_agent` path
+with `fork_context=false`; its handle has no isolated-root acknowledgement.
+For either mode, wait on real native liveness/activity, record exactly one
+terminal result, release the ticket before refilling capacity, and keep
+terminal scopes owned until release. Return to the director only for
 source staleness, changed contracts, scope changes, safety-blocked partial
 mutation, or structured `PLAN_INSUFFICIENT`. A worker must not redesign or
 broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
@@ -155,22 +167,33 @@ for legacy callers; compiled apply rejects those flags instead of guessing.
 
 The adapter's app-server `model/list` response is the only model authority.
 Use the exact picker-visible id, reasoning effort, service tier, and modality;
-hidden rows and aliases are not selectable. The selected model is passed to the
-native Codex child call with a fresh context (`fork_context=false`).
+hidden rows and aliases are not selectable. Pass the reserved `ticket.route_id`
+and `ticket.reasoning_effort` separately to a fresh native Codex child.
 
-The current Baton CLI uses an opaque generic execution handle:
+An isolated reservation uses this native launch shape (the invoking tool's
+workdir must independently equal `$EXECUTION_ROOT`):
 
 ```text
-baton dispatch bind TICKET --host codex --execution-handle task_name=CODEX_TASK_NAME --json
+codex exec --json -C "$EXECUTION_ROOT" --model "$ROUTE_ID" -c "model_reasoning_effort=\"$REASONING_EFFORT\"" -
+```
+
+Omit the `-c` option when `ticket.reasoning_effort` is null. Pass the prompt
+unchanged on stdin. While that exact-root process is still live, parse the
+early JSON thread/task id and bind it with the reservation identity:
+
+```text
+baton dispatch bind TICKET --host codex --execution-handle task_name=CODEX_THREAD_OR_TASK_ID --repository-id REPOSITORY_ID --git-common-dir-identity GIT_COMMON_DIR_IDENTITY --execution-root "$EXECUTION_ROOT" --base-tree BASE_TREE --worktree-record-id WORKTREE_RECORD_ID --json
 baton dispatch probe TICKET --host codex --execution-handle task_name=CODEX_TASK_NAME --state running --activity heartbeat --json
 baton dispatch complete TICKET --host codex --text "short conclusion" --release --json
 ```
 
-Reserve first (`baton dispatch next --host codex --json`), pass the reservation
-prompt unchanged to the native Codex child API, immediately bind its returned
-`task_name` as the opaque `task_name=...` handle, wait on native liveness/activity, record
-exactly one terminal result, and release before refilling capacity. A capacity
-backpressure response defers the same reservation without changing its model.
+Probe and release may omit the repeated five-field identity because the
+complete bound handle remains authoritative; if any identity field is
+supplied, all five must be supplied and identical. For explicit shared mode,
+reserve first, use `spawn_agent`, and bind its ordinary opaque `task_name`
+without exact-root flags. In both modes, record exactly one terminal result
+and release before refilling capacity. A capacity backpressure response defers
+the same reservation without changing its model.
 
 The root Codex conversation creates one opaque `BATON_SESSION_ID` before its
 first control-plane call. Every descendant and every control-plane operation

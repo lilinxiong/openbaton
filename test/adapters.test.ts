@@ -26,6 +26,7 @@ describe("manifest adapter registry", () => {
     const adapters = listCliAdapters(env);
     assert.deepEqual(adapters.map((a) => a.id), ["alpha", "beta"]);
     assert.equal(adapters[0].host.executionHandleKind, "alpha-task");
+    assert.equal(adapters[0].host.exactExecutionRoot, undefined);
     assert.equal(adapters[1].host.defaultMaxConcurrent, 5);
     assert.equal(discoverAdapterManifests(fixtureAdapterEnv())[0].quota.max_concurrent_subagents, 2);
     assert.strictEqual(getCliAdapter("alpha", env).id, "alpha");
@@ -38,6 +39,7 @@ describe("manifest adapter registry", () => {
     } }), { max_concurrent_subagents: 3, max_depth: 2 });
     assert.deepEqual(normalizeCliRuntimeCapabilities({ maxConcurrent: 2 }), { max_concurrent_subagents: 2 });
     assert.deepEqual(normalizeCliRuntimeCapabilities({ max_concurrent_subagents: 1, maxConcurrent: 4 }), { max_concurrent_subagents: 1 });
+    assert.deepEqual(normalizeCliRuntimeCapabilities({ capabilities: { exactExecutionRoot: true } }), { exact_execution_root: true });
   });
   it("accepts the legacy manifest quota spelling but returns only the canonical field", () => {
     const manifest = JSON.parse(fs.readFileSync(`${FIXTURE_ALPHA}/adapter.json`, "utf8")) as Record<string, unknown>;

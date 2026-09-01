@@ -13,19 +13,34 @@ import {
 import { sessionUid } from "../lib/spawn.js";
 import { refillRollingRun, synchronizeRollingTicketFacts } from "../lib/rolling-control.js";
 import type { WritableLike } from "../types.js";
-import type { NativeExecutionHandleKind } from "../adapters/contract.js";
+import {
+  normalizeExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+  type NativeExecutionHandleKind,
+} from "../adapters/contract.js";
+import type { NativeExecutionHandle } from "../lib/spawn.js";
+
+const EXACT_ROOT_FLAGS: ReadonlyArray<readonly [string, keyof ExactExecutionRootIdentity]> = [
+  ["repository-id", "repository_id"],
+  ["git-common-dir-identity", "git_common_dir_identity"],
+  ["execution-root", "execution_root"],
+  ["base-tree", "base_tree"],
+  ["worktree-record-id", "worktree_record_id"],
+];
+
+const EXACT_ROOT_USAGE = "--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID";
 
 const USAGE = `usage:
   baton dispatch next --host HOST [--capacity N] [--limit N] --json
-  baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
+  baton dispatch bind TICKET --execution-handle KIND=VALUE [${EXACT_ROOT_USAGE}] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
+  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE [${EXACT_ROOT_USAGE}] --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
   baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
   baton dispatch fail TICKET --host HOST --code CODE --message MESSAGE [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--message MESSAGE] [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch close TICKET --host HOST [--message MESSAGE] [--release] --json
-  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
+  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE [${EXACT_ROOT_USAGE}]] --json
   baton dispatch recover [--host HOST] [--stale-ms N] --json
   baton dispatch status --host HOST [--capacity N] --json
 
@@ -62,7 +77,7 @@ function validateFlags(args: string[]): void {
   const values = new Set([
     "host", "capacity", "limit", "execution-handle", "code", "message", "observed-capacity",
     "state", "activity", "phase", "text", "next", "blocker", "remaining-percent", "reset-at",
-    "probe-sequence", "stale-ms",
+    "probe-sequence", "stale-ms", ...EXACT_ROOT_FLAGS.map(([flag]) => flag),
   ]);
   const booleans = new Set(["json", "needs-input", "release"]);
   for (let index = 0; index < args.length; index += 1) {
@@ -93,7 +108,7 @@ function stringFlag(flags: FlagMap, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function executionHandleFlag(flags: FlagMap): { kind: NativeExecutionHandleKind; value: string; source: "manual" } | undefined {
+function executionHandleFlag(flags: FlagMap): NativeExecutionHandle | undefined {
   const raw = stringFlag(flags, "execution-handle");
   let kind: string | undefined;
   let value: string | undefined;
@@ -103,11 +118,18 @@ function executionHandleFlag(flags: FlagMap): { kind: NativeExecutionHandleKind;
     kind ||= raw.slice(0, separator);
     value ||= raw.slice(separator + 1);
   }
-  if (!kind && !value) return undefined;
+  const presentExactFlags = EXACT_ROOT_FLAGS.filter(([flag]) => stringFlag(flags, flag) !== undefined);
+  if (!kind && !value && presentExactFlags.length === 0) return undefined;
   if (!kind || !value || !/^[a-z][a-z0-9._-]*$/.test(kind)) {
     throw new Error(USAGE.trim());
   }
-  return { kind: kind as NativeExecutionHandleKind, value, source: "manual" };
+  if (presentExactFlags.length !== 0 && presentExactFlags.length !== EXACT_ROOT_FLAGS.length) {
+    throw new Error("exact execution-root acknowledgement requires all five identity flags");
+  }
+  const exactRoot = presentExactFlags.length === 0
+    ? undefined
+    : normalizeExactExecutionRootIdentity(Object.fromEntries(EXACT_ROOT_FLAGS.map(([flag, field]) => [field, stringFlag(flags, flag)])));
+  return { kind: kind as NativeExecutionHandleKind, value, source: "manual", ...exactRoot };
 }
 
 function print(stdout: WritableLike, value: unknown, json = true): void {

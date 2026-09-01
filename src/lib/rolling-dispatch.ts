@@ -30,6 +30,12 @@ import {
 } from "./ticket-materialization.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 import type { RollingDiagnostic } from "./rolling-plan.js";
+import {
+  normalizeExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+} from "../adapters/contract.js";
+import type { WorktreeRecord } from "./worktree-execution.js";
 
 type RollingStandalonePlan = Extract<StandalonePlan, { director_local: false }>;
 
@@ -45,6 +51,10 @@ export interface RollingRefillInput extends RollingDispatchSelectionInput {
   materialization?: Omit<TicketMaterializationBatchOptions, "env">;
   /** Injectable batch materializer, primarily for adapters and tests. */
   materializer?: typeof materializeStandalonePlansBatchAsync;
+  /** Exact setup result accepted by the parent, keyed by `unit_key@version`. */
+  exact_execution_roots?: Readonly<Record<string, ExactExecutionRootIdentity>>;
+  /** Equivalent setup-record input; accepted only when its immutable lineage is exact. */
+  worktree_records?: Readonly<Record<string, WorktreeRecord>>;
 }
 
 export interface RollingRefillResult {
@@ -109,6 +119,37 @@ function approvalFor(
   };
 }
 
+function exactRootFor(input: RollingRefillInput, unit: UnitVersion, ref: string): ExactExecutionRootIdentity | undefined {
+  const direct = input.exact_execution_roots?.[ref] ?? input.exact_execution_roots?.[unit.unit_key];
+  const record = input.worktree_records?.[ref] ?? input.worktree_records?.[unit.unit_key];
+  let fromRecord: ExactExecutionRootIdentity | undefined;
+  if (record) {
+    if (record.execution_mode !== "isolated-worktree" || record.setup_state !== "verified"
+      || record.run_id !== input.run_id || record.unit_key !== unit.unit_key || record.unit_version !== unit.version) {
+      throw new Error(`WORKTREE_RECORD_DRIFT: ${ref} setup record does not match the selected rolling unit`);
+    }
+    fromRecord = normalizeExactExecutionRootIdentity({
+      repository_id: record.repository_id,
+      git_common_dir_identity: record.git_common_dir_identity,
+      execution_root: record.execution_root,
+      base_tree: record.base_tree,
+      worktree_record_id: record.record_id,
+    });
+  }
+  const normalized = direct ? normalizeExactExecutionRootIdentity(direct) : undefined;
+  if (normalized && fromRecord && !sameExactExecutionRootIdentity(normalized, fromRecord)) {
+    throw new Error(`WORKTREE_RECORD_DRIFT: ${ref} exact-root inputs disagree`);
+  }
+  const identity = normalized ?? fromRecord;
+  if (unit.worktree_mode === "isolated-worktree" && !identity) {
+    throw new Error(`ISOLATED_EXECUTION_IDENTITY_PARTIAL: ${ref} has no accepted exact execution root`);
+  }
+  if (unit.worktree_mode !== "isolated-worktree" && identity) {
+    throw new Error(`ISOLATED_EXECUTION_IDENTITY_FORBIDDEN: ${ref} is not isolated-worktree`);
+  }
+  return identity;
+}
+
 function planFor(
   input: RollingRefillInput,
   unit: UnitVersion,
@@ -129,6 +170,7 @@ function planFor(
   const patch = unit.execution_mode === "patch-only";
   const writePaths = patch ? (unit.write_paths || []) : [];
   const allowedOperations = patch ? (unit.allowed_operations || []) : [];
+  const exactRoot = exactRootFor(input, unit, ref);
   const lineage: RollingUnitLineage = {
     schema_version: 1,
     run_id: input.run_id,
@@ -137,6 +179,8 @@ function planFor(
     unit_fingerprint: fingerprintUnitVersion(unit),
     task_keys: [...unit.task_keys].sort(),
     mode: unit.execution_mode,
+    ...(unit.worktree_mode === undefined ? {} : { worktree_mode: unit.worktree_mode }),
+    ...(exactRoot || {}),
   };
   const approval = approvalFor(input, selection, ref, candidate, now);
   const ticket = buildSpawnTicket({

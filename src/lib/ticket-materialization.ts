@@ -14,6 +14,8 @@ import { listSpawns, writeSpawn, type SpawnTicket, type StandalonePlan } from ".
 import { applyCommitBaselineToPlan } from "./ops-dispatch.js";
 import { assertDisjointWriteScopes, writePathsOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
 import { APPLY_RUN_STATE_TEMP_FILE_PREFIX } from "./apply-run.js";
+import { extractExactExecutionRootIdentity } from "../adapters/contract.js";
+import { resolveWorktreeTopology } from "./worktree-topology.js";
 
 /** Dependencies are injectable so Git/stream/race failures can be tested
  * without weakening the production stable-observation boundary. */
@@ -106,6 +108,25 @@ function removeIfNew(file: string, existed: boolean): void {
   }
 }
 
+function ticketExecutionRoot(cwd: string, ticket: SpawnTicket, writeAllowlist: string[]): string {
+  const worktreeMode = ticket.rolling_unit_lineage?.worktree_mode;
+  let identity;
+  try { identity = extractExactExecutionRootIdentity(ticket); }
+  catch { throw new Error("ISOLATED_EXECUTION_IDENTITY_PARTIAL: ticket exact-root identity is invalid"); }
+  if (worktreeMode !== "isolated-worktree") {
+    if (identity) throw new Error("ISOLATED_EXECUTION_IDENTITY_FORBIDDEN: shared or legacy ticket carries exact-root identity");
+    return cwd;
+  }
+  if (!identity) throw new Error("ISOLATED_EXECUTION_IDENTITY_PARTIAL: isolated ticket requires exact-root identity");
+  const topology = resolveWorktreeTopology(identity.execution_root, writeAllowlist);
+  if (topology.repositories.length !== 1
+    || topology.repositories[0]!.repository_id !== identity.repository_id
+    || topology.repositories[0]!.repository_root !== identity.execution_root) {
+    throw new Error("EXECUTION_ROOT_SCOPE_ESCAPE: write scope does not belong to the isolated execution root");
+  }
+  return identity.execution_root;
+}
+
 function listTemporaryRunStateFiles(cwd: string, env?: NodeJS.ProcessEnv): Set<string> {
   const root = compiledApplyRunsDir(cwd, env);
   const found = new Set<string>();
@@ -156,7 +177,7 @@ export async function materializeStandalonePlanAsync(
     // Keep a single-plan caller safe as well; batch callers additionally
     // preflight the complete wave so they cannot leave partial artifacts.
     assertWriteScopesAvailable(cwd, [{ key: planned.ticket.id, write_paths: writeAllowlist }], options.env);
-    const baseline = await captureWrite(cwd, safety);
+    const baseline = await captureWrite(ticketExecutionRoot(cwd, planned.ticket, writeAllowlist), safety);
     planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline, writeAllowlist, allowedOperations });
     planned.ticket.mode = "write";
     planned.ticket.read_only = false;
@@ -218,7 +239,7 @@ export async function materializeStandalonePlansBatchAsync(
     const writeAllowlist = entry.writeAllowlist || [];
     const allowedOperations = entry.allowedOperations || ["write", "create"];
     if (writeAllowlist.length) {
-      const baseline = await captureWrite(cwd, safety);
+      const baseline = await captureWrite(ticketExecutionRoot(cwd, planned.ticket, writeAllowlist), safety);
       planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline, writeAllowlist, allowedOperations });
       planned.ticket.mode = "write";
       planned.ticket.read_only = false;

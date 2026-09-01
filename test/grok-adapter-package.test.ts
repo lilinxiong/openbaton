@@ -83,6 +83,7 @@ describe("external Grok adapter package", () => {
     assert.deepEqual(manifests.map((manifest) => manifest.adapter.id), ["grok"]);
     assert.equal(manifests[0].catalog.command, "catalog.mjs");
     assert.equal(manifests[0].native.execution_handle_kind, "subagent_id");
+    assert.equal(manifests[0].native.exact_execution_root, false);
     assert.equal(manifests[0].invocation.signal, "GROK_SESSION_ID");
     assert.equal(manifests[0].quota.max_concurrent_subagents, 16);
     assert.equal(manifests[0].quota.max_depth, 1);
@@ -302,6 +303,9 @@ process.exit(0);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
     assert.match(sourceRuntimeText, /spawn_subagent/);
     assert.match(sourceRuntimeText, /subagent_id=/);
+    assert.match(sourceRuntimeText, /exact_execution_root=false/);
+    assert.match(sourceRuntimeText, /isolated-worktree[\s\S]*fail[\s\S]*before any `spawn_subagent`/);
+    assert.match(sourceRuntimeText, /explicitly shared[\s\S]*`spawn_subagent`/);
     assert.match(sourceRuntimeText, /^disable-model-invocation:\s*true$/m);
     assert.match(sourceRuntimeText, /^user-invocable:\s*true$/m);
     assert.match(
@@ -324,7 +328,7 @@ process.exit(0);
     assert.equal(conflict.targets.find((item) => item.path === target?.path)?.action, "conflict");
   });
 
-  it("omits catalog capabilities when Grok does not report a concurrent limit", async () => {
+  it("retains the false exact-root capability when Grok does not report a concurrent limit", async () => {
     const { env } = isolatedEnv();
     installPackage(env);
     env.BATON_GROK_PATH = fakeGrokExecutable(acpInitializeFake(`{
@@ -332,7 +336,7 @@ process.exit(0);
       _meta: { agentVersion: "fake-grok/1", modelState: { currentModelId: "grok-visible", availableModels: [{ modelId: "grok-visible", name: "Visible" }] } }
     }`));
     const catalog = await getCliAdapter("grok", env).discoverModels({ cwd: repoRoot, env });
-    assert.equal(catalog.capabilities, undefined);
+    assert.deepEqual(catalog.capabilities, { exact_execution_root: false });
     assert.equal(concurrentSubagentsFromInitialize({
       _meta: { modelState: { availableModels: [{ modelId: "grok-visible" }] } },
     }), undefined);
@@ -381,7 +385,7 @@ process.exit(0);
       }
     }`));
     const catalog = await getCliAdapter("grok", env).discoverModels({ cwd: repoRoot, env });
-    assert.deepEqual(catalog.capabilities, { max_concurrent_subagents: 32 });
+    assert.deepEqual(catalog.capabilities, { max_concurrent_subagents: 32, exact_execution_root: false });
 
     await initProject(cwd, { env });
     const output: string[] = [];

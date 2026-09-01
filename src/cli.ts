@@ -223,12 +223,12 @@ Usage:
   baton run RUN --seal-task TASK --seal-file PATH|- [--json]
   baton run RUN --reconcile [--task TASK] [--json]
   baton dispatch next --host HOST [--capacity N] --json
-  baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
+  baton dispatch bind TICKET --execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found --json
+  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID] --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" --json
   baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
-  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
+  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID]] --json
   baton dispatch fail|close TICKET --host HOST [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json

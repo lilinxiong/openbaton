@@ -24,6 +24,8 @@ import { buildSpawnTicket, nextSpawnId, writeSpawn, type SpawnTicket } from "../
 import { configureCli } from "./configure.js";
 import { fakeEnv, withHome } from "./home.js";
 import type { ModelSelectionApproval } from "../src/types.js";
+import { buildRollingStandalonePlans } from "../src/lib/rolling-dispatch.js";
+import type { PlanDelta, UnitVersion } from "../src/lib/rolling-plan.js";
 
 const HOST = "alpha";
 const ROUTE = "alpha/rolling";
@@ -145,6 +147,42 @@ function assertUnchanged(before: SpawnTicket, after: SpawnTicket): void {
 }
 
 describe("rolling dispatch artifact boundaries", () => {
+  it("fails closed without an accepted isolated root and propagates one complete identity through every blueprint", () => withHome((home) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-exact-blueprint-"));
+    const env = fakeEnv(home, { BATON_SESSION_ID: "rolling-exact-blueprint" });
+    configureCli(cwd, env, HOST, [ROUTE]);
+    publishRouteSnapshot(cwd, { models: [{ id: ROUTE, route_id: ROUTE, provider: HOST, supportedReasoningEfforts: [] }] }, new Date("2026-09-01T00:00:00.000Z"), { cli: HOST, host: HOST, env });
+    markRouteAvailable(cwd, { host: HOST, routeId: ROUTE }, { now: "2026-09-01T00:00:00.000Z", env });
+    const unit: UnitVersion = {
+      schema_version: 1, unit_key: "unit-exact", version: 1, task_keys: ["task-exact"], depends_on: [],
+      execution_mode: "patch-only", worktree_mode: "isolated-worktree", description: "exact blueprint",
+      write_paths: ["src/exact.ts"], allowed_operations: ["write"], completion_criteria: ["exact"], permitted_validation: ["read"],
+    };
+    const delta: PlanDelta = { schema_version: 1, delta_id: "delta-exact", prepared_from_append_sequence: 0, unit_versions: [unit], gate_versions: [], task_coverage: [] };
+    const base = {
+      cwd, env, run_id: "run-exact", host: HOST, accepted_deltas: [delta],
+      cards: [{ id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "coding", executable: true }],
+      automatic_cards: [{ id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "coding", executable: true }],
+      coding_models: [ROUTE], available_capacity: 1, stable_order: ["unit-exact@1"],
+      now: "2026-09-01T00:00:00.000Z", catalog_fingerprint: "catalog-exact",
+    };
+    const exactRoot = {
+      repository_id: "1".repeat(64), git_common_dir_identity: "2".repeat(64),
+      execution_root: path.join(cwd, "root"), base_tree: "3".repeat(40), worktree_record_id: "record-exact",
+    };
+    try {
+      assert.throws(() => buildRollingStandalonePlans(base), /ISOLATED_EXECUTION_IDENTITY_PARTIAL/);
+      const result = buildRollingStandalonePlans({ ...base, exact_execution_roots: { "unit-exact@1": exactRoot } });
+      const plan = result.plans[0]!;
+      assert.deepEqual(plan.ticket.rolling_unit_lineage, { schema_version: 1, run_id: "run-exact", unit_key: "unit-exact", unit_version: 1, unit_fingerprint: plan.ticket.rolling_unit_lineage!.unit_fingerprint, task_keys: ["task-exact"], mode: "patch-only", worktree_mode: "isolated-worktree", ...exactRoot });
+      assert.deepEqual(plan.receipt.rolling_unit_lineage, plan.ticket.rolling_unit_lineage);
+      assert.equal((plan.ticket.work_unit as Record<string, unknown>).execution_root, exactRoot.execution_root);
+      assert.equal(plan.receipt.execution_root, exactRoot.execution_root);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  }));
+
   it("reserves the persisted lineage and binds without rolling-run state", async () => withHome(async (home) => {
     const f = fixture(home, "rolling-dispatch-reserve-bind");
     try {

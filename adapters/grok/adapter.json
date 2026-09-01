@@ -18,7 +18,8 @@
     "environment": "Grok Build TUI session runtime"
   },
   "native": {
-    "execution_handle_kind": "subagent_id"
+    "execution_handle_kind": "subagent_id",
+    "exact_execution_root": false
   },
   "runtime_skill": {
     "source": "runtime/SKILL.md",

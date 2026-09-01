@@ -68,6 +68,7 @@ describe("external Codex adapter package", () => {
     assert.deepEqual(manifests.map((manifest) => manifest.adapter.id), ["codex"]);
     assert.equal(manifests[0].catalog.command, "catalog.mjs");
     assert.equal(manifests[0].native.execution_handle_kind, "task_name");
+    assert.equal(manifests[0].native.exact_execution_root, true);
     assert.equal(manifests[0].quota.max_concurrent_subagents, 3);
     assert.equal(getCliAdapter("codex", env).host.defaultMaxConcurrent, 3);
     assert.equal(getCliAdapter("codex", env).host.defaultMaxDepth, 1);
@@ -193,6 +194,15 @@ describe("external Codex adapter package", () => {
     assert.match(sourceRuntimeText, /root agent tree/);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
     assert.match(sourceRuntimeText, /\$baton/);
+    assert.match(sourceRuntimeText, /codex exec --json/);
+    assert.match(sourceRuntimeText, /-C "\$EXECUTION_ROOT"/);
+    assert.match(sourceRuntimeText, /tool workdir set[\s\S]*execution_root/);
+    assert.match(sourceRuntimeText, /ticket\.route_id/);
+    assert.match(sourceRuntimeText, /ticket\.reasoning_effort/);
+    assert.match(sourceRuntimeText, /thread\.started/);
+    assert.match(sourceRuntimeText, /Never use `spawn_agent` for isolated execution/);
+    assert.match(sourceRuntimeText, /explicitly shared[\s\S]*`spawn_agent`/);
+    assert.doesNotMatch(sourceRuntimeText, /--add-dir/);
     assert.doesNotMatch(sourceRuntimeText, /^disable-model-invocation:/m);
     assert.doesNotMatch(sourceRuntimeText, /^user-invocable:/m);
     assert.match(fs.readFileSync(sourceRuntimePolicy, "utf8"), /allow_implicit_invocation:\s*false/);
