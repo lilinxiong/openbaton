@@ -50,6 +50,7 @@ import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
 import { defaultCompiledApplyHandler } from "./lib/compiled-apply-cli.js";
 import { runRollingRun, type RollingRunHandler } from "./commands/run.js";
+import { runIntegration, type IntegrationCommandHandler } from "./commands/integration.js";
 
 
 interface RunOptions {
@@ -64,6 +65,8 @@ interface RunOptions {
   compiledApplyHandler?: CompiledApplyHandler;
   /** Injectable boundary for the source-neutral rolling-run protocol. */
   rollingRunHandler?: RollingRunHandler;
+  /** Injectable parent integration admission boundary. */
+  integrationHandler?: IntegrationCommandHandler;
 }
 
 export type CompiledApplyOperation = "plan" | "status" | "accept-gate" | "reconcile";
@@ -222,6 +225,8 @@ Usage:
   baton run RUN --accept-gate GATE@VERSION --text SUMMARY [--dispatch] [--json]
   baton run RUN --seal-task TASK --seal-file PATH|- [--json]
   baton run RUN --reconcile [--task TASK] [--json]
+  baton integration begin --run RUN --repository-id SHA256 --bundle-id ID --expected-before-tree GIT_OBJECT [--order-override N] [--json]
+               admit the current cwd to the repository queue; does not apply a bundle
   baton dispatch next --host HOST [--capacity N] --json
   baton dispatch bind TICKET --execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
@@ -255,6 +260,7 @@ export async function run(argv: string[], {
   prompt,
   compiledApplyHandler,
   rollingRunHandler,
+  integrationHandler,
 }: RunOptions = {}): Promise<number> {
   const streamStdin = typeof stdin === "string" ? process.stdin : stdin;
   const injectedStdin = typeof stdin === "string" ? stdin : undefined;
@@ -298,6 +304,8 @@ export async function run(argv: string[], {
         return await cmdApply(args, cwd, stdout, env, streamStdin, injectedStdin, compiledApplyHandler);
       case "run":
         return await runRollingRun(args, { cwd, stdout, stdin: streamStdin, injectedStdin, env, handler: rollingRunHandler });
+      case "integration":
+        return await runIntegration(args, { cwd, stdout, env, handler: integrationHandler });
       case "dispatch":
         return await runDispatch(args, { cwd, stdout, env });
       case "models":

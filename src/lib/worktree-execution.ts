@@ -171,6 +171,38 @@ export interface IntegrationConflict {
   detail?: string;
 }
 
+/** Frozen parent-side facts authorizing one narrow begin-integration action. */
+export interface IntegrationBeginAuthorization {
+  schema_version: 1;
+  expected_before_tree: string;
+  observed_before_tree: string;
+  head: string;
+  head_tree: string;
+  branch_ref: string;
+  refs_digest: string;
+  reflog: { count: number; checksum: string };
+  staged_tree: string;
+  index_control: { algorithm: string; checksum: string; entry_count: number };
+  control_facts_fingerprint: string;
+  dirty_facts_fingerprint: string;
+  git_operation: string | null;
+  parent_order_override: number | null;
+  fingerprint: string;
+}
+
+/** Stable queue order derived only from accepted rolling-plan lineage. */
+export interface IntegrationQueueOrderProvenance {
+  schema_version: 1;
+  source: "rolling-accepted-delta";
+  dependency_rank: number;
+  accepted_delta_index: number;
+  stable_unit_index: number;
+  unit_ref: string;
+  depends_on: string[];
+  parent_order_override: number | null;
+  fingerprint: string;
+}
+
 export interface IntegrationRecord {
   schema_version: typeof INTEGRATION_RECORD_SCHEMA_VERSION;
   integration_id: string;
@@ -184,6 +216,10 @@ export interface IntegrationRecord {
   before_tree: string;
   after_tree?: string;
   conflicts: IntegrationConflict[];
+  /** Optional so pre-ordering v1 records remain readable via queue_position. */
+  queue_order?: IntegrationQueueOrderProvenance;
+  /** Optional so persisted v1 records written before begin authorization remain readable. */
+  authorization?: IntegrationBeginAuthorization;
   resolution_id?: string;
   idempotency_keys: string[];
   created_at: string;
@@ -255,6 +291,7 @@ type AnyRecord = Record<string, unknown>;
 const HASH = /^[0-9a-f]{64}$/u;
 const GIT_OBJECT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u;
+const UNIT_VERSION_REF = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@[1-9][0-9]*$/u;
 const SETUP_STATES = new Set<WorktreeSetupState>(["planned", "registering", "registered", "verified", "failed"]);
 const LIFECYCLE_STATES = new Set<WorktreeLifecycleState>([
   "preparing", "worker_active", "terminal_awaiting_audit", "rejected", "bundle_ready", "integrating",
@@ -529,7 +566,7 @@ export function validateIntegrationRecord(input: unknown): RollingValidationResu
   if (!isRecord(input)) return { valid: false, diagnostics: [{ code: "INVALID_SHAPE", message: "integration record must be an object", path: root }] };
   exactFields(input, [
     "schema_version", "integration_id", "revision", "run_id", "repository_id", "git_common_dir_identity", "bundle_id",
-    "queue_position", "state", "before_tree", "after_tree", "conflicts", "resolution_id", "idempotency_keys", "created_at", "updated_at", "fingerprint",
+    "queue_position", "state", "before_tree", "after_tree", "conflicts", "queue_order", "authorization", "resolution_id", "idempotency_keys", "created_at", "updated_at", "fingerprint",
   ], root, diagnostics);
   if (input.schema_version !== INTEGRATION_RECORD_SCHEMA_VERSION) add(diagnostics, "UNKNOWN_SCHEMA", `schema_version must be ${INTEGRATION_RECORD_SCHEMA_VERSION}`, `${root}.schema_version`);
   for (const key of ["integration_id", "run_id", "bundle_id"] as const) requiredIdentity(input, key, root, diagnostics);
@@ -540,6 +577,73 @@ export function validateIntegrationRecord(input: unknown): RollingValidationResu
   requiredHash(input, "before_tree", root, diagnostics, true);
   if (input.after_tree !== undefined && (!text(input.after_tree) || !GIT_OBJECT.test(input.after_tree))) add(diagnostics, "INVALID_HASH", "after_tree has an invalid hash", `${root}.after_tree`);
   if (!Array.isArray(input.conflicts) || !input.conflicts.every((item) => isRecord(item) && text(item.path) && text(item.kind))) add(diagnostics, "INVALID_SHAPE", "conflicts must contain path/kind objects", `${root}.conflicts`);
+  if (input.queue_order !== undefined) {
+    const order = input.queue_order;
+    const orderRoot = `${root}.queue_order`;
+    if (!isRecord(order)) add(diagnostics, "INVALID_SHAPE", "queue_order must be an object", orderRoot);
+    else {
+      exactFields(order, [
+        "schema_version", "source", "dependency_rank", "accepted_delta_index", "stable_unit_index", "unit_ref",
+        "depends_on", "parent_order_override", "fingerprint",
+      ], orderRoot, diagnostics);
+      if (order.schema_version !== 1 || order.source !== "rolling-accepted-delta") add(diagnostics, "UNKNOWN_SCHEMA", "queue_order must use rolling accepted-delta schema 1", orderRoot);
+      for (const key of ["dependency_rank", "accepted_delta_index", "stable_unit_index"] as const) {
+        if (!safeInteger(order[key])) add(diagnostics, "INVALID_REVISION", `${key} must be non-negative`, `${orderRoot}.${key}`);
+      }
+      if (!text(order.unit_ref) || !UNIT_VERSION_REF.test(String(order.unit_ref))) add(diagnostics, "INVALID_IDENTITY", "unit_ref must be a stable unit version reference", `${orderRoot}.unit_ref`);
+      uniqueStrings(order.depends_on, null, `${orderRoot}.depends_on`, diagnostics);
+      if (Array.isArray(order.depends_on)) {
+        for (const [index, dependency] of order.depends_on.entries()) {
+          if (text(dependency) && !UNIT_VERSION_REF.test(dependency)) {
+            add(diagnostics, "INVALID_IDENTITY", "dependency must be a stable unit version reference", `${orderRoot}.depends_on.${index}`);
+          }
+        }
+      }
+      if (order.parent_order_override !== null && !safeInteger(order.parent_order_override)) add(diagnostics, "INVALID_REVISION", "parent_order_override must be non-negative or null", `${orderRoot}.parent_order_override`);
+      requiredHash(order, "fingerprint", orderRoot, diagnostics);
+      if (HASH.test(String(order.fingerprint || "")) && order.fingerprint !== fingerprintWorktreeRuntimeRecord(order)) {
+        add(diagnostics, "FINGERPRINT_MISMATCH", "queue_order fingerprint does not match", `${orderRoot}.fingerprint`);
+      }
+      if (order.parent_order_override !== null && order.parent_order_override !== input.queue_position) {
+        add(diagnostics, "INVALID_STATE", "queue_position must equal the parent override", orderRoot);
+      }
+    }
+  }
+  if (input.authorization !== undefined) {
+    const authorization = input.authorization;
+    const authorizationRoot = `${root}.authorization`;
+    if (!isRecord(authorization)) add(diagnostics, "INVALID_SHAPE", "authorization must be an object", authorizationRoot);
+    else {
+      exactFields(authorization, [
+        "schema_version", "expected_before_tree", "observed_before_tree", "head", "head_tree", "branch_ref", "refs_digest",
+        "reflog", "staged_tree", "index_control", "control_facts_fingerprint", "dirty_facts_fingerprint", "git_operation", "parent_order_override", "fingerprint",
+      ], authorizationRoot, diagnostics);
+      if (authorization.schema_version !== 1) add(diagnostics, "UNKNOWN_SCHEMA", "authorization schema_version must be 1", `${authorizationRoot}.schema_version`);
+      for (const key of ["expected_before_tree", "observed_before_tree", "head", "head_tree", "staged_tree"] as const) {
+        requiredHash(authorization, key, authorizationRoot, diagnostics, true);
+      }
+      for (const key of ["refs_digest", "control_facts_fingerprint", "dirty_facts_fingerprint", "fingerprint"] as const) requiredHash(authorization, key, authorizationRoot, diagnostics);
+      if (typeof authorization.branch_ref !== "string") add(diagnostics, "INVALID_SHAPE", "branch_ref must be a string", `${authorizationRoot}.branch_ref`);
+      if (authorization.git_operation !== null && !text(authorization.git_operation)) add(diagnostics, "INVALID_SHAPE", "git_operation must be a string or null", `${authorizationRoot}.git_operation`);
+      if (authorization.parent_order_override !== null && !safeInteger(authorization.parent_order_override)) add(diagnostics, "INVALID_REVISION", "parent_order_override must be non-negative or null", `${authorizationRoot}.parent_order_override`);
+      if (!isRecord(authorization.reflog) || !safeInteger(authorization.reflog.count) || !HASH.test(String(authorization.reflog.checksum || ""))) {
+        add(diagnostics, "INVALID_SHAPE", "reflog must contain a non-negative count and checksum", `${authorizationRoot}.reflog`);
+      }
+      if (!isRecord(authorization.index_control)
+        || !text(authorization.index_control.algorithm)
+        || !HASH.test(String(authorization.index_control.checksum || ""))
+        || !safeInteger(authorization.index_control.entry_count)) {
+        add(diagnostics, "INVALID_SHAPE", "index_control is invalid", `${authorizationRoot}.index_control`);
+      }
+      if (HASH.test(String(authorization.fingerprint || ""))
+        && authorization.fingerprint !== fingerprintWorktreeRuntimeRecord(authorization)) {
+        add(diagnostics, "FINGERPRINT_MISMATCH", "authorization fingerprint does not match", `${authorizationRoot}.fingerprint`);
+      }
+      if (authorization.expected_before_tree !== input.before_tree || authorization.observed_before_tree !== input.before_tree) {
+        add(diagnostics, "INVALID_STATE", "authorization tree must equal integration before_tree", authorizationRoot);
+      }
+    }
+  }
   if (input.resolution_id !== undefined && (!text(input.resolution_id) || !ID.test(input.resolution_id))) add(diagnostics, "INVALID_IDENTITY", "resolution_id is invalid", `${root}.resolution_id`);
   uniqueStrings(input.idempotency_keys, null, `${root}.idempotency_keys`, diagnostics);
   if (!iso(input.created_at) || !iso(input.updated_at)) add(diagnostics, "INVALID_TIMESTAMP", "created_at and updated_at must be ISO timestamps", root);
@@ -878,12 +982,55 @@ export function persistIntegrationRecord(cwd: string, input: IntegrationRecord, 
   const value = assertIntegrationRecord(input);
   const file = integrationRecordPath(cwd, value.run_id, value.repository_id, value.integration_id, env);
   if (candidateFiles(file).length > 0) {
-    const current = recoverAtomicRecord(file, parseIntegrationRecord, (record) => record.integration_id, (record) => record.revision, value.integration_id);
+    const current = recoverAtomicRecord(
+      file,
+      parseIntegrationRecord,
+      (record) => record.integration_id,
+      (record) => record.revision,
+      value.integration_id,
+      extendsIntegrationRecord,
+    );
     if (current.fingerprint === value.fingerprint) return current;
     if (value.revision !== current.revision + 1) throw new WorktreeExecutionError(`integration revision ${value.revision} does not follow ${current.revision}`, "WORKTREE_REVISION_MISMATCH");
+    if (!extendsIntegrationRecord(current, value)) {
+      throw new WorktreeExecutionError("integration update changes immutable lineage or does not extend its transaction", "WORKTREE_RECORD_CONFLICT");
+    }
   } else if (value.revision !== 0) throw new WorktreeExecutionError("the first integration record must have revision zero", "WORKTREE_REVISION_MISMATCH");
   atomicJson(file, value);
   return value;
+}
+
+const INTEGRATION_IMMUTABLE_FIELDS = [
+  "integration_id",
+  "run_id",
+  "repository_id",
+  "git_common_dir_identity",
+  "bundle_id",
+  "queue_position",
+  "before_tree",
+  "created_at",
+] as const satisfies readonly (keyof IntegrationRecord)[];
+
+const INTEGRATION_STATE_TRANSITIONS = new Set<string>([
+  "queued>integrating",
+  "queued>failed",
+  "integrating>awaiting_parent_resolution",
+  "integrating>integrated",
+  "integrating>failed",
+  "awaiting_parent_resolution>integrated",
+  "awaiting_parent_resolution>failed",
+  "integrated>accepted",
+  "integrated>failed",
+]);
+
+function extendsIntegrationRecord(current: IntegrationRecord, candidate: IntegrationRecord): boolean {
+  return INTEGRATION_IMMUTABLE_FIELDS.every((field) => candidate[field] === current[field])
+    && candidate.idempotency_keys.length > current.idempotency_keys.length
+    && canonicalizeWorktreeExecution(candidate.idempotency_keys.slice(0, current.idempotency_keys.length))
+      === canonicalizeWorktreeExecution(current.idempotency_keys)
+    && (!current.authorization || candidate.authorization?.fingerprint === current.authorization.fingerprint)
+    && (!current.queue_order || candidate.queue_order?.fingerprint === current.queue_order.fingerprint)
+    && INTEGRATION_STATE_TRANSITIONS.has(`${current.state}>${candidate.state}`);
 }
 
 export function readPersistedIntegrationRecord(
@@ -899,6 +1046,7 @@ export function readPersistedIntegrationRecord(
     (record) => `${record.run_id}\u0000${record.repository_id}\u0000${record.integration_id}`,
     (record) => record.revision,
     `${runId}\u0000${repositoryId}\u0000${integrationId}`,
+    extendsIntegrationRecord,
   );
 }
 

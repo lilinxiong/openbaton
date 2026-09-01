@@ -14,7 +14,10 @@ import {
   dispatchLockPath,
   hostDispatchStatePath,
   hostRouteSnapshotPath,
+  integrationDestinationLockPath,
+  integrationQueueLockPath,
   integrationRecordPath,
+  integrationRepositoryDir,
   rollingRunAcceptedDocumentPath,
   rollingRunAcceptedDocumentsDir,
   rollingRunCheckpointPath,
@@ -202,6 +205,9 @@ describe("global Baton storage paths", () => {
     assert.equal(rollingRunBundlesDir(repo, "run-1"), path.join(runRoot, "bundles"));
     assert.equal(bundleManifestPath(repo, "run-1", "bundle-1"), path.join(runRoot, "bundles", "bundle-1", "manifest-v1.json"));
     assert.equal(rollingRunIntegrationsDir(repo, "run-1"), path.join(runRoot, "integrations"));
+    assert.equal(integrationRepositoryDir(repo, "run-1", "a".repeat(64)), path.join(runRoot, "integrations", "a".repeat(64)));
+    assert.equal(integrationQueueLockPath(repo, "run-1", "a".repeat(64)), path.join(runRoot, "integrations", "a".repeat(64), ".queue-v1.lock"));
+    assert.equal(integrationDestinationLockPath(repo, "a".repeat(64)), path.join(runsDir(repo), "rolling-integration-destinations-v1", "a".repeat(64), ".begin-v1.lock"));
     assert.equal(integrationRecordPath(repo, "run-1", "a".repeat(64), "integration-1"), path.join(runRoot, "integrations", "a".repeat(64), "integration-1", "record-v1.json"));
   }));
 

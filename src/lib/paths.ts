@@ -25,6 +25,8 @@ export const ROLLING_WORKTREES_DIR = "worktrees";
 export const ROLLING_SNAPSHOTS_DIR = "snapshots";
 export const ROLLING_BUNDLES_DIR = "bundles";
 export const ROLLING_INTEGRATIONS_DIR = "integrations";
+/** Cross-run admission locks for one workspace repository destination. */
+export const ROLLING_INTEGRATION_DESTINATIONS_DIR = "rolling-integration-destinations-v1";
 export const WORKTREE_RECORD_NAME = "record-v1.json";
 export const SNAPSHOT_MANIFEST_NAME = "manifest-v1.json";
 export const BUNDLE_MANIFEST_NAME = "manifest-v1.json";
@@ -306,6 +308,43 @@ export function rollingRunIntegrationsDir(cwd: string, runId: string, env?: Node
   return path.join(rollingRunRoot(cwd, runId, env), ROLLING_INTEGRATIONS_DIR);
 }
 
+/** One repository-local serialization namespace inside a rolling run. */
+export function integrationRepositoryDir(
+  cwd: string,
+  runId: string,
+  repositoryId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    rollingRunIntegrationsDir(cwd, runId, env),
+    rollingPathSegment("repository id", repositoryId),
+  );
+}
+
+/** Lock guarding queue-position assignment and one-at-a-time begin transitions. */
+export function integrationQueueLockPath(
+  cwd: string,
+  runId: string,
+  repositoryId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(integrationRepositoryDir(cwd, runId, repositoryId, env), ".queue-v1.lock");
+}
+
+/** Workspace-local, cross-run serialization lock for one repository target. */
+export function integrationDestinationLockPath(
+  cwd: string,
+  repositoryId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    runsDir(cwd, env),
+    ROLLING_INTEGRATION_DESTINATIONS_DIR,
+    rollingPathSegment("repository id", repositoryId),
+    ".begin-v1.lock",
+  );
+}
+
 export function integrationRecordPath(
   cwd: string,
   runId: string,
@@ -314,8 +353,7 @@ export function integrationRecordPath(
   env?: NodeJS.ProcessEnv,
 ): string {
   return path.join(
-    rollingRunIntegrationsDir(cwd, runId, env),
-    rollingPathSegment("repository id", repositoryId),
+    integrationRepositoryDir(cwd, runId, repositoryId, env),
     rollingPathSegment("integration id", integrationId),
     INTEGRATION_RECORD_NAME,
   );
