@@ -195,6 +195,43 @@ describe("worktree recovery, status, and cleanup", () => {
     assert.equal(accepted.integration_id, integration.integration_id);
   });
 
+  it("repairs a released pre-bind terminal attempt as rejected evidence", async () => {
+    const f = fixture("pre-bind-recovery");
+    const record = await setup(f, "run-pre-bind-recovery", "unit-pre-bind-recovery");
+    const recovery = await recoverWorktreeRun({
+      cwd: f.repo,
+      run_id: record.run_id,
+      env: f.env,
+      tickets: [{
+        status: "closed",
+        slot_released_at: "2026-09-01T00:00:00.000Z",
+        liveness: null,
+        rolling_unit_lineage: { run_id: record.run_id, unit_key: record.unit_key, unit_version: record.unit_version },
+      }],
+    });
+    assert.deepEqual(recovery.repaired_record_ids, [record.record_id]);
+    const rejected = readPersistedWorktreeRecord(f.repo, record.run_id, record.unit_key, record.attempt_id, f.env);
+    assert.equal(rejected.lifecycle_state, "rejected");
+    assert.deepEqual(rejected.retention_reasons, ["rejected_result_evidence"]);
+  });
+
+  it("does not report another run's durable internal bundle ref as orphaned", async () => {
+    const f = fixture("workspace-bundle-ref");
+    const current = await setup(f, "run-current", "unit-current");
+    const other = await setup(f, "run-other", "unit-other");
+    const internalRef = "refs/baton/change-bundles/bundle-other-run";
+    const internalCommit = git(f.repo, ["rev-parse", "HEAD"]);
+    persistChangeBundleManifest(f.repo, other.run_id, bundleFor(f, other, "bundle-other-run", {
+      kind: "git-tree-internal-commit",
+      internal_base_commit: internalCommit,
+      internal_commit: internalCommit,
+      internal_ref: internalRef,
+    }), f.env);
+    git(f.repo, ["update-ref", internalRef, internalCommit]);
+    const status = await collectWorktreeRunStatus({ cwd: f.repo, run_id: current.run_id, env: f.env });
+    assert.equal(status.orphan_diagnostics.some((item) => item.code === "ORPHAN_INTERNAL_REF" && item.path === internalRef), false);
+  });
+
   it("refuses unresolved retention and reports unrecorded roots as orphans", async () => {
     const f = fixture("retention");
     let record = await setup(f, "run-retention", "unit-retention");

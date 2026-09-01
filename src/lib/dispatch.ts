@@ -492,10 +492,10 @@ function transitionExactRootRecord(
   _cwd: string,
   ticket: SpawnTicket,
   key: string,
-  toState: "worker_active" | "terminal_awaiting_audit",
+  toState: "worker_active" | "terminal_awaiting_audit" | "rejected",
   at: string,
   nativeHandle: string | null,
-  retentionReasons: Array<"live_native_handle" | "terminal_unreleased_ticket" | "pending_audit">,
+  retentionReasons: Array<"live_native_handle" | "terminal_unreleased_ticket" | "pending_audit" | "rejected_result_evidence">,
   env: NodeJS.ProcessEnv,
 ): void {
   const identity = isolatedTicketIdentity(ticket);
@@ -512,7 +512,12 @@ function transitionExactRootRecord(
 }
 
 function retainTerminalExactRoot(ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv): void {
-  if (!ticket.execution_handle || !isolatedTicketIdentity(ticket)) return;
+  if (!isolatedTicketIdentity(ticket)) return;
+  if (!ticket.execution_handle) {
+    transitionExactRootRecord("", ticket, `native-aborted-${ticket.id}-${ticket.attempt}`, "rejected", at,
+      null, ["rejected_result_evidence"], env);
+    return;
+  }
   transitionExactRootRecord("", ticket, `native-terminal-${ticket.id}-${ticket.attempt}`, "terminal_awaiting_audit", at,
     `${ticket.execution_handle.kind}:${ticket.execution_handle.value}`,
     ["pending_audit", "terminal_unreleased_ticket"], env);

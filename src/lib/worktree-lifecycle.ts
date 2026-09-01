@@ -10,6 +10,7 @@ import {
   rollingRunIntegrationsDir,
   rollingRunSnapshotsDir,
   rollingRunWorktreesDir,
+  rollingRunsDir,
   snapshotManifestPath,
   worktreeExecutionRootPath,
   worktreeRecordPath,
@@ -398,20 +399,26 @@ export async function collectWorktreeRunStatus(input: {
   }
   const unitStatus: Record<string, WorktreeIsolationStatus[]> = {};
   for (const status of units) (unitStatus[status.unit_ref] ||= []).push(status);
-  let bundles: ChangeBundleManifest[] = [];
-  try { bundles = allBundles(root, input.run_id, input.env); }
-  catch (error) { listed.diagnostics.push({ code: "BUNDLE_INVENTORY_INVALID", message: error instanceof Error ? error.message : String(error) }); }
+  let workspaceBundles: ChangeBundleManifest[] = [];
+  let workspaceBundleInventoryComplete = true;
+  try { workspaceBundles = allWorkspaceBundles(root, input.env); }
+  catch (error) {
+    workspaceBundleInventoryComplete = false;
+    listed.diagnostics.push({ code: "WORKSPACE_BUNDLE_INVENTORY_INVALID", message: error instanceof Error ? error.message : String(error) });
+  }
   for (const [repositoryRoot] of repositories) {
     try {
       const refs = await boundedOutput(repositoryRoot, ["for-each-ref", "--format=%(refname) %(objectname)", "refs/baton/change-bundles"], input.spawn);
       if (refs.truncated) listed.diagnostics.push({ code: "INTERNAL_REF_SUMMARY_TRUNCATED", message: "Baton internal ref inventory exceeded its bounded payload", path: repositoryRoot });
-      const identities = new Map(bundles.filter((bundle) => listed.records.some((record) => record.repository_root === repositoryRoot && record.repository_id === bundle.repository_id))
+      const repositoryId = resolveOwningRepository(repositoryRoot, ".").repository.repository_id;
+      const identities = new Map(workspaceBundles.filter((bundle) => bundle.repository_id === repositoryId)
         .filter((bundle) => typeof bundle.transport.internal_ref === "string" && typeof bundle.transport.internal_commit === "string")
         .map((bundle) => [String(bundle.transport.internal_ref), String(bundle.transport.internal_commit)]));
       for (const line of refs.bytes.toString("utf8").split(/\r?\n/u).filter(Boolean)) {
         const separator = line.lastIndexOf(" "); const ref = line.slice(0, separator); const object = line.slice(separator + 1);
-        if (!identities.has(ref)) listed.diagnostics.push({ code: "ORPHAN_INTERNAL_REF", message: "Baton internal ref has no immutable bundle manifest", path: ref });
-        else if (identities.get(ref) !== object) listed.diagnostics.push({ code: "BUNDLE_INTERNAL_REF_DRIFT", message: "Baton internal ref differs from its bundle manifest", path: ref });
+        if (!identities.has(ref)) {
+          if (workspaceBundleInventoryComplete) listed.diagnostics.push({ code: "ORPHAN_INTERNAL_REF", message: "Baton internal ref has no immutable bundle manifest", path: ref });
+        } else if (identities.get(ref) !== object) listed.diagnostics.push({ code: "BUNDLE_INTERNAL_REF_DRIFT", message: "Baton internal ref differs from its bundle manifest", path: ref });
       }
     } catch (error) { listed.diagnostics.push({ code: "INTERNAL_REF_INVENTORY_UNAVAILABLE", message: error instanceof Error ? error.message : String(error), path: repositoryRoot }); }
   }
@@ -426,6 +433,16 @@ function allBundles(cwd: string, runId: string, env?: NodeJS.ProcessEnv): Change
     if (!entry.isDirectory()) continue;
     const file = bundleManifestPath(cwd, runId, entry.name, env);
     if (fs.existsSync(file)) result.push(parseChangeBundleManifest(fs.readFileSync(file, "utf8")));
+  }
+  return result;
+}
+
+function allWorkspaceBundles(cwd: string, env?: NodeJS.ProcessEnv): ChangeBundleManifest[] {
+  const directory = rollingRunsDir(cwd, env);
+  if (!fs.existsSync(directory)) return [];
+  const result: ChangeBundleManifest[] = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) result.push(...allBundles(cwd, entry.name, env));
   }
   return result;
 }
@@ -503,6 +520,21 @@ export async function recoverWorktreeRun(input: {
         if (record.setup_state === "registering") record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: "recovery-setup-registered", phase: "setup", to_state: "preparing", setup_state: "registered", recorded_at: timestamp(input.at) }, input.env);
         await verifyRecoverableSetup(record, input.spawn);
         if (record.setup_state === "registered") record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: "recovery-setup-verified", phase: "setup", to_state: "preparing", setup_state: "verified", recorded_at: timestamp(input.at) }, input.env);
+      }
+      const ticket = ticketFor(record, input.tickets || []);
+      if (record.lifecycle_state === "preparing"
+        && record.setup_state === "verified"
+        && ticket?.slot_released_at
+        && !ticket.liveness
+        && ["errored", "timed_out", "closed"].includes(ticket.status)) {
+        record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, {
+          idempotency_key: `recovery-native-aborted-${record.record_id}`,
+          phase: "native_execution",
+          to_state: "rejected",
+          native_handle: null,
+          retention_reasons: ["rejected_result_evidence"],
+          recorded_at: timestamp(input.at),
+        }, input.env);
       }
       const matchingBundles = bundles.filter((bundle) => bundle.unit_key === record.unit_key && bundle.unit_version === record.unit_version && bundle.attempt_id === record.attempt_id && bundle.repository_id === record.repository_id);
       if (record.lifecycle_state === "terminal_awaiting_audit" && !record.bundle_id && matchingBundles.length === 1) {

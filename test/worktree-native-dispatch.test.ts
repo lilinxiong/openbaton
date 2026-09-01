@@ -13,6 +13,7 @@ import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { captureBaseline } from "../src/lib/safety.js";
 import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn } from "../src/lib/spawn.js";
 import { readPersistedWorktreeRecord } from "../src/lib/worktree-execution.js";
+import { cleanupWorktreeAttempt } from "../src/lib/worktree-lifecycle.js";
 import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
 import { resolveOwningRepository } from "../src/lib/worktree-topology.js";
 import { configureCli } from "./configure.js";
@@ -224,6 +225,18 @@ describe("isolated native dispatch", () => {
       });
       assert.ok(terminal.slot_released_at);
       assert.equal(terminal.execution_handle, null);
+      const rejected = readPersistedWorktreeRecord(f.cwd, f.runId, f.unitKey, f.attemptId, f.env);
+      assert.equal(rejected.lifecycle_state, "rejected");
+      assert.deepEqual(rejected.retention_reasons, ["rejected_result_evidence"]);
+      const cleaned = await cleanupWorktreeAttempt({
+        cwd: f.cwd,
+        run_id: f.runId,
+        unit_key: f.unitKey,
+        attempt_id: f.attemptId,
+        env: f.env,
+        discard_rejected_evidence: true,
+      });
+      assert.equal(cleaned.record.lifecycle_state, "cleaned");
     } finally {
       fs.rmSync(f.outer, { recursive: true, force: true });
     }

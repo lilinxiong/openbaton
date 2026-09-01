@@ -365,6 +365,7 @@ const INTEGRATION_STATES = new Set<IntegrationState>(["queued", "integrating", "
 const OPERATIONS = new Set<ChangeBundleOperation>(["write", "create", "delete", "rename", "copy", "chmod"]);
 
 const ALLOWED_TRANSITIONS = new Set<string>([
+  "preparing>rejected",
   "preparing>worker_active",
   "worker_active>terminal_awaiting_audit",
   "terminal_awaiting_audit>rejected",
