@@ -50,6 +50,7 @@ import {
 import { deriveRollingLifecycle, type RollingTaskLifecycle } from "./rolling-lifecycle.js";
 import { refillRollingCapacity, type RollingRefillResult } from "./rolling-dispatch.js";
 import { collectRollingUnitVersions } from "./rolling-dispatch-state.js";
+import { readPersistedWorktreeRecord, type WorktreeRecord } from "./worktree-execution.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./routes.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapterRegistry, type TaskSourceDiagnostic } from "./task-source.js";
@@ -442,6 +443,29 @@ function routeAvailability(cwd: string, host: string, cards: readonly { route_id
   return result;
 }
 
+function persistedRollingWorktreeRecords(
+  cwd: string,
+  run: RollingExecutionRun,
+  env?: NodeJS.ProcessEnv,
+): Record<string, WorktreeRecord> {
+  const records: Record<string, WorktreeRecord> = {};
+  const units = collectRollingUnitVersions(run.accepted_deltas);
+  const attempts = run.accepted_deltas.flatMap((delta) => delta.retry_attempts || []);
+  for (const [ref, unit] of units) {
+    if (unit.worktree_mode !== "isolated-worktree") continue;
+    const attempt = Math.max(1, ...attempts
+      .filter((item) => item.unit_key === unit.unit_key && item.unit_version === unit.version)
+      .map((item) => item.attempt));
+    try {
+      records[ref] = readPersistedWorktreeRecord(cwd, run.identity.run_id, unit.unit_key, `attempt-${attempt}`, env);
+    } catch {
+      // Keep the identity absent. The exact-root blueprint boundary emits the
+      // stable fail-closed diagnostic and never accepts caller self-attestation.
+    }
+  }
+  return records;
+}
+
 export async function refillRollingRun(context: RollingControlContext & { run_id: string; event_reason?: string }): Promise<RollingRefillResult> {
   const recovered = synchronizeRollingTicketFacts(context);
   const run = recovered.run;
@@ -468,6 +492,7 @@ export async function refillRollingRun(context: RollingControlContext & { run_id
     available_capacity: capacity.available,
     capacity: capacity.capacity,
     runtime_facts: executionFacts(run).map((fact) => ({ ...fact })),
+    worktree_records: persistedRollingWorktreeRecords(context.cwd, run, context.env),
     catalog_fingerprint: snapshot.fingerprint,
     event_reason: context.event_reason,
     now: context.now,

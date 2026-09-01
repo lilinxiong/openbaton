@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,9 @@ import { readRollingExecutionRun } from "../src/lib/rolling-run.js";
 import { readRouteSnapshot, publishRouteSnapshot } from "../src/lib/routes.js";
 import { listSpawns } from "../src/lib/spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapter } from "../src/lib/task-source.js";
+import { worktreeExecutionRootPath } from "../src/lib/paths.js";
+import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
+import { resolveWorktreeTopology } from "../src/lib/worktree-topology.js";
 import { configureCli } from "./configure.js";
 import { fakeEnv } from "./home.js";
 
@@ -61,6 +65,87 @@ async function fixture() {
 }
 
 describe("rolling control recovery", () => {
+  it("recovers a verified isolated worktree identity before the initial refill", async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-isolated-control-")));
+    const cwd = path.join(root, "repository");
+    const env = fakeEnv(path.join(root, "home"), { BATON_SESSION_ID: `rolling-isolated-${Date.now()}-${Math.random()}` });
+    fs.mkdirSync(cwd);
+    const git = (args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+    git(["init", "-q"]);
+    git(["config", "user.email", "baton@test.invalid"]);
+    git(["config", "user.name", "Baton Test"]);
+    fs.writeFileSync(path.join(cwd, ".gitignore"), ".baton/\n");
+    fs.writeFileSync(path.join(cwd, "tracked.txt"), "base\n");
+    git(["add", ".gitignore", "tracked.txt"]);
+    git(["commit", "-qm", "baseline"]);
+
+    const catalog = await getCliAdapter("alpha", env).discoverModels({ env });
+    const model = catalog.models[0]?.id;
+    assert.ok(model);
+    configureCli(cwd, env, "alpha", [model], { runner: model });
+    publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), { cli: "alpha", host: "alpha", env });
+
+    const runId = "run-isolated-control";
+    const unitKey = "unit-isolated-control";
+    const topology = resolveWorktreeTopology(cwd, ["tracked.txt"]);
+    const repository = topology.repositories[0]!;
+    const executionRoot = worktreeExecutionRootPath(cwd, runId, unitKey, "attempt-1", env);
+    const setup = await setupDetachedWorktree({
+      repository_root: cwd,
+      repository_id: repository.repository_id,
+      git_common_dir: repository.git_common_dir,
+      git_common_dir_identity: repository.git_common_dir_identity,
+      execution_root: executionRoot,
+      run_id: runId,
+      unit_key: unitKey,
+      unit_version: 1,
+      attempt_id: "attempt-1",
+      env,
+    });
+    const taskKey = deriveTaskKey("director", "isolated-task");
+    const source: TaskSourceDescriptor = {
+      schema_version: 1,
+      source_kind: "director",
+      adapter: "director",
+      selection: { tasks: [{ id: "isolated-task", description: "verify isolated startup" }] },
+    };
+    const delta: PlanDelta = {
+      schema_version: 1,
+      delta_id: "delta-isolated-control",
+      prepared_from_append_sequence: 0,
+      unit_versions: [{
+        schema_version: 1,
+        unit_key: unitKey,
+        version: 1,
+        task_keys: [taskKey],
+        depends_on: [],
+        execution_mode: "patch-only",
+        worktree_mode: "isolated-worktree",
+        route_profile: "runner",
+        prompt: "write only inside the isolated root",
+        write_paths: ["tracked.txt"],
+        allowed_operations: ["write"],
+        completion_criteria: ["isolated startup dispatched"],
+        permitted_validation: ["read"],
+        input_fingerprints: { fixture: "e".repeat(64) },
+      }],
+      gate_versions: [],
+      task_coverage: [{ schema_version: 1, task_key: taskKey, kind: "unit", unit_versions: [`${unitKey}@1`] }],
+    };
+
+    try {
+      const started = await startRollingControl({ cwd, env, run_id: runId, host: "alpha", worktree_mode: "isolated-worktree", source, delta, dispatch: true });
+      assert.equal(started.dispatch?.materialized.length, 1);
+      const lineage = listSpawns(cwd, env)[0]?.rolling_unit_lineage;
+      assert.equal(lineage?.execution_root, fs.realpathSync(executionRoot));
+      assert.equal(lineage?.worktree_record_id, setup.record.record_id);
+      assert.equal(lineage?.base_tree, setup.base_tree);
+    } finally {
+      execFileSync("git", ["worktree", "remove", "--force", executionRoot], { cwd, stdio: "ignore" });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a partially discovered manifest when a later page is unavailable", async () => {
     const partialSource: TaskSourceDescriptor = {
       schema_version: 1,
