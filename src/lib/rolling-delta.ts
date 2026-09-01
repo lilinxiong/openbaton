@@ -745,7 +745,7 @@ function worktreeRunContext(context: unknown): WorktreeRunContext {
 
 function effectiveWorktreeMode(unit: UnitVersion, run: WorktreeRunContext): WorktreeExecutionMode | undefined {
   if (unit.worktree_mode === "isolated-worktree" || unit.worktree_mode === "shared-worktree") return unit.worktree_mode;
-  if (run.mode === "shared-worktree" || run.schema_version !== ROLLING_WORKTREE_STATE_SCHEMA_VERSION) return "shared-worktree";
+  if (run.mode || run.schema_version !== ROLLING_WORKTREE_STATE_SCHEMA_VERSION) return run.mode || "shared-worktree";
   return undefined;
 }
 
@@ -774,8 +774,8 @@ function checkWorktreeModeContract(
   if (run.schema_version === ROLLING_WORKTREE_STATE_SCHEMA_VERSION && !run.mode) {
     issue(diagnostics, "WORKTREE_MODE_REQUIRED", "rolling-run v2 state must persist an explicit worktree execution mode", `${pathName}.worktree_mode`, [fact.id]);
   }
-  if (run.mode === "isolated-worktree" && explicit === undefined) {
-    issue(diagnostics, "WORKTREE_MODE_REQUIRED", "isolated writing units must persist isolated-worktree mode before dispatch", `${pathName}.worktree_mode`, [fact.id]);
+  if (run.mode && explicit === undefined) {
+    issue(diagnostics, "WORKTREE_MODE_REQUIRED", "writing units must persist the rolling run worktree mode before dispatch", `${pathName}.worktree_mode`, [fact.id, run.mode]);
   }
   if (run.mode && explicit && run.mode !== explicit) {
     issue(diagnostics, "WORKTREE_MODE_IMMUTABLE", "unit worktree mode cannot differ from the active rolling run", `${pathName}.worktree_mode`, [fact.id, run.mode, explicit]);

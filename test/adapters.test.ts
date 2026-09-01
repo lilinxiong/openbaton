@@ -26,7 +26,7 @@ describe("manifest adapter registry", () => {
     const adapters = listCliAdapters(env);
     assert.deepEqual(adapters.map((a) => a.id), ["alpha", "beta"]);
     assert.equal(adapters[0].host.executionHandleKind, "alpha-task");
-    assert.equal(adapters[0].host.exactExecutionRoot, undefined);
+    assert.equal(adapters[0].host.exactExecutionRoot, true);
     assert.equal(adapters[1].host.defaultMaxConcurrent, 5);
     assert.equal(discoverAdapterManifests(fixtureAdapterEnv())[0].quota.max_concurrent_subagents, 2);
     assert.strictEqual(getCliAdapter("alpha", env).id, "alpha");

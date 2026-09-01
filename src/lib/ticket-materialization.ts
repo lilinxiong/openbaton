@@ -12,7 +12,7 @@ import {
 } from "./safety.js";
 import { listSpawns, writeSpawn, type SpawnTicket, type StandalonePlan } from "./spawn.js";
 import { applyCommitBaselineToPlan } from "./ops-dispatch.js";
-import { assertDisjointWriteScopes, writePathsOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
+import { assertDisjointWriteScopes, writeScopesOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
 import { APPLY_RUN_STATE_TEMP_FILE_PREFIX } from "./apply-run.js";
 import { extractExactExecutionRootIdentity } from "../adapters/contract.js";
 import { resolveWorktreeTopology } from "./worktree-topology.js";
@@ -35,6 +35,24 @@ export interface TicketMaterializationOptions extends TicketMaterializationDepen
 
 export interface PendingWriteScope extends WriteScopeDeclaration {
   ticket_id?: string;
+}
+
+function namespaceForTicket(ticket: SpawnTicket): Pick<PendingWriteScope, "repository_id" | "execution_root"> {
+  let identity;
+  try { identity = extractExactExecutionRootIdentity(ticket); }
+  catch { throw new Error(`WRITE_SCOPE_CONFLICT: unable to inspect exact-root identity for ${ticket.id}`); }
+  const mode = ticket.rolling_unit_lineage?.worktree_mode;
+  if (mode === "isolated-worktree" && !identity) {
+    throw new Error(`WRITE_SCOPE_CONFLICT: isolated ticket ${ticket.id} has no exact-root identity`);
+  }
+  if (mode !== "isolated-worktree" && identity) {
+    throw new Error(`WRITE_SCOPE_CONFLICT: non-isolated ticket ${ticket.id} carries exact-root identity`);
+  }
+  return identity ? { repository_id: identity.repository_id, execution_root: identity.execution_root } : {};
+}
+
+function pendingScope(ticket: SpawnTicket, write_paths: string[]): PendingWriteScope {
+  return { key: ticket.id, ticket_id: ticket.id, write_paths, ...namespaceForTicket(ticket) };
 }
 
 /** One immutable plan/Receipt pair supplied to the atomic batch writer. */
@@ -70,7 +88,7 @@ function activeWriteScopes(cwd: string, env?: NodeJS.ProcessEnv): PendingWriteSc
           || receipt.execution.mode === "write" || receipt.execution.mode === "commit-only")
         && receipt.scope.write_allowlist.length
       ) {
-        scopes.push({ key: ticket.id, ticket_id: ticket.id, write_paths: receipt.scope.write_allowlist });
+        scopes.push(pendingScope(ticket, receipt.scope.write_allowlist));
       }
     } catch {
       // A malformed receipt is rejected by the normal ticket lifecycle. It
@@ -91,12 +109,8 @@ export function assertWriteScopesAvailable(cwd: string, scopes: PendingWriteScop
   const active = activeWriteScopes(cwd, env);
   for (const incoming of scopes) {
     for (const existing of active) {
-      for (const incomingPath of incoming.write_paths) {
-        for (const existingPath of existing.write_paths) {
-          if (writePathsOverlap(incomingPath, existingPath)) {
-            throw new Error(`WRITE_SCOPE_CONFLICT: ${incoming.key}:${incomingPath} overlaps active ${existing.key}:${existingPath}`);
-          }
-        }
+      if (writeScopesOverlap(incoming, existing)) {
+        throw new Error(`WRITE_SCOPE_CONFLICT: ${incoming.key} overlaps active ${existing.key}`);
       }
     }
   }
@@ -176,7 +190,7 @@ export async function materializeStandalonePlanAsync(
   if (writeAllowlist.length) {
     // Keep a single-plan caller safe as well; batch callers additionally
     // preflight the complete wave so they cannot leave partial artifacts.
-    assertWriteScopesAvailable(cwd, [{ key: planned.ticket.id, write_paths: writeAllowlist }], options.env);
+    assertWriteScopesAvailable(cwd, [pendingScope(planned.ticket, writeAllowlist)], options.env);
     const baseline = await captureWrite(ticketExecutionRoot(cwd, planned.ticket, writeAllowlist), safety);
     planned.receipt = buildWriteReceipt({ base: planned.receipt, baseline, writeAllowlist, allowedOperations });
     planned.ticket.mode = "write";
@@ -226,7 +240,7 @@ export async function materializeStandalonePlansBatchAsync(
   const temporaryRunStateFiles = listTemporaryRunStateFiles(cwd, env);
   const scopes: PendingWriteScope[] = entries.map((entry) => {
     const allowlist = entry.writeAllowlist || [];
-    return { key: entry.planned.ticket.id, ticket_id: entry.planned.ticket.id, write_paths: allowlist };
+    return pendingScope(entry.planned.ticket, allowlist);
   }).filter((scope) => scope.write_paths.length);
   assertWriteScopesAvailable(cwd, scopes, env);
 

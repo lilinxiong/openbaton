@@ -8,6 +8,8 @@
  * ticket, attempt, acceptance, release, or reconciliation.
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
+import { getCliAdapter } from "../adapters/registry.js";
 import {
   cliProfileForHost,
   configuredCodingModelsForHost,
@@ -50,8 +52,12 @@ import {
 } from "./rolling-acceptance.js";
 import { deriveRollingLifecycle, type RollingTaskLifecycle } from "./rolling-lifecycle.js";
 import { refillRollingCapacity, type RollingRefillResult } from "./rolling-dispatch.js";
+import { selectRollingFrontier } from "./rolling-dispatch-selection.js";
 import { collectRollingUnitVersions } from "./rolling-dispatch-state.js";
+import { worktreeExecutionRootPath } from "./paths.js";
 import { readPersistedWorktreeRecord, type WorktreeRecord } from "./worktree-execution.js";
+import { setupDetachedWorktree } from "./worktree-setup.js";
+import { resolveWorktreeTopology } from "./worktree-topology.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./routes.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapterRegistry, type TaskSourceDiagnostic } from "./task-source.js";
@@ -469,6 +475,89 @@ function persistedRollingWorktreeRecords(
   return records;
 }
 
+function worktreeAttempt(run: RollingExecutionRun, unit: UnitVersion): number {
+  return Math.max(1, ...run.accepted_deltas.flatMap((delta) => delta.retry_attempts || [])
+    .filter((item) => item.unit_key === unit.unit_key && item.unit_version === unit.version)
+    .map((item) => item.attempt));
+}
+
+function schedulingExecutionRoots(records: Readonly<Record<string, WorktreeRecord>>): Record<string, { repository_id: string; execution_root: string; base_tree: string }> {
+  return Object.fromEntries(Object.entries(records).map(([ref, record]) => [ref, {
+    repository_id: record.repository_id,
+    execution_root: record.execution_root,
+    base_tree: record.base_tree,
+  }]));
+}
+
+async function prepareRollingFrontierWorktrees(
+  context: RollingControlContext & { run_id: string },
+  run: RollingExecutionRun,
+  refillInput: Parameters<typeof refillRollingCapacity>[0],
+): Promise<void> {
+  const records = persistedRollingWorktreeRecords(context.cwd, run, context.env);
+  const selection = selectRollingFrontier({
+    ...refillInput,
+    execution_roots_by_unit: schedulingExecutionRoots(records),
+  });
+  const units = collectRollingUnitVersions(run.accepted_deltas);
+  const targets = selection.frontier
+    .map((ref) => ({ ref, unit: units.get(ref) }))
+    .filter((entry): entry is { ref: string; unit: UnitVersion } => entry.unit?.execution_mode === "patch-only" && entry.unit.worktree_mode === "isolated-worktree");
+  if (!targets.length) return;
+
+  const adapter = getCliAdapter(run.identity.host, context.env || process.env);
+  if (adapter.host.exactExecutionRoot !== true) {
+    throw new RollingControlError(
+      `adapter ${run.identity.host} cannot guarantee exact execution-root dispatch`,
+      "ADAPTER_EXACT_ROOT_UNSUPPORTED",
+    );
+  }
+
+  // Prepare only the selected capacity frontier. A large change therefore
+  // reaches its first useful mutation without creating every future root.
+  const callerRoot = fs.realpathSync(context.cwd);
+  for (const { ref, unit } of targets) {
+    if (records[ref]) continue;
+    const topology = resolveWorktreeTopology(callerRoot, unit.write_paths || []);
+    if (topology.requires_repository_decomposition || topology.repositories.length !== 1) {
+      throw new RollingControlError(
+        `isolated unit ${ref} must be decomposed into one repository-local unit before setup`,
+        "REPOSITORY_LOCAL_PARTS_REQUIRED",
+      );
+    }
+    const repository = topology.repositories[0]!;
+    if (fs.realpathSync(repository.repository_root) !== callerRoot) {
+      throw new RollingControlError(
+        `isolated unit ${ref} is owned by ${repository.repository_root}; run it from that repository root`,
+        "WORKTREE_REPOSITORY_ROOT_MISMATCH",
+      );
+    }
+    const attemptId = `attempt-${worktreeAttempt(run, unit)}`;
+    try {
+      await setupDetachedWorktree({
+        repository_root: repository.repository_root,
+        repository_id: repository.repository_id,
+        git_common_dir: repository.git_common_dir,
+        git_common_dir_identity: repository.git_common_dir_identity,
+        execution_root: worktreeExecutionRootPath(callerRoot, run.identity.run_id, unit.unit_key, attemptId, context.env),
+        run_id: run.identity.run_id,
+        unit_key: unit.unit_key,
+        unit_version: unit.version,
+        attempt_id: attemptId,
+        ...(selection.inherited_base_trees[ref] ? { base: selection.inherited_base_trees[ref] } : {}),
+        env: context.env,
+        created_at: context.now,
+      });
+    } catch (cause) {
+      const coded = cause as { code?: unknown; message?: unknown };
+      throw new RollingControlError(
+        typeof coded.message === "string" ? coded.message : `isolated worktree setup failed for ${ref}`,
+        typeof coded.code === "string" ? coded.code : "WORKTREE_SETUP_FAILED",
+      );
+    }
+  }
+}
+
 export async function refillRollingRun(context: RollingControlContext & { run_id: string; event_reason?: string }): Promise<RollingRefillResult> {
   const recovered = synchronizeRollingTicketFacts(context);
   const run = recovered.run;
@@ -480,7 +569,7 @@ export async function refillRollingRun(context: RollingControlContext & { run_id
   const snapshot = readRouteSnapshot(context.cwd, { host, env: context.env });
   if (!snapshot) throw new RollingControlError(`rolling run ${context.run_id} has no active model catalog for ${host}`, "ROLLING_MODEL_CATALOG_MISSING");
   const capacity = dispatchSnapshot(context.cwd, { host, env: context.env });
-  const result = await refillRollingCapacity({
+  const refillInput: Parameters<typeof refillRollingCapacity>[0] = {
     cwd: context.cwd,
     env: context.env,
     run_id: context.run_id,
@@ -499,7 +588,10 @@ export async function refillRollingRun(context: RollingControlContext & { run_id
     catalog_fingerprint: snapshot.fingerprint,
     event_reason: context.event_reason,
     now: context.now,
-  });
+  };
+  await prepareRollingFrontierWorktrees(context, run, refillInput);
+  refillInput.worktree_records = persistedRollingWorktreeRecords(context.cwd, run, context.env);
+  const result = await refillRollingCapacity(refillInput);
   // A queued ticket is itself a recovered execution fact. Keep the log caught
   // up before returning so a caller can immediately reconnect by run id.
   if (result.materialized.length) synchronizeRollingTicketFacts(context);
@@ -643,7 +735,8 @@ async function mutationResult(context: RollingControlContext & { run_id: string 
 }
 
 export async function startRollingControl(input: StartRollingControlInput): Promise<RollingControlMutationResult> {
-  createRollingExecutionRun({ cwd: input.cwd, env: input.env, runId: input.run_id, host: input.host, execution_mode: input.worktree_mode || "shared-worktree", source: input.source, now: input.now });
+  const mode = input.worktree_mode || "isolated-worktree";
+  createRollingExecutionRun({ cwd: input.cwd, env: input.env, runId: input.run_id, host: input.host, execution_mode: mode, source: input.source, now: input.now });
   const discovery = await discoverRollingTaskManifest(input.cwd, input.source);
   if (!discovery.complete) {
     throw new RollingControlError("rolling task source is unavailable during initial discovery", "ROLLING_DISCOVERY_UNAVAILABLE", discovery.diagnostics);

@@ -47,9 +47,11 @@ describe("rolling run v2 append storage", () => {
   it("appends a delta and deterministically rebuilds the checkpoint", () => {
     const { cwd, env, run } = create();
     assert.equal(run.append_sequence, 0);
+    assert.equal(run.identity.execution_mode, "isolated-worktree");
     const next = appendRollingPlanDelta({ cwd, env, runId: "run-1", expected_append_sequence: 0, delta: delta() });
     assert.equal(next.append_sequence, 1);
     assert.equal(next.accepted_deltas[0]!.delta_id, "delta-1");
+    assert.equal(next.accepted_deltas[0]!.unit_versions[0]!.worktree_mode, "isolated-worktree");
     const before = fs.readFileSync(rollingRunCheckpointPath(cwd, "run-1", env), "utf8");
     fs.unlinkSync(rollingRunCheckpointPath(cwd, "run-1", env));
     const rebuilt = rebuildRollingRunCheckpoint(cwd, "run-1", { env });

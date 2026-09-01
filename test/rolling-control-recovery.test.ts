@@ -21,8 +21,7 @@ import { readRouteSnapshot, publishRouteSnapshot } from "../src/lib/routes.js";
 import { listSpawns } from "../src/lib/spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapter } from "../src/lib/task-source.js";
 import { worktreeExecutionRootPath } from "../src/lib/paths.js";
-import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
-import { resolveWorktreeTopology } from "../src/lib/worktree-topology.js";
+import { readPersistedWorktreeRecord } from "../src/lib/worktree-execution.js";
 import { configureCli } from "./configure.js";
 import { fakeEnv } from "./home.js";
 
@@ -65,7 +64,7 @@ async function fixture() {
 }
 
 describe("rolling control recovery", () => {
-  it("recovers a verified isolated worktree identity before the initial refill", async () => {
+  it("defaults a writing unit to isolation and sets up only its selected frontier before refill", async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-isolated-control-")));
     const cwd = path.join(root, "repository");
     const env = fakeEnv(path.join(root, "home"), { BATON_SESSION_ID: `rolling-isolated-${Date.now()}-${Math.random()}` });
@@ -87,21 +86,7 @@ describe("rolling control recovery", () => {
 
     const runId = "run-isolated-control";
     const unitKey = "unit-isolated-control";
-    const topology = resolveWorktreeTopology(cwd, ["tracked.txt"]);
-    const repository = topology.repositories[0]!;
     const executionRoot = worktreeExecutionRootPath(cwd, runId, unitKey, "attempt-1", env);
-    const setup = await setupDetachedWorktree({
-      repository_root: cwd,
-      repository_id: repository.repository_id,
-      git_common_dir: repository.git_common_dir,
-      git_common_dir_identity: repository.git_common_dir_identity,
-      execution_root: executionRoot,
-      run_id: runId,
-      unit_key: unitKey,
-      unit_version: 1,
-      attempt_id: "attempt-1",
-      env,
-    });
     const taskKey = deriveTaskKey("director", "isolated-task");
     const source: TaskSourceDescriptor = {
       schema_version: 1,
@@ -120,7 +105,6 @@ describe("rolling control recovery", () => {
         task_keys: [taskKey],
         depends_on: [],
         execution_mode: "patch-only",
-        worktree_mode: "isolated-worktree",
         route_profile: "runner",
         prompt: "write only inside the isolated root",
         write_paths: ["tracked.txt"],
@@ -134,14 +118,165 @@ describe("rolling control recovery", () => {
     };
 
     try {
-      const started = await startRollingControl({ cwd, env, run_id: runId, host: "alpha", worktree_mode: "isolated-worktree", source, delta, dispatch: true });
+      const started = await startRollingControl({ cwd, env, run_id: runId, host: "alpha", source, delta, dispatch: true });
       assert.equal(started.dispatch?.materialized.length, 1);
+      const accepted = readRollingExecutionRun(cwd, runId, { env });
+      assert.equal(accepted.identity.execution_mode, "isolated-worktree");
+      assert.equal(accepted.accepted_deltas[0]?.unit_versions[0]?.worktree_mode, "isolated-worktree");
+      const setup = readPersistedWorktreeRecord(cwd, runId, unitKey, "attempt-1", env);
       const lineage = listSpawns(cwd, env)[0]?.rolling_unit_lineage;
       assert.equal(lineage?.execution_root, fs.realpathSync(executionRoot));
-      assert.equal(lineage?.worktree_record_id, setup.record.record_id);
+      assert.equal(lineage?.worktree_record_id, setup.record_id);
       assert.equal(lineage?.base_tree, setup.base_tree);
     } finally {
       execFileSync("git", ["worktree", "remove", "--force", executionRoot], { cwd, stdio: "ignore" });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on an unsupported exact-root adapter while explicit shared mode remains compatible", async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-mode-gate-")));
+    const cwd = path.join(root, "repository");
+    const env = fakeEnv(path.join(root, "home"), { BATON_SESSION_ID: `rolling-mode-gate-${Date.now()}-${Math.random()}` });
+    fs.mkdirSync(cwd);
+    const git = (args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+    git(["init", "-q"]);
+    git(["config", "user.email", "baton@test.invalid"]);
+    git(["config", "user.name", "Baton Test"]);
+    fs.writeFileSync(path.join(cwd, "tracked.txt"), "base\n");
+    git(["add", "tracked.txt"]);
+    git(["commit", "-qm", "baseline"]);
+
+    const catalog = await getCliAdapter("beta", env).discoverModels({ env });
+    const model = catalog.models[0]?.id;
+    assert.ok(model);
+    configureCli(cwd, env, "beta", [model], { runner: model });
+    publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), { cli: "beta", host: "beta", env });
+    const taskKey = deriveTaskKey("director", "mode-gate-task");
+    const source: TaskSourceDescriptor = {
+      schema_version: 1,
+      source_kind: "director",
+      adapter: "director",
+      selection: { tasks: [{ id: "mode-gate-task", description: "exercise worktree mode gate" }] },
+    };
+    const makeDelta = (id: string): PlanDelta => ({
+      schema_version: 1,
+      delta_id: id,
+      prepared_from_append_sequence: 0,
+      unit_versions: [{
+        schema_version: 1,
+        unit_key: `unit-${id}`,
+        version: 1,
+        task_keys: [taskKey],
+        depends_on: [],
+        execution_mode: "patch-only",
+        route_profile: "runner",
+        prompt: "write the declared file",
+        write_paths: ["tracked.txt"],
+        allowed_operations: ["write"],
+        completion_criteria: ["declared file updated"],
+        permitted_validation: ["read"],
+        input_fingerprints: { fixture: "f".repeat(64) },
+      }],
+      gate_versions: [],
+      task_coverage: [{ schema_version: 1, task_key: taskKey, kind: "unit", unit_versions: [`unit-${id}@1`] }],
+    });
+
+    try {
+      await assert.rejects(
+        startRollingControl({ cwd, env, run_id: "run-default-isolated-gate", host: "beta", source, delta: makeDelta("default-isolated"), dispatch: true }),
+        (error: unknown) => (error as { code?: string }).code === "ADAPTER_EXACT_ROOT_UNSUPPORTED",
+      );
+      assert.equal(listSpawns(cwd, env).length, 0);
+
+      const shared = await startRollingControl({
+        cwd,
+        env,
+        run_id: "run-explicit-shared",
+        host: "beta",
+        worktree_mode: "shared-worktree",
+        source,
+        delta: makeDelta("explicit-shared"),
+        dispatch: true,
+      });
+      assert.equal(shared.dispatch?.materialized.length, 1);
+      const lineage = listSpawns(cwd, env)[0]?.rolling_unit_lineage;
+      assert.equal(lineage?.worktree_mode, "shared-worktree");
+      assert.equal(lineage?.execution_root, undefined);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds large-change startup setup to the current isolated capacity frontier", async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-bounded-start-")));
+    const cwd = path.join(root, "repository");
+    const env = fakeEnv(path.join(root, "home"), { BATON_SESSION_ID: `rolling-bounded-${Date.now()}-${Math.random()}` });
+    fs.mkdirSync(cwd);
+    const git = (args: string[]) => execFileSync("git", args, { cwd, stdio: "ignore" });
+    git(["init", "-q"]);
+    git(["config", "user.email", "baton@test.invalid"]);
+    git(["config", "user.name", "Baton Test"]);
+    fs.writeFileSync(path.join(cwd, "shared.txt"), "base\n");
+    git(["add", "shared.txt"]);
+    git(["commit", "-qm", "baseline"]);
+    const catalog = await getCliAdapter("alpha", env).discoverModels({ env });
+    const model = catalog.models[0]?.id;
+    assert.ok(model);
+    configureCli(cwd, env, "alpha", [model], { runner: model });
+    publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), { cli: "alpha", host: "alpha", env });
+    const runId = "run-bounded-start";
+    const taskKey = deriveTaskKey("director", "bounded-start-task");
+    const unitRefs = [1, 2, 3, 4].map((ordinal) => `unit-bounded-${ordinal}@1`);
+    const source: TaskSourceDescriptor = {
+      schema_version: 1,
+      source_kind: "director",
+      adapter: "director",
+      selection: { tasks: [{ id: "bounded-start-task", description: "start a large isolated change" }] },
+    };
+    const delta: PlanDelta = {
+      schema_version: 1,
+      delta_id: "delta-bounded-start",
+      prepared_from_append_sequence: 0,
+      unit_versions: unitRefs.map((ref, index) => ({
+        schema_version: 1,
+        unit_key: ref.split("@")[0]!,
+        version: 1,
+        task_keys: [taskKey],
+        depends_on: [],
+        execution_mode: "patch-only" as const,
+        route_profile: "runner" as const,
+        prompt: `independent speculative edit ${index + 1}`,
+        write_paths: ["shared.txt"],
+        allowed_operations: ["write" as const],
+        completion_criteria: ["isolated result ready"],
+        permitted_validation: ["read"],
+        input_fingerprints: { fixture: String(index + 1).repeat(64) },
+      })),
+      gate_versions: [],
+      task_coverage: [{ schema_version: 1, task_key: taskKey, kind: "unit", unit_versions: unitRefs }],
+    };
+
+    const createdRoots: string[] = [];
+    try {
+      const started = await startRollingControl({ cwd, env, run_id: runId, host: "alpha", source, delta, dispatch: true });
+      assert.equal(started.dispatch?.materialized.length, 2);
+      assert.deepEqual(started.dispatch?.frontier, unitRefs.slice(0, 2));
+      assert.ok(started.dispatch?.selection.integration_conflict_risks.some((risk) => {
+        const pair = [risk.from, risk.to].sort();
+        return pair[0] === unitRefs[0] && pair[1] === unitRefs[1];
+      }));
+      for (const ordinal of [1, 2]) {
+        const record = readPersistedWorktreeRecord(cwd, runId, `unit-bounded-${ordinal}`, "attempt-1", env);
+        createdRoots.push(record.execution_root);
+      }
+      for (const ordinal of [3, 4]) {
+        assert.equal(fs.existsSync(worktreeExecutionRootPath(cwd, runId, `unit-bounded-${ordinal}`, "attempt-1", env)), false);
+      }
+    } finally {
+      for (const executionRoot of createdRoots) {
+        try { execFileSync("git", ["worktree", "remove", "--force", executionRoot], { cwd, stdio: "ignore" }); } catch { /* best effort */ }
+      }
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

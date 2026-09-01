@@ -198,6 +198,30 @@ function executionRootFor(input: RollingSchedulerInput, id: string, key: string)
   const values = input.execution_roots_by_unit;
   return values instanceof Map ? values.get(id) ?? values.get(key) : values?.[id] ?? values?.[key];
 }
+
+/**
+ * Planned isolated units already own distinct future roots even before the
+ * selected frontier has passed repository setup.  Model that fact only for
+ * conflict selection; exact base/root identity is still required by the
+ * dispatch boundary and is never inferred here.
+ */
+function schedulingOwnershipNamespaces(
+  input: RollingSchedulerInput,
+  units: ReadonlyMap<string, UnitVersion>,
+): ReadonlyMap<string, ApplyPlanOwnershipNamespace> {
+  const result = new Map<string, ApplyPlanOwnershipNamespace>();
+  for (const [id, unit] of units) {
+    const exact = executionRootFor(input, id, unit.unit_key);
+    if (exact) result.set(id, exact);
+    else if (unit.execution_mode === "patch-only" && unit.worktree_mode === "isolated-worktree") {
+      result.set(id, {
+        repository_id: "baton-pending-isolated-repository",
+        execution_root: `baton-pending-isolated-root:${id}`,
+      });
+    }
+  }
+  return result;
+}
 function versionId(key: string, version: number): string { return `${key}@${version}`; }
 function parseRef(value: string): { key: string; version?: number } { const parsed = value.match(VERSION_REF); return parsed ? { key: parsed[1]!, version: Number(parsed[2]) } : { key: value }; }
 function addBlocker(map: Map<string, RollingSchedulerBlocker[]>, id: string, code: string, message: string, refs: string[] = []): void {
@@ -506,7 +530,7 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
         addBlocker(blockers, id, "INTEGRATION_RESULT_BASE_MISSING", `accepted integration ${gateId} has no result base`, [id, gateId]); ready = false; continue;
       }
       const executionRoot = executionRootFor(input, id, unit.unit_key);
-      if (unit.worktree_mode === "isolated-worktree" && executionRoot?.base_tree !== resultBase) {
+      if (unit.worktree_mode === "isolated-worktree" && executionRoot && executionRoot.base_tree !== resultBase) {
         addBlocker(blockers, id, "INTEGRATION_RESULT_BASE_MISMATCH", `unit ${id} must inherit integration ${gateId} result base ${resultBase}`, [id, gateId]); ready = false; continue;
       }
       inheritedBaseTrees[id] = resultBase;
@@ -567,7 +591,7 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
   if (input.shared_worktree !== false) {
     const plan = { units: pseudoUnits } as unknown as Parameters<typeof buildFrontierConflictGraph>[0];
     const graph = buildFrontierConflictGraph(plan, routable, {
-      activeOwnership, stableOrder: routable, ownershipByUnit: input.execution_roots_by_unit,
+      activeOwnership, stableOrder: routable, ownershipByUnit: schedulingOwnershipNamespaces(input, units),
     });
     integrationConflictRisks = graph.integration_conflict_risks;
     for (const id of graph.blockedByActiveOwnership) addBlocker(blockers, id, "WRITE_SCOPE_CONFLICT", `unit ${id} conflicts with terminal-unreleased ownership`, [id]);

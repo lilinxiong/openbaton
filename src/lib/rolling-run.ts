@@ -234,7 +234,7 @@ function identityFromInput(input: RollingRunCreateInput, source: TaskSourceDescr
     host: input.host,
     adapter: input.adapter || source.adapter,
     source_kind: input.source_kind || source.source_kind,
-    execution_mode: input.execution_mode || "shared-worktree",
+    execution_mode: input.execution_mode || "isolated-worktree",
     session_uid,
   };
 }
@@ -351,6 +351,19 @@ function deltaIdempotencyFingerprint(value: PlanDelta): string {
   return fingerprintPlanDelta(copy);
 }
 
+function deltaWithRunWorktreeDefaults(value: PlanDelta, identity: RollingRunIdentity): PlanDelta {
+  const copy = structuredClone(value) as PlanDelta;
+  let changed = false;
+  for (const unit of copy.unit_versions || []) {
+    if (unit.execution_mode !== "patch-only" || unit.worktree_mode !== undefined) continue;
+    unit.worktree_mode = identity.execution_mode as WorktreeExecutionMode;
+    delete unit.fingerprint;
+    changed = true;
+  }
+  if (changed) delete copy.fingerprint;
+  return copy;
+}
+
 function deltaValidationFacts(identity: RollingRunIdentity, facts: readonly RollingFact[], proposed: PlanDelta): PlanDeltaValidationContext {
   const accepted_deltas = deltaPayloads(facts);
   const manifest = new Map<string, TaskManifestEntry>();
@@ -395,6 +408,11 @@ function deltaValidationFacts(identity: RollingRunIdentity, facts: readonly Roll
 function appendLocked(input: RollingRunAppendInput, normalized: { kind: RollingFactKind; idempotency_key: string; fact_id: string; document_id: string; payload: unknown; document: unknown }): RollingCheckpoint {
   const env = input.env || process.env;
   const identity = readIdentityFromFacts(input.cwd, input.runId, env);
+  if (normalized.kind === "delta" && record(normalized.payload)) {
+    const defaulted = deltaWithRunWorktreeDefaults(normalized.payload as unknown as PlanDelta, identity);
+    normalized.payload = defaulted;
+    normalized.document = defaulted;
+  }
   if (input.host !== undefined && input.host !== identity.host) error("rolling run host does not match state", "ROLLING_HOST_MISMATCH");
   if (input.session_uid !== undefined && input.session_uid !== identity.session_uid) error("rolling run session does not match state", "ROLLING_SESSION_MISMATCH");
   if (env.BATON_SESSION_ID) {
