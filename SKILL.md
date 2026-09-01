@@ -94,7 +94,25 @@ baton run <run> --status --json
 baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
 baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin|apply|resolve|accept ... --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
+
+Writing units in a new run default to `isolated-worktree`; verification units
+remain rootless. Let Baton prepare only the selected capacity frontier. Never
+create a shared ticket when adapter exact-root capability, repository
+decomposition, immutable-base setup, or caller-invariance checks fail. Shared
+mode is permitted only when the run explicitly selected the legacy/manual
+compatibility path.
+
+After a terminal isolated ticket is released, the parent freezes its audited
+bundle, serializes `begin`/`apply`, supplies and audits a separate `resolve`
+tree when conflicts exist, and calls `accept` before treating the result as a
+downstream base. Workers never create bundles or integrate. For submodules,
+run this lifecycle at the literal submodule root and use a later explicit
+superproject gitlink unit. Cleanup only an eligible exact attempt; preserve all
+reported retention reasons and identity mismatches.
 
 Each delta is compared with the current append sequence. A storage race rebases
 only that compare token; it never changes an immutable unit or gate version.

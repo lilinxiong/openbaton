@@ -117,7 +117,25 @@ baton run <run> --status --json
 baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
 baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin|apply|resolve|accept ... --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
+
+New writing units default to isolation. Baton itself prepares only the current
+capacity frontier after exact-root capability and repository setup gates pass;
+do not pre-create roots, substitute the caller checkout, or continue after a
+setup blocker. Verification units remain rootless. Shared mode is legal only
+when the accepted run explicitly selected the legacy/manual compatibility
+path.
+
+After release, the parent uses `--freeze-unit` to audit and freeze the terminal
+root, then owns the serialized integration queue. `apply` must not mutate the
+caller; conflicts require a separately audited `resolve`; only `accept` moves
+the frozen result into the caller and unlocks dependent bases. Run submodule
+units from their literal repository roots and represent the superproject
+gitlink as a later unit. Never clean an attempt while status reports retention
+or identity drift.
 
 Status is task-first and distinguishes unplanned, planned, active, blocked,
 terminal-unreleased, accepted, sealed, and reconciled work. Preserve the

@@ -17,6 +17,7 @@ import {
 } from "./config.js";
 import { dispatchSnapshot } from "./dispatch.js";
 import { createDirectorTaskSourceAdapter, type DirectorTaskDefinition } from "./director-task-source.js";
+import { extractExactExecutionRootIdentity, sameExactExecutionRootIdentity } from "../adapters/contract.js";
 import { availabilityForRoute } from "./model-availability.js";
 import { createOpenSpecTaskSourceAdapter } from "./openspec-task-source.js";
 import {
@@ -55,7 +56,9 @@ import { refillRollingCapacity, type RollingRefillResult } from "./rolling-dispa
 import { selectRollingFrontier } from "./rolling-dispatch-selection.js";
 import { collectRollingUnitVersions } from "./rolling-dispatch-state.js";
 import { worktreeExecutionRootPath } from "./paths.js";
-import { readPersistedWorktreeRecord, type WorktreeRecord } from "./worktree-execution.js";
+import { readReceipt } from "./receipt.js";
+import { createWorktreeChangeBundle, type WorktreeChangeBundleResult } from "./worktree-bundle.js";
+import { readPersistedWorktreeRecord, type ChangeBundleOperation, type WorktreeRecord } from "./worktree-execution.js";
 import { setupDetachedWorktree } from "./worktree-setup.js";
 import { resolveWorktreeTopology } from "./worktree-topology.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./routes.js";
@@ -114,6 +117,15 @@ export interface SealRollingTaskInput extends RollingControlContext {
 export interface ReconcileRollingTasksInput extends RollingControlContext {
   run_id: string;
   task_key?: string | null;
+}
+
+export interface FreezeRollingUnitInput extends RollingControlContext {
+  run_id: string;
+  unit_key: string;
+  attempt_id: string;
+  conclusion: string;
+  validation_summaries?: readonly string[];
+  allow_noop?: boolean;
 }
 
 export interface RollingControlMutationResult {
@@ -761,6 +773,58 @@ export async function appendRollingControl(input: AppendRollingControlInput): Pr
   appendRollingPlanDelta({ cwd: input.cwd, env: input.env, runId: input.run_id, delta, now: input.now });
   const dispatch = input.dispatch ? await refillRollingRun({ ...input, event_reason: "delta-append" }) : null;
   return mutationResult(input, "ROLLING_PLAN_APPENDED", dispatch);
+}
+
+export async function freezeRollingUnitBundle(input: FreezeRollingUnitInput): Promise<WorktreeChangeBundleResult> {
+  const recovered = synchronizeRollingTicketFacts(input);
+  const record = readPersistedWorktreeRecord(input.cwd, input.run_id, input.unit_key, input.attempt_id, input.env);
+  const ticket = recovered.tickets.find((candidate) => candidate.rolling_unit_lineage?.worktree_record_id === record.record_id);
+  if (!ticket || !ticket.receipt_id) {
+    throw new RollingControlError(
+      `isolated attempt ${input.unit_key}/${input.attempt_id} has no exact persisted ticket and Receipt`,
+      "ROLLING_BUNDLE_RECEIPT_MISSING",
+    );
+  }
+  const receipt = readReceipt(input.cwd, ticket.receipt_id, input.env);
+  const receiptIdentity = extractExactExecutionRootIdentity(receipt);
+  const lineage = receipt.rolling_unit_lineage;
+  const recordIdentity = {
+    repository_id: record.repository_id,
+    git_common_dir_identity: record.git_common_dir_identity,
+    execution_root: record.execution_root,
+    base_tree: record.base_tree,
+    worktree_record_id: record.record_id,
+  };
+  if (!receiptIdentity || !sameExactExecutionRootIdentity(receiptIdentity, recordIdentity)
+    || lineage?.worktree_mode !== "isolated-worktree"
+    || lineage.run_id !== record.run_id
+    || lineage.unit_key !== record.unit_key
+    || lineage.unit_version !== record.unit_version) {
+    throw new RollingControlError("isolated bundle Receipt does not match the persisted attempt", "ROLLING_BUNDLE_RECEIPT_INVALID");
+  }
+  const operations = receipt.scope.allowed_operations.filter((operation) =>
+    operation === "write" || operation === "create" || operation === "delete" || operation === "rename" || operation === "chmod") as ChangeBundleOperation[];
+  if (!operations.length || operations.length !== receipt.scope.allowed_operations.length) {
+    throw new RollingControlError("isolated bundle Receipt contains a non-bundle operation", "ROLLING_BUNDLE_RECEIPT_INVALID");
+  }
+  return createWorktreeChangeBundle({
+    record,
+    receipt: {
+      receipt_id: receipt.receipt_id,
+      ...receiptIdentity,
+      run_id: record.run_id,
+      unit_key: record.unit_key,
+      unit_version: record.unit_version,
+      attempt_id: record.attempt_id,
+      write_allowlist: receipt.scope.write_allowlist,
+      allowed_operations: operations,
+      ...(input.allow_noop ? { allow_noop: true } : {}),
+    },
+    terminal_conclusion: input.conclusion,
+    validation_summaries: input.validation_summaries,
+    created_at: input.now,
+    env: input.env,
+  });
 }
 
 function parseGateRef(value: string): { gate_key: string; gate_version: number } {

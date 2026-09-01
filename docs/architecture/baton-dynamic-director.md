@@ -163,6 +163,36 @@ idempotently. Clean uninstall inventories and retains auditable rolling-run
 records. Compiled-v1 and manual apply records remain readable through their
 original protocols and are never silently migrated.
 
+### Isolated worktree data plane
+
+The rolling log is the control plane; a verified detached worktree is the
+default data plane for each writing unit. Read-only units have no worktree.
+Before a frontier ticket exists, the adapter must advertise exact-root support
+and Baton must resolve one owning repository, freeze an immutable base, create
+the canonical run/unit/attempt root, and prove the caller's HEAD, index, refs,
+and dirty facts did not move. Only the current capacity frontier is prepared,
+so open-world planning does not turn into eager whole-change setup.
+
+Execution ownership is `(repository_id, execution_root, normalized_path)`.
+This preserves strict overlap exclusion inside a root while allowing
+speculative overlap across roots. Cross-root overlap becomes a deterministic
+integration risk rather than concurrent caller mutation.
+
+At terminal release Baton audits the complete root and freezes a
+`ChangeBundle v1` with base/result trees, non-text facts, Receipt lineage, and
+internal Git transport. Each repository has one serialized parent queue.
+Application and conflict resolution occur in isolated object plumbing; the
+caller changes only at final acceptance under a fresh baseline gate. Bundle
+readiness, integration, parent acceptance, task sealing, and source
+reconciliation remain separate facts.
+
+Submodules retain literal repository ownership. A submodule bundle is based,
+audited, and integrated in the submodule object database; a later superproject
+unit owns the mode-160000 gitlink change. Recovery reconciles exact records,
+registered worktrees, internal refs, bundles, integration contexts, and native
+liveness. Cleanup removes only an identity-matching eligible attempt after all
+retention reasons clear.
+
 ## Director and scheduling
 
 The director owns discussion, read-only analysis, classification, dependency

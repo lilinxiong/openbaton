@@ -208,6 +208,12 @@ baton run <run> --status --json
 baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
 baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] [--allow-noop] --json
+baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
+baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
+baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
+baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
 
 Start with one complete dependency-ready unit contract. While it is queued or
@@ -223,6 +229,39 @@ Terminal result, safety verdict, parent acceptance, and release remain
 separate idempotent facts, so reconnect recovery can repair a missing fact
 without starting a duplicate worker. Only adapter reconciliation writes the
 source task ledger.
+
+### Isolated execution, bundle, and integration lifecycle
+
+For a new run, Baton persists `isolated-worktree` on writing units by default;
+verification-only units do not own a root. Before materializing the current
+frontier, Baton requires the selected adapter to advertise
+`native.exact_execution_root=true`, resolves every declared write path to one
+repository, and verifies a detached worktree against an immutable base. It
+creates roots only for the current capacity frontier, not for every unit in a
+large change. Setup or capability failure is a local blocker and cannot fall
+back to the caller checkout. Explicit `shared-worktree` remains available only
+for legacy/manual compatibility.
+
+Overlapping paths in distinct verified roots may execute concurrently and are
+reported as `integration_conflict_risk`; same-root overlap remains forbidden.
+After a terminal attempt is released, `--freeze-unit` performs the complete
+Git audit and freezes an immutable `ChangeBundle v1`. Use `--allow-noop` only
+when the parent explicitly accepts an empty result. Worker text is never a
+substitute for the audited tree.
+
+The parent then owns the serialized repository integration queue. `begin`
+captures the exact caller baseline, `apply` computes a clean result or typed
+conflicts without mutating the caller, `resolve` audits a separately supplied
+parent result tree, and `accept` revalidates and applies only the frozen result.
+Earlier accepted bundles remain fixed if a later bundle conflicts. Integration
+acceptance supplies the exact result base to hard-dependent successor units.
+
+Run submodule work from the submodule repository root and integrate its bundle
+there. Represent the superproject gitlink change as a later repository-local
+unit with an explicit dependency/gate; never treat submodule files as
+superproject blobs. Status shows the live execution root and bounded diff facts
+separately from bundle/integration acceptance. Cleanup is exact and idempotent;
+it refuses identity drift and preserves every retained or unresolved artifact.
 
 Accepted rolling documents and facts are stored in
 `~/.baton/workspaces/<workspace>/v2/runs/rolling-runs-v2/`. They are auditable

@@ -189,7 +189,12 @@ export interface CliHostMetadata {
   isInvoking?: (env?: NodeJS.ProcessEnv) => boolean;
   /** Kind of handle returned by this host's native child execution API. */
   executionHandleKind: NativeExecutionHandleKind;
-  /** Missing/false adapters remain eligible only for shared compatibility. */
+  /**
+   * True only when native launch accepts and acknowledges Baton's complete
+   * five-field exact-root identity. Missing/false adapters cannot dispatch a
+   * default isolated writing unit and remain eligible only when the run
+   * explicitly selected shared-worktree compatibility.
+   */
   exactExecutionRoot?: boolean;
 }
 

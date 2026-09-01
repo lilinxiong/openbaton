@@ -183,6 +183,12 @@ baton run <run> --status --json
 baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
 baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] [--allow-noop] --json
+baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
+baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
+baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
+baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
 
 先提交一个完整、依赖已就绪的 unit contract；它 queued/running 时继续分析并
@@ -195,6 +201,33 @@ task 在 parent 为所有已知非 superseded unit/gate 提交精确 seal 前始
 terminal result、safety verdict、parent acceptance 和 release 是独立幂等事实，
 因此 reconnect recovery 可以补齐缺失事实，而不会重复启动 worker。只有 source
 adapter reconciliation 可以写任务 ledger。
+
+### 隔离执行、bundle 与 integration 生命周期
+
+新 run 默认在写入 unit 上持久化 `isolated-worktree`；verification-only unit
+不拥有 root。物化当前 frontier 前，Baton 要求选定 adapter 明确声明
+`native.exact_execution_root=true`，把每个 write path 解析到唯一 repository，
+并相对不可变 base 验证 detached worktree。它只为当前容量 frontier 创建 root，
+不会在大 change 启动时给所有未来 unit 一次性建目录。setup 或 capability 失败
+只形成局部 blocker，绝不能回退到 caller checkout。显式 `shared-worktree` 只作为
+legacy/manual 兼容入口保留。
+
+不同 verified root 上的重叠路径可以并行执行，并记录为
+`integration_conflict_risk`；同一 root 内仍严格互斥。terminal attempt release 后，
+`--freeze-unit` 执行完整 Git audit 并冻结不可变 `ChangeBundle v1`。只有 parent
+明确允许空结果时才能使用 `--allow-noop`；worker 文字结论不能替代 audited tree。
+
+随后由 parent 独占每个 repository 的串行 integration queue。`begin` 捕获精确
+caller baseline，`apply` 在不修改 caller 的前提下计算 clean result 或 typed
+conflicts，`resolve` 审计另行提交的 parent result tree，`accept` 重新校验并只应用
+冻结结果。后续 bundle 冲突不会回滚之前已经 accepted 的 bundle；integration
+acceptance 会把精确 result base 提供给硬依赖 successor。
+
+submodule 工作必须从 submodule repository root 启动并在该仓库集成。superproject
+gitlink 更新要表示为后续 repository-local unit，并带显式 dependency/gate；不能把
+submodule 文件当作 superproject blob。status 分开显示 live execution root/有界
+diff facts 与 bundle/integration acceptance。cleanup 精确且幂等；identity drift 会
+被拒绝，所有 retained 或 unresolved artifact 都会保留。
 
 已接受的 rolling documents/facts 位于
 `~/.baton/workspaces/<workspace>/v2/runs/rolling-runs-v2/`。它们是审计记录，

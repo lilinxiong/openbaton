@@ -146,6 +146,30 @@ append-only log 与不可变 accepted documents 位于当前 workspace runtime �
 result、release 做幂等合并。clean uninstall 会清点并保留可审计 rolling run。
 compiled-v1 与手工 apply 记录继续按原协议读取，绝不会被静默迁移。
 
+### 隔离 worktree 数据面
+
+rolling log 是控制面；每个写入 unit 默认使用 verified detached worktree 作为
+数据面，read-only unit 不需要 worktree。frontier ticket 创建前，adapter 必须声明
+exact-root 支持；Baton 必须解析唯一 owning repository、冻结不可变 base、创建规范
+run/unit/attempt root，并证明 caller 的 HEAD、index、refs 和 dirty facts 没有移动。
+只准备当前容量 frontier，因此 open-world planning 不会退化为全 change eager setup。
+
+执行所有权键是 `(repository_id, execution_root, normalized_path)`：同一 root 内
+继续严格排除重叠，不同 root 可做 speculative overlap。跨 root 重叠成为确定性的
+integration risk，而不是并发修改 caller。
+
+terminal release 后，Baton 审计完整 root，并冻结包含 base/result tree、non-text
+facts、Receipt lineage 和 internal Git transport 的 `ChangeBundle v1`。每个 repository
+只有一个串行 parent queue。application 和 conflict resolution 在隔离 object plumbing
+中完成；只有最终 acceptance 在重新校验 baseline 后修改 caller。bundle ready、
+integration、parent acceptance、task seal 与 source reconciliation 始终是不同事实。
+
+submodule 保留字面 repository ownership：submodule bundle 在 submodule object
+database 内建立、审计和集成，后续 superproject unit 才负责 mode-160000 gitlink。
+recovery 对齐精确 record、registered worktree、internal ref、bundle、integration
+context 和 native liveness。cleanup 只有在 retention reason 清空且 identity 完全匹配
+时才移除 eligible attempt。
+
 ## Director 与调度
 
 director 负责讨论、只读分析、分类、依赖排序、授权和仓库 scope。

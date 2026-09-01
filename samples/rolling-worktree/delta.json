@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "delta_id": "rolling-worktree-sample-1",
+  "prepared_from_append_sequence": 0,
+  "unit_versions": [
+    {
+      "schema_version": 1,
+      "unit_key": "sample-write",
+      "version": 1,
+      "task_keys": ["director:579c3d8eb172002267761a4f2ccaa1d3"],
+      "depends_on": [],
+      "execution_mode": "patch-only",
+      "route_profile": "runner",
+      "prompt": "Create sample-output.txt containing one line: isolated sample passed.",
+      "write_paths": ["sample-output.txt"],
+      "allowed_operations": ["create", "write"],
+      "completion_criteria": ["sample-output.txt contains the exact requested line"],
+      "permitted_validation": ["read sample-output.txt"],
+      "input_fingerprints": {
+        "sample-contract": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ],
+  "gate_versions": [],
+  "task_coverage": [
+    {
+      "schema_version": 1,
+      "task_key": "director:579c3d8eb172002267761a4f2ccaa1d3",
+      "kind": "unit",
+      "unit_versions": ["sample-write@1"]
+    }
+  ]
+}

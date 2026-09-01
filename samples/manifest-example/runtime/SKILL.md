@@ -14,6 +14,14 @@ immediate identity handoff containing `session_id`, `ticket_id`, and the
 opaque native execution handle. Wait on native activity, record one terminal
 result, and release before filling another capacity slot.
 
+This sample declares `native.exact_execution_root=false`, so Baton's default
+isolated writing run must stop before native launch. It may service a writing
+ticket only when the accepted run explicitly selected `shared-worktree`.
+An adapter that changes this field to `true` must accept the canonical
+repository/common-dir/root/base-tree/worktree-record identity, launch in that
+exact root, and acknowledge the same five fields before bind. It must never
+rewrite the root or silently fall back to the caller checkout.
+
 The manifest field `quota.max_concurrent_subagents` means the maximum number
 of simultaneously active descendants for one root-agent tree. It excludes the
 root invocation and includes direct and nested descendants together; it is not

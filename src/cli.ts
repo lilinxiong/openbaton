@@ -218,13 +218,15 @@ Usage:
   baton apply [change] --host ${HOSTS} --run RUN --reconcile [--task NUMBER] [--json]
   baton apply [change] --host ${HOSTS} --run RUN --plan-file PATH|- [--dispatch]
                submit a director-compiled successor plan (compiled handler)
-  baton run start --host ${HOSTS} --worktree-mode isolated-worktree|shared-worktree --source-file PATH|- [--plan-delta-file PATH|-] [--run-id RUN] [--dispatch] [--json]
-               create a source-neutral rolling v2 run; OpenSpec is one optional adapter
+  baton run start --host ${HOSTS} [--worktree-mode isolated-worktree|shared-worktree] --source-file PATH|- [--plan-delta-file PATH|-] [--run-id RUN] [--dispatch] [--json]
+               create a source-neutral rolling v2 run; writing units default to isolated worktrees
   baton run RUN --append-plan PATH|- [--dispatch] [--json]
   baton run RUN --status [--json]
   baton run RUN --accept-gate GATE@VERSION --text SUMMARY [--dispatch] [--json]
   baton run RUN --seal-task TASK --seal-file PATH|- [--json]
   baton run RUN --reconcile [--task TASK] [--json]
+  baton run RUN --freeze-unit UNIT --attempt ATTEMPT --text SUMMARY [--validation SUMMARY] [--allow-noop] [--json]
+               parent-audit one terminal isolated root and freeze its immutable ChangeBundle v1
   baton run RUN --cleanup-unit UNIT --attempt ATTEMPT [--release-downstream-base] [--discard-rejected-evidence] [--release-user-retention] [--json]
                remove only an exact eligible worktree and its disposable Baton reachability artifacts
   baton integration begin --run RUN --repository-id SHA256 --bundle-id ID --expected-before-tree GIT_OBJECT [--order-override N] [--json]

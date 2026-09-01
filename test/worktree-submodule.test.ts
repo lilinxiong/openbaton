@@ -9,11 +9,11 @@ import { markRouteAvailable } from "../src/lib/model-availability.js";
 import { worktreeExecutionRootPath } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, buildWriteReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
+import { freezeRollingUnitBundle } from "../src/lib/rolling-control.js";
 import { appendRollingPlanDelta, createRollingExecutionRun } from "../src/lib/rolling-run.js";
 import type { PlanDelta, UnitVersion } from "../src/lib/rolling-plan.js";
 import { captureBaseline } from "../src/lib/safety.js";
 import { buildSpawnTicket, nextSpawnId, writeSpawn } from "../src/lib/spawn.js";
-import { createWorktreeChangeBundle } from "../src/lib/worktree-bundle.js";
 import {
   CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION,
   fingerprintWorktreeRuntimeRecord,
@@ -172,10 +172,12 @@ describe("submodule isolated execution and parent gitlink ordering", () => {
     releaseAgent(moduleRoot, ticket.id, { host: HOST, executionHandle: handle, env });
     const terminal = readPersistedWorktreeRecord(moduleRoot, moduleRun, moduleUnit.unit_key, attemptId, env);
     assert.equal(terminal.lifecycle_state, "terminal_awaiting_audit");
-    const bundleResult = await createWorktreeChangeBundle({
-      record: terminal,
-      receipt: { receipt_id: receipt.receipt_id, ...exactRoot, run_id: moduleRun, unit_key: moduleUnit.unit_key, unit_version: 1, attempt_id: attemptId, write_allowlist: ["child.txt"], allowed_operations: ["write"] },
-      terminal_conclusion: "submodule worker result audited",
+    const bundleResult = await freezeRollingUnitBundle({
+      cwd: moduleRoot,
+      run_id: moduleRun,
+      unit_key: moduleUnit.unit_key,
+      attempt_id: attemptId,
+      conclusion: "submodule worker result audited",
       validation_summaries: ["native exact-root dispatch passed"],
       env,
     });

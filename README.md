@@ -377,7 +377,37 @@ baton run <run> --status --json
 baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
 baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
+baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
+baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
+baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
+
+New rolling runs default writing units to `isolated-worktree`; verification
+units remain rootless. Refill checks the adapter's
+`native.exact_execution_root=true` capability, resolves one owning repository,
+and creates verified detached roots only for the current capacity frontier.
+This bounds large-change startup work. Failure stops before ticket creation and
+never falls back to shared execution. `--worktree-mode shared-worktree` remains
+an explicit legacy/manual compatibility choice.
+
+After native completion and release, the parent freezes a `ChangeBundle v1`.
+The bundle records the immutable base/result trees, exact changed paths and
+operations, binary/mode/rename/symlink/gitlink facts, Receipt lineage, and a
+Baton-owned internal commit. Integration is serialized per repository:
+`begin` admits the exact caller baseline, `apply` uses isolated Git object
+plumbing, `resolve` records a separate parent-authored conflict result, and
+`accept` alone applies the frozen result to the caller. A clean caller checkout
+therefore does not mean workers made no progress; status reports execution and
+integration truth separately.
+
+Submodule files are executed, audited, bundled, and integrated from the
+submodule repository root. A later superproject unit owns the explicit gitlink
+update. Cleanup removes only an exact eligible root after all retention reasons
+are cleared; unresolved conflicts, live handles, ready bundles, downstream
+bases, and user retention remain visible and preserved.
 
 Status is task-first and distinguishes unplanned, planned, active,
 terminal-unreleased, blocked, accepted, sealed, and reconciled work. Terminal
@@ -429,6 +459,10 @@ baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
 baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
 baton run <run-id> --status --json
+baton run <run-id> --freeze-unit <unit> --attempt attempt-1 --text "audited result" --json
+baton integration begin --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --expected-before-tree <tree> --json
+baton integration apply --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --json
+baton integration accept --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --conclusion "accepted" --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

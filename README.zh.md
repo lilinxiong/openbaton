@@ -352,7 +352,33 @@ baton run <run> --status --json
 baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
 baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
+baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
+baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
+baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
+
+新的 rolling run 默认只把写入 unit 设为 `isolated-worktree`；verification unit
+不需要 root。refill 会先检查 adapter 的
+`native.exact_execution_root=true`，解析唯一 owning repository，然后只为当前
+容量 frontier 创建并验证 detached root，因此大 change 的首批启动成本有界。
+任一能力或 setup gate 失败都会在 ticket 创建前停止，绝不静默回退 shared。
+`--worktree-mode shared-worktree` 仅保留为显式 legacy/manual 兼容选项。
+
+native worker 完成并 release 后，由 parent 冻结 `ChangeBundle v1`。bundle 记录
+不可变 base/result tree、精确 changed path/operation、binary/mode/rename/symlink/
+gitlink 事实、Receipt lineage，以及 Baton 自己创建的 internal commit。每个仓库的
+integration 串行执行：`begin` 接受精确 caller baseline，`apply` 只在隔离 Git
+object plumbing 中计算，`resolve` 另存 parent 冲突解，只有 `accept` 才把冻结结果
+应用到 caller。因此 caller checkout 长时间 clean 不代表 worker 没工作；status
+会分别报告 execution truth 与 integration truth。
+
+submodule 文件必须从 submodule repository root 执行、审计、打 bundle 和集成；
+后续 superproject unit 显式负责 gitlink 更新。cleanup 只有在所有 retention reason
+清空后才删除精确 eligible root；live handle、ready bundle、未解冲突、downstream
+base 与用户保留证据都会继续可见且不会被移除。
 
 status 以 task 为主视图，区分 unplanned、planned、active、
 terminal-unreleased、blocked、accepted、sealed 和 reconciled。terminal success、
@@ -399,6 +425,10 @@ baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
 baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
 baton run <run-id> --status --json
+baton run <run-id> --freeze-unit <unit> --attempt attempt-1 --text "已审计结果" --json
+baton integration begin --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --expected-before-tree <tree> --json
+baton integration apply --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --json
+baton integration accept --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --conclusion "已接受" --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

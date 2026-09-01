@@ -114,6 +114,14 @@ baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
 baton run <run> --reconcile [--task <task-key>] --json
 ```
 
+New writing runs default to isolation, so Grok's declared
+`exact_execution_root=false` produces a pre-ticket local blocker. Do not retry
+that unit through `spawn_subagent` and do not infer shared mode. A user or
+director that intentionally needs Grok must create the run with explicit
+`--worktree-mode shared-worktree`; verification-only units remain rootless.
+Bundle, parent integration, submodule ordering, and cleanup remain parent-only
+operations and never belong to a Grok worker.
+
 Status is task-first and distinguishes unplanned, planned, active, blocked,
 terminal-unreleased, accepted, sealed, and reconciled work. Preserve the
 original `BATON_SESSION_ID` across reconnects. Status/reconciliation repairs

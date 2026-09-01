@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source_kind": "director",
+  "adapter": "director",
+  "selection": {
+    "tasks": [
+      {
+        "id": "sample-1",
+        "description": "Implement one bounded isolated sample change"
+      }
+    ]
+  }
+}

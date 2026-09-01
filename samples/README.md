@@ -6,6 +6,9 @@ Newcomers should start with [getting-started](getting-started/README.md).
 That walkthrough uses the catalog fixture below to run init, config, match,
 spawn, and dispatch in an isolated HOME.
 
+For the default rolling worktree, bundle, parent integration, conflict, and
+cleanup lifecycle, see [rolling-worktree](rolling-worktree/README.md).
+
 # Adapter manifest sample
 
 `manifest-example/` is a small external adapter package. It demonstrates the
@@ -22,9 +25,14 @@ sed -n '1,240p' samples/manifest-example/runtime/SKILL.md
 
 The manifest covers the SDK schema, stable adapter id, package metadata,
 catalog command/protocol, invocation signal, opaque native execution-handle
-kind, runtime-skill paths, and quota/backpressure facts. The catalog command
+kind, exact-root capability, runtime-skill paths, and quota/backpressure facts. The catalog command
 returns a normalized JSON response with one adapter id and exact model
 metadata.
+
+`native.exact_execution_root` is an execution guarantee, not a preference.
+`true` means the adapter can launch and acknowledge Baton's complete exact-root
+identity. Missing or `false` blocks default isolated writing units; only an
+explicit shared compatibility run may use that adapter for writes.
 
 ## Isolated discovery
 

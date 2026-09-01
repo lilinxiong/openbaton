@@ -84,6 +84,16 @@ describe("rolling run CLI grammar", () => {
     assert.equal(received.attempt, "attempt-2");
     assert.equal(received.release_downstream_base, true);
     assert.equal(received.release_user_retention, true);
+
+    const freeze = await command([
+      "run", "run-cli", "--freeze-unit", "unit-cli", "--attempt", "attempt-2",
+      "--text", "audited terminal result", "--validation", "focused tests passed", "--allow-noop", "--json",
+    ], { cwd, env, rollingRunHandler: async (input) => { received = input; return { frozen: true }; } });
+    assert.equal(freeze.code, 0, freeze.stderr);
+    assert.equal(received.operation, "freeze");
+    assert.equal(received.freeze_unit, "unit-cli");
+    assert.equal(received.validation, "focused tests passed");
+    assert.equal(received.allow_noop, true);
   });
 
   it("keeps operations mutually exclusive and stdin single-owner", async () => {
@@ -99,6 +109,9 @@ describe("rolling run CLI grammar", () => {
       ["run", "run-1", "--status", "--host", "alpha"],
       ["run", "run-1", "--status", "--worktree-mode", "isolated-worktree"],
       ["run", "run-1", "--cleanup-unit", "unit-cli"],
+      ["run", "run-1", "--freeze-unit", "unit-cli", "--attempt", "attempt-1"],
+      ["run", "run-1", "--status", "--allow-noop"],
+      ["run", "run-1", "--status", "--validation", "tests passed"],
       ["run", "run-1", "--status", "--release-downstream-base"],
       ["run", "start", "--host", "alpha", "--source-file", "-", "--worktree-mode", "unknown"],
     ];
