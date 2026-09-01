@@ -73,7 +73,9 @@ import {
 import { acceptApplyUnit, type ApplyAcceptanceResult } from "./apply-reconcile.js";
 import type { ApplyExecutionPlan, ApplyPlanUnit } from "./apply-plan.js";
 
-export const TERMINAL_TICKET_STATUSES = new Set<TicketStatus>(["completed", "errored", "timed_out", "closed"]);
+const TERMINAL_TICKET_STATUS_LIST = ["completed", "errored", "timed_out", "closed"] as const;
+type TerminalDispatchStatus = (typeof TERMINAL_TICKET_STATUS_LIST)[number];
+export const TERMINAL_TICKET_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>(TERMINAL_TICKET_STATUS_LIST);
 export const DEFAULT_AGENT_PROBE_INTERVAL_MS = 60_000;
 
 function requireCurrentTicket(ticket: SpawnTicket): SpawnTicket {
@@ -181,8 +183,6 @@ export function dispatchCompatibilityBlockers(cwd: string, env: NodeJS.ProcessEn
 }
 
 /** Host-reported terminal failure, kept as structured evidence when the safety gate overrides it. */
-type TerminalDispatchStatus = "completed" | "errored" | "timed_out" | "closed";
-
 interface HostTerminalError {
   status: Exclude<TerminalDispatchStatus, "completed">;
   code: string;

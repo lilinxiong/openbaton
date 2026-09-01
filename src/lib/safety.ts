@@ -405,16 +405,6 @@ function indexMetadata(fingerprint: GitSafetyFacts["indexControl"]): {
   return { checksum: fingerprint.checksum, algorithm: fingerprint.algorithm, entryCount: fingerprint.entryCount };
 }
 
-/** Select only a known collector algorithm; malformed metadata is reported by
- * the verdict mapper rather than being passed to the collector as a string. */
-function selectAuditIndexControlAlgorithm(baseline: {
-  index_control_algorithm?: unknown;
-  index_control_checksum?: unknown;
-  index_control_entry_count?: unknown;
-}): typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM {
-  return GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
-}
-
 function stableObservationOptions(
   options: AsyncSafetyOptions,
   purpose: "baseline" | "audit",
@@ -943,12 +933,7 @@ export async function auditPreparedCommitAsync(
   options: AsyncSafetyOptions = {},
 ): Promise<CommitSafetyVerdict> {
   const root = await resolveRepoRootAsync(worktree, options.spawn);
-  const indexControlAlgorithm = selectAuditIndexControlAlgorithm({
-    index_control_algorithm: baseline.staged_index_control_algorithm,
-    index_control_checksum: baseline.staged_index_control_checksum,
-    index_control_entry_count: baseline.staged_index_control_entry_count,
-  });
-  const facts = await captureStableSafetyFacts(root, stableObservationOptions(options, "audit", indexControlAlgorithm));
+  const facts = await captureStableSafetyFacts(root, stableObservationOptions(options, "audit", GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM));
   return auditPreparedCommitRules(root, preparedObservationFromFacts(facts), baseline);
 }
 
@@ -960,12 +945,7 @@ export async function auditCommitOutcomeAsync(
 ): Promise<CommitSafetyVerdict> {
   const root = await resolveRepoRootAsync(worktree, options.spawn);
   const { requireCommit = true, ...factsOptions } = options;
-  const indexControlAlgorithm = selectAuditIndexControlAlgorithm({
-    index_control_algorithm: baseline.staged_index_control_algorithm,
-    index_control_checksum: baseline.staged_index_control_checksum,
-    index_control_entry_count: baseline.staged_index_control_entry_count,
-  });
-  const facts = await captureStableSafetyFacts(root, stableObservationOptions(factsOptions, "audit", indexControlAlgorithm));
+  const facts = await captureStableSafetyFacts(root, stableObservationOptions(factsOptions, "audit", GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM));
   return auditCommitOutcomeRules(root, commitOutcomeObservationFromFacts(facts), baseline, { requireCommit });
 }
 
@@ -1019,7 +999,6 @@ export async function auditWorktreeAsync(
   options: AsyncSafetyOptions = {},
 ): Promise<SafetyVerdict> {
   const root = await resolveRepoRootAsync(worktree, options.spawn);
-  const indexControlAlgorithm = selectAuditIndexControlAlgorithm(baseline);
-  const facts = await captureStableSafetyFacts(root, stableObservationOptions(options, "audit", indexControlAlgorithm));
+  const facts = await captureStableSafetyFacts(root, stableObservationOptions(options, "audit", GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM));
   return auditWorktreeRules(root, worktreeObservationFromFacts(facts), baseline, policy);
 }

@@ -803,4 +803,3 @@ export async function runCompiledApplyInvocation(input: CompiledApplyInvocation)
 
 /** Stable production default retained as a replaceable test boundary in cli.ts. */
 export const defaultCompiledApplyHandler = runCompiledApplyInvocation;
-export const createDefaultCompiledApplyHandler = (): typeof runCompiledApplyInvocation => runCompiledApplyInvocation;
