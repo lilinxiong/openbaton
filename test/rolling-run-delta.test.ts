@@ -185,6 +185,36 @@ describe("rolling delta ingestion and immutable supersession", () => {
     assert.equal(next.accepted_deltas[1]!.unit_versions[0]!.version, 2);
   });
 
+  it("allows replacement after cancellation even when a later safety pass shares the unit owner", () => {
+    const f = fixture();
+    appendInitial(f);
+    appendRollingFact({
+      cwd: f.cwd,
+      env: f.env,
+      runId: "run-1",
+      expected_append_sequence: 1,
+      kind: "execution",
+      idempotency_key: "execution:cancelled",
+      payload: { kind: "native-attempt", unit_key: "unit-1", unit_version: 1, state: "cancelled" },
+    });
+    appendRollingFact({
+      cwd: f.cwd,
+      env: f.env,
+      runId: "run-1",
+      expected_append_sequence: 2,
+      kind: "execution",
+      idempotency_key: "execution:safety-pass",
+      payload: { kind: "safety-verdict", owner_type: "unit_version", unit_key: "unit-1", unit_version: 1, accepted: true },
+    });
+    const next = appendRollingPlanDelta({ cwd: f.cwd, env: f.env, runId: "run-1", expected_append_sequence: 3, delta: delta("replace-cancelled", 3, {
+      unit_versions: [unit("unit-1", 2)],
+      task_coverage: [{ schema_version: 1, task_key: "task-1", kind: "unit", unit_versions: ["unit-1@2"] }],
+      supersessions: [{ schema_version: 1, owner: "unit_version", previous: "unit-1@1", successor: "unit-1@2", reason: "replace cancelled dispatch" }],
+    }) });
+    assert.equal(next.accepted_deltas.length, 2);
+    assert.equal(next.accepted_deltas[1]!.unit_versions[0]!.version, 2);
+  });
+
   it("applies the same immutable boundary to gates", () => {
     const f = fixture();
     appendRollingPlanDelta({ cwd: f.cwd, env: f.env, runId: "run-1", expected_append_sequence: 0, delta: delta("gate-1", 0, {

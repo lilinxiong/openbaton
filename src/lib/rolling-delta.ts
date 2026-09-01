@@ -291,7 +291,7 @@ function normalizedLineageState(value: unknown): LineageState | null {
   if (["dispatching", "materialized", "reserved"].includes(state)) return "reserved";
   if (["completed", "terminal", "terminal-unreleased", "terminal-awaiting-release"].includes(state)) return "terminal-unreleased";
   if (["succeeded", "success", "accepted", "reconciled", "done"].includes(state)) return "accepted";
-  if (["errored", "timed-out", "failure", "failed"].includes(state)) return "failed";
+  if (["errored", "timed-out", "failure", "failed", "cancelled", "canceled", "closed", "interrupted"].includes(state)) return "failed";
   return state;
 }
 
@@ -380,9 +380,14 @@ function collectLineageStatusContainer(states: Map<string, LineageState>, value:
 function collectLineageFact(states: Map<string, LineageState>, value: unknown): void {
   if (!isRecord(value)) return;
   const payload = isRecord(value.payload) ? value.payload : value;
-  const kindText = typeof value.kind === "string" ? value.kind.toLowerCase() : "";
+  const outerKind = typeof value.kind === "string" ? value.kind.toLowerCase() : "";
+  const payloadKind = typeof payload.kind === "string" ? payload.kind.toLowerCase() : "";
+  const kindText = `${outerKind} ${payloadKind}`.trim();
   const fallbackKind: FactKind | undefined = kindText.includes("gate") ? "gate" : kindText.includes("unit") || kindText.includes("ticket") || kindText.includes("attempt") || kindText.includes("result") ? "unit" : undefined;
-  const state = normalizedLineageState(payload) || normalizedLineageState(value)
+  // A safety pass is a prerequisite, not parent acceptance of the unit.  It
+  // must not overwrite a terminal failure merely because its payload also
+  // uses an `accepted: true` field.
+  const state = (kindText.includes("safety-verdict") && payload.accepted === true ? null : normalizedLineageState(payload)) || normalizedLineageState(value)
     || (/(?:fail|error|reject)/u.test(kindText) ? "failed"
       : /(?:accept|success|succeed)/u.test(kindText) ? "accepted"
       : /terminal/u.test(kindText) ? "terminal-unreleased"
