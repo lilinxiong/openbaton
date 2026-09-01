@@ -21,6 +21,7 @@ import { readReceipt, type DelegationReceipt, type CompiledApplyLineage } from "
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { applyRunStateLockPath, compiledApplyRunStatePath } from "./paths.js";
 import { writeJsonAtomic } from "./json-utils.js";
+import { wildcardStaticPrefix } from "./wildcard.js";
 
 export type ApplyReconcileErrorCode =
   | "RUN_STATE_LOCK_BUSY" | "RUN_STATE_INVALID" | "RUN_NOT_FOUND"
@@ -125,8 +126,7 @@ function ownsTaskLedger(cwd: string, value: string, ledger: string): boolean {
   return value.split(/\s*->\s*/u).some((part) => {
     const declared = part.replaceAll("\\", "/").toLowerCase();
     const normalized = path.resolve(cwd, part).replaceAll("\\", "/").toLowerCase();
-    const wildcard = normalized.search(/[*?\[]/u);
-    const scope = (wildcard >= 0 ? normalized.slice(0, wildcard) : normalized).replace(/\/+$/u, "");
+    const scope = wildcardStaticPrefix(normalized);
     return normalized === normalizedLedger
       || Boolean(scope && normalizedLedger.startsWith(`${scope}/`))
       || declared === "tasks.md"

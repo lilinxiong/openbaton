@@ -7,6 +7,7 @@
 import path from "node:path";
 import type { SafetyOperation } from "./safety.js";
 import { canonicalizeJson, sha256Hex } from "./json-utils.js";
+import { wildcardStaticPrefix } from "./wildcard.js";
 
 export const APPLY_EXECUTION_PLAN_SCHEMA_VERSION = 1 as const;
 export const APPLY_PLAN_OPERATIONS: readonly SafetyOperation[] = ["write", "create", "delete", "rename", "chmod"];
@@ -257,8 +258,7 @@ function normalizeScopePath(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
   const value = path.posix.normalize(trimmed.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, ""));
-  const wildcard = value.search(/[*?\[]/);
-  const withoutWildcard = wildcard >= 0 ? value.slice(0, wildcard).replace(/\/+$/, "") : value;
+  const withoutWildcard = wildcardStaticPrefix(value);
   const normalized = path.posix.normalize(withoutWildcard || ".");
   return normalized === "." ? "." : normalized;
 }

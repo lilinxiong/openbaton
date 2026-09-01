@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { RepositoryLocalUnitPart } from "./rolling-plan.js";
 import { sha256Hex } from "./json-utils.js";
+import { firstWildcardIndex } from "./wildcard.js";
 
 export const WORKTREE_TOPOLOGY_SCHEMA_VERSION = 1 as const;
 
@@ -226,7 +227,7 @@ function normalizeDeclaredPath(raw: string): { normalized: string; probe: string
   if (normalized.split("/").includes(".git")) {
     throw new WorktreeTopologyError(`Git control paths are not writable: ${raw}`, "WORKTREE_PATH_INVALID");
   }
-  const wildcard = normalized.search(/[*?[]/u);
+  const wildcard = firstWildcardIndex(normalized);
   const staticPrefix = wildcard < 0 ? normalized : normalized.slice(0, wildcard).replace(/\/+$/u, "");
   return { normalized, probe: staticPrefix || "." };
 }

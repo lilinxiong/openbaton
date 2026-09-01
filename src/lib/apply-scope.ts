@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { SafetyOperation } from "./safety.js";
+import { wildcardStaticPrefix } from "./wildcard.js";
 
 export type ApplyUnitMode = "write" | "read-only";
 
@@ -183,8 +184,7 @@ function scopePath(value: string): string {
   normalized = normalized.replace(/\/+$/, "");
   if (normalized.endsWith("/**")) normalized = normalized.slice(0, -3);
   else if (normalized.endsWith("/*")) normalized = normalized.slice(0, -2);
-  const wildcard = normalized.search(/[?*\[]/);
-  if (wildcard >= 0) normalized = normalized.slice(0, wildcard).replace(/\/+$/, "");
+  normalized = wildcardStaticPrefix(normalized);
   return normalized || ".";
 }
 
