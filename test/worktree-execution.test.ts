@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -44,8 +44,15 @@ interface Fixture {
   input: CreateWorktreeRecordInput;
 }
 
+const fixtureRoots = new Set<string>();
+after(() => {
+  for (const root of fixtureRoots) fs.rmSync(root, { recursive: true, force: true });
+  fixtureRoots.clear();
+});
+
 function fixture(prefix = "baton-worktree-state-"): Fixture {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fixtureRoots.add(root);
   const cwd = path.join(root, "repository");
   const home = path.join(root, "home");
   fs.mkdirSync(cwd);

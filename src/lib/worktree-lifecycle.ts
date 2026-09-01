@@ -166,6 +166,17 @@ async function boundedOutput(cwd: string, args: string[], spawn?: GitProcessOpti
   return { bytes, truncated };
 }
 
+function canonicalPotentialPath(value: string): string {
+  const absolute = path.resolve(value);
+  let existing = absolute;
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return absolute;
+    existing = parent;
+  }
+  return path.resolve(fs.realpathSync(existing), path.relative(existing, absolute));
+}
+
 async function registeredWorktreeRoots(repositoryRoot: string, spawn?: GitProcessOptions["spawn"]): Promise<Set<string>> {
   const output = await boundedOutput(repositoryRoot, ["worktree", "list", "--porcelain", "-z"], spawn);
   if (output.truncated) throw new WorktreeLifecycleError("Git worktree registry exceeds the bounded recovery payload", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
@@ -173,7 +184,7 @@ async function registeredWorktreeRoots(repositoryRoot: string, spawn?: GitProces
   for (const field of output.bytes.toString("utf8").split("\0")) {
     if (!field.startsWith("worktree ")) continue;
     const raw = field.slice("worktree ".length);
-    result.add(fs.existsSync(raw) ? fs.realpathSync(raw) : path.resolve(raw));
+    result.add(canonicalPotentialPath(raw));
   }
   return result;
 }
@@ -304,7 +315,7 @@ async function statusForRecord(
 ): Promise<WorktreeIsolationStatus> {
   const diagnostics: WorktreeLifecycleDiagnostic[] = [];
   const state = rootState(record.execution_root);
-  const canonicalRoot = state === "directory" ? fs.realpathSync(record.execution_root) : path.resolve(record.execution_root);
+  const canonicalRoot = canonicalPotentialPath(record.execution_root);
   const registered = registry.has(canonicalRoot);
   let registrationState: WorktreeIsolationStatus["registration_state"] = registered ? "registered" : "missing";
   if (state === "directory") {
@@ -391,10 +402,10 @@ export async function collectWorktreeRunStatus(input: {
   }
   const units: WorktreeIsolationStatus[] = [];
   for (const record of listed.records) units.push(await statusForRecord(root, record, input.env, input.tickets || [], repositories.get(record.repository_root) || new Set(), input.spawn));
-  const recordedRoots = new Set(listed.records.map((record) => path.resolve(record.execution_root)));
-  const ownedRoot = rollingRunWorktreesDir(root, input.run_id, input.env);
+  const recordedRoots = new Set(listed.records.map((record) => canonicalPotentialPath(record.execution_root)));
+  const ownedRoot = canonicalPotentialPath(rollingRunWorktreesDir(root, input.run_id, input.env));
   for (const roots of repositories.values()) for (const registered of roots) {
-    if (within(ownedRoot, registered) && !recordedRoots.has(path.resolve(registered))) listed.diagnostics.push({ code: "ORPHAN_WORKTREE_REGISTRATION", message: "Baton namespace contains an unrecorded Git worktree", path: registered });
+    if (within(ownedRoot, registered) && !recordedRoots.has(canonicalPotentialPath(registered))) listed.diagnostics.push({ code: "ORPHAN_WORKTREE_REGISTRATION", message: "Baton namespace contains an unrecorded Git worktree", path: registered });
   }
   const unitStatus: Record<string, WorktreeIsolationStatus[]> = {};
   for (const status of units) (unitStatus[status.unit_ref] ||= []).push(status);
@@ -513,7 +524,7 @@ export async function recoverWorktreeRun(input: {
     let record = initial;
     try {
       const registry = await registeredWorktreeRoots(record.repository_root, input.spawn);
-      const canonical = rootState(record.execution_root) === "directory" ? fs.realpathSync(record.execution_root) : path.resolve(record.execution_root);
+      const canonical = canonicalPotentialPath(record.execution_root);
       if (record.lifecycle_state === "preparing" && registry.has(canonical) && record.setup_state !== "verified" && record.setup_state !== "failed") {
         if (record.setup_state === "planned") record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: "recovery-setup-registering", phase: "setup", to_state: "preparing", setup_state: "registering", recorded_at: timestamp(input.at) }, input.env);
         if (record.setup_state === "registering") record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: "recovery-setup-registered", phase: "setup", to_state: "preparing", setup_state: "registered", recorded_at: timestamp(input.at) }, input.env);
@@ -662,11 +673,12 @@ export async function cleanupWorktreeAttempt(input: WorktreeCleanupInput): Promi
     assertExactCleanupIdentity(root, record, input.env);
     const registry = await registeredWorktreeRoots(record.repository_root, input.spawn);
     const state = rootState(record.execution_root);
-    const canonical = state === "directory" ? fs.realpathSync(record.execution_root) : path.resolve(record.execution_root);
+    const canonical = canonicalPotentialPath(record.execution_root);
     if (state === "directory" && !registry.has(canonical)) throw new WorktreeLifecycleError("cleanup root exists without an exact Git registration", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
     if (state !== "absent" && state !== "directory") throw new WorktreeLifecycleError(`cleanup root has unsupported state ${state}`, "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
     if (registry.has(canonical)) {
-      await runGitProcess({ cwd: record.repository_root, args: ["worktree", "remove", "--force", record.execution_root], spawn: input.spawn });
+      if (state === "absent") await runGitProcess({ cwd: record.repository_root, args: ["worktree", "prune"], spawn: input.spawn });
+      else await runGitProcess({ cwd: record.repository_root, args: ["worktree", "remove", "--force", record.execution_root], spawn: input.spawn });
       removedWorktree = true;
     }
     removedInternalRef = await deleteInternalBundleRef(record, readBundle(root, record, input.env), input.spawn);

@@ -328,4 +328,28 @@ describe("worktree recovery, status, and cleanup", () => {
     assert.equal(failed.cleanup.status, "failed");
     assert.match(failed.cleanup.last_error ?? "", /recorded repository/u);
   });
+
+  it("prunes stale Git registration when an eligible execution root is already absent", async () => {
+    const f = fixture("cleanup-stale-registration");
+    let record = await setup(f, "run-cleanup-stale-registration", "unit-cleanup-stale-registration");
+    const bundle = bundleFor(f, record, "bundle-cleanup-stale-registration");
+    const integration = acceptedIntegration(record, bundle.bundle_id, "integration-cleanup-stale-registration");
+    persistChangeBundleManifest(f.repo, record.run_id, bundle, f.env);
+    persistIntegrationRecord(f.repo, integration, f.env);
+    record = advanceAccepted(f, record, bundle.bundle_id, integration.integration_id);
+    fs.rmSync(record.execution_root, { recursive: true, force: true });
+    assert.match(git(f.repo, ["worktree", "list", "--porcelain"]), new RegExp(record.execution_root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+    const cleaned = await cleanupWorktreeAttempt({
+      cwd: f.repo,
+      run_id: record.run_id,
+      unit_key: record.unit_key,
+      attempt_id: record.attempt_id,
+      env: f.env,
+      release_downstream_base: true,
+    });
+    assert.equal(cleaned.record.lifecycle_state, "cleaned");
+    assert.equal(cleaned.removed_worktree, true, `expected stale registration cleanup for ${record.execution_root}: ${git(f.repo, ["worktree", "list", "--porcelain"])}`);
+    assert.doesNotMatch(git(f.repo, ["worktree", "list", "--porcelain"]), new RegExp(record.execution_root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
 });
