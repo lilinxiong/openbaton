@@ -176,7 +176,15 @@ export interface RollingControlStatus {
   tasks: RollingTaskControlStatus[];
   task_status: Record<string, RollingTaskControlStatus>;
   acceptance: RollingAcceptanceProjection;
-  tickets: Array<{ ticket_id: string; unit_ref: string; status: string; released: boolean }>;
+  tickets: Array<{
+    ticket_id: string;
+    unit_ref: string;
+    status: string;
+    released: boolean;
+    execution_root: string | null;
+    progress: SpawnTicket["progress"];
+    liveness: SpawnTicket["liveness"];
+  }>;
   isolation: WorktreeRunIsolationStatus;
   recovery: { appended_execution_facts: number; repaired_worktree_record_ids: string[]; source_diagnostics: readonly TaskSourceDiagnostic[] };
 }
@@ -735,7 +743,15 @@ export async function statusRollingControl(context: RollingControlContext & { ru
     tasks,
     task_status,
     acceptance,
-    tickets: recovered.tickets.map((ticket) => ({ ticket_id: ticket.id, unit_ref: `${ticket.rolling_unit_lineage!.unit_key}@${ticket.rolling_unit_lineage!.unit_version}`, status: ticket.status, released: Boolean(ticket.slot_released_at) })),
+    tickets: recovered.tickets.map((ticket) => ({
+      ticket_id: ticket.id,
+      unit_ref: `${ticket.rolling_unit_lineage!.unit_key}@${ticket.rolling_unit_lineage!.unit_version}`,
+      status: ticket.status,
+      released: Boolean(ticket.slot_released_at),
+      execution_root: ticket.rolling_unit_lineage!.execution_root || null,
+      progress: ticket.progress,
+      liveness: ticket.liveness,
+    })),
     isolation: worktreeRecovery.status,
     recovery: { appended_execution_facts: recovered.appended, repaired_worktree_record_ids: worktreeRecovery.repaired_record_ids, source_diagnostics: sourceDiagnostics.diagnostics },
   };
@@ -940,9 +956,14 @@ export function formatRollingControlStatus(status: RollingControlStatus): string
     `rolling run ${status.run_id}  ${status.state}`,
     `  host ${status.host}  append ${status.append_sequence}  session ${status.session_uid}`,
   ];
+  const tickets = new Map(status.tickets.map((ticket) => [ticket.ticket_id, ticket]));
   for (const task of status.tasks) {
     lines.push(`  ${task.display_id}  ${task.state}  ${task.title}`);
     if (task.ticket_ids.length) lines.push(`    tickets ${task.ticket_ids.join(", ")}`);
+    for (const ticketId of task.ticket_ids) {
+      const progress = tickets.get(ticketId)?.progress;
+      if (progress) lines.push(`    progress ${progress.phase}: ${progress.summary}`);
+    }
     if (task.next_legal_action) lines.push(`    next ${task.next_legal_action}`);
     for (const blocker of task.blockers.slice(0, 3)) lines.push(`    blocked ${blocker.code}: ${blocker.message}`);
   }
