@@ -47,7 +47,8 @@ evidence are session-local Baton cache facts; session evidence never carries to
 a new Codex session, which must recheck its routes.
 
 For an `isolated-worktree` reservation, pass its prompt unchanged on stdin to
-one fresh `codex exec --json` child. Launch the child with the tool workdir set
+one fresh exact-model native worker through a `codex exec --json` child. Launch
+the child with the tool workdir set
 to the reservation's `execution_root` and with `-C` set to that same absolute
 root. Select the child with the reserved `ticket.route_id` via `--model`; when
 the ticket has a `reasoning_effort`, pass that separate value through Codex's
