@@ -42,6 +42,7 @@ function signedBundle(input: {
   commonId: string;
   tree: string;
   resultTree?: string;
+  changedPaths?: string[];
 }): ChangeBundleManifest {
   const value = {
     schema_version: CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION,
@@ -56,7 +57,7 @@ function signedBundle(input: {
     base_tree: input.tree,
     result_tree: input.resultTree ?? input.tree,
     operations: ["write"],
-    changed_paths: ["file.txt"],
+    changed_paths: input.changedPaths ?? ["file.txt"],
     non_text_facts: {},
     transport: { kind: "test" },
     validation_summaries: [],
@@ -215,6 +216,40 @@ function resultTree(root: string, content: string | Uint8Array): string {
     return git(root, ["write-tree"], env);
   } finally {
     fs.writeFileSync(path.join(root, "file.txt"), original);
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+function gitBlob(root: string, content: string | Uint8Array): string {
+  return execFileSync("git", ["hash-object", "-w", "--stdin"], {
+    cwd: root,
+    input: content,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+  }).trim();
+}
+
+function treeWithChanges(root: string, changes: Array<{
+  path: string;
+  mode?: "100644" | "100755" | "120000" | "160000";
+  content?: string | Uint8Array;
+  object?: string;
+  delete?: boolean;
+}>): string {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "baton-integration-tree-index-"));
+  const env = { GIT_INDEX_FILE: path.join(temporary, "index") };
+  try {
+    git(root, ["read-tree", "HEAD^{tree}"], env);
+    for (const change of changes) {
+      if (change.delete) {
+        git(root, ["update-index", "--force-remove", "--", change.path], env);
+        continue;
+      }
+      const object = change.object ?? gitBlob(root, change.content ?? "");
+      git(root, ["update-index", "--add", "--cacheinfo", change.mode ?? "100644", object, change.path], env);
+    }
+    return git(root, ["write-tree"], env);
+  } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 }
@@ -401,6 +436,22 @@ describe("repository integration queue", () => {
       && error.code === "INTEGRATION_QUEUE_BLOCKED"
       && error.detail?.blocking_run_id === "run-owner-a");
     assert.deepEqual(listIntegrationQueue(f.root, "run-owner-b", f.repositoryId, f.env), []);
+  });
+
+  it("rejects caller baseline movement after begin and leaves that integration locally retryable", async () => {
+    const f = repositoryFixture();
+    const runId = "run-baseline-movement";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-baseline")]]);
+    const bundle = signedBundle({ run: runId, bundle: "bundle-baseline", unit: "unit-baseline", repositoryId: f.repositoryId, commonId: f.commonId, tree: f.baseTree, resultTree: resultTree(f.root, "bundle result\n") });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, expected_before_tree: expected, env: f.env });
+    fs.writeFileSync(path.join(f.root, "file.txt"), "caller moved after begin\n");
+    await assert.rejects(applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, env: f.env }), (error: unknown) => error instanceof WorktreeIntegrationError && error.code === "INTEGRATION_DESTINATION_BASELINE_MISMATCH");
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), "caller moved after begin\n");
+    const record = listIntegrationQueue(f.root, runId, f.repositoryId, f.env)[0]!;
+    assert.equal(record.state, "integrating");
+    assert.ok(record.application);
   });
 
   it("applies a clean bundle through isolated object plumbing without changing caller control state", async () => {
@@ -703,6 +754,27 @@ describe("repository integration queue", () => {
     assert.equal(bundle.fingerprint, bundleFingerprint);
   });
 
+  it("preserves an earlier accepted integration when the next overlapping bundle conflicts", async () => {
+    const f = repositoryFixture();
+    const runId = "run-preserve-earlier";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-earlier"), plannedUnit("unit-later")]]);
+    const earlier = signedBundle({ run: runId, bundle: "bundle-earlier", unit: "unit-earlier", repositoryId: f.repositoryId, commonId: f.commonId, tree: f.baseTree, resultTree: resultTree(f.root, "earlier accepted\n") });
+    const later = signedBundle({ run: runId, bundle: "bundle-later", unit: "unit-later", repositoryId: f.repositoryId, commonId: f.commonId, tree: f.baseTree, resultTree: resultTree(f.root, "later bundle\n") });
+    markBundleReady(f.root, f.env, earlier, f.commonDir);
+    markBundleReady(f.root, f.env, later, f.commonDir);
+    await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: earlier.bundle_id, expected_before_tree: captureVisibleTree(f.root), env: f.env });
+    await applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: earlier.bundle_id, env: f.env });
+    await acceptWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: earlier.bundle_id, conclusion: "accept earlier result", env: f.env });
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), "earlier accepted\n");
+    await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: later.bundle_id, expected_before_tree: captureVisibleTree(f.root), env: f.env });
+    const conflicted = await applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: later.bundle_id, env: f.env });
+    assert.equal(conflicted.record.state, "awaiting_parent_resolution");
+    assert.equal(conflicted.record.conflicts[0]?.kind, "content");
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), "earlier accepted\n");
+    const queue = listIntegrationQueue(f.root, runId, f.repositoryId, f.env);
+    assert.deepEqual(queue.map((record) => record.state), ["accepted", "awaiting_parent_resolution"]);
+  });
+
   it("classifies binary conflicts from stable merge-tree message types", async () => {
     const f = repositoryFixture();
     const runId = "run-binary-conflict";
@@ -778,6 +850,90 @@ describe("repository integration queue", () => {
     assert.ok(applied.record.conflicts.some((conflict) => conflict.kind === "rename"));
     assert.equal(fs.existsSync(path.join(f.root, "file.txt")), false);
     assert.equal(fs.readFileSync(path.join(f.root, "parent-name.txt"), "utf8"), "base\n");
+  });
+
+  it("classifies add/add, delete/modify, mode, symlink, and gitlink conflicts from real merge-tree stages", async () => {
+    const cases: Array<{
+      name: string;
+      kind: "add_add" | "delete_modify" | "mode" | "symlink" | "gitlink";
+      changedPaths: string[];
+      bundleTree(fixture: ReturnType<typeof repositoryFixture>): string;
+      mutateParent(fixture: ReturnType<typeof repositoryFixture>): void;
+    }> = [
+      {
+        name: "add-add",
+        kind: "add_add",
+        changedPaths: ["added.txt"],
+        bundleTree: (f) => treeWithChanges(f.root, [{ path: "added.txt", content: "bundle added\n" }]),
+        mutateParent: (f) => fs.writeFileSync(path.join(f.root, "added.txt"), "parent added\n"),
+      },
+      {
+        name: "delete-modify",
+        kind: "delete_modify",
+        changedPaths: ["file.txt"],
+        bundleTree: (f) => treeWithChanges(f.root, [{ path: "file.txt", content: "bundle modified\n" }]),
+        mutateParent: (f) => fs.rmSync(path.join(f.root, "file.txt")),
+      },
+      {
+        name: "mode",
+        kind: "mode",
+        changedPaths: ["file.txt"],
+        bundleTree: (f) => treeWithChanges(f.root, [{ path: "file.txt", content: "bundle content\n" }]),
+        mutateParent: (f) => {
+          fs.writeFileSync(path.join(f.root, "file.txt"), "parent content\n");
+          fs.chmodSync(path.join(f.root, "file.txt"), 0o755);
+        },
+      },
+      {
+        name: "symlink",
+        kind: "symlink",
+        changedPaths: ["file.txt"],
+        bundleTree: (f) => treeWithChanges(f.root, [{ path: "file.txt", mode: "120000", content: "bundle-target" }]),
+        mutateParent: (f) => fs.writeFileSync(path.join(f.root, "file.txt"), "parent regular content\n"),
+      },
+      {
+        name: "gitlink",
+        kind: "gitlink",
+        changedPaths: ["module"],
+        bundleTree: (f) => {
+          const bundleCommit = git(f.root, ["commit-tree", "HEAD^{tree}", "-m", "bundle gitlink"]);
+          return treeWithChanges(f.root, [{ path: "module", mode: "160000", object: bundleCommit }]);
+        },
+        mutateParent: (f) => {
+          const module = path.join(f.root, "module");
+          fs.mkdirSync(module);
+          git(module, ["init", "-q"]);
+          git(module, ["config", "user.name", "Baton Test"]);
+          git(module, ["config", "user.email", "baton@example.invalid"]);
+          fs.writeFileSync(path.join(module, "module.txt"), "parent module\n");
+          git(module, ["add", "module.txt"]);
+          git(module, ["commit", "-qm", "parent module"]);
+        },
+      },
+    ];
+    for (const item of cases) {
+      const f = repositoryFixture();
+      const runId = `run-${item.name}-conflict`;
+      const unit = `unit-${item.name}`;
+      createPlanRun(f.root, f.env, runId, [[plannedUnit(unit)]]);
+      const bundle = signedBundle({
+        run: runId,
+        bundle: `bundle-${item.name}`,
+        unit,
+        repositoryId: f.repositoryId,
+        commonId: f.commonId,
+        tree: f.baseTree,
+        resultTree: item.bundleTree(f),
+        changedPaths: item.changedPaths,
+      });
+      markBundleReady(f.root, f.env, bundle, f.commonDir);
+      item.mutateParent(f);
+      const expected = captureVisibleTree(f.root);
+      await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, expected_before_tree: expected, env: f.env });
+      const applied = await applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, env: f.env });
+      assert.equal(applied.record.state, "awaiting_parent_resolution", item.name);
+      assert.ok(applied.record.conflicts.some((conflict) => conflict.kind === item.kind), `${item.name}: ${JSON.stringify(applied.record.conflicts)}`);
+    }
   });
 
   it("exposes only cwd-targeted parent integration operations through the CLI transport", async () => {
