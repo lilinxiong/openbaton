@@ -57,7 +57,7 @@ describe("rolling run CLI grammar", () => {
     let received: any;
     const result = await command([
       "run", "start", "--host", "alpha", "--run-id", "run-cli", "--source-file", sourceFile,
-      "--plan-delta-file", "-", "--dispatch", "--json",
+      "--worktree-mode", "isolated-worktree", "--plan-delta-file", "-", "--dispatch", "--json",
     ], {
       cwd,
       env,
@@ -69,6 +69,7 @@ describe("rolling run CLI grammar", () => {
     assert.equal(received.operation, "start");
     assert.equal(received.run_id, "run-cli");
     assert.equal(received.host, "alpha");
+    assert.equal(received.worktree_mode, "isolated-worktree");
     assert.equal(received.source.source_kind, "director");
     assert.equal(received.delta.delta_id, "delta-cli");
     assert.equal(received.dispatch, true);
@@ -85,6 +86,8 @@ describe("rolling run CLI grammar", () => {
       ["run", "run-1", "--accept-gate", "gate@1", "--text", "   "],
       ["run", "run-1", "--seal-task", "task"],
       ["run", "run-1", "--status", "--host", "alpha"],
+      ["run", "run-1", "--status", "--worktree-mode", "isolated-worktree"],
+      ["run", "start", "--host", "alpha", "--source-file", "-", "--worktree-mode", "unknown"],
     ];
     for (const argv of cases) {
       const result = await command(argv, { cwd, env, stdin: "{}", rollingRunHandler: async () => ({ unreachable: true }) });

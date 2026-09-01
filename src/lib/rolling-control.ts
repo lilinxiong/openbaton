@@ -29,6 +29,7 @@ import {
   type TaskSeal,
   type TaskSourceDescriptor,
   type UnitVersion,
+  type WorktreeExecutionMode,
 } from "./rolling-plan.js";
 import {
   appendRollingFact,
@@ -77,6 +78,7 @@ export interface RollingControlContext {
 export interface StartRollingControlInput extends RollingControlContext {
   run_id: string;
   host: string;
+  worktree_mode?: WorktreeExecutionMode;
   source: TaskSourceDescriptor;
   delta?: PlanDelta | null;
   dispatch?: boolean;
@@ -611,7 +613,7 @@ async function mutationResult(context: RollingControlContext & { run_id: string 
 }
 
 export async function startRollingControl(input: StartRollingControlInput): Promise<RollingControlMutationResult> {
-  createRollingExecutionRun({ cwd: input.cwd, env: input.env, runId: input.run_id, host: input.host, source: input.source, now: input.now });
+  createRollingExecutionRun({ cwd: input.cwd, env: input.env, runId: input.run_id, host: input.host, execution_mode: input.worktree_mode || "shared-worktree", source: input.source, now: input.now });
   const discovery = await discoverRollingTaskManifest(input.cwd, input.source);
   if (!discovery.complete) {
     throw new RollingControlError("rolling task source is unavailable during initial discovery", "ROLLING_DISCOVERY_UNAVAILABLE", discovery.diagnostics);

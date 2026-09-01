@@ -8,6 +8,7 @@ import {
   type PlanDelta,
   type TaskSeal,
   type TaskSourceDescriptor,
+  type WorktreeExecutionMode,
 } from "../lib/rolling-plan.js";
 import {
   acceptRollingGate,
@@ -27,6 +28,7 @@ export interface RollingRunInvocation {
   env: NodeJS.ProcessEnv;
   run_id: string;
   host: string | null;
+  worktree_mode: WorktreeExecutionMode | null;
   source_file: string | null;
   source: TaskSourceDescriptor | null;
   plan_delta_file: string | null;
@@ -79,7 +81,7 @@ function valueAt(args: readonly string[], key: string): string | undefined {
 }
 
 function validateTokens(args: readonly string[]): void {
-  const valueFlags = new Set(["host", "run-id", "source-file", "plan-delta-file", "append-plan", "accept-gate", "text", "seal-task", "seal-file", "task"]);
+  const valueFlags = new Set(["host", "run-id", "worktree-mode", "source-file", "plan-delta-file", "append-plan", "accept-gate", "text", "seal-task", "seal-file", "task"]);
   const booleanFlags = new Set(["status", "reconcile", "dispatch", "json"]);
   const seen = new Set<string>();
   let positional = 0;
@@ -126,6 +128,11 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
   const starting = positional === "start";
   const hostRaw = valueAt(args, "host");
   const host = hostRaw === undefined ? null : scalar(hostRaw, "host");
+  const worktreeModeRaw = valueAt(args, "worktree-mode");
+  const worktreeMode = worktreeModeRaw === undefined ? null : scalar(worktreeModeRaw, "worktree-mode");
+  if (worktreeMode !== null && worktreeMode !== "isolated-worktree" && worktreeMode !== "shared-worktree") {
+    invalid("--worktree-mode must be isolated-worktree or shared-worktree");
+  }
   const runIdRaw = valueAt(args, "run-id");
   const sourceRaw = valueAt(args, "source-file");
   const initialDeltaRaw = valueAt(args, "plan-delta-file");
@@ -145,7 +152,7 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
     if (sourceRaw === undefined) invalid("baton run start requires --source-file PATH|-");
     if (appendRaw !== undefined || status || gateRaw !== undefined || sealTaskRaw !== undefined || sealFileRaw !== undefined || reconcile || taskRaw !== undefined) invalid("baton run start received a flag for another operation");
   } else {
-    if (host !== null || runIdRaw !== undefined || sourceRaw !== undefined || initialDeltaRaw !== undefined) invalid("existing rolling run operations use accepted run identity and forbid --host, --run-id, --source-file, and --plan-delta-file");
+    if (host !== null || worktreeMode !== null || runIdRaw !== undefined || sourceRaw !== undefined || initialDeltaRaw !== undefined) invalid("existing rolling run operations use accepted run identity and forbid --host, --worktree-mode, --run-id, --source-file, and --plan-delta-file");
   }
   if (textRaw !== undefined && gateRaw === undefined) invalid("--text only accompanies --accept-gate");
   if (gateRaw !== undefined && textRaw === undefined) invalid("--accept-gate requires --text SUMMARY");
@@ -163,6 +170,7 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
     env,
     run_id: starting ? (runIdRaw === undefined ? generatedRunId() : scalar(runIdRaw, "run-id")) : scalar(positional, "run-id"),
     host,
+    worktree_mode: worktreeMode as WorktreeExecutionMode | null,
     source_file: sourceRaw === undefined ? null : scalar(sourceRaw, "source-file", true),
     source: null,
     plan_delta_file: initialDeltaRaw === undefined ? (appendRaw === undefined ? null : scalar(appendRaw, "append-plan", true)) : scalar(initialDeltaRaw, "plan-delta-file", true),
@@ -202,7 +210,7 @@ async function loadDocuments(invocation: RollingRunInvocation, options: RunComma
 }
 
 export const defaultRollingRunHandler: RollingRunHandler = async (input) => {
-  if (input.operation === "start") return startRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id, host: input.host!, source: input.source!, delta: input.delta, dispatch: input.dispatch });
+  if (input.operation === "start") return startRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id, host: input.host!, worktree_mode: input.worktree_mode || undefined, source: input.source!, delta: input.delta, dispatch: input.dispatch });
   if (input.operation === "append-plan") return appendRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id, delta: input.delta!, dispatch: input.dispatch });
   if (input.operation === "status") return statusRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id });
   if (input.operation === "accept-gate") return acceptRollingGate({ cwd: input.cwd, env: input.env, run_id: input.run_id, gate_ref: input.accept_gate!, evidence: input.text!, dispatch: input.dispatch ? true : undefined });

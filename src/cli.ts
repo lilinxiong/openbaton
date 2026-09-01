@@ -215,7 +215,7 @@ Usage:
   baton apply [change] --host ${HOSTS} --run RUN --reconcile [--task NUMBER] [--json]
   baton apply [change] --host ${HOSTS} --run RUN --plan-file PATH|- [--dispatch]
                submit a director-compiled successor plan (compiled handler)
-  baton run start --host ${HOSTS} --source-file PATH|- [--plan-delta-file PATH|-] [--run-id RUN] [--dispatch] [--json]
+  baton run start --host ${HOSTS} --worktree-mode isolated-worktree|shared-worktree --source-file PATH|- [--plan-delta-file PATH|-] [--run-id RUN] [--dispatch] [--json]
                create a source-neutral rolling v2 run; OpenSpec is one optional adapter
   baton run RUN --append-plan PATH|- [--dispatch] [--json]
   baton run RUN --status [--json]

@@ -23,6 +23,7 @@ import {
   type TaskManifestEntry,
   type TaskSeal,
   type TaskSourceDescriptor,
+  type WorktreeExecutionMode,
 } from "./rolling-plan.js";
 import {
   validatePlanDeltaAgainstFacts,
@@ -383,6 +384,8 @@ function deltaValidationFacts(identity: RollingRunIdentity, facts: readonly Roll
     });
   }
   return {
+    rolling_run_schema_version: 2,
+    run_execution_mode: identity.execution_mode as WorktreeExecutionMode,
     manifest_entries: [...manifest.values()],
     accepted_deltas,
     facts: [...facts],
