@@ -330,15 +330,19 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
   const acceptedUnit = (item: Identity): void => {
     if (item.kind !== "unit") return;
     acceptedUnits.add(`unit:${item.id}`);
-    acceptedUnits.add(`unit:${item.key}`);
+    if (item.version === undefined) acceptedUnits.add(`unit:${item.key}`);
   };
   for (const fact of runtimeFacts(input)) {
     const payload = record(fact) && record(fact.payload) ? fact.payload : fact;
     const source = record(payload) ? payload : record(fact) ? fact : null;
     const factKind = String(source?.kind || (record(fact) ? fact.kind : "")).toLowerCase();
     const item = identity(fact) || identity(payload);
-    const itemState = stateFromFact(payload) || stateFromFact(fact);
-    const explicitAccepted = record(payload) && payload.accepted === true;
+    const observedState = stateFromFact(payload) || stateFromFact(fact);
+    // A safety verdict authorizes the write scope; only parent acceptance
+    // accepts the unit.  In particular, do not let an accepted verdict from a
+    // superseded version leak through the stable unit key to its successor.
+    const itemState = factKind === "safety-verdict" && observedState === "accepted" ? null : observedState;
+    const explicitAccepted = record(payload) && payload.accepted === true && factKind !== "safety-verdict";
     const explicitTerminal = record(payload) && (payload.terminal_unreleased === true || payload.terminalUnreleased === true);
     const attemptOwned = attemptKinds.has(factKind) || (record(payload) && payload.owner_type === "attempt");
     if (item?.kind === "unit" && (explicitAccepted || (!attemptOwned && itemState === "accepted"))) acceptedUnit(item);

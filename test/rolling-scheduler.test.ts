@@ -97,6 +97,54 @@ describe("rolling scheduler", () => {
     assert.deepEqual(accepted.frontier, ["gated@1"]);
   });
 
+  it("keeps acceptance version-local when a cancelled unit is superseded", () => {
+    const original = unit("setup", 1);
+    const successor = unit("setup", 2);
+    const result = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([original, successor], [], {
+        supersessions: [{ schema_version: 1, owner: "unit_version", previous: "setup@1", successor: "setup@2", reason: "retry cancelled setup" }],
+      })],
+      runtime_facts: [
+        { kind: "native-attempt", owner_type: "attempt", owner_key: "setup@1:attempt-1", unit_key: "setup", unit_version: 1, state: "cancelled" },
+        { kind: "terminal-result", owner_type: "attempt", owner_key: "setup@1:attempt-1", unit_key: "setup", unit_version: 1, status: "cancelled" },
+        { kind: "safety-verdict", owner_type: "unit_version", owner_key: "setup@1", unit_key: "setup", unit_version: 1, accepted: true },
+        { kind: "release", owner_type: "attempt", owner_key: "setup@1:attempt-1", unit_key: "setup", unit_version: 1, released: true },
+      ],
+      capacity: 8,
+    });
+    assert.deepEqual(result.frontier, ["setup@2"]);
+    assert.equal(result.blockers["setup@2"], undefined);
+  });
+
+  it("does not treat a safety verdict as parent acceptance", () => {
+    const candidate = unit("review");
+    const result = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([candidate])],
+      runtime_facts: [
+        { kind: "safety-verdict", owner_type: "unit_version", owner_key: "review@1", unit_key: "review", unit_version: 1, accepted: true },
+      ],
+      capacity: 8,
+    });
+    assert.deepEqual(result.frontier, ["review@1"]);
+    assert.equal(result.blockers["review@1"], undefined);
+  });
+
+  it("does not inherit an accepted predecessor through a stable unit key", () => {
+    const original = unit("repair", 1);
+    const successor = unit("repair", 2);
+    const result = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([original, successor], [], {
+        supersessions: [{ schema_version: 1, owner: "unit_version", previous: "repair@1", successor: "repair@2", reason: "new repair scope" }],
+      })],
+      runtime_facts: [
+        { kind: "parent-acceptance", owner_type: "unit_version", owner_key: "repair@1", unit_key: "repair", unit_version: 1, accepted: true },
+      ],
+      capacity: 8,
+    });
+    assert.deepEqual(result.frontier, ["repair@2"]);
+    assert.equal(result.blockers["repair@2"], undefined);
+  });
+
   it("keeps route failures local and selects an eligible independent route", () => {
     const blocked = unit("blocked", 1, { required_execution_capabilities: ["native-execution"] } as Partial<UnitVersion>);
     const eligible = unit("eligible", 1, { required_execution_capabilities: ["native-execution"] } as Partial<UnitVersion>);
