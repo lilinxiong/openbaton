@@ -1,14 +1,30 @@
+import { normalizeRollingUnitLineage, type RollingUnitLineage } from "./receipt.js";
+
 export type WorkUnitKind = "concrete" | "deliberative";
 export type CoordinationMode = "terminal-only" | "checkpointed";
 export type CompiledWorkUnitMode = "patch-only" | "verification-only";
 export type WorkUnitOperation = "write" | "create" | "delete" | "rename" | "chmod";
 
 export interface WorkUnitContract {
-  schema_version: 1 | 2;
+  schema_version: 1 | 2 | 3;
   kind: WorkUnitKind;
   objective: string;
   deliverable: string;
   done_when: string;
+}
+
+/** A rolling unit contract carries only the immutable unit-version boundary. */
+export interface RollingWorkUnitContract extends WorkUnitContract {
+  schema_version: 3;
+  kind: "concrete";
+  mode: CompiledWorkUnitMode;
+  rolling_unit_lineage: RollingUnitLineage;
+  read_context: readonly string[];
+  write_paths: readonly string[];
+  allowed_operations: readonly WorkUnitOperation[];
+  completion_criteria: readonly string[];
+  permitted_validation: readonly string[];
+  coordination: "terminal-only";
 }
 
 /**
@@ -71,6 +87,8 @@ export interface CompileWorkUnitOptions {
   completion_criteria?: readonly string[];
   permittedValidation?: readonly string[];
   permitted_validation?: readonly string[];
+  rollingUnitLineage?: unknown;
+  rolling_unit_lineage?: unknown;
 }
 
 export interface CompileCompiledWorkUnitOptions extends Omit<CompileWorkUnitOptions, "kind" | "mode" | "executionMode" | "execution_mode"> {
@@ -79,6 +97,15 @@ export interface CompileCompiledWorkUnitOptions extends Omit<CompileWorkUnitOpti
   execution_mode?: CompiledWorkUnitMode;
   objective?: string;
   description?: string;
+}
+
+export interface CompileRollingWorkUnitOptions extends Omit<CompileWorkUnitOptions, "kind" | "mode" | "executionMode" | "execution_mode"> {
+  mode: CompiledWorkUnitMode;
+  executionMode?: CompiledWorkUnitMode;
+  execution_mode?: CompiledWorkUnitMode;
+  objective?: string;
+  description?: string;
+  done_when?: string;
 }
 
 function nonEmpty(value: unknown, field: string): string {
@@ -156,15 +183,86 @@ export function compileCompiledWorkUnit(
   return freezeDeep(contract);
 }
 
+export function compileRollingWorkUnit(
+  description: unknown,
+  options?: CompileRollingWorkUnitOptions,
+): RollingWorkUnitContract {
+  const objectInput = options === undefined && description && typeof description === "object"
+    ? description as Record<string, unknown>
+    : undefined;
+  if (objectInput) {
+    const allowedObjectFields = [
+      "schema_version", "kind", "objective", "deliverable", "done_when", "mode",
+      "rolling_unit_lineage", "read_context", "write_paths", "allowed_operations",
+      "completion_criteria", "permitted_validation", "coordination",
+    ];
+    if (Object.keys(objectInput).some((key) => !allowedObjectFields.includes(key))) {
+      throw new Error("rolling work unit contains an unknown field");
+    }
+    if (objectInput.schema_version !== 3) {
+      throw new Error("rolling work unit schema_version must be 3");
+    }
+    if (objectInput.kind !== "concrete") {
+      throw new Error("rolling work unit kind must be concrete");
+    }
+    if (objectInput.coordination !== "terminal-only") {
+      throw new Error("rolling work unit coordination must be terminal-only");
+    }
+  }
+  const source = options ?? objectInput ?? {};
+  const mode = source.mode ?? source.execution_mode ?? source.executionMode;
+  if (mode !== "patch-only" && mode !== "verification-only") {
+    throw new Error("rolling work unit mode is required and must be patch-only or verification-only");
+  }
+  const rollingInput = source.rolling_unit_lineage ?? source.rollingUnitLineage;
+  if (rollingInput === undefined || rollingInput === null) {
+    throw new Error("rolling work unit rolling_unit_lineage is required");
+  }
+  const rollingLineage = normalizeRollingUnitLineage(rollingInput);
+  if (rollingLineage.mode !== mode) {
+    throw new Error("rolling work unit mode must equal rolling unit lineage mode");
+  }
+  const writePaths = optionalStrings(source.write_paths ?? source.writePaths, "write_paths");
+  const allowedOperations = optionalStrings(source.allowed_operations ?? source.allowedOperations, "allowed_operations") as WorkUnitOperation[];
+  const validOperations = new Set<WorkUnitOperation>(["write", "create", "delete", "rename", "chmod"]);
+  if (allowedOperations.some((operation) => !validOperations.has(operation))) {
+    throw new Error("rolling work unit allowed_operations contains an unsupported operation");
+  }
+  if (mode === "patch-only" && (!writePaths.length || !allowedOperations.length)) {
+    throw new Error("patch-only rolling work unit requires non-empty write_paths and allowed_operations");
+  }
+  if (mode === "verification-only" && (writePaths.length || allowedOperations.length)) {
+    throw new Error("verification-only rolling work unit forbids write_paths and allowed_operations");
+  }
+  const objective = nonEmpty(options ? description : source.objective ?? source.description, "objective");
+  const contract: RollingWorkUnitContract = {
+    schema_version: 3,
+    kind: "concrete",
+    objective,
+    deliverable: nonEmpty(source.deliverable, "deliverable"),
+    done_when: nonEmpty(source.done_when ?? source.doneWhen, "done_when"),
+    mode,
+    rolling_unit_lineage: rollingLineage,
+    read_context: strings(source.read_context ?? source.readContext, "read_context"),
+    write_paths: writePaths,
+    allowed_operations: allowedOperations,
+    completion_criteria: strings(source.completion_criteria ?? source.completionCriteria, "completion_criteria"),
+    permitted_validation: strings(source.permitted_validation ?? source.permittedValidation, "permitted_validation"),
+    coordination: "terminal-only",
+  };
+  return freezeDeep(contract);
+}
+
 /** Compile either the legacy schema-1 unit or a versioned bounded unit. */
 export function compileWorkUnit(
   description: unknown,
   options?: CompileWorkUnitOptions,
-): WorkUnitContract | CompiledWorkUnitContract {
+): WorkUnitContract | CompiledWorkUnitContract | RollingWorkUnitContract {
   // Accepting the object form keeps the compiled contract useful to callers
   // that already have a single plan record to pass around.
   if (options === undefined && description && typeof description === "object") {
-    const input = description as CompileCompiledWorkUnitOptions;
+    const input = description as CompileCompiledWorkUnitOptions & { schema_version?: unknown };
+    if (input.schema_version === 3) return compileRollingWorkUnit(input);
     if (input.mode || input.executionMode || input.execution_mode) {
       return compileCompiledWorkUnit(input.objective ?? input.description, {
         ...input,
@@ -238,7 +336,33 @@ export function buildWorkerPrompt(basePrompt: string, unit: WorkUnitContract, co
   } else {
     lines.push("coordination: terminal-only; return one short conclusion when complete.");
   }
-  if ("mode" in unit) {
+  if (unit.schema_version === 3 && "rolling_unit_lineage" in unit) {
+    const rolling = unit as RollingWorkUnitContract;
+    lines.push(
+      "",
+      "[Baton rolling execution contract]",
+      `schema_version: ${rolling.schema_version}`,
+      `kind: ${rolling.kind}`,
+      `objective: ${rolling.objective}`,
+      `deliverable: ${rolling.deliverable}`,
+      `done_when: ${rolling.done_when}`,
+      `mode: ${rolling.mode}`,
+      `rolling_unit_lineage: ${JSON.stringify(rolling.rolling_unit_lineage)}`,
+      `read_context: ${rolling.read_context.join(", ")}`,
+      `write_paths: ${rolling.write_paths.join(", ")}`,
+      `allowed_operations: ${rolling.allowed_operations.join(", ")}`,
+      `completion_criteria: ${rolling.completion_criteria.join("; ")}`,
+      `permitted_validation: ${rolling.permitted_validation.join("; ")}`,
+      `coordination: ${rolling.coordination}`,
+      "",
+      "Imperative policy:",
+      "Follow the contract exactly. Do not spawn child agents, change the plan, stage, commit, branch, rebase, or modify OpenSpec, Receipt, dispatch, or CLI artifacts.",
+      rolling.mode === "patch-only"
+        ? "Write only the exact write_paths, and use only the listed allowed_operations; do not write any other path."
+        : "Perform verification only; do not write, create, delete, rename, chmod, stage, commit, or otherwise mutate any file.",
+      "If the contract or a required decision is missing, stop. Return exactly one structured JSON object with code PLAN_INSUFFICIENT and string fields file, symbol, and missing_decision: {\"code\":\"PLAN_INSUFFICIENT\",\"file\":\"...\",\"symbol\":\"...\",\"missing_decision\":\"...\"}.",
+    );
+  } else if ("mode" in unit) {
     const compiled = unit as CompiledWorkUnitContract;
     lines.push(
       "",

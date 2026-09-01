@@ -28,6 +28,7 @@ export const TASK_MANIFEST_SCHEMA_VERSION = TASK_MANIFEST_PAGE_SCHEMA_VERSION;
 export type RollingSourceKind = "openspec" | "director";
 export type TaskSourceState = "pending" | "complete" | "unavailable";
 export type UnitExecutionMode = "patch-only" | "verification-only";
+export type UnitRouteProfile = "coding" | "runner" | "longctx";
 export type GateType = "safety-precondition" | "integration-acceptance" | "evidence";
 export type CoverageKind = "unit" | "gate" | "no-op";
 export type FailureOwner = "manifest_entry" | "delta" | "unit_version" | "attempt" | "gate_version" | "seal" | "reconciliation";
@@ -81,6 +82,8 @@ export interface UnitVersion {
   task_keys: string[];
   depends_on: string[];
   execution_mode: UnitExecutionMode;
+  /** Configured host profile selected by policy, never a raw model override. */
+  route_profile?: UnitRouteProfile;
   prompt?: string;
   recipe?: string;
   description?: string;
@@ -351,11 +354,12 @@ function validateUnit(input: unknown, path = "unit_versions"): RollingValidation
   const d: RollingDiagnostic[] = [];
   if (!checkObject(input, path, d)) return { valid: false, diagnostics: d };
   const v = input;
-  unknownFields(v, ["schema_version", "unit_key", "version", "task_keys", "depends_on", "execution_mode", "prompt", "recipe", "description", "write_paths", "allowed_operations", "read_context", "completion_criteria", "permitted_validation", "input_fingerprints", "required_gate_keys", "fingerprint"], path, d);
+  unknownFields(v, ["schema_version", "unit_key", "version", "task_keys", "depends_on", "execution_mode", "route_profile", "prompt", "recipe", "description", "write_paths", "allowed_operations", "read_context", "completion_criteria", "permitted_validation", "input_fingerprints", "required_gate_keys", "fingerprint"], path, d);
   checkVersion(v, path, d, UNIT_VERSION_SCHEMA_VERSION); requiredString(v, "unit_key", path, d, true);
   if (!integer(v.version) || (v.version as number) < 1) issue(d, "INVALID_VERSION", "version must be a positive integer", `${path}.version`);
   requiredArray(v, "task_keys", path, d); requiredArray(v, "depends_on", path, d); uniqueStrings(v.task_keys, `${path}.task_keys`, d); uniqueStrings(v.depends_on, `${path}.depends_on`, d);
   if (!new Set<UnitExecutionMode>(["patch-only", "verification-only"]).has(v.execution_mode as UnitExecutionMode)) issue(d, "INVALID_MODE", "execution_mode is unsupported", `${path}.execution_mode`);
+  if (v.route_profile !== undefined && !new Set(["coding", "runner", "longctx"]).has(v.route_profile as string)) issue(d, "INVALID_ROUTE_PROFILE", "route_profile is unsupported", `${path}.route_profile`);
   for (const key of ["write_paths", "completion_criteria", "permitted_validation", "required_gate_keys"]) if (v[key] !== undefined && !stringArray(v[key])) issue(d, "INVALID_SHAPE", `${key} must be an array of strings`, `${path}.${key}`);
   if (v.allowed_operations !== undefined && (!Array.isArray(v.allowed_operations) || !(v.allowed_operations as unknown[]).every((x) => typeof x === "string" && OPERATIONS.has(x as SafetyOperation)))) issue(d, "INVALID_OPERATION", "allowed_operations contains an unsupported operation", `${path}.allowed_operations`);
   if (v.input_fingerprints !== undefined && (!isRecord(v.input_fingerprints) || !Object.values(v.input_fingerprints).every((x) => typeof x === "string" && HASH.test(x)))) issue(d, "INVALID_FINGERPRINT", "input_fingerprints must map names to SHA-256 strings", `${path}.input_fingerprints`);

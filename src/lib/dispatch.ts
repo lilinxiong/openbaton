@@ -20,11 +20,13 @@ import { dispatchLockPath, spawnsDir, workspaceId } from "./paths.js";
 import {
   assertValidTicketReceiptLineage,
   normalizeCompiledApplyLineage,
+  normalizeRollingUnitLineage,
   readReceipt,
   writeReceipt,
   type CompiledApplyLineage,
   type DelegationReceipt,
   type ExecutionMode,
+  type RollingUnitLineage,
 } from "./receipt.js";
 import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, type AsyncSafetyOptions, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
@@ -325,6 +327,7 @@ export interface DispatchSpec {
   description: string;
   prompt: string;
   work_unit: SpawnTicket["work_unit"];
+  rolling_unit_lineage?: RollingUnitLineage;
   coordination: SpawnTicket["coordination"];
   attempt: number;
   max_attempts: number;
@@ -365,6 +368,7 @@ function publicDispatchSpec(
     description: withDispatchReservationEnvelope(ticket.description, reservation),
     prompt: withDispatchReservationEnvelope(ticket.prompt, reservation),
     work_unit: ticket.work_unit,
+    ...(ticket.rolling_unit_lineage ? { rolling_unit_lineage: ticket.rolling_unit_lineage } : {}),
     coordination: ticket.coordination,
     attempt: ticket.attempt,
     max_attempts: ticket.max_attempts,
@@ -411,6 +415,82 @@ function receiptModeMatches(ticket: SpawnTicket, receipt: DelegationReceipt): bo
     && receipt.scope.side_effects.length === 1
     && receipt.scope.side_effects[0] === "git-commit"
     && JSON.stringify(receipt.scope.write_allowlist) === JSON.stringify(receipt.commit_baseline!.staged_paths);
+}
+
+function isRollingDispatchTicket(ticket: SpawnTicket): boolean {
+  const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+  return ticket.rolling_unit_lineage !== undefined || unit?.schema_version === 3;
+}
+
+/**
+ * Validate the artifact-local identity of a rolling dispatch.  Rolling
+ * lifecycle authorization is intentionally anchored only in the immutable
+ * ticket, schema-3 work unit, and Receipt; rolling-run state and append
+ * progress are not consulted here.
+ */
+function validateRollingDispatchArtifacts(
+  cwd: string,
+  ticket: SpawnTicket,
+  host: HostId,
+  env: NodeJS.ProcessEnv,
+  receiptOverride?: DelegationReceipt,
+): DelegationReceipt | null {
+  if (!isRollingDispatchTicket(ticket)) return null;
+  try {
+    const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+    if (!unit || unit.schema_version !== 3 || !unit.rolling_unit_lineage) {
+      throw new DispatchError(`ticket ${ticket.id} requires a schema-3 rolling work unit`, "ROLLING_LINEAGE_MISMATCH", { ticketId: ticket.id });
+    }
+    if (!ticket.rolling_unit_lineage) {
+      throw new DispatchError(`ticket ${ticket.id} requires rolling unit lineage`, "ROLLING_LINEAGE_MISMATCH", { ticketId: ticket.id });
+    }
+    if (!ticket.receipt_id) {
+      throw new DispatchError(`ticket ${ticket.id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: ticket.id });
+    }
+    const receipt = receiptOverride || readReceipt(cwd, ticket.receipt_id, env);
+    const ticketLineage = normalizeRollingUnitLineage(ticket.rolling_unit_lineage);
+    const workUnitLineage = normalizeRollingUnitLineage(unit.rolling_unit_lineage);
+    const receiptLineage = receipt.rolling_unit_lineage === undefined
+      ? null
+      : normalizeRollingUnitLineage(receipt.rolling_unit_lineage);
+    const serialized = JSON.stringify(ticketLineage);
+    if (serialized !== JSON.stringify(workUnitLineage)
+      || receiptLineage === null
+      || serialized !== JSON.stringify(receiptLineage)) {
+      throw new DispatchError(`ticket ${ticket.id} rolling unit lineage does not match its work unit and Receipt`, "ROLLING_LINEAGE_MISMATCH", { ticketId: ticket.id });
+    }
+    const expectedReceiptHost = ticket.target_host || ticket.dispatch_host || ticket.host;
+    if (receipt.ticket_id !== ticket.id
+      || receipt.receipt_id !== ticket.receipt_id
+      || (expectedReceiptHost ? receipt.host !== expectedReceiptHost : Boolean(receipt.host && receipt.host !== host))
+      || receipt.route.route_id !== ticket.route_id
+      || !receiptModeMatches(ticket, receipt)
+      || !receipt.selection
+      || !ticket.selection
+      || receipt.selection.approval_id !== ticket.selection.approval_id
+      || receipt.selection.selected_model_id !== ticket.model_id
+      || receipt.selection.host !== host
+      || ticket.selection.host !== host) {
+      throw new DispatchError(`ticket ${ticket.id} does not match its rolling Delegation Receipt`, "RECEIPT_MISMATCH", { ticketId: ticket.id });
+    }
+    // Keep the existing generic lineage checks as part of the rolling edge;
+    // this also covers route/model/service-tier and execution-mode identity.
+    assertValidTicketReceiptLineage({
+      ...ticket,
+      target_host: ticket.target_host || host,
+    }, receipt);
+    return receipt;
+  } catch (error) {
+    if (error instanceof DispatchError) throw error;
+    const code = error instanceof Error && "code" in error
+      ? String((error as Error & { code?: unknown }).code || "ROLLING_LINEAGE_MISMATCH")
+      : "ROLLING_LINEAGE_MISMATCH";
+    throw new DispatchError(
+      error instanceof Error ? error.message : String(error),
+      code,
+      { ticketId: ticket.id },
+    );
+  }
 }
 
 async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host: HostId, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}): Promise<{ ticket_id: string; code: string; message: string } | null> {
@@ -1016,6 +1096,9 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
         blocked.push({ ticket_id: ticket.id, code: "HOST_MISMATCH", message: `ticket ${ticket.id} targets ${ticketHost}, not ${targetHost}` });
         continue;
       }
+      // A rolling ticket must be authorized from its immutable artifact edge
+      // before any reservation fields or status are changed.
+      validateRollingDispatchArtifacts(cwd, ticket, targetHost, env);
       let compiledContext: CompiledApplyContext | null = null;
       // Dependency/gate backpressure is not a terminal ticket failure. Keep
       // the compiled unit queued so an independent frontier can continue and
@@ -1162,6 +1245,9 @@ export function bindAgent(cwd: string, id: string, {
         { ticketId: id, currentStatus: ticket.status, nextStatus: "running" },
       );
     }
+    // Re-read the immutable rolling authorization after reservation and
+    // before attaching a native handle or changing lifecycle state.
+    validateRollingDispatchArtifacts(cwd, ticket, targetHost, env);
     if (isCompiledApplyTicket(ticket)) {
       try { validateCompiledTicket(cwd, ticket, targetHost, env); }
       catch (error) { rejectCompiledTicketValidation(cwd, ticket, error, at, env); }
@@ -2085,6 +2171,7 @@ export async function finishAgent(cwd: string, id: string, {
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
+    validateRollingDispatchArtifacts(cwd, ticket, ticketTargetHost(ticket, env), env);
     let compiledContext: CompiledApplyContext | null = null;
     if (isCompiledApplyTicket(ticket)) {
       try { compiledContext = validateCompiledTicket(cwd, ticket, ticketTargetHost(ticket, env), env); }
@@ -2311,6 +2398,7 @@ export function releaseAgent(cwd: string, id: string, {
     if (!TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is not terminal`, "RELEASE_REQUIRES_TERMINAL", { ticketId: id, currentStatus: ticket.status });
     }
+    validateRollingDispatchArtifacts(cwd, ticket, ticketTargetHost(ticket, env), env);
     if (ticket.slot_released_at) {
       // Native release confirmation may be retried after a transport timeout.
       // A handle is not required once the ticket is already known released,
