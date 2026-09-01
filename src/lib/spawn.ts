@@ -424,14 +424,15 @@ export function sessionTicketId(prefix: string, uid: string, ordinal: number): s
 export function nextSpawnId(cwd: string, prefix = "spn", env?: NodeJS.ProcessEnv): string {
   if (!/^(?:spn|os)$/.test(prefix)) throw new Error("invalid session ticket prefix");
   const uid = sessionUid(env);
-  const existing = listSpawns(cwd, env);
   let max = 0;
-  for (const s of existing) {
-    // Standalone and OpenSpec tickets share one session ordinal namespace.
-    // Scope discovery to the exact current session uid so another session's
-    // history can never consume an ordinal for this invocation.
-    const m = String(s.id).match(/^(spn|os)-([0-9a-f]{64})-(\d+)$/);
-    if (!m || m[2] !== uid || s.session_uid !== uid) continue;
+  const directory = spawnsDir(cwd, env);
+  const names = fs.existsSync(directory) ? fs.readdirSync(directory) : [];
+  for (const name of names) {
+    // Reserve ordinals from filenames before parsing payloads. A corrupt or
+    // future-format ticket must remain visible to identity allocation so a
+    // later write can never overwrite its durable record.
+    const m = name.match(/^(spn|os)-([0-9a-f]{64})-(\d+)\.json$/);
+    if (!m || m[2] !== uid) continue;
     max = Math.max(max, Number(m[3]));
   }
   return sessionTicketId(prefix, uid, max + 1);

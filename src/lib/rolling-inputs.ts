@@ -351,6 +351,12 @@ function isRecord(value: unknown): value is RecordLike {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function isPlainRecord(value: unknown): value is RecordLike {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -360,7 +366,7 @@ function clone(value: unknown): unknown {
   if (typeof value === "bigint") return `${value}n`;
   if (value instanceof Uint8Array) return Array.from(value);
   if (Array.isArray(value)) return value.map(clone);
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value).filter(([key]) => !EPHEMERAL_KEYS.has(key)).map(([key, item]) => [key, clone(item)]));
+  if (isPlainRecord(value)) return Object.fromEntries(Object.entries(value).filter(([key]) => !EPHEMERAL_KEYS.has(key)).map(([key, item]) => [key, clone(item)]));
   throw new RollingInputError("ROLLING_INPUT_VALUE_INVALID", "input fact must be JSON-compatible");
 }
 

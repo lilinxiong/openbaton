@@ -7,6 +7,7 @@ import { getCliAdapter } from "../src/adapters/registry.js";
 import { bindAgent, finishAgent, releaseAgent, reserveNext } from "../src/lib/dispatch.js";
 import {
   appendRollingControl,
+  discoverRollingTaskManifest,
   reconcileRollingTasks,
   sealRollingTask,
   startRollingControl,
@@ -17,6 +18,7 @@ import { deriveTaskKey, type PlanDelta, type TaskSourceDescriptor } from "../src
 import { readRollingExecutionRun } from "../src/lib/rolling-run.js";
 import { readRouteSnapshot, publishRouteSnapshot } from "../src/lib/routes.js";
 import { listSpawns } from "../src/lib/spawn.js";
+import { createTaskSourceAdapterRegistry, type TaskSourceAdapter } from "../src/lib/task-source.js";
 import { configureCli } from "./configure.js";
 import { fakeEnv } from "./home.js";
 
@@ -59,6 +61,44 @@ async function fixture() {
 }
 
 describe("rolling control recovery", () => {
+  it("rejects a partially discovered manifest when a later page is unavailable", async () => {
+    const partialSource: TaskSourceDescriptor = {
+      schema_version: 1,
+      source_kind: "director",
+      adapter: "partial",
+      selection: { queue: "partial" },
+    };
+    const adapter: TaskSourceAdapter = {
+      id: "partial",
+      source_kind: "director",
+      discover: async ({ cursor }) => cursor === null || cursor === undefined
+        ? {
+          schema_version: 1,
+          source: partialSource,
+          entries: [{
+            schema_version: 1,
+            task_key: "director:first",
+            source_kind: "director",
+            source_ref: { id: "first" },
+            display_id: "first",
+            title: "first",
+            source_fingerprint: "a".repeat(64),
+            source_state: "pending",
+            discovery_sequence: 0,
+          }],
+          has_more: true,
+          next_cursor: "second",
+        }
+        : { ok: false, status: "unavailable", diagnostics: [{ code: "PAGE_OFFLINE", message: "second page unavailable" }] },
+      refresh: async () => [],
+      reconcile: async (request) => ({ task_key: request.task_key, source_fingerprint: request.expected_source_fingerprint, source_state: "pending", source_ref: null }),
+    };
+    const result = await discoverRollingTaskManifest("/unused", partialSource, createTaskSourceAdapterRegistry([adapter], { max_page_size: 1 }));
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.entries.map((entry) => entry.task_key), ["director:first"]);
+    assert.equal(result.diagnostics[0]?.code, "PAGE_OFFLINE");
+  });
+
   it("recovers native lifecycle facts idempotently, seals, and reconciles", async () => {
     const f = await fixture();
     const started = await startRollingControl({ cwd: f.cwd, env: f.env, run_id: "run-control", host: "alpha", source: f.source, delta: f.delta, dispatch: true });

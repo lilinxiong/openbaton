@@ -493,9 +493,27 @@ function validateRollingDispatchArtifacts(
   }
 }
 
-async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host: HostId, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}): Promise<{ ticket_id: string; code: string; message: string } | null> {
-  let code = null;
-  let message = null;
+async function rejectUndispatchable(
+  cwd: string,
+  ticket: SpawnTicket,
+  at: string,
+  host: HostId,
+  env: NodeJS.ProcessEnv = process.env,
+  safetyOptions: AsyncSafetyOptions = {},
+  preflightError: unknown = null,
+): Promise<{ ticket_id: string; code: string; message: string } | null> {
+  let code: string | null = preflightError instanceof DispatchError
+    ? preflightError.code
+    : preflightError instanceof Error && "code" in preflightError
+      ? String((preflightError as Error & { code?: unknown }).code || "ROLLING_LINEAGE_MISMATCH")
+      : preflightError === null
+        ? null
+        : "ROLLING_LINEAGE_MISMATCH";
+  let message: string | null = preflightError === null
+    ? null
+    : preflightError instanceof Error
+      ? preflightError.message
+      : String(preflightError);
   let capturedHost: HostId | null = null;
   try {
     capturedHost = ticketTargetHost(ticket, env);
@@ -621,11 +639,12 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
     }
   }
   if (!code) return null;
+  const finalMessage = message || `ticket ${ticket.id} cannot be dispatched`;
   transition(ticket, "queued", "errored", { at, event: "dispatch_blocked", detail: { error_code: code } });
-  ticket.error = { code, message };
+  ticket.error = { code, message: finalMessage };
   ticket.finished_at = at;
   writeSpawn(cwd, ticket, env);
-  return { ticket_id: ticket.id, code, message };
+  return { ticket_id: ticket.id, code, message: finalMessage };
 }
 
 interface ReserveOptions {
@@ -1098,7 +1117,13 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
       }
       // A rolling ticket must be authorized from its immutable artifact edge
       // before any reservation fields or status are changed.
-      validateRollingDispatchArtifacts(cwd, ticket, targetHost, env);
+      try {
+        validateRollingDispatchArtifacts(cwd, ticket, targetHost, env);
+      } catch (error) {
+        const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions, error);
+        if (rejected) blocked.push(rejected);
+        continue;
+      }
       let compiledContext: CompiledApplyContext | null = null;
       // Dependency/gate backpressure is not a terminal ticket failure. Keep
       // the compiled unit queued so an independent frontier can continue and
@@ -2398,7 +2423,6 @@ export function releaseAgent(cwd: string, id: string, {
     if (!TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is not terminal`, "RELEASE_REQUIRES_TERMINAL", { ticketId: id, currentStatus: ticket.status });
     }
-    validateRollingDispatchArtifacts(cwd, ticket, ticketTargetHost(ticket, env), env);
     if (ticket.slot_released_at) {
       // Native release confirmation may be retried after a transport timeout.
       // A handle is not required once the ticket is already known released,

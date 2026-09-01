@@ -149,6 +149,7 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
   }
   if (textRaw !== undefined && gateRaw === undefined) invalid("--text only accompanies --accept-gate");
   if (gateRaw !== undefined && textRaw === undefined) invalid("--accept-gate requires --text SUMMARY");
+  if (textRaw !== undefined && !textRaw.trim()) invalid("--text SUMMARY must not be empty");
   if ((sealTaskRaw === undefined) !== (sealFileRaw === undefined)) invalid("--seal-task and --seal-file are required together");
   if (taskRaw !== undefined && !reconcile) invalid("--task only accompanies --reconcile");
   if (args.includes("--dispatch") && !(starting || appendRaw !== undefined || gateRaw !== undefined)) invalid("--dispatch only accompanies start, --append-plan, or --accept-gate");

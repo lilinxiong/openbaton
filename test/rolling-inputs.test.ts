@@ -196,4 +196,17 @@ describe("rolling local input capture", () => {
     assert.equal(value.components[0]?.value, "evidence-v1");
     assert.equal(value.components[1]?.value, "source-v1");
   });
+
+  it("rejects non-plain object values instead of collapsing them to empty objects", async () => {
+    for (const value of [new Date("2026-01-01T00:00:00.000Z"), new Map([["key", "value"]]), new Set(["value"])]) {
+      await assert.rejects(
+        captureUnitLocalInputs({
+          repoRoot: root,
+          ownerKey: "unit-non-json",
+          inputs: [{ label: "bad", kind: "source-fact", value }],
+        }),
+        (error: unknown) => error instanceof RollingInputError && error.code === "ROLLING_INPUT_VALUE_INVALID",
+      );
+    }
+  });
 });

@@ -320,7 +320,7 @@ export function buildWriteReceipt({
   if (base.compiled_apply_lineage !== undefined && base.rolling_unit_lineage !== undefined) {
     throw new ReceiptError("compiled and rolling lineages are mutually exclusive", "RECEIPT_LINEAGE_MUTUALLY_EXCLUSIVE");
   }
-  const rollingInputs = [rollingUnitLineage, rolling_unit_lineage].filter((value) => value !== undefined);
+  const rollingInputs = [rollingUnitLineage, rolling_unit_lineage].filter((value) => value !== undefined && value !== null);
   let suppliedRollingLineage: RollingUnitLineage | undefined;
   if (rollingInputs.length) {
     suppliedRollingLineage = normalizeRollingUnitLineage(rollingInputs[0]);

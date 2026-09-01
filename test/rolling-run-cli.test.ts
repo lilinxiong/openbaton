@@ -82,6 +82,7 @@ describe("rolling run CLI grammar", () => {
       ["run", "run-1", "--status", "--status"],
       ["run", "start", "--host", "alpha", "--source-file", "-", "--plan-delta-file", "-"],
       ["run", "run-1", "--accept-gate", "gate@1"],
+      ["run", "run-1", "--accept-gate", "gate@1", "--text", "   "],
       ["run", "run-1", "--seal-task", "task"],
       ["run", "run-1", "--status", "--host", "alpha"],
     ];

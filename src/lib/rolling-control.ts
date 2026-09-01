@@ -197,11 +197,11 @@ export function rollingTaskSourceRegistry(cwd: string, source: TaskSourceDescrip
   throw new RollingControlError(`unsupported rolling source kind ${source.source_kind}`, "ROLLING_SOURCE_UNSUPPORTED");
 }
 
-async function discoverManifest(
+export async function discoverRollingTaskManifest(
   cwd: string,
   source: TaskSourceDescriptor,
-): Promise<{ entries: TaskManifestEntry[]; diagnostics: readonly TaskSourceDiagnostic[] }> {
-  const registry = rollingTaskSourceRegistry(cwd, source);
+  registry: TaskSourceAdapterRegistry = rollingTaskSourceRegistry(cwd, source),
+): Promise<{ entries: TaskManifestEntry[]; diagnostics: readonly TaskSourceDiagnostic[]; complete: boolean }> {
   const entries: TaskManifestEntry[] = [];
   const diagnostics: TaskSourceDiagnostic[] = [];
   let cursor: string | null = null;
@@ -209,7 +209,7 @@ async function discoverManifest(
   do {
     const result = await registry.discover(source, { cursor, limit: registry.max_page_size });
     diagnostics.push(...result.diagnostics);
-    if (!result.ok) return { entries, diagnostics };
+    if (!result.ok) return { entries, diagnostics, complete: false };
     entries.push(...result.value.entries);
     const next = result.value.next_cursor ?? null;
     if (next !== null) {
@@ -218,7 +218,7 @@ async function discoverManifest(
     }
     cursor = next;
   } while (cursor !== null);
-  return { entries, diagnostics };
+  return { entries, diagnostics, complete: true };
 }
 
 function manifestDiff(
@@ -612,8 +612,8 @@ async function mutationResult(context: RollingControlContext & { run_id: string 
 
 export async function startRollingControl(input: StartRollingControlInput): Promise<RollingControlMutationResult> {
   createRollingExecutionRun({ cwd: input.cwd, env: input.env, runId: input.run_id, host: input.host, source: input.source, now: input.now });
-  const discovery = await discoverManifest(input.cwd, input.source);
-  if (!discovery.entries.length && discovery.diagnostics.length) {
+  const discovery = await discoverRollingTaskManifest(input.cwd, input.source);
+  if (!discovery.complete) {
     throw new RollingControlError("rolling task source is unavailable during initial discovery", "ROLLING_DISCOVERY_UNAVAILABLE", discovery.diagnostics);
   }
   const delta = input.delta
@@ -627,7 +627,10 @@ export async function startRollingControl(input: StartRollingControlInput): Prom
 export async function appendRollingControl(input: AppendRollingControlInput): Promise<RollingControlMutationResult> {
   const recovered = synchronizeRollingTicketFacts(input);
   const source = sourceFromRun(recovered.run);
-  const discovery = await discoverManifest(input.cwd, source);
+  const discovery = await discoverRollingTaskManifest(input.cwd, source);
+  if (!discovery.complete) {
+    throw new RollingControlError("rolling task source is unavailable during incremental discovery", "ROLLING_DISCOVERY_UNAVAILABLE", discovery.diagnostics);
+  }
   const diff = manifestDiff(recovered.run.manifest_entries, discovery.entries);
   const delta = mergeManifest(input.delta, diff.additions, diff.refreshes);
   appendRollingPlanDelta({ cwd: input.cwd, env: input.env, runId: input.run_id, delta, now: input.now });

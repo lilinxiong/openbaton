@@ -161,22 +161,19 @@ describe("rolling dispatch artifact boundaries", () => {
     }
   }));
 
-  it("rejects Receipt drift before every selected lifecycle boundary", async () => withHome(async (home) => {
-    const boundaries = ["reserve", "bind", "finish-completed", "finish-errored-pre-bind", "finish-closed", "finish-timed-out", "release"] as const;
+  it("rejects Receipt drift before every mutation that grants or completes work", async () => withHome(async (home) => {
+    const boundaries = ["bind", "finish-completed", "finish-errored-pre-bind", "finish-closed", "finish-timed-out"] as const;
     for (const [index, boundary] of boundaries.entries()) {
       const f = fixture(home, `rolling-dispatch-drift-${index}`);
       try {
-        if (boundary !== "reserve") await reserveNext(f.cwd, { capacity: 1, host: HOST, limit: 1, env: f.env });
-        if (["finish-completed", "finish-closed", "finish-timed-out", "release"].includes(boundary)) {
+        await reserveNext(f.cwd, { capacity: 1, host: HOST, limit: 1, env: f.env });
+        if (["finish-completed", "finish-closed", "finish-timed-out"].includes(boundary)) {
           bindAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env });
         }
-        if (boundary === "release") await finishAgent(f.cwd, f.ticket.id, { status: "closed", errorCode: "AGENT_CLOSED", errorMessage: "closed", host: HOST, env: f.env });
         const before = rawTicket(f);
         tamperReceipt(f);
         const reject = (error: unknown) => (error as { code?: string }).code === "ROLLING_LINEAGE_MISMATCH";
-        if (boundary === "reserve") await assert.rejects(() => reserveNext(f.cwd, { capacity: 1, host: HOST, limit: 1, env: f.env }), reject);
-        else if (boundary === "bind") assert.throws(() => bindAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env }), reject);
-        else if (boundary === "release") assert.throws(() => releaseAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env }), reject);
+        if (boundary === "bind") assert.throws(() => bindAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env }), reject);
         else await assert.rejects(() => finishAgent(f.cwd, f.ticket.id, {
           status: boundary === "finish-completed" ? "completed" : boundary === "finish-timed-out" ? "timed_out" : boundary === "finish-errored-pre-bind" ? "errored" : "closed",
           conclusion: boundary === "finish-completed" ? "done" : null,
@@ -189,6 +186,59 @@ describe("rolling dispatch artifact boundaries", () => {
       } finally {
         fs.rmSync(f.cwd, { recursive: true, force: true });
       }
+    }
+  }));
+
+  it("contains a corrupt rolling Receipt and reserves the next healthy ticket", async () => withHome(async (home) => {
+    const f = fixture(home, "rolling-dispatch-corrupt-containment");
+    try {
+      const healthy = buildSpawnTicket({
+        cwd: f.cwd,
+        env: f.env,
+        id: nextSpawnId(f.cwd, "spn", f.env),
+        description: "healthy independent ticket",
+        prompt: "healthy independent ticket",
+        modelId: ROUTE,
+        routeId: ROUTE,
+        taskKind: "concrete",
+        selection: selection(),
+        targetHost: HOST,
+      });
+      const healthyReceipt = buildReadOnlyReceipt({
+        ticketId: healthy.id,
+        card: { id: ROUTE, route_id: ROUTE, provider: HOST, strengths: "healthy" },
+        issuedAt: healthy.created_at,
+        selection: selection(),
+        host: HOST,
+      });
+      healthy.receipt_id = healthyReceipt.receipt_id;
+      writeReceipt(f.cwd, healthyReceipt, f.env);
+      writeSpawn(f.cwd, healthy, f.env);
+      tamperReceipt(f);
+
+      const result = await reserveNext(f.cwd, { capacity: 1, host: HOST, limit: 1, env: f.env });
+      assert.equal(result.blocked.find((item) => item.ticket_id === f.ticket.id)?.code, "ROLLING_LINEAGE_MISMATCH");
+      assert.equal(result.reserved[0]?.ticket_id, healthy.id);
+      assert.equal(rawTicket(f).status, "errored");
+      assert.equal(rawTicket(f).error?.code, "ROLLING_LINEAGE_MISMATCH");
+    } finally {
+      fs.rmSync(f.cwd, { recursive: true, force: true });
+    }
+  }));
+
+  it("releases terminal capacity despite Receipt drift and keeps retries idempotent", async () => withHome(async (home) => {
+    const f = fixture(home, "rolling-dispatch-release-cleanup");
+    try {
+      await reserveNext(f.cwd, { capacity: 1, host: HOST, limit: 1, env: f.env });
+      bindAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env });
+      await finishAgent(f.cwd, f.ticket.id, { status: "closed", errorCode: "AGENT_CLOSED", errorMessage: "closed", host: HOST, env: f.env });
+      tamperReceipt(f);
+      const released = releaseAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env });
+      assert.ok(released.slot_released_at);
+      const retry = releaseAgent(f.cwd, f.ticket.id, { host: HOST, env: f.env });
+      assert.equal(retry.slot_released_at, released.slot_released_at);
+    } finally {
+      fs.rmSync(f.cwd, { recursive: true, force: true });
     }
   }));
 

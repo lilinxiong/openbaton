@@ -132,16 +132,17 @@ function cleanConclusion(value: string): string { return String(value || "").rep
 
 function atomicWrite(file: string, value: string): void {
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  const originalMode = fs.statSync(file).mode & 0o777;
   let fd: number | undefined;
   try {
     fd = fs.openSync(temporary, "wx", 0o600);
+    fs.fchmodSync(fd, originalMode);
     const bytes = Buffer.from(value, "utf8");
     fs.writeSync(fd, bytes, 0, bytes.length, 0);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;
     fs.renameSync(temporary, file);
-    try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch { /* best effort */ }
     try { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); } catch { /* best effort */ }

@@ -161,4 +161,34 @@ describe("Delegation Receipt", () => {
     assert.deepEqual(receipt.compiled_apply_lineage, patchLineage);
     assert.throws(() => buildWriteReceipt({ base: buildReadOnlyReceipt({ ticketId: "spn-v", card: { id: "k3", strengths: "" }, compiledApplyLineage: verificationLineage }), baseline, writeAllowlist: ["x"], allowedOperations: ["write"] }), (error) => error instanceof ReceiptError && error.code === "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
   });
+
+  it("ignores null rolling-lineage aliases while preserving the base lineage", () => {
+    const rollingLineage = {
+      schema_version: 1 as const,
+      run_id: "rolling-run",
+      unit_key: "rolling-unit",
+      unit_version: 1,
+      unit_fingerprint: "a".repeat(64),
+      task_keys: ["director:task"],
+      mode: "patch-only" as const,
+    };
+    const base = buildReadOnlyReceipt({
+      ticketId: "spn-rolling-null-alias",
+      card: { id: "alpha/default", strengths: "", route_id: "alpha/default" },
+      rollingUnitLineage: rollingLineage,
+    });
+    const baseline = {
+      repo_root: "/repo", head: "a".repeat(40), branch: "main", branch_ref: "refs/heads/main",
+      index_path: "/repo/.git/index", index_tree: "b".repeat(40), index_control_checksum: "c".repeat(64), index_control_algorithm: "git-index-control-framed-sha256-v2", index_control_entry_count: 0,
+      staged_paths: [], refs: [], head_reflog_count: 0, head_reflog_checksum: "d".repeat(64), dirty_entries: [], dirty_checksums: {}, captured_at: "2026-08-21T00:00:00.000Z",
+    };
+    const receipt = buildWriteReceipt({
+      base,
+      baseline,
+      writeAllowlist: ["src/x.ts"],
+      allowedOperations: ["write"],
+      rolling_unit_lineage: null,
+    });
+    assert.deepEqual(receipt.rolling_unit_lineage, rollingLineage);
+  });
 });

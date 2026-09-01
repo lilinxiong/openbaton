@@ -88,9 +88,11 @@ describe("OpenSpec stable task source", () => {
       assert.equal(locked.status, "unavailable");
       assert.equal(locked.diagnostics[0]?.code, "LEDGER_LOCKED");
     } finally { lock.release(); }
+    fs.chmodSync(f.tasksPath, 0o664);
     const first = await adapter.reconcile({ source: f.source, task_key: entry.task_key, conclusion: "accepted", expected_source_fingerprint: entry.source_fingerprint });
     assert.equal(first.status, "available");
     if (first.status !== "available") return;
+    assert.equal(fs.statSync(f.tasksPath).mode & 0o777, 0o664);
     const second = await adapter.reconcile({ source: f.source, task_key: entry.task_key, conclusion: "accepted", expected_source_fingerprint: entry.source_fingerprint });
     assert.equal(second.status, "available");
     fs.appendFileSync(f.tasksPath, "\n");
