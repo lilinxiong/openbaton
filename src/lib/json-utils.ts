@@ -1,20 +1,17 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isRecord } from "./validate-utils.js";
 
 /**
  * Shared JSON helpers: deterministic canonicalization, hashing, and small
  * file IO primitives used across persistence modules.
  */
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Recursively sort object keys; array order stays semantic. */
 export function sortJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJsonValue);
-  if (!isPlainObject(value)) return value;
+  if (!isRecord(value)) return value;
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJsonValue(value[key])]));
 }
 
@@ -35,7 +32,7 @@ export function sha256Hex(data: string | Uint8Array, encoding?: crypto.BinaryToT
 export function fingerprintJson(value: unknown, omitKeys: readonly string[] = ["fingerprint"]): string {
   const strip = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(strip);
-    if (!isPlainObject(item)) return item;
+    if (!isRecord(item)) return item;
     return Object.fromEntries(Object.entries(item)
       .filter(([key]) => !omitKeys.includes(key))
       .map(([key, entry]) => [key, strip(entry)]));

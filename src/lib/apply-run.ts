@@ -18,6 +18,7 @@ import {
 } from "./paths.js";
 import { sessionScope, validateSessionScope, type SessionScope } from "./session-scope.js";
 import { canonicalizeJson } from "./json-utils.js";
+import { isNonEmptyString, isRecord } from "./validate-utils.js";
 
 export const APPLY_RUN_STATE_SCHEMA_VERSION = 1 as const;
 export const APPLY_RUN_STATE_LOCK_OPERATION = "compiled-apply-run";
@@ -51,8 +52,8 @@ export class ApplyRunError extends Error { readonly code: string; constructor(me
 const LIFECYCLE: readonly ApplyRunLifecycleState[] = ["undispatched", "materialized", "reserved", "running", "terminal-unreleased", "accepted", "failed", "blocked", "superseded", "reconciled"];
 const TICKET: readonly ApplyRunTicketStatus[] = ["queued", "dispatching", "running", "completed", "errored", "timed_out", "closed"];
 const RETRY_MS = 25;
-function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
-function nonEmpty(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
+
+function nonEmpty(value: unknown): value is string { return isNonEmptyString(value); }
 function strings(value: unknown): string[] { if (!Array.isArray(value) || !value.every(nonEmpty)) throw new ApplyRunError("expected a string array", "RUN_STATE_INVALID"); return [...new Set(value)].sort(); }
 function at(value: string | number | Date | undefined): string { const stamp = value instanceof Date ? value.getTime() : typeof value === "number" ? value : Date.parse(value || ""); return Number.isFinite(stamp) ? new Date(stamp).toISOString() : new Date().toISOString(); }
 function atomicJson(file: string, value: unknown): void { const temp = path.basename(file) === "state-v1.json" ? path.join(path.dirname(file), `${APPLY_RUN_STATE_TEMP_FILE_PREFIX}${process.pid}-${crypto.randomUUID()}`) : `${file}.tmp-${process.pid}-${crypto.randomUUID()}`; fs.mkdirSync(path.dirname(file), { recursive: true }); try { fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" }); fs.renameSync(temp, file); } finally { try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch { /* best effort */ } } }

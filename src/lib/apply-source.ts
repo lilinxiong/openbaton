@@ -22,6 +22,7 @@ import { parseTasks } from "./openspec.js";
 import { canonicalizeJson, sha256Hex } from "./json-utils.js";
 
 export { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
+import { isRecord } from "./validate-utils.js";
 
 export const APPLY_SOURCE_SCHEMA_VERSION = 1 as const;
 export const APPLY_PLAN_STALE = "APPLY_PLAN_STALE" as const;
@@ -345,10 +346,6 @@ class ApplySourceInputError extends Error {
     this.name = "ApplySourceInputError";
     this.code = code;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function stringValue(value: unknown): string | undefined {

@@ -7,6 +7,7 @@
  */
 import type { SafetyOperation } from "./safety.js";
 import { canonicalizeJson, sha256Hex } from "./json-utils.js";
+import { isNonEmptyString, isRecord } from "./validate-utils.js";
 
 export const ROLLING_PROTOCOL_SCHEMA_VERSION = 1 as const;
 export const TASK_SOURCE_DESCRIPTOR_SCHEMA_VERSION = 1 as const;
@@ -241,11 +242,8 @@ const GATES = new Set<GateType>(["safety-precondition", "integration-acceptance"
 const SOURCES = new Set<RollingSourceKind>(["openspec", "director"]);
 const WORKTREE_MODES = new Set<WorktreeExecutionMode>(["isolated-worktree", "shared-worktree"]);
 
-function isRecord(value: unknown): value is AnyRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 function has(value: AnyRecord, key: string): boolean { return Object.prototype.hasOwnProperty.call(value, key); }
-function nonEmpty(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
+function nonEmpty(value: unknown): value is string { return isNonEmptyString(value); }
 function integer(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && Number.isFinite(value); }
 function stringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every(nonEmpty); }
 function issue(out: RollingDiagnostic[], code: string, message: string, path?: string, refs?: string[]): void {

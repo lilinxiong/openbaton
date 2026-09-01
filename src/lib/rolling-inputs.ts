@@ -18,6 +18,7 @@ import type {
 } from "./apply-source.js";
 import { canonicalizeRolling } from "./rolling-plan.js";
 import { sha256Hex } from "./json-utils.js";
+import { isRecord } from "./validate-utils.js";
 
 export const ROLLING_INPUTS_SCHEMA_VERSION = 1 as const;
 
@@ -344,10 +345,6 @@ const EPHEMERAL_KEYS = new Set([
   "prepared_from_append_sequence",
   "preparedFromAppendSequence",
 ]);
-
-function isRecord(value: unknown): value is RecordLike {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
 function isPlainRecord(value: unknown): value is RecordLike {
   if (!isRecord(value)) return false;

@@ -22,6 +22,7 @@ import {
 } from "./paths.js";
 import type { SafetyOperation } from "./safety.js";
 import { canonicalizeJson, fingerprintJson, writeBytesAtomic } from "./json-utils.js";
+import { isNonBlankString, isRecord } from "./validate-utils.js";
 
 export type ChangeBundleOperation = SafetyOperation | "copy";
 
@@ -384,13 +385,8 @@ const ALLOWED_TRANSITIONS = new Set<string>([
   "cleanup_failed>cleanup_eligible",
 ]);
 
-function isRecord(value: unknown): value is AnyRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
-function text(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+function text(value: unknown): value is string { return isNonBlankString(value); }
 
 function safeInteger(value: unknown, minimum = 0): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;

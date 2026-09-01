@@ -24,6 +24,7 @@ import {
   type WorktreeExecutionMode,
 } from "./rolling-plan.js";
 import type { SafetyOperation } from "./safety.js";
+import { isNonBlankString, isRecord } from "./validate-utils.js";
 
 export const ROLLING_DELTA_DIAGNOSTIC_SCHEMA_VERSION = 1 as const;
 
@@ -165,17 +166,12 @@ const VERSION_REF = /^([A-Za-z0-9][A-Za-z0-9._:/-]*)@([1-9][0-9]*)$/;
 const HASH = /^[0-9a-f]{64}$/;
 const OPERATION_ORDER = new Map(ROLLING_DELTA_OPERATIONS.map((value, index) => [value, index]));
 
-function isRecord(value: unknown): value is AnyRecord {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
 
 function own(value: AnyRecord, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function text(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+function text(value: unknown): value is string { return isNonBlankString(value); }
 
 function integer(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
