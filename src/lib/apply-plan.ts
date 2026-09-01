@@ -153,11 +153,29 @@ export interface ApplyPlanScopeSource {
 
 export interface ApplyPlanActiveOwnership {
   key: string;
+  /** Repository/root namespace which owns these paths. Both fields are required together. */
+  repository_id?: string;
+  execution_root?: string;
+  base_tree?: string;
   released?: boolean;
   terminal?: boolean;
   terminal_unreleased?: boolean;
   slot_released_at?: string | null;
   facts: readonly ApplyPlanScopeFact[];
+}
+
+export interface ApplyPlanOwnershipNamespace {
+  repository_id: string;
+  execution_root: string;
+  base_tree?: string;
+}
+
+export interface ApplyPlanIntegrationConflictRisk {
+  from: string;
+  to: string;
+  repository_id: string;
+  execution_roots: [string, string];
+  paths: string[];
 }
 
 export interface ApplyPlanDependencyReadyOptions {
@@ -172,6 +190,8 @@ export interface ApplyPlanConflictGraphOptions {
   declaredScopeFacts?: ReadonlyMap<string, readonly ApplyPlanScopeFact[]> | readonly ApplyPlanScopeFact[];
   /** Active foreign ownership facts across root trees; terminal/unreleased owners always conflict. */
   activeOwnership?: readonly ApplyPlanActiveOwnership[];
+  /** Exact repository/root namespace for each candidate unit. */
+  ownershipByUnit?: Readonly<Record<string, ApplyPlanOwnershipNamespace>> | ReadonlyMap<string, ApplyPlanOwnershipNamespace>;
   /** Override unit order for deterministic tie-break and stable comparisons. */
   stableOrder?: readonly string[];
 }
@@ -179,6 +199,8 @@ export interface ApplyPlanConflictGraphOptions {
 export interface ApplyPlanConflictGraphResult {
   conflicts: ReadonlyMap<string, string[]>;
   blockedByActiveOwnership: ReadonlySet<string>;
+  /** Non-blocking overlaps isolated by distinct roots in the same repository. */
+  integration_conflict_risks: ApplyPlanIntegrationConflictRisk[];
 }
 
 export interface ApplyPlanIndependentSetOptions {
@@ -311,6 +333,30 @@ function isActiveOwnershipBlocking(item: ApplyPlanActiveOwnership): boolean {
   return true;
 }
 
+function ownershipNamespace(
+  values: ApplyPlanConflictGraphOptions["ownershipByUnit"],
+  unitId: string,
+): ApplyPlanOwnershipNamespace | undefined {
+  return values instanceof Map ? values.get(unitId) : values?.[unitId];
+}
+
+function overlapPaths(left: readonly ApplyPlanScopeFact[], right: readonly ApplyPlanScopeFact[]): string[] {
+  const paths = new Set<string>();
+  for (const source of left) for (const target of right) {
+    if (scopeConflicts(source, target)) paths.add([source.path, target.path].sort().join(" <-> "));
+  }
+  return [...paths].sort((a, b) => a.localeCompare(b));
+}
+
+function namespaceRelation(
+  left: ApplyPlanOwnershipNamespace | undefined,
+  right: ApplyPlanOwnershipNamespace | undefined,
+): "same-root" | "cross-root" | "different-repository" | "unknown" {
+  if (!left || !right) return "unknown";
+  if (left.repository_id !== right.repository_id) return "different-repository";
+  return left.execution_root === right.execution_root ? "same-root" : "cross-root";
+}
+
 function isRuntimeAccepted(state: ApplyPlanRuntimeState | undefined, accepted: Set<ApplyPlanRuntimeState>): boolean {
   return accepted.has(state || "planned");
 }
@@ -423,22 +469,26 @@ export function buildFrontierConflictGraph(plan: ApplyExecutionPlan, frontier: r
   }
 
   const conflicts = new Map<string, Set<string>>();
+  const integrationRisks: ApplyPlanIntegrationConflictRisk[] = [];
   for (const unitId of frontier) conflicts.set(unitId, new Set());
   for (let left = 0; left < frontier.length; left += 1) {
     for (let right = left + 1; right < frontier.length; right += 1) {
       const leftFacts = declared.get(frontier[left]) || [];
       const rightFacts = declared.get(frontier[right]) || [];
-      let overlapping = false;
-      for (const source of leftFacts) {
-        for (const target of rightFacts) {
-          if (scopeConflicts(source, target)) {
-            overlapping = true;
-            break;
-          }
-        }
-        if (overlapping) break;
+      const paths = overlapPaths(leftFacts, rightFacts);
+      if (!paths.length) continue;
+      const leftNamespace = ownershipNamespace(options.ownershipByUnit, frontier[left]);
+      const rightNamespace = ownershipNamespace(options.ownershipByUnit, frontier[right]);
+      const relation = namespaceRelation(leftNamespace, rightNamespace);
+      if (relation === "different-repository") continue;
+      if (relation === "cross-root") {
+        const roots = [leftNamespace!.execution_root, rightNamespace!.execution_root].sort() as [string, string];
+        integrationRisks.push({
+          from: frontier[left], to: frontier[right], repository_id: leftNamespace!.repository_id,
+          execution_roots: roots, paths,
+        });
+        continue;
       }
-      if (!overlapping) continue;
       conflicts.get(frontier[left])?.add(frontier[right]);
       conflicts.get(frontier[right])?.add(frontier[left]);
     }
@@ -450,14 +500,30 @@ export function buildFrontierConflictGraph(plan: ApplyExecutionPlan, frontier: r
     for (const ownership of activeOwnership) {
       if (!isActiveOwnershipBlocking(ownership)) continue;
       const ownershipFacts = normalizeOwnershipFacts(ownership);
-      const blocked = unitFacts.some((left) => ownershipFacts.some((right) => scopeConflicts(left, right)));
-      if (blocked) blockedByActiveOwnership.add(unitId);
+      const paths = overlapPaths(unitFacts, ownershipFacts);
+      if (!paths.length) continue;
+      const candidateNamespace = ownershipNamespace(options.ownershipByUnit, unitId);
+      const ownerNamespace = ownership.repository_id && ownership.execution_root
+        ? { repository_id: ownership.repository_id, execution_root: ownership.execution_root, ...(ownership.base_tree ? { base_tree: ownership.base_tree } : {}) }
+        : undefined;
+      const relation = namespaceRelation(candidateNamespace, ownerNamespace);
+      if (relation === "different-repository") continue;
+      if (relation === "cross-root") {
+        const roots = [candidateNamespace!.execution_root, ownerNamespace!.execution_root].sort() as [string, string];
+        integrationRisks.push({ from: unitId, to: ownership.key, repository_id: candidateNamespace!.repository_id, execution_roots: roots, paths });
+        continue;
+      }
+      blockedByActiveOwnership.add(unitId);
     }
   }
 
   return {
     conflicts: new Map([...conflicts.entries()].map(([unitId, linked]) => [unitId, sortByPlanOrder([...linked], stableOrder)])),
     blockedByActiveOwnership,
+    integration_conflict_risks: integrationRisks.sort((left, right) => left.from.localeCompare(right.from)
+      || left.to.localeCompare(right.to) || left.repository_id.localeCompare(right.repository_id)
+      || left.execution_roots.join("\0").localeCompare(right.execution_roots.join("\0"))
+      || left.paths.join("\0").localeCompare(right.paths.join("\0"))),
   };
 }
 

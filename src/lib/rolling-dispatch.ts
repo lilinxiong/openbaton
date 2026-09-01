@@ -88,6 +88,22 @@ function unitsByRef(deltas: RollingRefillInput["accepted_deltas"]): Map<string, 
   return result;
 }
 
+function executionNamespaces(input: RollingRefillInput): NonNullable<RollingDispatchSelectionInput["execution_roots_by_unit"]> {
+  const result: Record<string, { repository_id: string; execution_root: string; base_tree: string }> = {};
+  for (const [ref, unit] of unitsByRef(input.accepted_deltas)) {
+    const direct = input.exact_execution_roots?.[ref] ?? input.exact_execution_roots?.[unit.unit_key];
+    const record = input.worktree_records?.[ref] ?? input.worktree_records?.[unit.unit_key];
+    if (direct) {
+      const normalized = normalizeExactExecutionRootIdentity(direct);
+      result[ref] = { repository_id: normalized.repository_id, execution_root: normalized.execution_root, base_tree: normalized.base_tree };
+    } else if (record?.execution_mode === "isolated-worktree" && record.setup_state === "verified"
+      && record.run_id === input.run_id && record.unit_key === unit.unit_key && record.unit_version === unit.version) {
+      result[ref] = { repository_id: record.repository_id, execution_root: record.execution_root, base_tree: record.base_tree };
+    }
+  }
+  return result;
+}
+
 function isoNow(value: RollingRefillInput["now"]): string {
   return (value instanceof Date ? value : new Date(value === undefined ? Date.now() : value)).toISOString();
 }
@@ -248,6 +264,7 @@ export function buildRollingStandalonePlans(input: RollingRefillInput): RollingR
     available_capacity: input.available_capacity,
     capacity: input.capacity,
     active_ownership: input.active_ownership,
+    execution_roots_by_unit: executionNamespaces(input),
     stable_order: input.stable_order,
     runtime_facts: input.runtime_facts,
     env: input.env,

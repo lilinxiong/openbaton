@@ -11,6 +11,8 @@ import {
   buildFrontierConflictGraph,
   selectIndependentSet,
   type ApplyPlanActiveOwnership,
+  type ApplyPlanIntegrationConflictRisk,
+  type ApplyPlanOwnershipNamespace,
   type ApplyPlanUnit,
 } from "./apply-plan.js";
 import type { SafetyOperation } from "./safety.js";
@@ -79,6 +81,8 @@ export interface RollingSchedulerInput {
   capacity?: number | null;
   shared_worktree?: boolean;
   active_ownership?: readonly ApplyPlanActiveOwnership[];
+  /** Exact immutable execution namespace keyed by unit_key@version. */
+  execution_roots_by_unit?: Readonly<Record<string, ApplyPlanOwnershipNamespace>> | ReadonlyMap<string, ApplyPlanOwnershipNamespace>;
   stable_order?: readonly string[];
   /** Optional counter hooks used by conformance tests. */
   instrumentation?: RollingSchedulerInstrumentation;
@@ -100,6 +104,10 @@ export interface RollingSchedulerResult {
   selected_routes: Record<string, string>;
   route_by_unit: Record<string, string | null>;
   eligible: string[];
+  /** Non-blocking overlaps across isolated roots which the parent integration queue must serialize. */
+  integration_conflict_risks: ApplyPlanIntegrationConflictRisk[];
+  /** Accepted integration result tree inherited by each integration-dependent unit. */
+  inherited_base_trees: Record<string, string>;
   blockers: Record<string, RollingSchedulerBlocker[]>;
   /** Known non-superseded unit identities considered by this projection. */
   known_unit_versions: string[];
@@ -185,6 +193,10 @@ function identity(value: unknown, fallback?: Kind, fallbackKey?: string): Identi
 }
 function runtimeFacts(input: RollingSchedulerInput): unknown[] {
   return input.runtime_facts ? [...input.runtime_facts] : [];
+}
+function executionRootFor(input: RollingSchedulerInput, id: string, key: string): ApplyPlanOwnershipNamespace | undefined {
+  const values = input.execution_roots_by_unit;
+  return values instanceof Map ? values.get(id) ?? values.get(key) : values?.[id] ?? values?.[key];
 }
 function versionId(key: string, version: number): string { return `${key}@${version}`; }
 function parseRef(value: string): { key: string; version?: number } { const parsed = value.match(VERSION_REF); return parsed ? { key: parsed[1]!, version: Number(parsed[2]) } : { key: value }; }
@@ -317,6 +329,7 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
     if (!prior || statePriority(value) >= statePriority(prior)) states.set(key, value);
   };
   const acceptedUnits = new Set<string>();
+  const integrationResultBases = new Map<string, string>();
   type AttemptObservation = { unitId: string; ownerKey: string; reserved: boolean; running: boolean; terminal: boolean; failed: boolean; released: boolean };
   const attempts = new Map<string, AttemptObservation>();
   const attemptKinds = new Set(["reservation", "native-attempt", "terminal-result", "release", "retry"]);
@@ -346,6 +359,13 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
     const explicitTerminal = record(payload) && (payload.terminal_unreleased === true || payload.terminalUnreleased === true);
     const attemptOwned = attemptKinds.has(factKind) || (record(payload) && payload.owner_type === "attempt");
     if (item?.kind === "unit" && (explicitAccepted || (!attemptOwned && itemState === "accepted"))) acceptedUnit(item);
+    if (item?.kind === "gate" && itemState === "accepted" && record(source)) {
+      const resultBase = source.result_base_tree ?? source.result_tree ?? source.after_tree;
+      if (text(resultBase) && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(String(resultBase))) {
+        integrationResultBases.set(item.id, resultBase);
+        integrationResultBases.set(item.key, resultBase);
+      }
+    }
     if (attemptOwned) {
       const explicitOwnerKey = record(payload) && text(payload.owner_key)
         ? String(payload.owner_key)
@@ -412,6 +432,7 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
   const known = knownIds.map((id) => [id, units.get(id)!] as [string, UnitVersion]);
   const blockers = new Map<string, RollingSchedulerBlocker[]>();
   const dependencyReady: string[] = [];
+  const inheritedBaseTrees: Record<string, string> = {};
   const activeByKey = new Map<string, UnitVersion>();
   const activeGateByKey = new Map<string, GateVersion>();
   for (const [, unit] of known) {
@@ -471,6 +492,25 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
       if (gateValue.type !== "safety-precondition") continue;
       if (!gateAccepted(gateId, gateValue)) { addBlocker(blockers, id, "SAFETY_PRECONDITION_NOT_ACCEPTED", `safety-precondition ${gateId} is not accepted`, [id, gateId]); ready = false; }
     }
+    for (const ref of unit.integration_gate_keys || []) {
+      const gate = resolveGate(ref);
+      if (!gate || gate[1].type !== "integration-acceptance") {
+        addBlocker(blockers, id, "UNKNOWN_INTEGRATION_GATE", `unit ${id} requires unknown integration gate ${ref}`, [id, ref]); ready = false; continue;
+      }
+      const [gateId, gateValue] = gate;
+      if (!gateAccepted(gateId, gateValue)) {
+        addBlocker(blockers, id, "INTEGRATION_NOT_ACCEPTED", `integration ${gateId} is not accepted`, [id, gateId]); ready = false; continue;
+      }
+      const resultBase = integrationResultBases.get(gateId) ?? integrationResultBases.get(gateValue.gate_key);
+      if (!resultBase) {
+        addBlocker(blockers, id, "INTEGRATION_RESULT_BASE_MISSING", `accepted integration ${gateId} has no result base`, [id, gateId]); ready = false; continue;
+      }
+      const executionRoot = executionRootFor(input, id, unit.unit_key);
+      if (unit.worktree_mode === "isolated-worktree" && executionRoot?.base_tree !== resultBase) {
+        addBlocker(blockers, id, "INTEGRATION_RESULT_BASE_MISMATCH", `unit ${id} must inherit integration ${gateId} result base ${resultBase}`, [id, gateId]); ready = false; continue;
+      }
+      inheritedBaseTrees[id] = resultBase;
+    }
     if (ready) dependencyReady.push(id);
   }
 
@@ -515,15 +555,21 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
       const keys = owners.length ? owners.map((attempt) => attempt.ownerKey) : [id];
       for (const key of keys) {
         const ownership: ApplyPlanActiveOwnership = { key, terminal: status === "terminal-unreleased", facts: (unit.write_paths || []).map((path) => ({ unit_id: key, path, kind: "path" })) };
+        const namespace = executionRootFor(input, id, unit.unit_key);
+        if (namespace) Object.assign(ownership, namespace);
         if (status === "terminal-unreleased") ownership.terminal_unreleased = true;
         activeOwnership.push(ownership);
       }
     }
   }
   let selected = [...routable];
+  let integrationConflictRisks: ApplyPlanIntegrationConflictRisk[] = [];
   if (input.shared_worktree !== false) {
     const plan = { units: pseudoUnits } as unknown as Parameters<typeof buildFrontierConflictGraph>[0];
-    const graph = buildFrontierConflictGraph(plan, routable, { activeOwnership, stableOrder: routable });
+    const graph = buildFrontierConflictGraph(plan, routable, {
+      activeOwnership, stableOrder: routable, ownershipByUnit: input.execution_roots_by_unit,
+    });
+    integrationConflictRisks = graph.integration_conflict_risks;
     for (const id of graph.blockedByActiveOwnership) addBlocker(blockers, id, "WRITE_SCOPE_CONFLICT", `unit ${id} conflicts with terminal-unreleased ownership`, [id]);
     const available = routable.filter((id) => !graph.blockedByActiveOwnership.has(id));
     const selectedSet = selectIndependentSet(available, graph.conflicts, { capacity: input.capacity == null ? available.length : input.capacity });
@@ -540,5 +586,5 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
   const stableBlockers: Record<string, RollingSchedulerBlocker[]> = {};
   for (const id of knownIds) if (blockers.has(id)) stableBlockers[id] = [...blockers.get(id)!].sort((a, b) => a.code.localeCompare(b.code) || a.message.localeCompare(b.message));
   const selectedRoutes = Object.fromEntries(selected.filter((id) => routeByUnit[id]).map((id) => [id, routeByUnit[id]!])) as Record<string, string>;
-  return { frontier: [...selected], selected_routes: selectedRoutes, route_by_unit: Object.fromEntries(knownIds.map((id) => [id, routeByUnit[id] ?? null])), eligible: [...routable], blockers: stableBlockers, known_unit_versions: knownIds, instrumentation: { manifest_reads: 0, semantic_reads: 0 } };
+  return { frontier: [...selected], selected_routes: selectedRoutes, route_by_unit: Object.fromEntries(knownIds.map((id) => [id, routeByUnit[id] ?? null])), eligible: [...routable], integration_conflict_risks: integrationConflictRisks, inherited_base_trees: Object.fromEntries(Object.entries(inheritedBaseTrees).sort(([left], [right]) => left.localeCompare(right))), blockers: stableBlockers, known_unit_versions: knownIds, instrumentation: { manifest_reads: 0, semantic_reads: 0 } };
 }

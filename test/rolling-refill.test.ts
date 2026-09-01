@@ -103,6 +103,26 @@ function assertNoPersistence(cwd: string, env: NodeJS.ProcessEnv): void {
 }
 
 describe("rolling refill blueprint projection", () => {
+  it("preserves isolated overlap concurrency and its integration risk through dispatch selection", () => {
+    const { cwd, env } = fixture();
+    try {
+      const first = { ...unit("unit.alpha"), worktree_mode: "isolated-worktree" as const, write_paths: ["src/shared.ts"] };
+      const second = { ...unit("unit.beta"), worktree_mode: "isolated-worktree" as const, write_paths: ["src/shared.ts"] };
+      const common = { repository_id: "1".repeat(64), git_common_dir_identity: "2".repeat(64), base_tree: "3".repeat(40) };
+      const result = buildRollingStandalonePlans(input(cwd, env, [delta("delta-isolated", [first, second])], {
+        exact_execution_roots: {
+          "unit.alpha@1": { ...common, execution_root: path.join(cwd, "worktrees", "alpha"), worktree_record_id: "record-alpha" },
+          "unit.beta@1": { ...common, execution_root: path.join(cwd, "worktrees", "beta"), worktree_record_id: "record-beta" },
+        },
+      }));
+
+      assert.deepEqual(result.frontier, ["unit.alpha@1", "unit.beta@1"]);
+      assert.deepEqual(result.selection.integration_conflict_risks.map((risk) => [risk.from, risk.to]), [["unit.alpha@1", "unit.beta@1"]]);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("uses frontier order and capacity for stable IDs, entries, source, and exact lineage", () => {
     const { cwd, env } = fixture();
     try {

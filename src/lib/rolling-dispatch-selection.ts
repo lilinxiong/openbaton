@@ -44,6 +44,7 @@ export interface RollingDispatchSelectionInput {
   available_capacity?: number | null;
   capacity?: number | null;
   active_ownership?: readonly ApplyPlanActiveOwnership[];
+  execution_roots_by_unit?: RollingSchedulerInput["execution_roots_by_unit"];
   stable_order?: readonly string[];
   runtime_facts?: RollingSchedulerInput["runtime_facts"];
   env?: NodeJS.ProcessEnv;
@@ -155,6 +156,7 @@ export function selectRollingFrontier(input: RollingDispatchSelectionInput): Rol
     runtime_facts: input.runtime_facts,
     capacity: NO_CAPACITY,
     shared_worktree: false,
+    execution_roots_by_unit: input.execution_roots_by_unit,
     stable_order: input.stable_order,
   });
   const representedIndex = indexRepresentedRollingTickets(input.run_id, units, input.existing_tickets || []);
@@ -217,6 +219,7 @@ export function selectRollingFrontier(input: RollingDispatchSelectionInput): Rol
     capacity: capacity === undefined ? null : capacity,
     shared_worktree: true,
     active_ownership: input.active_ownership,
+    execution_roots_by_unit: input.execution_roots_by_unit,
     stable_order: input.stable_order,
   });
   const blockers = stableBlockers(scheduled.blockers, represented, representedIndex.ticket_ids_by_unit, representedIndex.blockers, localBlockers);

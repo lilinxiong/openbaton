@@ -183,6 +183,70 @@ describe("rolling scheduler", () => {
     assert.equal(result.blockers["overlap@1"]?.[0]?.code, "WRITE_SCOPE_CONFLICT");
   });
 
+  it("runs independent isolated roots from one immutable base and emits deterministic integration risk", () => {
+    const first = unit("first", 1, { worktree_mode: "isolated-worktree", write_paths: ["src/shared.ts"] });
+    const second = unit("second", 1, { worktree_mode: "isolated-worktree", write_paths: ["src/shared.ts"] });
+    const result = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([first, second])],
+      execution_roots_by_unit: {
+        "first@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/first", base_tree: "1".repeat(40) },
+        "second@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/second", base_tree: "1".repeat(40) },
+      },
+      capacity: 8,
+    });
+
+    assert.deepEqual(result.frontier, ["first@1", "second@1"]);
+    assert.deepEqual(result.integration_conflict_risks.map((risk) => [risk.from, risk.to]), [["first@1", "second@1"]]);
+
+    const distinctAllowedBase = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([first, second])],
+      execution_roots_by_unit: {
+        "first@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/first", base_tree: "1".repeat(40) },
+        "second@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/second", base_tree: "2".repeat(40) },
+      },
+      capacity: 8,
+    });
+    assert.deepEqual(distinctAllowedBase.frontier, ["first@1", "second@1"]);
+  });
+
+  it("waits for accepted integration and requires the successor root to inherit its result base", () => {
+    const integration: GateVersion = {
+      schema_version: 1, gate_key: "integrate", version: 1, type: "integration-acceptance",
+      task_keys: ["task-successor"], depends_on: [],
+    };
+    const successor = unit("successor", 1, {
+      worktree_mode: "isolated-worktree", integration_gate_keys: ["integrate@1"],
+    });
+    const acceptedFact = { kind: "integration-acceptance", gate_key: "integrate", gate_version: 1, state: "accepted", after_tree: "2".repeat(40) };
+    const pending = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([successor], [integration])],
+      execution_roots_by_unit: { "successor@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/successor", base_tree: "1".repeat(40) } },
+      capacity: 8,
+    });
+    const mismatched = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([successor], [integration])], runtime_facts: [acceptedFact],
+      execution_roots_by_unit: { "successor@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/successor", base_tree: "1".repeat(40) } },
+      capacity: 8,
+    });
+    const inherited = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([successor], [integration])], runtime_facts: [acceptedFact],
+      execution_roots_by_unit: { "successor@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/successor", base_tree: "2".repeat(40) } },
+      capacity: 8,
+    });
+    const oldBaseDisguisedAsResult = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([successor], [integration])],
+      runtime_facts: [{ ...acceptedFact, after_tree: undefined, base_tree: "2".repeat(40) }],
+      execution_roots_by_unit: { "successor@1": { repository_id: "a".repeat(64), execution_root: "/worktrees/successor", base_tree: "2".repeat(40) } },
+      capacity: 8,
+    });
+
+    assert.equal(pending.blockers["successor@1"]?.[0]?.code, "INTEGRATION_NOT_ACCEPTED");
+    assert.equal(mismatched.blockers["successor@1"]?.[0]?.code, "INTEGRATION_RESULT_BASE_MISMATCH");
+    assert.deepEqual(inherited.frontier, ["successor@1"]);
+    assert.equal(inherited.inherited_base_trees["successor@1"], "2".repeat(40));
+    assert.equal(oldBaseDisguisedAsResult.blockers["successor@1"]?.[0]?.code, "INTEGRATION_RESULT_BASE_MISSING");
+  });
+
   it("automatically holds reserved and running attempt scopes", () => {
     const reserved = unit("reserved");
     const running = unit("running");
