@@ -469,7 +469,7 @@ function coverageByTask(deltas: readonly PlanDelta[]): Map<string, TaskCoverage[
     const value = item as unknown as TaskCoverage;
     const current = result.get(value.task_key) || [];
     const signature = JSON.stringify(value);
-    if (!current.some((entry) => JSON.stringify(entry) === signature)) current.push(clone(value));
+    if (!current.some((entry) => JSON.stringify(entry) === signature)) current.push(structuredClone(value));
     result.set(value.task_key, current);
   }
   return result;
@@ -646,7 +646,7 @@ function taskLifecycle(taskKey: string, source: AnyRecord, manifest: Map<string,
     sealed,
     reconciled,
     ...(sourceFingerprint ? { source_fingerprint: sourceFingerprint } : {}),
-    ...(seal ? { seal: clone(seal) } : {}),
+    ...(seal ? { seal: structuredClone(seal) } : {}),
   };
 }
 
@@ -740,7 +740,7 @@ function validateSealSemantics(seal: TaskSeal, source: AnyRecord, diagnostics: R
   const refs = refsForCoverage(coverage, superseded);
   const expectedUnits = sortedUnique(refs.units);
   const expectedGates = sortedUnique(refs.gates);
-  const normalized = clone(seal);
+  const normalized = structuredClone(seal);
   normalized.required_unit_versions = [...seal.required_unit_versions].sort((left, right) => left.localeCompare(right));
   normalized.required_gate_versions = [...seal.required_gate_versions].sort((left, right) => left.localeCompare(right));
   if (!coverage.length) {

@@ -812,7 +812,7 @@ function checkRepositoryParts(
     if (!isRecord(rawPart)) continue;
     const partPath = `${pathName}.repository_parts.${partIndex}`;
     if (text(rawPart.part_key) && integer(rawPart.integration_order)) parts.set(rawPart.part_key, { order: rawPart.integration_order, value: rawPart });
-    const copy = clone(rawPart);
+    const copy = structuredClone(rawPart);
     const normalizedPaths: string[] = [];
     for (const rawPath of Array.isArray(rawPart.write_paths) ? rawPart.write_paths : []) {
       const result = normalizeWritePath(rawPath, operations);
@@ -1177,7 +1177,7 @@ function checkSupersessions(delta: PlanDelta, index: FactIndex, diagnostics: Rol
 }
 
 function normalizeDelta(delta: PlanDelta, index: FactIndex): PlanDelta {
-  const output = clone(delta);
+  const output = structuredClone(delta);
   const units = Array.isArray(output.unit_versions) ? output.unit_versions : [];
   for (const unit of units) {
     if (!isRecord(unit)) continue;
@@ -1205,7 +1205,7 @@ export function validatePlanDeltaAgainstFacts(input: unknown, context: PlanDelta
   if (!isRecord(input)) return { valid: false, diagnostics: sortDiagnostics(diagnostics) };
   const delta = input as unknown as PlanDelta;
   const index = makeIndex(context, delta, diagnostics);
-  const normalized = clone(delta);
+  const normalized = structuredClone(delta);
   const normalizedUnits = new Map<string, UnitVersion>();
   for (const value of Array.isArray(normalized.unit_versions) ? normalized.unit_versions : []) {
     const id = stableVersionId(value.unit_key, value.version);
@@ -1216,7 +1216,7 @@ export function validatePlanDeltaAgainstFacts(input: unknown, context: PlanDelta
     const node = index.nodes.get(`unit:${fact.id}`);
     if (!node) continue;
     checkTaskRefs(node, index, diagnostics);
-    checkUnitContract(fact, normalizedUnits.get(fact.id) || clone(fact.value), index, context, diagnostics);
+    checkUnitContract(fact, normalizedUnits.get(fact.id) || structuredClone(fact.value), index, context, diagnostics);
   }
   for (const fact of [...index.localGates.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     const node = index.nodes.get(`gate:${fact.id}`);

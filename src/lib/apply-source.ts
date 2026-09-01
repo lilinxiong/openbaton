@@ -574,14 +574,8 @@ function normalizeTaskLedger(value: ApplySourceOpenSpecIdentity): ApplySourceTas
 
 function normalizeSelectedTasks(value: ApplySourceOpenSpecIdentity): unknown[] {
   const selected = value.selected_tasks ?? value.selectedTasks;
-  if (Array.isArray(selected)) return selected.map(cloneJsonValue);
+  if (Array.isArray(selected)) return selected.map((entry) => structuredClone(entry));
   return [];
-}
-
-function cloneJsonValue<T>(value: T): T {
-  if (Array.isArray(value)) return value.map((entry) => cloneJsonValue(entry)) as T;
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneJsonValue(entry)])) as T;
-  return value;
 }
 
 function normalizeOpenSpec(value: ApplySourceOpenSpecIdentity = {}): NormalizedApplySourceOpenSpecIdentity {
