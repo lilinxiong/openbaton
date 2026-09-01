@@ -1,8 +1,14 @@
+import {
+  EXACT_EXECUTION_ROOT_IDENTITY_FIELDS,
+  extractExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+} from "../adapters/contract.js";
+
 const ENVELOPE_KEY = "baton_dispatch";
 
 export const BATON_DISPATCH_RESERVATION_SCHEMA = 1;
 
-export interface DispatchReservationIdentity {
+export interface DispatchReservationIdentity extends Partial<ExactExecutionRootIdentity> {
   schema: typeof BATON_DISPATCH_RESERVATION_SCHEMA;
   reservation_id: string;
   ticket_id: string;
@@ -22,7 +28,11 @@ function exactKeys(value: Record<string, unknown>, expected: string[]): boolean 
 export function parseDispatchReservationIdentity(value: unknown): DispatchReservationIdentity | null {
   if (!record(value) || !exactKeys(value, [ENVELOPE_KEY])) return null;
   const identity = value[ENVELOPE_KEY];
-  if (!record(identity) || !exactKeys(identity, ["schema", "reservation_id", "ticket_id", "attempt", "host"])) return null;
+  if (!record(identity)) return null;
+  const baseFields = ["schema", "reservation_id", "ticket_id", "attempt", "host"];
+  const suppliedExactRootFields = EXACT_EXECUTION_ROOT_IDENTITY_FIELDS.filter((field) => Object.hasOwn(identity, field));
+  if (suppliedExactRootFields.length !== 0 && suppliedExactRootFields.length !== EXACT_EXECUTION_ROOT_IDENTITY_FIELDS.length) return null;
+  if (!exactKeys(identity, suppliedExactRootFields.length ? [...baseFields, ...EXACT_EXECUTION_ROOT_IDENTITY_FIELDS] : baseFields)) return null;
   const reservationId = identity.reservation_id;
   const ticketId = identity.ticket_id;
   const host = identity.host;
@@ -40,12 +50,19 @@ export function parseDispatchReservationIdentity(value: unknown): DispatchReserv
     || typeof attempt !== "number"
     || !Number.isInteger(attempt)
     || attempt < 1) return null;
+  let exactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    exactRoot = extractExactExecutionRootIdentity(identity);
+  } catch {
+    return null;
+  }
   return {
     schema: BATON_DISPATCH_RESERVATION_SCHEMA,
     reservation_id: reservationId,
     ticket_id: ticketId,
     attempt,
     host,
+    ...(exactRoot || {}),
   };
 }
 
@@ -62,7 +79,9 @@ export function parseDispatchReservationEnvelope(value: unknown): DispatchReserv
 }
 
 export function dispatchReservationEnvelope(identity: DispatchReservationIdentity): string {
-  return JSON.stringify({ [ENVELOPE_KEY]: identity });
+  const normalized = parseDispatchReservationIdentity({ [ENVELOPE_KEY]: identity });
+  if (!normalized) throw new Error("dispatch reservation identity is invalid");
+  return JSON.stringify({ [ENVELOPE_KEY]: normalized });
 }
 
 export function withDispatchReservationEnvelope(text: string, identity: DispatchReservationIdentity): string {

@@ -12,6 +12,26 @@ export const SPAWNS_DIR = "spawns";
 export const RUNS_DIR = "runs";
 /** Compiled OpenSpec apply runs have their own versioned namespace. */
 export const COMPILED_APPLY_RUNS_DIR = "compiled-apply-runs";
+/** Rolling execution runs use a separate v2 namespace and never share the
+ * compiled-apply-v1 records above. */
+export const ROLLING_RUNS_DIR = "rolling-runs-v2";
+export const ROLLING_FACTS_DIR = "facts";
+export const ROLLING_FACT_LOG_NAME = "facts.ndjson";
+export const ROLLING_ACCEPTED_DOCUMENTS_DIR = "accepted-documents";
+export const ROLLING_CHECKPOINT_NAME = "checkpoint.json";
+export const ROLLING_LOCK_NAME = ".lock";
+/** Versioned worktree-execution records live inside one rolling-run root. */
+export const ROLLING_WORKTREES_DIR = "worktrees";
+export const ROLLING_SNAPSHOTS_DIR = "snapshots";
+export const ROLLING_BUNDLES_DIR = "bundles";
+export const ROLLING_INTEGRATIONS_DIR = "integrations";
+/** Cross-run admission locks for one workspace repository destination. */
+export const ROLLING_INTEGRATION_DESTINATIONS_DIR = "rolling-integration-destinations-v1";
+export const WORKTREE_RECORD_NAME = "record-v1.json";
+export const SNAPSHOT_MANIFEST_NAME = "manifest-v1.json";
+export const BUNDLE_MANIFEST_NAME = "manifest-v1.json";
+export const INTEGRATION_RECORD_NAME = "record-v1.json";
+export const WORKTREE_EXECUTION_ROOT_DIR = "root";
 export const SELECTIONS_DIR = "selections";
 export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
@@ -37,12 +57,51 @@ export class CompiledApplyPathError extends Error {
   }
 }
 
-function compiledPathSegment(label: string, value: unknown): string {
+export const ROLLING_PATH_SEGMENT_INVALID = "ROLLING_PATH_SEGMENT_INVALID" as const;
+
+export class RollingRunPathError extends Error {
+  readonly code = ROLLING_PATH_SEGMENT_INVALID;
+  constructor(label: string, value: unknown) {
+    super(`${label} must be one non-empty path segment: ${JSON.stringify(String(value))}`);
+    this.name = "RollingRunPathError";
+  }
+}
+
+/**
+ * Validate one externally supplied path component.  In addition to ordinary
+ * separators, reject Windows drive roots so the same contract is safe when a
+ * path is later materialized on another platform.  The error factory keeps
+ * the validator shared while preserving the legacy compiled-run error code.
+ */
+function strictPathSegment(
+  label: string,
+  value: unknown,
+  error: (label: string, value: unknown) => Error,
+  requireString = false,
+): string {
   const segment = String(value);
-  if (!segment.trim() || segment === "." || segment === ".." || /[/\\\u0000-\u001f\u007f]/u.test(segment)) {
-    throw new CompiledApplyPathError(label, value);
+  if (
+    (requireString && typeof value !== "string")
+    || !segment.trim()
+    || segment === "."
+    || segment === ".."
+    || /[/\\\p{Cc}\p{Cf}]/u.test(segment)
+    || path.isAbsolute(segment)
+    || path.win32.isAbsolute(segment)
+    || path.win32.parse(segment).root
+  ) {
+    throw error(label, value);
   }
   return segment;
+}
+
+function compiledPathSegment(label: string, value: unknown): string {
+  return strictPathSegment(label, value, (part, input) => new CompiledApplyPathError(part, input));
+}
+
+/** Shared strict validator for rolling-run identifiers. */
+export function rollingPathSegment(label: string, value: unknown): string {
+  return strictPathSegment(label, value, (part, input) => new RollingRunPathError(part, input), true);
 }
 
 /** Host-keyed state names used by the current runtime. */
@@ -125,6 +184,194 @@ export function compiledApplyRunBodyPath(cwd: string, runId: string, revision: s
 export function applyRunStateLockPath(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(compiledApplyRunsDir(cwd, env), ".run-state-v1.lock");
 }
+
+/** Root directory for rolling-run v2 state in one workspace. */
+export function rollingRunsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(runsDir(cwd, env), ROLLING_RUNS_DIR);
+}
+
+/** Root directory for one rolling run. */
+export function rollingRunRoot(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunsDir(cwd, env), rollingPathSegment("run id", runId));
+}
+
+/** Directory form for implementations that shard the append-only facts. */
+export function rollingRunFactsDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_FACTS_DIR);
+}
+
+/** Canonical append-only fact log for one rolling run. */
+export function rollingRunFactLogPath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_FACT_LOG_NAME);
+}
+
+/** Alias used by callers that treat the append log as the run's facts path. */
+export const rollingRunFactsPath = rollingRunFactLogPath;
+
+/** Optional sharded fact path; the fact id is still a single safe segment. */
+export function rollingRunFactPath(cwd: string, runId: string, factId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunFactsDir(cwd, runId, env), `${rollingPathSegment("fact id", factId)}.json`);
+}
+
+/** Directory containing immutable, accepted control documents. */
+export function rollingRunAcceptedDocumentsDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_ACCEPTED_DOCUMENTS_DIR);
+}
+
+/** Canonical path for one immutable accepted document. */
+export function rollingRunAcceptedDocumentPath(cwd: string, runId: string, documentId: string, env?: NodeJS.ProcessEnv): string {
+  const id = rollingPathSegment("document id", documentId);
+  if (id.startsWith("delta-")) throw new RollingRunPathError("document id", documentId);
+  return path.join(rollingRunAcceptedDocumentsDir(cwd, runId, env), `${id}.json`);
+}
+
+/** Canonical path for a delta document, retaining the delta identity in its filename. */
+export function rollingRunDeltaDocumentPath(cwd: string, runId: string, deltaId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunAcceptedDocumentsDir(cwd, runId, env), `delta-${rollingPathSegment("delta id", deltaId)}.json`);
+}
+
+/** Replaceable derived checkpoint for one rolling run. */
+export function rollingRunCheckpointPath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_CHECKPOINT_NAME);
+}
+
+/** Per-run lock guarding append/checkpoint updates. */
+export function rollingRunLockPath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_LOCK_NAME);
+}
+
+/** Baton-owned detached worktrees for one rolling run. */
+export function rollingRunWorktreesDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_WORKTREES_DIR);
+}
+
+/** One attempt namespace. Every externally supplied component is one segment. */
+export function worktreeAttemptDir(
+  cwd: string,
+  runId: string,
+  unitKey: string,
+  attemptId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    rollingRunWorktreesDir(cwd, runId, env),
+    rollingPathSegment("unit key", unitKey),
+    rollingPathSegment("attempt id", attemptId),
+  );
+}
+
+/** The exact directory that may later be registered as a detached Git worktree. */
+export function worktreeExecutionRootPath(
+  cwd: string,
+  runId: string,
+  unitKey: string,
+  attemptId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(worktreeAttemptDir(cwd, runId, unitKey, attemptId, env), WORKTREE_EXECUTION_ROOT_DIR);
+}
+
+/** Version-1 lifecycle record for one worktree attempt. */
+export function worktreeRecordPath(
+  cwd: string,
+  runId: string,
+  unitKey: string,
+  attemptId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(worktreeAttemptDir(cwd, runId, unitKey, attemptId, env), WORKTREE_RECORD_NAME);
+}
+
+export function rollingRunSnapshotsDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_SNAPSHOTS_DIR);
+}
+
+export function snapshotManifestPath(cwd: string, runId: string, snapshotId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(
+    rollingRunSnapshotsDir(cwd, runId, env),
+    rollingPathSegment("snapshot id", snapshotId),
+    SNAPSHOT_MANIFEST_NAME,
+  );
+}
+
+export function rollingRunBundlesDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_BUNDLES_DIR);
+}
+
+export function bundleManifestPath(cwd: string, runId: string, bundleId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(
+    rollingRunBundlesDir(cwd, runId, env),
+    rollingPathSegment("bundle id", bundleId),
+    BUNDLE_MANIFEST_NAME,
+  );
+}
+
+export function rollingRunIntegrationsDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_INTEGRATIONS_DIR);
+}
+
+/** One repository-local serialization namespace inside a rolling run. */
+export function integrationRepositoryDir(
+  cwd: string,
+  runId: string,
+  repositoryId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    rollingRunIntegrationsDir(cwd, runId, env),
+    rollingPathSegment("repository id", repositoryId),
+  );
+}
+
+/** Lock guarding queue-position assignment and one-at-a-time begin transitions. */
+export function integrationQueueLockPath(
+  cwd: string,
+  runId: string,
+  repositoryId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(integrationRepositoryDir(cwd, runId, repositoryId, env), ".queue-v1.lock");
+}
+
+/** Workspace-local, cross-run serialization lock for one repository target. */
+export function integrationDestinationLockPath(
+  cwd: string,
+  repositoryId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    runsDir(cwd, env),
+    ROLLING_INTEGRATION_DESTINATIONS_DIR,
+    rollingPathSegment("repository id", repositoryId),
+    ".begin-v1.lock",
+  );
+}
+
+export function integrationRecordPath(
+  cwd: string,
+  runId: string,
+  repositoryId: string,
+  integrationId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    integrationRepositoryDir(cwd, runId, repositoryId, env),
+    rollingPathSegment("integration id", integrationId),
+    INTEGRATION_RECORD_NAME,
+  );
+}
+
+// Compact aliases for callers that already operate inside a rolling run.
+export const rollingWorktreesDir = rollingRunWorktreesDir;
+export const rollingSnapshotsDir = rollingRunSnapshotsDir;
+export const rollingBundlesDir = rollingRunBundlesDir;
+export const rollingIntegrationsDir = rollingRunIntegrationsDir;
+
+// Keep the vocabulary close to the existing compiled-apply helpers for callers
+// that use "dir" or "document" rather than "root" or "accepted document".
+export const rollingRunDir = rollingRunRoot;
+export const rollingRunRootPath = rollingRunRoot;
+export const rollingRunDocumentPath = rollingRunAcceptedDocumentPath;
 
 export function selectionsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), SELECTIONS_DIR);

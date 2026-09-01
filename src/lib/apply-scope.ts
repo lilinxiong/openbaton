@@ -167,6 +167,14 @@ function parseWriteOperations(value: string): SafetyOperation[] {
 export interface WriteScopeDeclaration {
   key: string;
   write_paths: string[];
+  /** Exact isolated namespace; absent values retain shared-worktree safety. */
+  repository_id?: string;
+  execution_root?: string;
+}
+
+function distinctWriteNamespace(left: WriteScopeDeclaration, right: WriteScopeDeclaration): boolean {
+  return Boolean(left.repository_id && left.execution_root && right.repository_id && right.execution_root
+    && (left.repository_id !== right.repository_id || left.execution_root !== right.execution_root));
 }
 
 function scopePath(value: string): string {
@@ -192,6 +200,7 @@ export function assertDisjointWriteScopes(scopes: Iterable<WriteScopeDeclaration
   const entries = [...scopes].filter((scope) => scope.write_paths.length);
   for (let left = 0; left < entries.length; left += 1) {
     for (let right = left + 1; right < entries.length; right += 1) {
+      if (distinctWriteNamespace(entries[left]!, entries[right]!)) continue;
       for (const leftPath of entries[left].write_paths) {
         for (const rightPath of entries[right].write_paths) {
           if (!writePathsOverlap(leftPath, rightPath)) continue;
@@ -200,4 +209,9 @@ export function assertDisjointWriteScopes(scopes: Iterable<WriteScopeDeclaration
       }
     }
   }
+}
+/** True only when two declarations can mutate the same namespaced path. */
+export function writeScopesOverlap(left: WriteScopeDeclaration, right: WriteScopeDeclaration): boolean {
+  if (distinctWriteNamespace(left, right)) return false;
+  return left.write_paths.some((leftPath) => right.write_paths.some((rightPath) => writePathsOverlap(leftPath, rightPath)));
 }

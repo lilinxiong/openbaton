@@ -69,13 +69,19 @@ export interface SafetyPolicy {
   allowed_operations: SafetyOperation[];
   /** Allowlists of overlapping write tickets. Dirt on those paths is their audit, not this one. */
   peer_write_allowlists?: string[][];
+  /**
+   * Linked isolated roots share one common refs namespace with the parent.
+   * Parent-owned integration may advance it while this root remains active;
+   * root-local HEAD, branch, reflog, index, and path checks stay strict.
+   */
+  shared_refs?: "strict" | "parent-owned";
 }
 
 export interface SafetyViolation {
   code: string;
   path?: string;
   original_path?: string;
-  operation?: SafetyOperation;
+  operation?: SafetyOperation | "copy";
   message: string;
 }
 
@@ -290,6 +296,44 @@ function hasUnstagedOrUntracked(repoRoot: string): boolean {
 
 function sameList(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function splitRefSnapshotEntry(entry: string): { ref: string; object: string } | null {
+  const separator = entry.indexOf("\0");
+  if (separator <= 0 || separator === entry.length - 1 || entry.indexOf("\0", separator + 1) !== -1) return null;
+  const ref = entry.slice(0, separator);
+  const object = entry.slice(separator + 1);
+  if (!ref.startsWith("refs/") || !/^[0-9a-f]+$/u.test(object)) return null;
+  return { ref, object };
+}
+
+/**
+ * Isolated workers share the repository ref namespace with the parent.  The
+ * parent may add refs or advance an existing ref, but it may not delete or
+ * rewrite a baseline ref while the worker is being audited.
+ */
+function parentOwnedRefsPreserved(repoRoot: string, observed: string[], baseline: string[]): boolean {
+  const observedRefs = new Map<string, string>();
+  for (const entry of observed) {
+    const parsed = splitRefSnapshotEntry(entry);
+    if (!parsed || observedRefs.has(parsed.ref)) return false;
+    observedRefs.set(parsed.ref, parsed.object);
+  }
+  for (const entry of baseline) {
+    const parsed = splitRefSnapshotEntry(entry);
+    if (!parsed) return false;
+    const current = observedRefs.get(parsed.ref);
+    if (!current) return false;
+    if (current === parsed.object) continue;
+    try {
+      if (!gitExitZero(repoRoot, ["merge-base", "--is-ancestor", parsed.object, current])) return false;
+    } catch {
+      // Captured or deserialized ref objects may be missing or invalid.  An
+      // audit converts every such ancestry failure into a ref violation.
+      return false;
+    }
+  }
+  return true;
 }
 
 export function parsePorcelainV1Z(output: string): StatusEntry[] {
@@ -820,8 +864,12 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   if (currentFormat && (gitOptional(root, ["symbolic-ref", "-q", "HEAD"])?.trim() || "") !== baseline.branch_ref) {
     violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the attached branch ref" });
   }
-  if (currentFormat && !sameList(refsSnapshot(root), baseline.refs)) {
-    violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  if (currentFormat) {
+    const observedRefs = refsSnapshot(root);
+    const refsAccepted = policy.shared_refs === "parent-owned"
+      ? parentOwnedRefsPreserved(root, observedRefs, baseline.refs)
+      : sameList(observedRefs, baseline.refs);
+    if (!refsAccepted) violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
   }
   if (currentFormat) {
     const reflog = headReflog(root);
@@ -910,7 +958,12 @@ function auditWorktreeFromFacts(root: string, facts: StableGitSafetyFacts, basel
   if (facts.head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
   if (currentFormat && facts.branch !== baseline.branch) violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the current branch" });
   if (currentFormat && facts.branchRef !== baseline.branch_ref) violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the attached branch ref" });
-  if (currentFormat && !sameList(facts.refs, baseline.refs)) violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  if (currentFormat) {
+    const refsAccepted = policy.shared_refs === "parent-owned"
+      ? parentOwnedRefsPreserved(root, facts.refs, baseline.refs)
+      : sameList(facts.refs, baseline.refs);
+    if (!refsAccepted) violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  }
   if (currentFormat && (facts.reflog.count !== baseline.head_reflog_count || facts.reflog.checksum !== baseline.head_reflog_checksum)) {
     violations.push({ code: "E_HEAD_REFLOG_MUTATION", message: "worker changed the HEAD reflog" });
   }

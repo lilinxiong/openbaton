@@ -23,7 +23,9 @@ function applyFixture() {
     // Deliberately non-canonical order; resolution sorts it.
     contextFiles: { tasks: [path.join(changeDir, "tasks.md")], proposal: [path.join(changeDir, "proposal.md")] },
     progress: { total: 2, complete: 0, remaining: 2 },
-    tasks: [{ id: "1", description: "1.1 First", done: false }, { id: "2", description: "1.2 Second", done: false }],
+    tasks: fs.readFileSync(path.join(changeDir, "tasks.md"), "utf8").split(/\r?\n/)
+      .filter((line) => /^- \[[ xX-]\] /.test(line))
+      .map((line, index) => ({ id: String(index + 1), description: line.replace(/^- \[[ xX-]\] /, ""), done: /^- \[[xX]\] /.test(line) })),
     state: "ready",
     instruction: "Continue with the pending tasks.",
     context: "TypeScript project",
@@ -78,6 +80,38 @@ describe("parseTasks + writeTaskConclusion", () => {
     const completion = resolveOpenSpecApplyInstructions(fixture.cwd, "demo", options);
     assert.deepEqual(completion.pendingTaskNumbers, ["1.2", "1.3"]);
     assert.notEqual(completion.selectedTaskSnapshotFingerprint, inserted.selectedTaskSnapshotFingerprint);
+  });
+
+  it("keeps transient apply metadata diagnostic-only in the task fingerprint", () => {
+    const fixture = applyFixture();
+    let applyIds = ["1", "2"];
+    const options = {
+      cli: "/fake/openspec",
+      runner: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          ...fixture.output(),
+          tasks: applyIds.map((id, index) => ({ id, description: `${index === 0 ? "1.1 First" : "1.2 Second"}`, done: false })),
+        }),
+        stderr: "",
+      }),
+    };
+    const before = resolveOpenSpecApplyInstructions(fixture.cwd, "demo", options);
+    applyIds = ["101", "202"];
+    const reallocated = resolveOpenSpecApplyInstructions(fixture.cwd, "demo", options);
+    assert.equal(reallocated.selectedTaskSnapshotFingerprint, before.selectedTaskSnapshotFingerprint);
+    assert.notEqual(reallocated.selectedTasks[0]?.applyId, before.selectedTasks[0]?.applyId);
+  });
+
+  it("rejects completion drift when Markdown is complete but apply output is pending", () => {
+    const fixture = applyFixture();
+    fs.writeFileSync(path.join(fixture.changeDir, "tasks.md"), "# Tasks\n\n## Build\n\n- [x] 1.1 First\n- [ ] 1.2 Second\n");
+    const staleApply = { ...fixture.output(), tasks: [{ id: "101", description: "1.1 First", done: false }, { id: "202", description: "1.2 Second", done: false }] };
+    const options = {
+      cli: "/fake/openspec",
+      runner: () => ({ status: 0, stdout: JSON.stringify(staleApply), stderr: "" }),
+    };
+    assert.throws(() => resolveOpenSpecApplyInstructions(fixture.cwd, "demo", options), (error) => error instanceof OpenSpecError && error.code === "TASK_MAPPING_CONTRADICTORY");
   });
 
   it("fails closed for malformed output, missing context/tasks, duplicate numbers, and escaped paths", () => {

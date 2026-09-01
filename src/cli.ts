@@ -49,6 +49,8 @@ import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
 import { defaultCompiledApplyHandler } from "./lib/compiled-apply-cli.js";
+import { runRollingRun, type RollingRunHandler } from "./commands/run.js";
+import { runIntegration, type IntegrationCommandHandler } from "./commands/integration.js";
 
 
 interface RunOptions {
@@ -61,6 +63,10 @@ interface RunOptions {
   prompt?: SelectPrompt;
   /** Injectable boundary for the director-compiled apply protocol. */
   compiledApplyHandler?: CompiledApplyHandler;
+  /** Injectable boundary for the source-neutral rolling-run protocol. */
+  rollingRunHandler?: RollingRunHandler;
+  /** Injectable parent integration admission boundary. */
+  integrationHandler?: IntegrationCommandHandler;
 }
 
 export type CompiledApplyOperation = "plan" | "status" | "accept-gate" | "reconcile";
@@ -212,13 +218,32 @@ Usage:
   baton apply [change] --host ${HOSTS} --run RUN --reconcile [--task NUMBER] [--json]
   baton apply [change] --host ${HOSTS} --run RUN --plan-file PATH|- [--dispatch]
                submit a director-compiled successor plan (compiled handler)
+  baton run start --host ${HOSTS} [--worktree-mode isolated-worktree|shared-worktree] --source-file PATH|- [--plan-delta-file PATH|-] [--run-id RUN] [--dispatch] [--json]
+               create a source-neutral rolling v2 run; writing units default to isolated worktrees
+  baton run RUN --append-plan PATH|- [--dispatch] [--json]
+  baton run RUN --status [--json]
+  baton run RUN --accept-gate GATE@VERSION --text SUMMARY [--dispatch] [--json]
+  baton run RUN --seal-task TASK --seal-file PATH|- [--json]
+  baton run RUN --reconcile [--task TASK] [--json]
+  baton run RUN --freeze-unit UNIT --attempt ATTEMPT --text SUMMARY [--validation SUMMARY] [--allow-noop] [--json]
+               parent-audit one terminal isolated root and freeze its immutable ChangeBundle v1
+  baton run RUN --cleanup-unit UNIT --attempt ATTEMPT [--release-downstream-base] [--discard-rejected-evidence] [--release-user-retention] [--json]
+               remove only an exact eligible worktree and its disposable Baton reachability artifacts
+  baton integration begin --run RUN --repository-id SHA256 --bundle-id ID --expected-before-tree GIT_OBJECT [--order-override N] [--json]
+               admit the current cwd to the repository queue; does not apply a bundle
+  baton integration apply --run RUN --repository-id SHA256 --bundle-id ID [--idempotency-key ID] [--json]
+               merge the admitted bundle in isolated Git object plumbing; does not mutate the caller checkout
+  baton integration resolve --run RUN --repository-id SHA256 --bundle-id ID --resolved-tree GIT_OBJECT --conclusion TEXT [--idempotency-key ID] [--json]
+               audit and freeze a parent resolution without rewriting the worker bundle
+  baton integration accept --run RUN --repository-id SHA256 --bundle-id ID --conclusion TEXT [--idempotency-key ID] [--json]
+               apply the frozen result to the caller and accept matching rolling integration gates
   baton dispatch next --host HOST [--capacity N] --json
-  baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
+  baton dispatch bind TICKET --execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found --json
+  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID] --state pending_init|running|interrupted|shutdown|not_found --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" --json
   baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
-  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
+  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID]] --json
   baton dispatch fail|close TICKET --host HOST [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--release] --json
   baton dispatch recover --host HOST --json
@@ -244,6 +269,8 @@ export async function run(argv: string[], {
   adapterProvider,
   prompt,
   compiledApplyHandler,
+  rollingRunHandler,
+  integrationHandler,
 }: RunOptions = {}): Promise<number> {
   const streamStdin = typeof stdin === "string" ? process.stdin : stdin;
   const injectedStdin = typeof stdin === "string" ? stdin : undefined;
@@ -285,6 +312,10 @@ export async function run(argv: string[], {
         return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
         return await cmdApply(args, cwd, stdout, env, streamStdin, injectedStdin, compiledApplyHandler);
+      case "run":
+        return await runRollingRun(args, { cwd, stdout, stdin: streamStdin, injectedStdin, env, handler: rollingRunHandler });
+      case "integration":
+        return await runIntegration(args, { cwd, stdout, env, handler: integrationHandler });
       case "dispatch":
         return await runDispatch(args, { cwd, stdout, env });
       case "models":

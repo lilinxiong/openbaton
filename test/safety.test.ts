@@ -441,6 +441,11 @@ describe("stable asynchronous safety observations", () => {
     const refsVerdict = await auditWorktreeAsync(refs, refsBaseline, { write_allowlist: [], allowed_operations: [] });
     assert.equal(refsVerdict.accepted, false);
     assert.ok(refsVerdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
+    const parentOwnedRefsVerdict = await auditWorktreeAsync(refs, refsBaseline, {
+      write_allowlist: [], allowed_operations: [], shared_refs: "parent-owned",
+    });
+    assert.equal(parentOwnedRefsVerdict.accepted, true);
+    assert.ok(!parentOwnedRefsVerdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
 
     const reflog = fixture();
     const reflogBaseline = await captureBaselineAsync(reflog);
@@ -634,6 +639,54 @@ describe("stable asynchronous safety observations", () => {
     git(cwd, "update-ref", "refs/tags/turn-diffs/should-be-audited", "HEAD");
     assert.equal(auditWorktree(cwd, syncBaseline, policy).accepted, false);
     assert.equal((await auditWorktreeAsync(cwd, asyncBaseline, policy)).accepted, false);
+  });
+
+  it("allows only additions and descendant advances for parent-owned refs", async () => {
+    const policy = { write_allowlist: [], allowed_operations: [], shared_refs: "parent-owned" as const };
+
+    const advanced = fixture();
+    git(advanced, "branch", "parent-integration");
+    const advancedBaseline = captureBaseline(advanced);
+    const descendant = git(
+      advanced,
+      "commit-tree",
+      advancedBaseline.index_tree,
+      "-p",
+      advancedBaseline.head,
+      "-m",
+      "parent integration",
+    ).trim();
+    git(advanced, "update-ref", "refs/heads/parent-integration", descendant);
+    git(advanced, "tag", "new-parent-tag");
+    assert.equal(auditWorktree(advanced, advancedBaseline, policy).accepted, true);
+    assert.equal((await auditWorktreeAsync(advanced, advancedBaseline, policy)).accepted, true);
+
+    const deleted = fixture();
+    git(deleted, "branch", "parent-integration");
+    const deletedBaseline = captureBaseline(deleted);
+    git(deleted, "update-ref", "-d", "refs/heads/parent-integration");
+    assert.ok(auditWorktree(deleted, deletedBaseline, policy).violations.some((item) => item.code === "E_REFS_MUTATION"));
+    assert.ok((await auditWorktreeAsync(deleted, deletedBaseline, policy)).violations.some((item) => item.code === "E_REFS_MUTATION"));
+
+    const rewritten = fixture();
+    git(rewritten, "branch", "parent-integration");
+    const rewrittenBaseline = captureBaseline(rewritten);
+    const unrelated = git(rewritten, "commit-tree", rewrittenBaseline.index_tree, "-m", "unrelated parent history").trim();
+    git(rewritten, "update-ref", "refs/heads/parent-integration", unrelated);
+    assert.ok(auditWorktree(rewritten, rewrittenBaseline, policy).violations.some((item) => item.code === "E_REFS_MUTATION"));
+    assert.ok((await auditWorktreeAsync(rewritten, rewrittenBaseline, policy)).violations.some((item) => item.code === "E_REFS_MUTATION"));
+
+    const unknown = fixture();
+    const unknownBaseline = await captureBaselineAsync(unknown);
+    const unknownFacts = await collectGitSafetyFacts(unknown);
+    unknownFacts.refs = unknownFacts.refs.map((entry) => entry.startsWith(`${unknownBaseline.branch_ref}\0`)
+      ? `${unknownBaseline.branch_ref}\0${"f".repeat(40)}`
+      : entry);
+    const unknownVerdict = await auditWorktreeAsync(unknown, unknownBaseline, policy, {
+      collectFacts: async () => unknownFacts,
+      collectToken: async () => deriveGitSafetyStabilityToken(unknownFacts),
+    });
+    assert.ok(unknownVerdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
   });
 
   it("audits v2 commit baselines and keeps prepared/outcome semantics", async () => {

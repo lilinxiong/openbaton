@@ -6,6 +6,9 @@
 那份 walkthrough 使用下面的目录 fixture，在隔离 HOME 中跑完
 init、config、match、spawn 和 dispatch。
 
+默认 rolling worktree、bundle、parent integration、冲突与 cleanup 生命周期见
+[rolling-worktree](rolling-worktree/README.zh.md)。
+
 # Adapter manifest 样例
 
 `manifest-example/` 是一个很小的外部 adapter 软件包。它展示公开 SDK
@@ -20,9 +23,13 @@ sed -n '1,240p' samples/manifest-example/runtime/SKILL.md
 ```
 
 manifest 覆盖 SDK schema、稳定 adapter id、软件包元数据、目录
-命令/协议、调用信号、不透明的原生 execution-handle 类型、运行时
+命令/协议、调用信号、不透明的原生 execution-handle 类型、exact-root 能力、运行时
 skill 路径，以及 quota/backpressure 事实。目录命令返回规范化 JSON，
 其中只有一个 adapter id 和精确的模型元数据。
+
+`native.exact_execution_root` 是执行保证，不是偏好。`true` 表示 adapter 能启动并
+确认 Baton 的完整 exact-root identity；缺失或 `false` 会阻断默认隔离写入 unit，
+只有显式 shared 兼容 run 才能让该 adapter 执行写入。
 
 ## 隔离发现
 

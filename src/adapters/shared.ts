@@ -54,13 +54,19 @@ export function normalizeCliRuntimeCapabilities(value: unknown): CliRuntimeCapab
   ].filter((source): source is Record<string, unknown> => source !== null);
   let maxConcurrentSubagents: number | undefined;
   let maxDepth: number | undefined;
+  let exactExecutionRoot: boolean | undefined;
   for (const source of sources) {
     maxConcurrentSubagents ??= firstPositiveInteger(source, MAX_CONCURRENT_SUBAGENT_KEYS);
     maxDepth ??= firstPositiveInteger(source, ["max_depth", "maxDepth"]);
+    if (exactExecutionRoot === undefined) {
+      const advertised = source.exact_execution_root ?? source.exactExecutionRoot;
+      if (typeof advertised === "boolean") exactExecutionRoot = advertised;
+    }
   }
-  if (maxConcurrentSubagents === undefined && maxDepth === undefined) return undefined;
+  if (maxConcurrentSubagents === undefined && maxDepth === undefined && exactExecutionRoot === undefined) return undefined;
   return {
     ...(maxConcurrentSubagents !== undefined ? { max_concurrent_subagents: maxConcurrentSubagents } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
+    ...(exactExecutionRoot !== undefined ? { exact_execution_root: exactExecutionRoot } : {}),
   };
 }

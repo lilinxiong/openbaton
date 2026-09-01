@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { sanitizeConclusion, sanitizeProgress } from "./hygiene.js";
 import { listSpawns, readSpawn, writeSpawn, sessionTicketId, sessionUid, validateSpawnSessionScope } from "./spawn.js";
 import type {
@@ -13,18 +14,31 @@ import type {
   NativeExecutionHandle,
 } from "./spawn.js";
 import { normalizeSpawnTicket } from "./spawn.js";
-import type { NativeExecutionHandleKind } from "../adapters/contract.js";
+import {
+  extractExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+  type NativeExecutionHandleKind,
+} from "../adapters/contract.js";
 import { getCliAdapter } from "../adapters/index.js";
 import type { UnknownRecord } from "../types.js";
-import { dispatchLockPath, spawnsDir, workspaceId } from "./paths.js";
+import { dispatchLockPath, spawnsDir, workspaceId, WORKTREE_RECORD_NAME } from "./paths.js";
+import { resolveOwningRepository, resolveWorktreeTopology } from "./worktree-topology.js";
+import {
+  parseWorktreeRecord,
+  transitionPersistedWorktreeRecord,
+  type WorktreeRecord,
+} from "./worktree-execution.js";
 import {
   assertValidTicketReceiptLineage,
   normalizeCompiledApplyLineage,
+  normalizeRollingUnitLineage,
   readReceipt,
   writeReceipt,
   type CompiledApplyLineage,
   type DelegationReceipt,
   type ExecutionMode,
+  type RollingUnitLineage,
 } from "./receipt.js";
 import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, type AsyncSafetyOptions, type SafetyOperation } from "./safety.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
@@ -303,7 +317,7 @@ function capacityValue(capacity: unknown): number {
   return value;
 }
 
-export interface DispatchSpec {
+export interface DispatchSpec extends Partial<ExactExecutionRootIdentity> {
   ticket_id: string;
   reservation: DispatchReservationIdentity;
   target_host: string;
@@ -325,6 +339,7 @@ export interface DispatchSpec {
   description: string;
   prompt: string;
   work_unit: SpawnTicket["work_unit"];
+  rolling_unit_lineage?: RollingUnitLineage;
   coordination: SpawnTicket["coordination"];
   attempt: number;
   max_attempts: number;
@@ -336,12 +351,14 @@ function publicDispatchSpec(
   receipt: DelegationReceipt,
   env: NodeJS.ProcessEnv = process.env,
 ): DispatchSpec {
+  const exactRoot = extractExactExecutionRootIdentity(ticket);
   const reservation: DispatchReservationIdentity = {
     schema: BATON_DISPATCH_RESERVATION_SCHEMA,
     reservation_id: ticket.reservation_id,
     ticket_id: ticket.id,
     attempt: ticket.attempt,
     host: ticketTargetHost(ticket, env),
+    ...(exactRoot || {}),
   };
   return {
     ticket_id: ticket.id,
@@ -365,11 +382,145 @@ function publicDispatchSpec(
     description: withDispatchReservationEnvelope(ticket.description, reservation),
     prompt: withDispatchReservationEnvelope(ticket.prompt, reservation),
     work_unit: ticket.work_unit,
+    ...(ticket.rolling_unit_lineage ? { rolling_unit_lineage: ticket.rolling_unit_lineage } : {}),
     coordination: ticket.coordination,
     attempt: ticket.attempt,
     max_attempts: ticket.max_attempts,
     selection: ticket.selection!,
+    ...(exactRoot || {}),
   };
+}
+
+function isolatedTicketIdentity(ticket: SpawnTicket): ExactExecutionRootIdentity | null {
+  const mode = ticket.rolling_unit_lineage?.worktree_mode;
+  const identity = extractExactExecutionRootIdentity(ticket);
+  if (mode !== "isolated-worktree") {
+    if (identity) throw new DispatchError(`ticket ${ticket.id} cannot carry exact-root identity in ${mode || "legacy"} mode`, "ISOLATED_EXECUTION_IDENTITY_FORBIDDEN", { ticketId: ticket.id });
+    return null;
+  }
+  if (!identity) throw new DispatchError(`ticket ${ticket.id} has no complete exact-root identity`, "ISOLATED_EXECUTION_IDENTITY_PARTIAL", { ticketId: ticket.id });
+  return identity;
+}
+
+function requireExactRootAdapter(ticket: SpawnTicket, host: HostId, env: NodeJS.ProcessEnv): ExactExecutionRootIdentity | null {
+  const identity = isolatedTicketIdentity(ticket);
+  if (identity && getCliAdapter(host, env).host.exactExecutionRoot !== true) {
+    throw new DispatchError(`adapter ${host} cannot guarantee exact execution-root dispatch`, "ADAPTER_EXACT_ROOT_UNSUPPORTED", { ticketId: ticket.id });
+  }
+  return identity;
+}
+
+/** Last physical gate before a public spawn request is returned or a handle is bound. */
+const EXACT_ROOT_GIT_MAX_BUFFER = 256 * 1024;
+
+function verifyExactExecutionRoot(
+  cwd: string,
+  ticket: SpawnTicket,
+  receipt: DelegationReceipt,
+  host: HostId,
+  env: NodeJS.ProcessEnv,
+  requireClean = true,
+): WorktreeRecord | null {
+  const identity = requireExactRootAdapter(ticket, host, env);
+  if (!identity) return null;
+  let root: string;
+  try { root = fs.realpathSync(identity.execution_root); }
+  catch (cause) { throw new DispatchError(`execution root is unavailable: ${cause instanceof Error ? cause.message : String(cause)}`, "EXECUTION_ROOT_DRIFT", { ticketId: ticket.id }); }
+  if (fs.lstatSync(identity.execution_root).isSymbolicLink()
+    || root === fs.realpathSync(cwd)
+    || !fs.statSync(root).isDirectory()) {
+    throw new DispatchError(`ticket ${ticket.id} execution root was rewritten or aliases the caller checkout`, "EXECUTION_ROOT_REWRITE", { ticketId: ticket.id });
+  }
+  const recordFile = path.join(path.dirname(root), WORKTREE_RECORD_NAME);
+  let record: WorktreeRecord;
+  try { record = parseWorktreeRecord(fs.readFileSync(recordFile, "utf8")); }
+  catch (cause) { throw new DispatchError(`ticket ${ticket.id} worktree record is unavailable or invalid: ${cause instanceof Error ? cause.message : String(cause)}`, "WORKTREE_RECORD_DRIFT", { ticketId: ticket.id }); }
+  const lineage = ticket.rolling_unit_lineage!;
+  if (record.record_id !== identity.worktree_record_id
+    || record.execution_mode !== "isolated-worktree"
+    || record.repository_id !== identity.repository_id
+    || record.git_common_dir_identity !== identity.git_common_dir_identity
+    || record.execution_root !== identity.execution_root
+    || record.base_tree !== identity.base_tree
+    || record.run_id !== lineage.run_id
+    || record.unit_key !== lineage.unit_key
+    || record.unit_version !== lineage.unit_version
+    || record.setup_state !== "verified"
+    || record.lifecycle_state !== "preparing") {
+    throw new DispatchError(`ticket ${ticket.id} worktree record lineage drifted before native spawn`, "WORKTREE_RECORD_DRIFT", { ticketId: ticket.id });
+  }
+  let owner;
+  try { owner = resolveOwningRepository(root, ".").repository; }
+  catch (cause) { throw new DispatchError(`ticket ${ticket.id} execution-root repository cannot be verified: ${cause instanceof Error ? cause.message : String(cause)}`, "EXECUTION_ROOT_REPOSITORY_DRIFT", { ticketId: ticket.id }); }
+  if (owner.repository_root !== root
+    || owner.repository_id !== identity.repository_id
+    || owner.git_common_dir_identity !== identity.git_common_dir_identity
+    || owner.git_common_dir !== record.git_common_dir) {
+    throw new DispatchError(`ticket ${ticket.id} execution-root repository identity drifted`, "EXECUTION_ROOT_REPOSITORY_DRIFT", { ticketId: ticket.id });
+  }
+  try {
+    const git = (args: string[]) => execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
+      maxBuffer: EXACT_ROOT_GIT_MAX_BUFFER,
+    }).trim();
+    if (git(["rev-parse", "HEAD^{tree}"]) !== identity.base_tree
+      || git(["write-tree"]) !== identity.base_tree
+      || (requireClean && git(["status", "--porcelain=v1", "--untracked-files=all"]) !== "")) {
+      throw new Error("immutable base tree or worktree content changed");
+    }
+  } catch (cause) {
+    throw new DispatchError(`ticket ${ticket.id} execution-root base drifted: ${cause instanceof Error ? cause.message : String(cause)}`, "EXECUTION_ROOT_BASE_DRIFT", { ticketId: ticket.id });
+  }
+  try {
+    const topology = receipt.scope.write_allowlist.length
+      ? resolveWorktreeTopology(root, receipt.scope.write_allowlist)
+      : null;
+    if (topology && (topology.repositories.length !== 1
+      || topology.repositories[0]!.repository_id !== identity.repository_id
+      || topology.repositories[0]!.repository_root !== root)) {
+      throw new Error("scope resolves outside the isolated repository root");
+    }
+  } catch (cause) {
+    throw new DispatchError(`ticket ${ticket.id} scope escapes its execution root: ${cause instanceof Error ? cause.message : String(cause)}`, "EXECUTION_ROOT_SCOPE_ESCAPE", { ticketId: ticket.id });
+  }
+  return record;
+}
+
+function transitionExactRootRecord(
+  _cwd: string,
+  ticket: SpawnTicket,
+  key: string,
+  toState: "worker_active" | "terminal_awaiting_audit" | "rejected",
+  at: string,
+  nativeHandle: string | null,
+  retentionReasons: Array<"live_native_handle" | "terminal_unreleased_ticket" | "pending_audit" | "rejected_result_evidence">,
+  env: NodeJS.ProcessEnv,
+): void {
+  const identity = isolatedTicketIdentity(ticket);
+  if (!identity) return;
+  const record = parseWorktreeRecord(fs.readFileSync(path.join(path.dirname(identity.execution_root), WORKTREE_RECORD_NAME), "utf8"));
+  transitionPersistedWorktreeRecord(record.repository_root, record.run_id, record.unit_key, record.attempt_id, {
+    idempotency_key: key,
+    phase: "native_execution",
+    to_state: toState,
+    recorded_at: at,
+    native_handle: nativeHandle,
+    retention_reasons: retentionReasons,
+  }, env);
+}
+
+function retainTerminalExactRoot(ticket: SpawnTicket, at: string, env: NodeJS.ProcessEnv): void {
+  if (!isolatedTicketIdentity(ticket)) return;
+  if (!ticket.execution_handle) {
+    transitionExactRootRecord("", ticket, `native-aborted-${ticket.id}-${ticket.attempt}`, "rejected", at,
+      null, ["rejected_result_evidence"], env);
+    return;
+  }
+  transitionExactRootRecord("", ticket, `native-terminal-${ticket.id}-${ticket.attempt}`, "terminal_awaiting_audit", at,
+    `${ticket.execution_handle.kind}:${ticket.execution_handle.value}`,
+    ["pending_audit", "terminal_unreleased_ticket"], env);
 }
 
 function receiptModeMatches(ticket: SpawnTicket, receipt: DelegationReceipt): boolean {
@@ -413,9 +564,104 @@ function receiptModeMatches(ticket: SpawnTicket, receipt: DelegationReceipt): bo
     && JSON.stringify(receipt.scope.write_allowlist) === JSON.stringify(receipt.commit_baseline!.staged_paths);
 }
 
-async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string, host: HostId, env: NodeJS.ProcessEnv = process.env, safetyOptions: AsyncSafetyOptions = {}): Promise<{ ticket_id: string; code: string; message: string } | null> {
-  let code = null;
-  let message = null;
+function isRollingDispatchTicket(ticket: SpawnTicket): boolean {
+  const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+  return ticket.rolling_unit_lineage !== undefined || unit?.schema_version === 3;
+}
+
+/**
+ * Validate the artifact-local identity of a rolling dispatch.  Rolling
+ * lifecycle authorization is intentionally anchored only in the immutable
+ * ticket, schema-3 work unit, and Receipt; rolling-run state and append
+ * progress are not consulted here.
+ */
+function validateRollingDispatchArtifacts(
+  cwd: string,
+  ticket: SpawnTicket,
+  host: HostId,
+  env: NodeJS.ProcessEnv,
+  receiptOverride?: DelegationReceipt,
+): DelegationReceipt | null {
+  if (!isRollingDispatchTicket(ticket)) return null;
+  try {
+    requireExactRootAdapter(ticket, host, env);
+    const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
+    if (!unit || unit.schema_version !== 3 || !unit.rolling_unit_lineage) {
+      throw new DispatchError(`ticket ${ticket.id} requires a schema-3 rolling work unit`, "ROLLING_LINEAGE_MISMATCH", { ticketId: ticket.id });
+    }
+    if (!ticket.rolling_unit_lineage) {
+      throw new DispatchError(`ticket ${ticket.id} requires rolling unit lineage`, "ROLLING_LINEAGE_MISMATCH", { ticketId: ticket.id });
+    }
+    if (!ticket.receipt_id) {
+      throw new DispatchError(`ticket ${ticket.id} has no Receipt`, "RECEIPT_REQUIRED", { ticketId: ticket.id });
+    }
+    const receipt = receiptOverride || readReceipt(cwd, ticket.receipt_id, env);
+    const ticketLineage = normalizeRollingUnitLineage(ticket.rolling_unit_lineage);
+    const workUnitLineage = normalizeRollingUnitLineage(unit.rolling_unit_lineage);
+    const receiptLineage = receipt.rolling_unit_lineage === undefined
+      ? null
+      : normalizeRollingUnitLineage(receipt.rolling_unit_lineage);
+    const serialized = JSON.stringify(ticketLineage);
+    if (serialized !== JSON.stringify(workUnitLineage)
+      || receiptLineage === null
+      || serialized !== JSON.stringify(receiptLineage)) {
+      throw new DispatchError(`ticket ${ticket.id} rolling unit lineage does not match its work unit and Receipt`, "ROLLING_LINEAGE_MISMATCH", { ticketId: ticket.id });
+    }
+    const expectedReceiptHost = ticket.target_host || ticket.dispatch_host || ticket.host;
+    if (receipt.ticket_id !== ticket.id
+      || receipt.receipt_id !== ticket.receipt_id
+      || (expectedReceiptHost ? receipt.host !== expectedReceiptHost : Boolean(receipt.host && receipt.host !== host))
+      || receipt.route.route_id !== ticket.route_id
+      || !receiptModeMatches(ticket, receipt)
+      || !receipt.selection
+      || !ticket.selection
+      || receipt.selection.approval_id !== ticket.selection.approval_id
+      || receipt.selection.selected_model_id !== ticket.model_id
+      || receipt.selection.host !== host
+      || ticket.selection.host !== host) {
+      throw new DispatchError(`ticket ${ticket.id} does not match its rolling Delegation Receipt`, "RECEIPT_MISMATCH", { ticketId: ticket.id });
+    }
+    // Keep the existing generic lineage checks as part of the rolling edge;
+    // this also covers route/model/service-tier and execution-mode identity.
+    assertValidTicketReceiptLineage({
+      ...ticket,
+      target_host: ticket.target_host || host,
+    }, receipt);
+    return receipt;
+  } catch (error) {
+    if (error instanceof DispatchError) throw error;
+    const code = error instanceof Error && "code" in error
+      ? String((error as Error & { code?: unknown }).code || "ROLLING_LINEAGE_MISMATCH")
+      : "ROLLING_LINEAGE_MISMATCH";
+    throw new DispatchError(
+      error instanceof Error ? error.message : String(error),
+      code,
+      { ticketId: ticket.id },
+    );
+  }
+}
+
+async function rejectUndispatchable(
+  cwd: string,
+  ticket: SpawnTicket,
+  at: string,
+  host: HostId,
+  env: NodeJS.ProcessEnv = process.env,
+  safetyOptions: AsyncSafetyOptions = {},
+  preflightError: unknown = null,
+): Promise<{ ticket_id: string; code: string; message: string } | null> {
+  let code: string | null = preflightError instanceof DispatchError
+    ? preflightError.code
+    : preflightError instanceof Error && "code" in preflightError
+      ? String((preflightError as Error & { code?: unknown }).code || "ROLLING_LINEAGE_MISMATCH")
+      : preflightError === null
+        ? null
+        : "ROLLING_LINEAGE_MISMATCH";
+  let message: string | null = preflightError === null
+    ? null
+    : preflightError instanceof Error
+      ? preflightError.message
+      : String(preflightError);
   let capturedHost: HostId | null = null;
   try {
     capturedHost = ticketTargetHost(ticket, env);
@@ -541,11 +787,12 @@ async function rejectUndispatchable(cwd: string, ticket: SpawnTicket, at: string
     }
   }
   if (!code) return null;
+  const finalMessage = message || `ticket ${ticket.id} cannot be dispatched`;
   transition(ticket, "queued", "errored", { at, event: "dispatch_blocked", detail: { error_code: code } });
-  ticket.error = { code, message };
+  ticket.error = { code, message: finalMessage };
   ticket.finished_at = at;
   writeSpawn(cwd, ticket, env);
-  return { ticket_id: ticket.id, code, message };
+  return { ticket_id: ticket.id, code, message: finalMessage };
 }
 
 interface ReserveOptions {
@@ -1016,6 +1263,16 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
         blocked.push({ ticket_id: ticket.id, code: "HOST_MISMATCH", message: `ticket ${ticket.id} targets ${ticketHost}, not ${targetHost}` });
         continue;
       }
+      // A rolling ticket must be authorized from its immutable artifact edge
+      // before any reservation fields or status are changed.
+      let rollingReceipt: DelegationReceipt | null = null;
+      try {
+        rollingReceipt = validateRollingDispatchArtifacts(cwd, ticket, targetHost, env);
+      } catch (error) {
+        const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions, error);
+        if (rejected) blocked.push(rejected);
+        continue;
+      }
       let compiledContext: CompiledApplyContext | null = null;
       // Dependency/gate backpressure is not a terminal ticket failure. Keep
       // the compiled unit queued so an independent frontier can continue and
@@ -1088,6 +1345,13 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
           continue;
         }
       }
+      try {
+        if (rollingReceipt) verifyExactExecutionRoot(cwd, ticket, rollingReceipt, targetHost, env, true);
+      } catch (error) {
+        const rejected = await rejectUndispatchable(cwd, ticket, at, targetHost, env, safetyOptions, error);
+        if (rejected) blocked.push(rejected);
+        continue;
+      }
       ticket.dispatch_host = targetHost;
       ticket.dispatch_requested_at = at;
       ticket.attempt = Number(ticket.attempt || 0) + 1;
@@ -1140,6 +1404,35 @@ function currentHandleForTicket(ticket: SpawnTicket): NativeExecutionHandle | nu
   return ticket.execution_handle;
 }
 
+/**
+ * Probe/release callers may rely on the complete handle persisted at bind.
+ * When they repeat any exact-root field, however, the repetition must remain
+ * complete and identical so a partial or rewritten lineage cannot be hidden.
+ */
+function assertOptionalExactRootAcknowledgement(
+  ticketId: string,
+  operation: "probe" | "release",
+  requested: NativeExecutionHandle,
+  bound: NativeExecutionHandle,
+): void {
+  let repeated: ExactExecutionRootIdentity | undefined;
+  try { repeated = extractExactExecutionRootIdentity(requested); }
+  catch {
+    throw new DispatchError(
+      `ticket ${ticketId} ${operation} handle has a partial exact-root acknowledgement`,
+      "EXECUTION_ROOT_ACKNOWLEDGEMENT_MISMATCH",
+      { ticketId },
+    );
+  }
+  if (repeated && !sameExactExecutionRootIdentity(repeated, bound)) {
+    throw new DispatchError(
+      `ticket ${ticketId} ${operation} handle exact-root acknowledgement does not match`,
+      "EXECUTION_ROOT_ACKNOWLEDGEMENT_MISMATCH",
+      { ticketId },
+    );
+  }
+}
+
 export function bindAgent(cwd: string, id: string, {
   executionHandle,
   host,
@@ -1162,6 +1455,9 @@ export function bindAgent(cwd: string, id: string, {
         { ticketId: id, currentStatus: ticket.status, nextStatus: "running" },
       );
     }
+    // Re-read the immutable rolling authorization after reservation and
+    // before attaching a native handle or changing lifecycle state.
+    const rollingReceipt = validateRollingDispatchArtifacts(cwd, ticket, targetHost, env);
     if (isCompiledApplyTicket(ticket)) {
       try { validateCompiledTicket(cwd, ticket, targetHost, env); }
       catch (error) { rejectCompiledTicketValidation(cwd, ticket, error, at, env); }
@@ -1170,6 +1466,17 @@ export function bindAgent(cwd: string, id: string, {
     if (!handle || !handle.value.trim()) throw new DispatchError(`ticket ${id} has no native execution handle`, "EXECUTION_HANDLE_REQUIRED", { ticketId: id });
     const expectedKind = getCliAdapter(host, env).host.executionHandleKind;
     if (handle.kind !== expectedKind) throw new DispatchError(`ticket ${id} requires handle kind ${expectedKind}`, "EXECUTION_HANDLE_KIND_MISMATCH", { ticketId: id });
+    const exactRoot = requireExactRootAdapter(ticket, host, env);
+    let acknowledgedRoot: ExactExecutionRootIdentity | undefined;
+    try { acknowledgedRoot = extractExactExecutionRootIdentity(handle); }
+    catch { throw new DispatchError(`ticket ${id} native handle has a partial exact-root acknowledgement`, "EXECUTION_ROOT_ACKNOWLEDGEMENT_MISMATCH", { ticketId: id }); }
+    if (exactRoot && (!acknowledgedRoot || !sameExactExecutionRootIdentity(exactRoot, acknowledgedRoot))) {
+      throw new DispatchError(`ticket ${id} native handle did not acknowledge the identical execution root`, "EXECUTION_ROOT_ACKNOWLEDGEMENT_MISMATCH", { ticketId: id });
+    }
+    if (!exactRoot && acknowledgedRoot) {
+      throw new DispatchError(`ticket ${id} shared execution cannot bind an isolated-root handle`, "ISOLATED_EXECUTION_IDENTITY_FORBIDDEN", { ticketId: id });
+    }
+    if (rollingReceipt) verifyExactExecutionRoot(cwd, ticket, rollingReceipt, host, env, false);
     const detail: UnknownRecord = { host, execution_handle: handle };
     transition(ticket, "dispatching", "running", { at, event: "agent_bound", detail });
     ticket.execution_handle = handle;
@@ -1187,6 +1494,7 @@ export function bindAgent(cwd: string, id: string, {
         );
       }
     }
+    transitionExactRootRecord(cwd, ticket, `native-bind-${ticket.reservation_id || ticket.attempt}`, "worker_active", at, `${handle.kind}:${handle.value}`, ["live_native_handle"], env);
     writeSpawn(cwd, ticket, env);
     return ticket;
   }, env);
@@ -1288,6 +1596,7 @@ export function reportAgentProbe(cwd: string, id: string, {
     if (!bound || bound.kind !== requested.kind || bound.value !== requested.value) {
       throw new DispatchError(`ticket ${id} is bound to ${bound?.value || "no handle"}, not ${requested.value}`, "EXECUTION_HANDLE_MISMATCH", { ticketId: id });
     }
+    assertOptionalExactRootAcknowledgement(id, "probe", requested, bound);
     updateTicketLiveness(ticket, bound, state, activity, at);
     if (state === "running") {
       const availability = availabilityOutcome(cwd, ticket, at, { success: true, env });
@@ -2085,6 +2394,7 @@ export async function finishAgent(cwd: string, id: string, {
     if (TERMINAL_TICKET_STATUSES.has(ticket.status)) {
       throw new DispatchError(`ticket ${id} is already terminal: ${ticket.status}`, "TICKET_ALREADY_TERMINAL", { ticketId: id });
     }
+    validateRollingDispatchArtifacts(cwd, ticket, ticketTargetHost(ticket, env), env);
     let compiledContext: CompiledApplyContext | null = null;
     if (isCompiledApplyTicket(ticket)) {
       try { compiledContext = validateCompiledTicket(cwd, ticket, ticketTargetHost(ticket, env), env); }
@@ -2126,10 +2436,12 @@ export async function finishAgent(cwd: string, id: string, {
       if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
       const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation =>
         ["write", "create", "delete", "rename", "chmod"].includes(item));
-      const verdict = await auditWorktreeAsync(cwd, receipt.baseline, {
+      const isolatedIdentity = isolatedTicketIdentity(ticket);
+      const verdict = await auditWorktreeAsync(isolatedIdentity?.execution_root || cwd, receipt.baseline, {
         write_allowlist: receipt.scope.write_allowlist,
         allowed_operations: allowedOperations,
         peer_write_allowlists: peerWriteAllowlists(cwd, ticket, env),
+        ...(isolatedIdentity ? { shared_refs: "parent-owned" as const } : {}),
       }, safetyOptions);
       ticket.safety_verdict = verdict as unknown as UnknownRecord;
       if (!verdict.accepted) {
@@ -2165,6 +2477,7 @@ export async function finishAgent(cwd: string, id: string, {
           ticket.compiled_acceptance = acceptance;
         }
         writeSpawn(cwd, ticket, env);
+        retainTerminalExactRoot(ticket, at, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
       }
@@ -2208,6 +2521,7 @@ export async function finishAgent(cwd: string, id: string, {
           ticket.compiled_acceptance = acceptance;
         }
         writeSpawn(cwd, ticket, env);
+        retainTerminalExactRoot(ticket, at, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
       }
@@ -2282,6 +2596,7 @@ export async function finishAgent(cwd: string, id: string, {
       }
     }
     writeSpawn(cwd, ticket, env);
+    retainTerminalExactRoot(ticket, at, env);
     updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at, env);
     return ticket;
   }, { ...dispatchLock, env });
@@ -2328,6 +2643,7 @@ export function releaseAgent(cwd: string, id: string, {
       && (requestedHandle.kind !== ticket.execution_handle.kind || requestedHandle.value !== ticket.execution_handle.value)) {
       throw new DispatchError(`ticket ${id} is bound to ${ticket.execution_handle.value}, not ${requestedHandle.value}`, "EXECUTION_HANDLE_MISMATCH", { ticketId: id });
     }
+    if (requestedHandle) assertOptionalExactRootAcknowledgement(id, "release", requestedHandle, ticket.execution_handle);
     ticket.slot_released_at = at;
     history(ticket, "agent_slot_released", at, {
       execution_handle: ticket.execution_handle,

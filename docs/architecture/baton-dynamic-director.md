@@ -117,6 +117,82 @@ manual apply with explicit scopes or `--read-only` remains compatible, while
 compiled mode rejects manual scope flags. These failure paths fail closed
 without inventing a route or accepting partial work.
 
+## Rolling execution planning v2
+
+The generic rolling kernel removes the whole-change planning barrier. It
+accepts a bounded `PlanDelta` as soon as that delta contains one complete,
+dependency-ready unit, dispatches the maximal safe known frontier, and accepts
+later deltas while existing native attempts are queued, running, terminal, or
+accepted. Unplanned manifest tasks create no repository-read or semantic-plan
+prerequisite for that first unit.
+
+`TaskSourceDescriptor` makes the kernel source-neutral. The built-in director
+adapter derives stable task keys from caller-owned ids. The OpenSpec adapter
+derives reconciliation identity from the stable Markdown task number and keeps
+the Apply ordinal as separate non-authoritative metadata. This prevents Apply
+result ordering from changing task ownership.
+
+Each accepted unit and gate version has a local immutable fingerprint. Deltas
+compare an append sequence only for storage concurrency; appending unrelated
+work does not invalidate an active ticket. Supersession is allowed only for
+undispatched or failed lineage. Scheduling, route failure, input staleness,
+gate failure, and `PLAN_INSUFFICIENT` remain local to their smallest owner.
+
+The three gate types are `safety-precondition`, `integration-acceptance`, and
+`evidence`. They block explicit dependencies only. Terminal result, safety
+verdict, parent acceptance, and release are separate facts. A task remains
+open after its known units pass; only an exact seal over non-superseded
+coverage followed by source-adapter reconciliation completes it.
+
+The source-neutral control surface is:
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+The append-only log and immutable accepted documents live in the current
+workspace runtime under `runs/rolling-runs-v2/`; checkpoints are replaceable
+derived caches. Reconnect recovery joins those facts to ordinary tickets,
+Receipts, reservations, bound native handles, terminal results, and releases
+idempotently. Clean uninstall inventories and retains auditable rolling-run
+records. Compiled-v1 and manual apply records remain readable through their
+original protocols and are never silently migrated.
+
+### Isolated worktree data plane
+
+The rolling log is the control plane; a verified detached worktree is the
+default data plane for each writing unit. Read-only units have no worktree.
+Before a frontier ticket exists, the adapter must advertise exact-root support
+and Baton must resolve one owning repository, freeze an immutable base, create
+the canonical run/unit/attempt root, and prove the caller's HEAD, index, refs,
+and dirty facts did not move. Only the current capacity frontier is prepared,
+so open-world planning does not turn into eager whole-change setup.
+
+Execution ownership is `(repository_id, execution_root, normalized_path)`.
+This preserves strict overlap exclusion inside a root while allowing
+speculative overlap across roots. Cross-root overlap becomes a deterministic
+integration risk rather than concurrent caller mutation.
+
+At terminal release Baton audits the complete root and freezes a
+`ChangeBundle v1` with base/result trees, non-text facts, Receipt lineage, and
+internal Git transport. Each repository has one serialized parent queue.
+Application and conflict resolution occur in isolated object plumbing; the
+caller changes only at final acceptance under a fresh baseline gate. Bundle
+readiness, integration, parent acceptance, task sealing, and source
+reconciliation remain separate facts.
+
+Submodules retain literal repository ownership. A submodule bundle is based,
+audited, and integrated in the submodule object database; a later superproject
+unit owns the mode-160000 gitlink change. Recovery reconciles exact records,
+registered worktrees, internal refs, bundles, integration contexts, and native
+liveness. Cleanup removes only an identity-matching eligible attempt after all
+retention reasons clear.
+
 ## Director and scheduling
 
 The director owns discussion, read-only analysis, classification, dependency

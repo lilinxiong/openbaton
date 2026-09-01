@@ -16,11 +16,27 @@ const identity = {
   host: "alpha",
 } as const;
 
+const exactRoot = {
+  repository_id: "a".repeat(64),
+  git_common_dir_identity: "b".repeat(64),
+  execution_root: "/tmp/baton/worktrees/run/unit/attempt",
+  base_tree: "c".repeat(40),
+  worktree_record_id: "record-run-unit-attempt",
+} as const;
+
 describe("dispatch reservation envelope", () => {
   it("round-trips one complete first-line identity without interpreting the ticket id", () => {
     const prompt = withDispatchReservationEnvelope("work for os-0001 and spn-0002", identity);
     assert.deepEqual(parseDispatchReservationEnvelope(prompt), identity);
     assert.equal(prompt.split("\n", 1)[0], dispatchReservationEnvelope(identity));
+  });
+
+  it("round-trips an all-or-nothing exact-root reservation lineage", () => {
+    const isolated = { ...identity, ...exactRoot };
+    assert.deepEqual(parseDispatchReservationEnvelope(withDispatchReservationEnvelope("work", isolated)), isolated);
+    assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...isolated, base_tree: undefined } }), null);
+    assert.equal(parseDispatchReservationIdentity({ baton_dispatch: { ...isolated, execution_root: "/tmp/baton/../caller" } }), null);
+    assert.throws(() => dispatchReservationEnvelope({ ...identity, repository_id: exactRoot.repository_id }), /invalid/);
   });
 
   it("never treats ticket-like business text or a later embedded envelope as identity", () => {

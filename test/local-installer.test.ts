@@ -13,7 +13,7 @@ const SYSTEM_NODE = execFileSync("which", ["node"], {
 }).trim();
 const ISOLATED_SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter);
 
-type PlanMode = "success" | "active" | "conflict" | "invalid" | "stale" | "malformed-preflight" | "malformed-remove" | "malformed-already-absent" | "malformed-manifest" | "apply-conflict";
+type PlanMode = "success" | "active" | "conflict" | "invalid" | "stale" | "retained" | "malformed-preflight" | "malformed-remove" | "malformed-already-absent" | "malformed-manifest" | "apply-conflict";
 type Fixture = {
   root: string;
   checkout: string;
@@ -37,12 +37,19 @@ const log = process.env.FAKE_LOG;
 const record = (line) => fs.appendFileSync(log, line + "\\n");
 record("cli " + args.join(" "));
 const mode = process.env.FAKE_PLAN_MODE || "success";
-const plan = { hosts: ["codex", "grok"], clean: true, dry_run: true, applied: false, targets: [], active_tickets: [], constraints: [] };
+const plan = { hosts: ["codex", "grok"], clean: true, dry_run: true, applied: false, targets: [], active_tickets: [], retained_runtime_records: [], constraints: [] };
 if (args[0] === "uninstall" && args.includes("--dry-run")) {
   if (mode === "active") plan.active_tickets = [{ path: "~/.baton/workspaces/active/v2/spawns/ticket.json", ticket_id: "ticket-active", status: "running", host: "codex" }];
   if (mode === "conflict") plan.targets = [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", host: "codex", reason: "skill was modified or ownership is ambiguous" }];
   if (mode === "invalid") plan.constraints = ["UNINSTALL_STATE_INVALID: malformed runtime state"];
   if (mode === "stale") plan.targets = [{ action: "remove", path: "~/.baton/stale", reason: "clean removes Baton-owned global file", expected_kind: "file", expected_mode: 420, expected_fingerprint: "stale" }];
+  if (mode === "retained") {
+    plan.retained_runtime_records = [{ path: "~/.baton/workspaces/example/v2/runs/rolling-runs-v2/run-1/facts.ndjson", kind: "rolling-run-v2", reason: "retain auditable rolling execution record" }];
+    plan.constraints = [
+      "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
+      "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
+    ];
+  }
   if (mode === "malformed-preflight") {
     console.log(JSON.stringify({ hosts: plan.hosts, clean: true, dry_run: true, targets: [], active_tickets: [], constraints: [] }));
     process.exit(0);
@@ -111,7 +118,16 @@ if [ "\${1:-}" = "run" ] && { [ "\${2:-}" = "test" ] || [ "\${2:-}" = "check" ];
   [ "\${FAKE_FAIL:-}" = "check" ] && exit 23
   exit 0
 fi
-if [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build" ]; then [ "\${FAKE_FAIL:-}" = "build" ] && exit 24 || cp "$FAKE_CLI_TEMPLATE" "$FAKE_CHECKOUT/dist/bin/baton.js"; chmod +x "$FAKE_CHECKOUT/dist/bin/baton.js"; exit 0; fi
+if [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build" ]; then
+  [ "\${FAKE_FAIL:-}" = "build" ] && exit 24
+  cp "$FAKE_CLI_TEMPLATE" "$FAKE_CHECKOUT/dist/bin/baton.js"
+  chmod +x "$FAKE_CHECKOUT/dist/bin/baton.js"
+  mkdir -p "$FAKE_CHECKOUT/dist/src/lib"
+  for module in worktree-setup worktree-audit worktree-bundle worktree-integration worktree-lifecycle; do
+    touch "$FAKE_CHECKOUT/dist/src/lib/$module.js"
+  done
+  exit 0
+fi
 if [ "\${1:-}" = "link" ]; then [ "\${FAKE_FAIL:-}" = "link" ] && exit 25 || ln -sfn "$FAKE_CHECKOUT/dist/bin/baton.js" "$FAKE_BIN/baton"; exit 0; fi
 if [ "\${1:-}" = "remove" ] || [ "\${1:-}" = "uninstall" ] || [ "\${1:-}" = "unlink" ]; then [ "\${FAKE_FAIL:-}" = "remove" ] && exit 26 || rm -f "$FAKE_BIN/baton"; exit 0; fi
 exit 0
@@ -328,6 +344,19 @@ describe("isolated local Baton installer", () => {
     assert.equal(lines.some((line) => line.startsWith("cli init")), true);
     assert.equal(lines.some((line) => line.startsWith("cli version")), true);
     assert.equal(lines.some((line) => line.includes("cli uninstall --clean --dry-run --json")), true);
+  });
+
+  it("accepts auditable rolling-run retention records from clean uninstall", () => {
+    const f = fixture();
+    setupPriorInstall(f);
+    f.env.FAKE_PLAN_MODE = "retained";
+
+    const result = runInstaller(f, ["--skip-install", "--skip-tests"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /clean-reinstalled/i);
+    const lines = logLines(f);
+    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --dry-run --json")), true);
+    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --yes --json")), true);
   });
 
   it("installs a partial footprint even without a visible command or package registration", () => {

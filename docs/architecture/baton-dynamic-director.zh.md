@@ -106,6 +106,70 @@ baseline 校验。`--status` 只读，`--accept-gate` 记录 parent 证据，只
 `--read-only` 仍兼容；compiled 模式拒绝手工 scope flag。上述失败路径都
 fail closed，不猜测 route，也不接受部分结果。
 
+## Rolling execution planning v2
+
+通用 rolling kernel 移除了“必须先完成整份 change 规划”的启动门。只要一个有界
+`PlanDelta` 已包含完整且依赖就绪的 unit，Baton 就接受它、派发当前最大安全
+frontier，并允许在已有 native attempt queued、running、terminal 或 accepted 时
+继续追加后续 delta。manifest 中尚未规划的任务不会为首个 unit 增加仓库读取或
+语义拆解前提。
+
+`TaskSourceDescriptor` 让 kernel 与来源解耦。内置 director adapter 从调用方拥有
+的稳定 id 派生 task key；OpenSpec adapter 用 Markdown 稳定任务号做 reconciliation
+identity，Apply ordinal 只保留为非权威元数据。因此 Apply 结果重排不会改变任务
+所有权。
+
+每个已接受 unit/gate version 都有局部不可变 fingerprint。delta 的 append sequence
+只用于存储并发比较；追加无关工作不会使 active ticket 失效。只有 undispatched 或
+failed lineage 可以 supersede。调度失败、route 失败、输入 stale、gate 失败和
+`PLAN_INSUFFICIENT` 都只归属最小本地 owner。
+
+三类 gate 是 `safety-precondition`、`integration-acceptance` 和 `evidence`，只阻断
+显式依赖。terminal result、safety verdict、parent acceptance 与 release 是四类
+独立事实。已知 unit 全部通过后 task 仍保持 open；只有覆盖全部非 superseded
+版本的精确 seal，再加 source-adapter reconciliation，才能完成任务。
+
+来源中立的控制面为：
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+append-only log 与不可变 accepted documents 位于当前 workspace runtime 的
+`runs/rolling-runs-v2/`；checkpoint 只是可重建派生缓存。reconnect recovery 会把
+这些 facts 与普通 ticket、Receipt、reservation、bound native handle、terminal
+result、release 做幂等合并。clean uninstall 会清点并保留可审计 rolling run。
+compiled-v1 与手工 apply 记录继续按原协议读取，绝不会被静默迁移。
+
+### 隔离 worktree 数据面
+
+rolling log 是控制面；每个写入 unit 默认使用 verified detached worktree 作为
+数据面，read-only unit 不需要 worktree。frontier ticket 创建前，adapter 必须声明
+exact-root 支持；Baton 必须解析唯一 owning repository、冻结不可变 base、创建规范
+run/unit/attempt root，并证明 caller 的 HEAD、index、refs 和 dirty facts 没有移动。
+只准备当前容量 frontier，因此 open-world planning 不会退化为全 change eager setup。
+
+执行所有权键是 `(repository_id, execution_root, normalized_path)`：同一 root 内
+继续严格排除重叠，不同 root 可做 speculative overlap。跨 root 重叠成为确定性的
+integration risk，而不是并发修改 caller。
+
+terminal release 后，Baton 审计完整 root，并冻结包含 base/result tree、non-text
+facts、Receipt lineage 和 internal Git transport 的 `ChangeBundle v1`。每个 repository
+只有一个串行 parent queue。application 和 conflict resolution 在隔离 object plumbing
+中完成；只有最终 acceptance 在重新校验 baseline 后修改 caller。bundle ready、
+integration、parent acceptance、task seal 与 source reconciliation 始终是不同事实。
+
+submodule 保留字面 repository ownership：submodule bundle 在 submodule object
+database 内建立、审计和集成，后续 superproject unit 才负责 mode-160000 gitlink。
+recovery 对齐精确 record、registered worktree、internal ref、bundle、integration
+context 和 native liveness。cleanup 只有在 retention reason 清空且 identity 完全匹配
+时才移除 eligible attempt。
+
 ## Director 与调度
 
 director 负责讨论、只读分析、分类、依赖排序、授权和仓库 scope。

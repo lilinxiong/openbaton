@@ -308,6 +308,34 @@ describe("frontier conflict graph", () => {
 
     assert.ok(graph.blockedByActiveOwnership.has("u1"));
   });
+
+  it("namespaces overlaps by repository and execution root while reporting cross-root integration risk", () => {
+    const plan = frontierPlan([
+      { id: "same", mode: "patch-only", task_ids: ["t1"], write_paths: ["src/shared.ts"], allowed_operations: ["write"] },
+      { id: "otherRoot", mode: "patch-only", task_ids: ["t2"], write_paths: ["src/shared.ts"], allowed_operations: ["write"] },
+      { id: "otherRepo", mode: "patch-only", task_ids: ["t3"], write_paths: ["src/shared.ts"], allowed_operations: ["write"] },
+    ]);
+    const graph = buildFrontierConflictGraph(plan, ["same", "otherRoot", "otherRepo"], {
+      ownershipByUnit: {
+        same: { repository_id: "a".repeat(64), execution_root: "/worktrees/root-a", base_tree: "1".repeat(40) },
+        otherRoot: { repository_id: "a".repeat(64), execution_root: "/worktrees/root-b", base_tree: "1".repeat(40) },
+        otherRepo: { repository_id: "b".repeat(64), execution_root: "/worktrees/root-a", base_tree: "1".repeat(40) },
+      },
+      activeOwnership: [{
+        key: "running-same-root", repository_id: "a".repeat(64), execution_root: "/worktrees/root-a",
+        facts: [{ unit_id: "running-same-root", path: "src/shared.ts", kind: "path" }],
+      }],
+    });
+
+    assert.deepEqual(graph.conflicts.get("same"), []);
+    assert.equal(graph.blockedByActiveOwnership.has("same"), true);
+    assert.equal(graph.blockedByActiveOwnership.has("otherRoot"), false);
+    assert.equal(graph.blockedByActiveOwnership.has("otherRepo"), false);
+    assert.deepEqual(graph.integration_conflict_risks.map((risk) => [risk.from, risk.to]), [
+      ["otherRoot", "running-same-root"],
+      ["same", "otherRoot"],
+    ]);
+  });
 });
 
 describe("independent-set selection", () => {

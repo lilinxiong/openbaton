@@ -21,6 +21,21 @@ describe("write scope hard gate", () => {
     );
   });
 
+  it("namespaces overlapping paths by exact repository and execution root", () => {
+    assert.doesNotThrow(() => assertDisjointWriteScopes([
+      { key: "one", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src/shared.ts"] },
+      { key: "two", repository_id: "repo", execution_root: "/isolated/two", write_paths: ["src/shared.ts"] },
+    ]));
+    assert.throws(() => assertDisjointWriteScopes([
+      { key: "one", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src"] },
+      { key: "two", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src/shared.ts"] },
+    ]), /WRITE_SCOPE_CONFLICT/);
+    assert.throws(() => assertDisjointWriteScopes([
+      { key: "isolated", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src/shared.ts"] },
+      { key: "legacy", write_paths: ["src/shared.ts"] },
+    ]), /WRITE_SCOPE_CONFLICT/);
+  });
+
   it("keeps operations per apply unit and preserves the default", () => {
     const scopes = parseApplyUnitScopes([
       "--unit", "1.1", "--write-path", "src/a.ts", "--write-ops", "write,delete",
