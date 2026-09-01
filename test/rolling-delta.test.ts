@@ -148,6 +148,27 @@ describe("rolling PlanDelta semantic validation", () => {
     }
   });
 
+  it("diagnoses malformed fixed-fact task claims without throwing", () => {
+    const malformedFacts = {
+      ...facts(),
+      unit_versions: [{ ...unit(), task_keys: undefined }],
+      gate_versions: [{ ...gate(), task_keys: undefined }],
+    } as unknown as PlanDeltaValidationContext;
+    const result = validatePlanDeltaAgainstFacts(delta({
+      unit_versions: [],
+      gate_versions: [],
+      task_coverage: [{
+        schema_version: 1,
+        task_key: "task-1",
+        kind: "unit",
+        unit_versions: ["unit-1@1"],
+        gate_versions: ["gate-1@1"],
+      }],
+    }), malformedFacts);
+    assert.equal(result.valid, false);
+    assert.equal(result.diagnostics.filter((item) => item.code === "COVERAGE_TASK_MISMATCH").length, 2);
+  });
+
   it("checks supersession references and throws the local assertion error", () => {
     const result = validatePlanDeltaAgainstFacts(delta({
       supersessions: [{
@@ -165,4 +186,3 @@ describe("rolling PlanDelta semantic validation", () => {
     }), facts()), (cause: unknown) => cause instanceof RollingDeltaValidationError);
   });
 });
-

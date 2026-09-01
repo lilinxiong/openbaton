@@ -954,7 +954,7 @@ function checkCoverage(delta: PlanDelta, index: FactIndex, diagnostics: RollingD
       const fact = resolveVersion(ref, index.units);
       if (!fact || !parseVersionRef(ref)) {
         issue(diagnostics, "UNKNOWN_COVERAGE_REFERENCE", `coverage references unknown unit version ${ref}`, `${pathName}.unit_versions`, [value.task_key, ref]);
-      } else if (!fact.value.task_keys.includes(value.task_key)) {
+      } else if (!Array.isArray(fact.value.task_keys) || !fact.value.task_keys.includes(value.task_key)) {
         issue(diagnostics, "COVERAGE_TASK_MISMATCH", `unit version ${ref} does not claim task ${value.task_key}`, `${pathName}.unit_versions`, [value.task_key, ref]);
       } else coveredUnits.add(fact.id);
     }
@@ -962,7 +962,7 @@ function checkCoverage(delta: PlanDelta, index: FactIndex, diagnostics: RollingD
       const fact = resolveVersion(ref, index.gates);
       if (!fact || !parseVersionRef(ref)) {
         issue(diagnostics, "UNKNOWN_COVERAGE_REFERENCE", `coverage references unknown gate version ${ref}`, `${pathName}.gate_versions`, [value.task_key, ref]);
-      } else if (!fact.value.task_keys.includes(value.task_key)) {
+      } else if (!Array.isArray(fact.value.task_keys) || !fact.value.task_keys.includes(value.task_key)) {
         issue(diagnostics, "COVERAGE_TASK_MISMATCH", `gate version ${ref} does not claim task ${value.task_key}`, `${pathName}.gate_versions`, [value.task_key, ref]);
       } else coveredGates.add(fact.id);
     }
