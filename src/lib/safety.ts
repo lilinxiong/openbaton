@@ -75,7 +75,7 @@ export interface SafetyViolation {
   code: string;
   path?: string;
   original_path?: string;
-  operation?: SafetyOperation;
+  operation?: SafetyOperation | "copy";
   message: string;
 }
 

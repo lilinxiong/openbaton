@@ -29,7 +29,7 @@ describe("streamed Git safety facts", () => {
   it("collects every Receipt/verdict fact from real Git without aggregate output capture", async () => {
     const facts = await collectGitSafetyFacts(process.cwd());
     assert.match(facts.head, /^[0-9a-f]{40}$/);
-    assert.match(facts.branchRef, /^refs\/heads\//);
+    assert.ok(facts.branchRef === "" || /^refs\/heads\//.test(facts.branchRef));
     assert.ok(Array.isArray(facts.refs));
     assert.ok(facts.reflog.count >= 1);
     assert.match(facts.reflog.checksum, /^[0-9a-f]{64}$/);

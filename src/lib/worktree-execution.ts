@@ -22,6 +22,8 @@ import {
 } from "./paths.js";
 import type { SafetyOperation } from "./safety.js";
 
+export type ChangeBundleOperation = SafetyOperation | "copy";
+
 export const WORKTREE_RECORD_SCHEMA_VERSION = 2 as const;
 export const SNAPSHOT_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION = 1 as const;
@@ -149,13 +151,15 @@ export interface ChangeBundleManifest {
   git_common_dir_identity: string;
   base_tree: string;
   result_tree: string;
-  operations: SafetyOperation[];
+  operations: ChangeBundleOperation[];
   changed_paths: string[];
   non_text_facts: Record<string, unknown>;
   transport: Record<string, unknown>;
   validation_summaries: string[];
   terminal_conclusion: string;
   safety_verdict: "safe" | "rejected";
+  /** New bundles freeze this explicit integration-readiness verdict. */
+  state?: "ready_for_integration" | "rejected";
   retention_reasons: RetentionReason[];
   created_at: string;
   fingerprint: string;
@@ -263,7 +267,7 @@ const RETENTION_REASONS = new Set<RetentionReason>([
 ]);
 const CLEANUP_STATUSES = new Set<CleanupStatus>(["retained", "eligible", "cleaning", "cleaned", "failed"]);
 const INTEGRATION_STATES = new Set<IntegrationState>(["queued", "integrating", "awaiting_parent_resolution", "integrated", "accepted", "failed"]);
-const OPERATIONS = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
+const OPERATIONS = new Set<ChangeBundleOperation>(["write", "create", "delete", "rename", "copy", "chmod"]);
 
 const ALLOWED_TRANSITIONS = new Set<string>([
   "preparing>worker_active",
@@ -497,7 +501,7 @@ export function validateChangeBundleManifest(input: unknown): RollingValidationR
   const result = validateManifestCommon(input, root, CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION, [
     "schema_version", "bundle_id", "run_id", "unit_key", "unit_version", "attempt_id", "receipt_id", "repository_id",
     "git_common_dir_identity", "base_tree", "result_tree", "operations", "changed_paths", "non_text_facts", "transport",
-    "validation_summaries", "terminal_conclusion", "safety_verdict", "retention_reasons", "created_at", "fingerprint",
+    "validation_summaries", "terminal_conclusion", "safety_verdict", "state", "retention_reasons", "created_at", "fingerprint",
   ]);
   const diagnostics = result.diagnostics;
   const value = result.value;
@@ -512,6 +516,8 @@ export function validateChangeBundleManifest(input: unknown): RollingValidationR
     uniqueStrings(value.validation_summaries, null, `${root}.validation_summaries`, diagnostics);
     if (!text(value.terminal_conclusion)) add(diagnostics, "INVALID_SHAPE", "terminal_conclusion is required", `${root}.terminal_conclusion`);
     if (value.safety_verdict !== "safe" && value.safety_verdict !== "rejected") add(diagnostics, "INVALID_STATE", "unsupported safety_verdict", `${root}.safety_verdict`);
+    if (value.state !== undefined && value.state !== "ready_for_integration" && value.state !== "rejected") add(diagnostics, "INVALID_STATE", "unsupported bundle state", `${root}.state`);
+    if (value.state === "ready_for_integration" && value.safety_verdict !== "safe") add(diagnostics, "INVALID_STATE", "only a safe bundle may be ready for integration", `${root}.state`);
     uniqueStrings(value.retention_reasons, RETENTION_REASONS as Set<string>, `${root}.retention_reasons`, diagnostics);
   }
   return { valid: diagnostics.length === 0, diagnostics, ...(diagnostics.length ? {} : { value: input as ChangeBundleManifest }) };

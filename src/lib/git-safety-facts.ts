@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { collectGitScalar, GitSafetyError, runGitProcess, type GitProcessOptions } from "./git-safety-process.js";
 import {
@@ -10,6 +11,7 @@ import {
 import {
   consumeModeChangeSummary,
   consumeLineRecords,
+  consumeNulRecords,
   consumePorcelainV1Z,
   consumeRefRecords,
   consumeReflogSummary,
@@ -86,6 +88,40 @@ export interface StableGitSafetyFacts extends GitSafetyFacts {
   stabilityToken: GitSafetyStabilityToken;
 }
 
+export type GitTreeChangeOperation = "write" | "create" | "delete" | "rename" | "copy" | "chmod";
+
+/** One lossless raw-tree delta. Object ids and modes are authoritative. */
+export interface GitTreeChangeFact {
+  status: "A" | "C" | "D" | "M" | "R" | "T";
+  score?: number;
+  operation: GitTreeChangeOperation;
+  path: string;
+  original_path?: string;
+  old_mode: string;
+  new_mode: string;
+  old_object: string;
+  new_object: string;
+  binary: boolean;
+}
+
+/** A stable terminal filesystem image plus its immutable base-to-result facts. */
+export interface StableGitTerminalTreeFacts {
+  baseTree: string;
+  resultTree: string;
+  changes: GitTreeChangeFact[];
+  binaryPaths: string[];
+  symlinkPaths: string[];
+  gitlinkPaths: string[];
+  modeChangedPaths: string[];
+  baseIndexControl: GitIndexControlFingerprint;
+  terminal: StableGitSafetyFacts;
+}
+
+export interface StableGitTerminalTreeOptions extends GitSafetyFactsOptions {
+  collectFacts?: StableGitSafetyFactsOptions["collectFacts"];
+  collectToken?: StableGitSafetyFactsOptions["collectToken"];
+}
+
 export type GitSafetyFactsOptions = {
   indexControlAlgorithm?: typeof GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM;
   spawn?: GitProcessOptions["spawn"];
@@ -111,6 +147,7 @@ export async function streamGitSafetyFact<T>(
   args: string[],
   consume: FactConsumer<T>,
   spawn?: GitProcessOptions["spawn"],
+  env?: NodeJS.ProcessEnv,
 ): Promise<T> {
   let consumer: Promise<T> | undefined;
   let slot: { chunk: Buffer; ack: Ack } | undefined;
@@ -153,6 +190,7 @@ export async function streamGitSafetyFact<T>(
       cwd,
       args,
       spawn,
+      env,
       signal: abortController.signal,
       onStdout: (chunk) => {
         if (consumerFailure !== undefined) return Promise.reject(consumerFailure);
@@ -350,4 +388,196 @@ export async function captureStableSafetyFacts(
     if (sameStabilityToken(expected, actual)) return { ...facts, stabilityToken: expected };
   }
   throw raceError(purpose);
+}
+
+function malformedTreeFacts(message: string): GitSafetyError {
+  return new GitSafetyError({
+    code: "GIT_SAFETY_STREAM_MALFORMED",
+    command: "git diff-tree --raw -z",
+    message,
+  });
+}
+
+function operationForTreeStatus(status: GitTreeChangeFact["status"], oldMode: string, newMode: string): GitTreeChangeOperation {
+  if (status === "A") return "create";
+  if (status === "D") return "delete";
+  if (status === "R") return "rename";
+  if (status === "C") return "copy";
+  if (status === "T" || oldMode !== newMode) return "chmod";
+  return "write";
+}
+
+/** Parse `git diff-tree --raw -z` incrementally without aggregate buffering. */
+export async function consumeGitRawTreeChanges(chunks: AsyncIterable<Buffer>): Promise<GitTreeChangeFact[]> {
+  const changes: GitTreeChangeFact[] = [];
+  let metadata: Omit<GitTreeChangeFact, "path" | "original_path" | "binary"> | undefined;
+  let paths: string[] = [];
+  await consumeNulRecords(chunks, (record) => {
+    if (!metadata) {
+      const value = record.toString("utf8");
+      const match = value.match(/^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([ACDMRT])(\d*)$/u);
+      if (!match) throw malformedTreeFacts("Git returned a malformed raw tree-change record");
+      const status = match[5] as GitTreeChangeFact["status"];
+      const oldMode = match[1]!;
+      const newMode = match[2]!;
+      metadata = {
+        status,
+        ...(match[6] ? { score: Number.parseInt(match[6], 10) } : {}),
+        operation: operationForTreeStatus(status, oldMode, newMode),
+        old_mode: oldMode,
+        new_mode: newMode,
+        old_object: match[3]!,
+        new_object: match[4]!,
+      };
+      paths = [];
+      return;
+    }
+    paths.push(record.toString("utf8"));
+    const expected = metadata.status === "R" || metadata.status === "C" ? 2 : 1;
+    if (paths.length < expected) return;
+    if (paths.some((item) => !item)) throw malformedTreeFacts("Git returned an empty raw tree-change path");
+    changes.push({
+      ...metadata,
+      path: paths[expected - 1]!,
+      ...(expected === 2 ? { original_path: paths[0]! } : {}),
+      binary: false,
+    });
+    metadata = undefined;
+    paths = [];
+  });
+  if (metadata) throw malformedTreeFacts("Git returned an incomplete raw tree-change record");
+  return changes;
+}
+
+/** Parse `git diff-tree --numstat -z --no-renames` and retain only binary paths. */
+export async function consumeGitBinaryPaths(chunks: AsyncIterable<Buffer>): Promise<string[]> {
+  const paths = new Set<string>();
+  await consumeNulRecords(chunks, (record) => {
+    const first = record.indexOf(0x09);
+    const second = first < 0 ? -1 : record.indexOf(0x09, first + 1);
+    if (first < 0 || second < 0 || second === record.length - 1) {
+      throw malformedTreeFacts("Git returned a malformed numstat record");
+    }
+    const added = record.subarray(0, first).toString("ascii");
+    const deleted = record.subarray(first + 1, second).toString("ascii");
+    const pathname = record.subarray(second + 1).toString("utf8");
+    if ((added === "-") !== (deleted === "-") || (added !== "-" && (!/^\d+$/u.test(added) || !/^\d+$/u.test(deleted)))) {
+      throw malformedTreeFacts("Git returned invalid numstat counters");
+    }
+    if (added === "-") paths.add(pathname);
+  });
+  return [...paths].sort();
+}
+
+function terminalSurfaceFingerprint(facts: StableGitSafetyFacts): string {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    head: facts.head,
+    branch: facts.branch,
+    branch_ref: facts.branchRef,
+    staged_tree: facts.stagedTree,
+    staged_paths: facts.stagedPaths,
+    dirty_entries: facts.dirtyEntries,
+    untracked_exists: facts.untrackedExists,
+    mode_changed_paths: [...facts.modeChangedPaths].sort(),
+    git_operation: facts.gitOperation ?? null,
+    commit: facts.commit ?? null,
+    stability_token: facts.stabilityToken,
+  })).digest("hex");
+}
+
+async function materializeVisibleResultTree(
+  repoRoot: string,
+  baseTree: string,
+  indexFile: string,
+  spawn?: GitProcessOptions["spawn"],
+): Promise<string> {
+  const env = { GIT_INDEX_FILE: indexFile };
+  await runGitProcess({ cwd: repoRoot, args: ["read-tree", baseTree], env, spawn });
+  await runGitProcess({ cwd: repoRoot, args: ["add", "-A", "--", "."], env, spawn });
+  return collectGitScalar({ cwd: repoRoot, args: ["write-tree"], env, spawn });
+}
+
+async function collectBaseIndexControl(
+  repoRoot: string,
+  baseTree: string,
+  indexFile: string,
+  spawn?: GitProcessOptions["spawn"],
+): Promise<GitIndexControlFingerprint> {
+  const env = { GIT_INDEX_FILE: indexFile };
+  await runGitProcess({ cwd: repoRoot, args: ["read-tree", baseTree], env, spawn });
+  return streamGitSafetyFact(
+    repoRoot,
+    ["ls-files", "--debug", "-z"],
+    (chunks) => consumeGitIndexControlV2(chunks),
+    spawn,
+    env,
+  );
+}
+
+/**
+ * Freeze the visible terminal root twice through independent alternate indexes.
+ * The tree is returned only when both complete captures and all control facts
+ * agree, so a concurrent writer cannot produce a mixed-time accepted bundle.
+ */
+export async function captureStableGitTerminalTree(
+  repoRoot: string,
+  immutableBase: string,
+  options: StableGitTerminalTreeOptions = {},
+): Promise<StableGitTerminalTreeFacts> {
+  const root = fs.realpathSync(repoRoot);
+  const baseTree = await collectGitScalar({ cwd: root, args: ["rev-parse", `${immutableBase}^{tree}`], spawn: options.spawn });
+  const stableOptions: StableGitSafetyFactsOptions = {
+    purpose: "audit",
+    spawn: options.spawn,
+    collectFacts: options.collectFacts,
+    collectToken: options.collectToken,
+    indexControlAlgorithm: options.indexControlAlgorithm,
+  };
+  const before = await captureStableSafetyFacts(root, stableOptions);
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "baton-terminal-audit-"));
+  try {
+    const firstTree = await materializeVisibleResultTree(root, baseTree, path.join(temporaryRoot, "index-first"), options.spawn);
+    const baseIndexControl = await collectBaseIndexControl(root, baseTree, path.join(temporaryRoot, "index-base"), options.spawn);
+    const middle = await captureStableSafetyFacts(root, stableOptions);
+    const secondTree = await materializeVisibleResultTree(root, baseTree, path.join(temporaryRoot, "index-second"), options.spawn);
+    const after = await captureStableSafetyFacts(root, stableOptions);
+    if (firstTree !== secondTree
+      || terminalSurfaceFingerprint(before) !== terminalSurfaceFingerprint(middle)
+      || terminalSurfaceFingerprint(middle) !== terminalSurfaceFingerprint(after)) {
+      throw new GitSafetyError({
+        code: "GIT_AUDIT_RACED",
+        command: "git safety stable terminal tree",
+        message: "Git terminal worktree changed during the complete audit",
+      });
+    }
+    const changes = await streamGitSafetyFact(
+      root,
+      ["diff-tree", "--no-commit-id", "-r", "--raw", "-z", "--no-abbrev", "-M", "-C", "--find-copies-harder", baseTree, secondTree],
+      consumeGitRawTreeChanges,
+      options.spawn,
+    );
+    const binaryPaths = await streamGitSafetyFact(
+      root,
+      ["diff-tree", "--no-commit-id", "-r", "--numstat", "-z", "--no-renames", baseTree, secondTree],
+      consumeGitBinaryPaths,
+      options.spawn,
+    );
+    const binary = new Set(binaryPaths);
+    for (const change of changes) change.binary = binary.has(change.path) || Boolean(change.original_path && binary.has(change.original_path));
+    return {
+      baseTree,
+      resultTree: secondTree,
+      changes,
+      binaryPaths,
+      symlinkPaths: changes.filter((change) => change.old_mode === "120000" || change.new_mode === "120000")
+        .flatMap((change) => [change.original_path, change.path].filter((item): item is string => Boolean(item))).filter((item, index, all) => all.indexOf(item) === index).sort(),
+      gitlinkPaths: changes.filter((change) => change.old_mode === "160000" || change.new_mode === "160000")
+        .flatMap((change) => [change.original_path, change.path].filter((item): item is string => Boolean(item))).filter((item, index, all) => all.indexOf(item) === index).sort(),
+      modeChangedPaths: changes.filter((change) => change.old_mode !== change.new_mode).map((change) => change.path).sort(),
+      baseIndexControl,
+      terminal: after,
+    };
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 }
