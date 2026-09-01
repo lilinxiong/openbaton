@@ -73,6 +73,18 @@ export interface TaskSourceReconcileRequest {
   expected_source_fingerprint: string;
 }
 
+export interface TaskSourceBatchReconcileItem {
+  task_key: string;
+  conclusion: string;
+  expected_source_fingerprint: string;
+  expected_source_state: TaskManifestEntry["source_state"];
+}
+
+export interface TaskSourceBatchReconcileRequest {
+  source: TaskSourceDescriptor;
+  items: readonly TaskSourceBatchReconcileItem[];
+}
+
 export interface TaskSourceDiagnosticsRequest {
   source: TaskSourceDescriptor;
   operation?: "discover" | "refresh" | "reconcile";
@@ -107,6 +119,7 @@ export type TaskSourceOperationResult<T> = TaskSourceResult<T>;
 export type TaskSourceDiscoveryResult = TaskSourceResult<TaskManifestPage>;
 export type TaskSourceRefreshResult = TaskSourceResult<readonly TaskManifestEntry[]>;
 export type TaskSourceReconcileResult = TaskSourceResult<TaskSourceReconciliation | TaskManifestEntry>;
+export type TaskSourceBatchReconcileResult = TaskSourceResult<readonly (TaskSourceReconciliation | TaskManifestEntry)[]>;
 export type TaskSourceDiagnosticsResult = TaskSourceResult<readonly TaskSourceDiagnostic[]>;
 
 /**
@@ -120,6 +133,9 @@ export interface TaskSourceAdapter {
   discover(request: TaskSourceDiscoverRequest): Promise<TaskManifestPage | TaskSourceDiscoveryResult> | TaskManifestPage | TaskSourceDiscoveryResult;
   refresh(request: TaskSourceRefreshRequest): Promise<readonly TaskManifestEntry[] | TaskSourceRefreshResult> | readonly TaskManifestEntry[] | TaskSourceRefreshResult;
   reconcile(request: TaskSourceReconcileRequest): Promise<TaskSourceReconciliation | TaskManifestEntry | TaskSourceReconcileResult> | TaskSourceReconciliation | TaskManifestEntry | TaskSourceReconcileResult;
+  /** Optional atomic multi-task writeback for sources whose task identities
+   * share one mutable container fingerprint, such as one OpenSpec tasks.md. */
+  reconcile_batch?(request: TaskSourceBatchReconcileRequest): Promise<readonly (TaskSourceReconciliation | TaskManifestEntry)[] | TaskSourceBatchReconcileResult> | readonly (TaskSourceReconciliation | TaskManifestEntry)[] | TaskSourceBatchReconcileResult;
   diagnostics?(request: TaskSourceDiagnosticsRequest): Promise<readonly TaskSourceDiagnostic[] | TaskSourceDiagnosticsResult> | readonly TaskSourceDiagnostic[] | TaskSourceDiagnosticsResult;
 }
 
@@ -307,6 +323,33 @@ export class TaskSourceAdapterRegistry {
       return available(raw as TaskSourceReconciliation | TaskManifestEntry);
     } catch (error) {
       return unavailable("RECONCILIATION_UNAVAILABLE", `task source ${adapter.id} is temporarily unavailable during reconciliation`, error);
+    }
+  }
+
+  async reconcileBatch(source: TaskSourceDescriptor, items: readonly TaskSourceBatchReconcileItem[]): Promise<TaskSourceBatchReconcileResult> {
+    const adapter = this.resolve(source);
+    const normalized = items.map((item) => ({ ...item }));
+    if (normalized.length === 0) return available([]);
+    if (!adapter.reconcile_batch) {
+      if (normalized.length !== 1) {
+        return unavailable("BATCH_RECONCILIATION_UNAVAILABLE", `task source ${adapter.id} does not support atomic batch reconciliation`);
+      }
+      const item = normalized[0]!;
+      const result = await this.reconcile(source, item.task_key, item.conclusion, item.expected_source_fingerprint);
+      return result.ok
+        ? available([result.value], result.diagnostics)
+        : { ok: false, status: "unavailable", diagnostics: result.diagnostics };
+    }
+    const request: TaskSourceBatchReconcileRequest = { source: sourceFor(adapter, source), items: normalized };
+    try {
+      const raw = await adapter.reconcile_batch(request);
+      if (isResult(raw)) {
+        if (raw.status === "unavailable") return raw as TaskSourceUnavailableResult<readonly (TaskSourceReconciliation | TaskManifestEntry)[]>;
+        return available(raw.value as readonly (TaskSourceReconciliation | TaskManifestEntry)[], raw.diagnostics);
+      }
+      return available(raw as readonly (TaskSourceReconciliation | TaskManifestEntry)[]);
+    } catch (error) {
+      return unavailable("RECONCILIATION_UNAVAILABLE", `task source ${adapter.id} is temporarily unavailable during batch reconciliation`, error);
     }
   }
 

@@ -12,6 +12,7 @@ import {
   resolveChangeDir,
   resolveOpenSpecApplyInstructions,
   writeTaskConclusionByNumber,
+  writeTaskConclusions,
 } from "./openspec.js";
 import { withOwnedLock } from "./owned-lock.js";
 import {
@@ -22,6 +23,7 @@ import {
 } from "./rolling-plan.js";
 import type {
   TaskSourceAdapter,
+  TaskSourceBatchReconcileRequest,
   TaskSourceDiagnostic,
   TaskSourceDiscoverRequest,
   TaskSourceReconcileRequest,
@@ -125,6 +127,32 @@ function previousWriteFingerprint(text: string, line: number, conclusion: string
   if (line < 0 || line >= lines.length || conclusionAt(text, line) !== conclusion) return null;
   lines[line] = lines[line].replace(/^(\s*)- \[[xX]\]/, "$1- [ ]");
   lines.splice(line + 1, 1);
+  return crypto.createHash("sha256").update(lines.join(separator), "utf8").digest("hex");
+}
+
+function previousBatchWriteFingerprint(
+  text: string,
+  targets: readonly { number: string; conclusion: string; expected_source_state: TaskManifestEntry["source_state"] }[],
+): string | null {
+  const separator = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.split(/\r?\n/);
+  const tasks = new Map(parseTasks(text).map((task) => [task.number, task]));
+  const pendingWrites = targets
+    .filter((target) => target.expected_source_state === "pending")
+    .map((target) => {
+      const task = tasks.get(target.number);
+      if (!task || task.status !== "done" || conclusionAt(text, task.line_index) !== target.conclusion) return null;
+      return task;
+    });
+  if (pendingWrites.some((task) => task === null)) return null;
+  for (const target of targets.filter((item) => item.expected_source_state === "complete")) {
+    const task = tasks.get(target.number);
+    if (!task || task.status !== "done" || conclusionAt(text, task.line_index) !== target.conclusion) return null;
+  }
+  for (const task of (pendingWrites as Exclude<(typeof pendingWrites)[number], null>[]).sort((left, right) => right.line_index - left.line_index)) {
+    lines[task.line_index] = lines[task.line_index]!.replace(/^(\s*)- \[[xX]\]/, "$1- [ ]");
+    lines.splice(task.line_index + 1, 1);
+  }
   return crypto.createHash("sha256").update(lines.join(separator), "utf8").digest("hex");
 }
 
@@ -257,6 +285,75 @@ export class OpenSpecTaskSourceAdapter implements TaskSourceAdapter {
         return { task, identity: readTaskLedgerIdentity(before.path) };
       }, { operation: "openspec-task-reconcile" });
       return { ok: true, status: "available", value: { task_key: request.task_key, source_fingerprint: result.identity.sha256, source_state: "complete", source_ref: { change: selected.change, number, tasks_path: result.identity.path }, conclusion: cleanConclusion(request.conclusion) }, diagnostics: [] };
+    } catch (error) {
+      if (error instanceof OpenSpecError && !["NOT_FOUND", "TASKS_MISSING", "NO_CHANGE", "EMPTY", "TASK_LEDGER_MISSING", "LEDGER_LOCKED", "TASK_LEDGER_CHANGED"].includes(error.code)) throw error;
+      if ((error as NodeJS.ErrnoException).code === "LOCK_BUSY" || (error instanceof Error && error.message.startsWith("lock is busy:"))) return unavailable("reconciliation", new OpenSpecError("OpenSpec task ledger is locked", "LEDGER_LOCKED"));
+      return unavailable("reconciliation", error);
+    }
+  }
+
+  reconcile_batch(request: TaskSourceBatchReconcileRequest): TaskSourceResult<readonly TaskSourceReconciliation[]> {
+    try {
+      if (request.items.length === 0) return { ok: true, status: "available", value: [], diagnostics: [] };
+      const selected = changeOf(request.source, this.options);
+      const targets = request.items.map((item) => ({
+        ...item,
+        number: numberFromKey(item.task_key, selected.change, request.source.source_ref),
+        conclusion: cleanConclusion(item.conclusion),
+      }));
+      if (new Set(targets.map((item) => item.task_key)).size !== targets.length) {
+        throw new OpenSpecError("OpenSpec batch reconciliation contains duplicate task keys", "TASK_ID_AMBIGUOUS");
+      }
+      const expected = new Set(targets.map((item) => item.expected_source_fingerprint));
+      if (expected.size !== 1) throw new OpenSpecError("OpenSpec batch reconciliation must use one source snapshot", "TASK_LEDGER_CHANGED");
+      const expectedFingerprint = targets[0]!.expected_source_fingerprint;
+      const changeDir = resolveChangeDir(selected.cwd, selected.change);
+      if (!changeDir) throw new OpenSpecError(`cannot resolve OpenSpec change: ${selected.change}`, "NO_CHANGE");
+      const ledgerPath = path.join(changeDir, "tasks.md");
+      const lockPath = `${ledgerPath}.baton.lock`;
+      const identity = withOwnedLock(lockPath, () => {
+        const before = readTaskLedgerIdentity(ledgerPath);
+        const sourceText = fs.readFileSync(before.path, "utf8");
+        const tasks = new Map(parseTasks(sourceText).map((task) => [task.number, task]));
+        for (const target of targets) {
+          const task = tasks.get(target.number);
+          if (!task) throw new OpenSpecError(`OpenSpec task number not found: ${target.number}`, "TASK_ID_NOT_FOUND");
+        }
+        if (before.sha256 !== expectedFingerprint) {
+          if (previousBatchWriteFingerprint(sourceText, targets) !== expectedFingerprint) {
+            throw new OpenSpecError("OpenSpec task ledger changed during batch reconciliation", "TASK_LEDGER_CHANGED");
+          }
+          return before;
+        }
+        const pending = new Map<string, string>();
+        for (const target of targets) {
+          const task = tasks.get(target.number)!;
+          if (target.expected_source_state === "complete") {
+            if (task.status !== "done" || conclusionAt(sourceText, task.line_index) !== target.conclusion) {
+              throw new OpenSpecError(`OpenSpec completed task differs during batch reconciliation: ${target.number}`, "TASK_WRITEBACK_FAILED");
+            }
+          } else if (target.expected_source_state === "pending" && task.status === "pending") {
+            pending.set(target.number, target.conclusion);
+          } else {
+            throw new OpenSpecError(`OpenSpec task state differs during batch reconciliation: ${target.number}`, "TASK_WRITEBACK_FAILED");
+          }
+        }
+        if (pending.size === 0) return before;
+        atomicWrite(before.path, writeTaskConclusions(sourceText, pending));
+        return readTaskLedgerIdentity(before.path);
+      }, { operation: "openspec-task-batch-reconcile" });
+      return {
+        ok: true,
+        status: "available",
+        value: targets.map((target) => ({
+          task_key: target.task_key,
+          source_fingerprint: identity.sha256,
+          source_state: "complete" as const,
+          source_ref: { change: selected.change, number: target.number, tasks_path: identity.path },
+          conclusion: target.conclusion,
+        })),
+        diagnostics: [],
+      };
     } catch (error) {
       if (error instanceof OpenSpecError && !["NOT_FOUND", "TASKS_MISSING", "NO_CHANGE", "EMPTY", "TASK_LEDGER_MISSING", "LEDGER_LOCKED", "TASK_LEDGER_CHANGED"].includes(error.code)) throw error;
       if ((error as NodeJS.ErrnoException).code === "LOCK_BUSY" || (error instanceof Error && error.message.startsWith("lock is busy:"))) return unavailable("reconciliation", new OpenSpecError("OpenSpec task ledger is locked", "LEDGER_LOCKED"));

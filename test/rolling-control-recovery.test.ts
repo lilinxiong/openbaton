@@ -361,4 +361,88 @@ describe("rolling control recovery", () => {
     assert.equal(reconciled.task_status[taskKey]?.state, "reconciled");
     assert.match(fs.readFileSync(tasksPath, "utf8"), /- \[x\] 1\.1 Stable task\n  - conclusion: stable task passed/);
   });
+
+  it("reconciles several sealed OpenSpec tasks atomically from one ledger fingerprint", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-openspec-batch-"));
+    const env = fakeEnv(fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-openspec-batch-home-")), { BATON_SESSION_ID: `rolling-openspec-batch-${Date.now()}` });
+    const changeDir = path.join(cwd, "openspec", "changes", "demo");
+    const tasksPath = path.join(changeDir, "tasks.md");
+    fs.mkdirSync(changeDir, { recursive: true });
+    fs.writeFileSync(tasksPath, "## Work\n\n- [ ] 1.1 First stable task\n- [ ] 1.2 Second stable task\n");
+    fs.writeFileSync(path.join(changeDir, "proposal.md"), "# Proposal\n");
+    const cli = path.join(cwd, "fake-openspec.mjs");
+    const applyPayload = {
+      changeName: "demo",
+      changeDir,
+      schemaName: "spec-driven",
+      contextFiles: { tasks: [tasksPath], proposal: [path.join(changeDir, "proposal.md")] },
+      tasks: [
+        { id: "77", description: "1.1 First stable task", done: false },
+        { id: "91", description: "1.2 Second stable task", done: false },
+      ],
+      instruction: "continue",
+    };
+    fs.writeFileSync(cli, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(applyPayload))});\n`);
+    fs.chmodSync(cli, 0o755);
+
+    const catalog = await getCliAdapter("alpha", env).discoverModels({ env });
+    const model = catalog.models[0]?.id;
+    assert.ok(model);
+    configureCli(cwd, env, "alpha", [model], { runner: model });
+    publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), { cli: "alpha", host: "alpha", env });
+    const taskKeys = ["openspec:demo:1.1", "openspec:demo:1.2"];
+    const source: TaskSourceDescriptor = {
+      schema_version: 1,
+      source_kind: "openspec",
+      adapter: "openspec",
+      selection: { change: "demo", cwd, cli },
+      source_ref: { change: "demo" },
+    };
+    const delta: PlanDelta = {
+      schema_version: 1,
+      delta_id: "openspec-batch-window",
+      prepared_from_append_sequence: 0,
+      unit_versions: [{
+        schema_version: 1,
+        unit_key: "openspec-batch-unit",
+        version: 1,
+        task_keys: taskKeys,
+        depends_on: [],
+        execution_mode: "verification-only",
+        route_profile: "runner",
+        prompt: "verify atomic OpenSpec reconciliation",
+        completion_criteria: ["batch verification accepted"],
+        permitted_validation: ["read"],
+        input_fingerprints: { fixture: "d".repeat(64) },
+      }],
+      gate_versions: [],
+      task_coverage: taskKeys.map((task_key) => ({ schema_version: 1, task_key, kind: "unit" as const, unit_versions: ["openspec-batch-unit@1"] })),
+    };
+
+    await startRollingControl({ cwd, env, run_id: "run-openspec-batch", host: "alpha", source, delta, dispatch: true });
+    const reservation = await reserveNext(cwd, { host: "alpha", env });
+    const ticketId = reservation.reserved[0]?.ticket_id;
+    assert.ok(ticketId);
+    const handle = { kind: getCliAdapter("alpha", env).host.executionHandleKind, value: "openspec-batch-native", source: "manual" as const };
+    bindAgent(cwd, ticketId, { host: "alpha", executionHandle: handle, env });
+    await finishAgent(cwd, ticketId, { host: "alpha", status: "completed", conclusion: "batch stable tasks passed", env });
+    releaseAgent(cwd, ticketId, { host: "alpha", executionHandle: handle, env });
+
+    const run = readRollingExecutionRun(cwd, "run-openspec-batch", { env });
+    for (const taskKey of taskKeys) {
+      const entry = run.manifest_entries.find((item) => item.task_key === taskKey)!;
+      await sealRollingTask({
+        cwd,
+        env,
+        run_id: "run-openspec-batch",
+        seal: { schema_version: 1, task_key: taskKey, required_unit_versions: ["openspec-batch-unit@1"], required_gate_versions: [], source_fingerprint: entry.source_fingerprint },
+      });
+    }
+    await reconcileRollingTasks({ cwd, env, run_id: "run-openspec-batch" });
+    const reconciled = await statusRollingControl({ cwd, env, run_id: "run-openspec-batch" });
+    assert.deepEqual(taskKeys.map((taskKey) => reconciled.task_status[taskKey]?.state), ["reconciled", "reconciled"]);
+    const ledger = fs.readFileSync(tasksPath, "utf8");
+    assert.match(ledger, /- \[x\] 1\.1 First stable task\n  - conclusion: batch stable tasks passed/);
+    assert.match(ledger, /- \[x\] 1\.2 Second stable task\n  - conclusion: batch stable tasks passed/);
+  });
 });

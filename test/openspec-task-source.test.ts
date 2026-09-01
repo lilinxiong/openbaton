@@ -100,4 +100,30 @@ describe("OpenSpec stable task source", () => {
     assert.equal(changed.status, "unavailable");
     assert.equal(changed.diagnostics[0]?.code, "TASK_LEDGER_CHANGED");
   });
+
+  it("atomically reconciles one shared ledger and replays a mixed complete/pending batch", async () => {
+    const f = fixture([{ id: "77", description: "1.1 First", done: true }, { id: "78", description: "1.2 Second", done: false }]);
+    fs.writeFileSync(f.tasksPath, "## Work\n\n- [x] 1.1 First\n  - conclusion: first accepted\n- [ ] 1.2 Second\n");
+    const adapter = new OpenSpecTaskSourceAdapter({ runner: f.runner, cli: "/fake/openspec" });
+    const page = adapter.discover({ source: f.source, limit: 10 });
+    assert.equal(page.status, "available");
+    if (page.status !== "available") return;
+    const first = page.value.entries.find((entry) => entry.display_id === "1.1")!;
+    const second = page.value.entries.find((entry) => entry.display_id === "1.2")!;
+    const request = {
+      source: f.source,
+      items: [
+        { task_key: first.task_key, conclusion: "first accepted", expected_source_fingerprint: first.source_fingerprint, expected_source_state: first.source_state },
+        { task_key: second.task_key, conclusion: "second accepted", expected_source_fingerprint: second.source_fingerprint, expected_source_state: second.source_state },
+      ],
+    };
+    const reconciled = adapter.reconcile_batch(request);
+    assert.equal(reconciled.status, "available");
+    const bytes = fs.readFileSync(f.tasksPath, "utf8");
+    assert.match(bytes, /- \[x\] 1\.1 First\n  - conclusion: first accepted/);
+    assert.match(bytes, /- \[x\] 1\.2 Second\n  - conclusion: second accepted/);
+    const replay = adapter.reconcile_batch(request);
+    assert.equal(replay.status, "available");
+    assert.equal(fs.readFileSync(f.tasksPath, "utf8"), bytes);
+  });
 });

@@ -707,25 +707,35 @@ export async function reconcileRollingTasks(input: ReconcileRollingTasksInput): 
   const status = await statusRollingControl(input);
   const targets = input.task_key ? [input.task_key] : status.tasks.filter((task) => task.state === "sealed").map((task) => task.task_key);
   if (!targets.length) throw new RollingControlError("no sealed rolling task is eligible for reconciliation", "ROLLING_RECONCILE_NOT_READY");
-  for (const taskKey of targets) {
-    const existing = run.facts.find((fact) => fact.kind === ROLLING_RECONCILIATION_DOCUMENT_KIND && record(fact.payload) && fact.payload.task_key === taskKey && fact.payload.status === "reconciled");
-    if (existing) continue;
+  const pending = targets.filter((taskKey) => !run.facts.some((fact) => fact.kind === ROLLING_RECONCILIATION_DOCUMENT_KIND && record(fact.payload) && fact.payload.task_key === taskKey && fact.payload.status === "reconciled"));
+  const requests = pending.map((taskKey) => {
     const task = status.task_status[taskKey];
     if (!task) throw new RollingControlError(`rolling task is unknown: ${taskKey}`, "ROLLING_TASK_UNKNOWN");
     if (task.state !== "sealed") throw new RollingControlError(`rolling task ${taskKey} is ${task.state}, not sealed`, "ROLLING_RECONCILE_NOT_READY");
     const entry = run.manifest_entries.find((item) => item.task_key === taskKey)!;
     const conclusion = acceptedConclusion(taskKey, run, recovered.tickets);
-    const result = await registry.reconcile(source, taskKey, conclusion, entry.source_fingerprint);
-    if (!result.ok) throw new RollingControlError(`rolling source reconciliation is unavailable for ${taskKey}`, "ROLLING_RECONCILIATION_UNAVAILABLE", result.diagnostics);
-    const payload = { task_key: taskKey, status: "reconciled", conclusion, source_result: result.value };
+    return { task_key: taskKey, conclusion, expected_source_fingerprint: entry.source_fingerprint, expected_source_state: entry.source_state };
+  });
+  if (!requests.length) return mutationResult(input, "ROLLING_TASKS_RECONCILED", null);
+  const result = requests.length === 1
+    ? await registry.reconcile(source, requests[0]!.task_key, requests[0]!.conclusion, requests[0]!.expected_source_fingerprint)
+    : await registry.reconcileBatch(source, requests);
+  if (!result.ok) throw new RollingControlError("rolling source reconciliation is unavailable for the sealed task batch", "ROLLING_RECONCILIATION_UNAVAILABLE", result.diagnostics);
+  const sourceResults = Array.isArray(result.value) ? result.value : [result.value];
+  const byTask = new Map(sourceResults.map((value) => [value.task_key, value]));
+  if (byTask.size !== requests.length || requests.some((request) => !byTask.has(request.task_key))) {
+    throw new RollingControlError("rolling source reconciliation returned an incomplete task batch", "ROLLING_RECONCILIATION_INCOMPLETE");
+  }
+  for (const request of requests) {
+    const payload = { task_key: request.task_key, status: "reconciled", conclusion: request.conclusion, source_result: byTask.get(request.task_key) };
     run = appendRollingFact({
       cwd: input.cwd,
       env: input.env,
       runId: input.run_id,
       kind: ROLLING_RECONCILIATION_DOCUMENT_KIND,
-      idempotency_key: `reconciliation:${taskKey}`,
-      fact_id: `reconciliation:${taskKey}`,
-      document_id: `reconciliation-${taskKey}`,
+      idempotency_key: `reconciliation:${request.task_key}`,
+      fact_id: `reconciliation:${request.task_key}`,
+      document_id: `reconciliation-${request.task_key}`,
       payload,
       document: payload,
       now: input.now,
