@@ -18,6 +18,8 @@ The delta intentionally omits `worktree_mode`: Baton persists
 and returns an exact-root ticket. After the native worker is bound, completed,
 and released, freeze and integrate the audited result using values from status:
 
+The first native launch may hold later tickets at `ROUTE_PROBE_PENDING` until the route reports one live probe; once proven, remaining capacity refills normally.
+
 ```text
 baton run rolling-sample --freeze-unit sample-write --attempt attempt-1 --text "sample result audited" --validation "sample validation passed" --json
 baton integration begin --run rolling-sample --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
