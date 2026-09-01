@@ -61,6 +61,31 @@ broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
 parent alone accepts gates and reconciles task checkboxes after all mapped units
 and gates pass; never complete a checkbox early.
 
+### Exact worker execution boundary
+
+For an isolated reservation, render and pass the exact canonical
+`execution_root`, the patch instructions unchanged, and the complete
+`permitted_validation` list. The execution root is the worker's only workspace
+boundary, not additional authorization: all paths and operations remain limited
+by the Receipt. Validation is not extra read or write authority. The worker must
+not read, write, traverse, resolve a path into, or run a command in the caller
+checkout or any sibling execution root, including through symlinks, nested
+repositories, or other repository indirection.
+
+The worker must not run Git or stage, commit, create or change branches, update
+refs, merge, or rebase. It must not edit OpenSpec artifacts, task sources, task
+ledgers, plans, Receipts, dispatch artifacts, or lifecycle records; create or
+manage worktrees; spawn descendants; replan, redesign, change dependencies, or
+expand or narrow scope; create or apply bundles; integrate results; or resolve
+conflicts. If the exact patch or validation instructions require any forbidden
+action, it returns structured `PLAN_INSUFFICIENT` instead of substituting work.
+
+An explicitly selected `shared-worktree` reservation remains a legacy/manual
+compatibility path. It has no generated exact-root claim and keeps its existing
+shared-workspace semantics, but every other Receipt, operation, Git, planning,
+descendant, bundle, and integration restriction above still applies. Never
+silently convert between shared and isolated execution.
+
 ## Rolling v2 control loop
 
 For new multi-unit work, use the source-neutral rolling protocol. OpenSpec is

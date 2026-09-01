@@ -1,5 +1,6 @@
 import readline from "node:readline";
 import type { WritableLike } from "../types.js";
+import type { ExactExecutionRootIdentity } from "../adapters/contract.js";
 
 export interface PromptChoice<T> {
   value: T;
@@ -30,6 +31,76 @@ export interface TerminalPromptOptions {
   stdout: WritableLike;
   env?: NodeJS.ProcessEnv;
   pageSize?: number;
+}
+
+export type WorkerWorktreeMode = "isolated-worktree" | "shared-worktree";
+
+export interface WorktreeWorkerPolicyOptions extends Partial<ExactExecutionRootIdentity> {
+  worktree_mode: WorkerWorktreeMode;
+  patch_instructions: string;
+  permitted_validation: readonly string[];
+}
+
+/**
+ * Render the immutable worker-only policy that is appended to a Baton prompt.
+ * JSON framing keeps patch and validation instructions lossless and prevents
+ * their contents from being mistaken for additional policy fields.
+ */
+export function renderWorktreeWorkerPolicy(options: WorktreeWorkerPolicyOptions): string {
+  const mode = options.worktree_mode;
+  if (mode !== "isolated-worktree" && mode !== "shared-worktree") {
+    throw new Error("worker policy worktree_mode must be isolated-worktree or shared-worktree");
+  }
+  const exactRootFields = [
+    "repository_id",
+    "git_common_dir_identity",
+    "execution_root",
+    "base_tree",
+    "worktree_record_id",
+  ] as const;
+  const exactRoot = Object.fromEntries(
+    exactRootFields.map((field) => [field, options[field]]),
+  ) as Partial<ExactExecutionRootIdentity>;
+  if (mode === "isolated-worktree" && exactRootFields.some((field) => !String(exactRoot[field] ?? "").trim())) {
+    throw new Error("isolated worker policy requires complete exact-root identity");
+  }
+  if (mode === "shared-worktree" && exactRootFields.some((field) => exactRoot[field] !== undefined)) {
+    throw new Error("shared worker policy forbids exact-root identity");
+  }
+  if (!Array.isArray(options.permitted_validation)) {
+    throw new Error("worker policy permitted_validation must be an array");
+  }
+
+  const instructions = JSON.stringify({
+    patch_instructions: String(options.patch_instructions),
+    permitted_validation: [...options.permitted_validation],
+  });
+  const boundary = mode === "isolated-worktree"
+    ? [
+      ...exactRootFields.map((field) => `${field}: ${exactRoot[field]}`),
+      "Treat execution_root as the only workspace boundary, not as permission beyond the Receipt scope.",
+      "Do not read, write, traverse, resolve paths into, or run commands in the caller checkout or any sibling execution root. Reject symlink and repository-indirection escapes.",
+    ]
+    : [
+      "execution_root: none (explicit shared-worktree legacy/manual compatibility)",
+      "This compatibility mode does not claim or manufacture an isolated root. Use only the current shared workspace and the exact Receipt scope; do not access any other checkout or execution root.",
+    ];
+
+  return [
+    "[Baton worktree worker policy]",
+    `worktree_mode: ${mode}`,
+    ...boundary,
+    `instructions_json: ${instructions}`,
+    "Execute the patch instructions exactly, using only the declared write paths and allowed operations. Run only the listed permitted validation; validation is not additional read or write authority.",
+    "Do not run Git or perform staging, commits, branch operations, ref operations, merges, rebases, or any other repository-history/control mutation.",
+    "Do not edit OpenSpec artifacts, task sources, task ledgers, plans, Receipts, dispatch artifacts, or lifecycle records.",
+    "Do not create, move, remove, repair, prune, lock, unlock, or otherwise manage worktrees.",
+    "Do not spawn descendants, child agents, or subagents.",
+    "Do not replan, redesign, change dependencies, expand or narrow scope, or substitute different patch or validation instructions.",
+    "Do not create or apply bundles, integrate results, resolve conflicts, or modify integration state.",
+    "Git/stage/commit/branch/ref operations, OpenSpec and task-source edits, worktree management, bundle creation, integration, and conflict resolution are parent-only.",
+    "If any required action falls outside this policy, stop and return structured PLAN_INSUFFICIENT.",
+  ].join("\n");
 }
 
 const HIDE_CURSOR = "\x1b[?25l";

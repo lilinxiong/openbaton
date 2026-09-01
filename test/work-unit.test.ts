@@ -31,6 +31,7 @@ describe("work-unit contract", () => {
   };
 
   it("compiles one canonical isolated rolling identity across lineage and work unit", () => {
+    const patchInstructions = "apply only the exact branch\nkeep trailing spaces  ";
     const unit = compileRollingWorkUnit("apply isolated patch", {
       mode: "patch-only",
       rollingUnitLineage: isolatedLineage,
@@ -49,6 +50,15 @@ describe("work-unit contract", () => {
     const partial = { ...unit } as any;
     delete partial.base_tree;
     assert.throws(() => compileRollingWorkUnit(partial), /partial|mismatch/);
+    const prompt = buildWorkerPrompt(patchInstructions, unit, coordinationFor(unit));
+    for (const [field, value] of Object.entries(exactRoot)) {
+      assert.match(prompt, new RegExp(`^${field}: ${value}$`, "m"));
+    }
+    const framed = JSON.parse(prompt.match(/^instructions_json: (.+)$/m)?.[1] ?? "null");
+    assert.equal(framed.patch_instructions, patchInstructions);
+    assert.deepEqual(framed.permitted_validation, ["bun test"]);
+    assert.match(prompt, /parent-only/);
+    assert.match(prompt, /caller checkout or any sibling execution root/);
   });
 
   it("keeps explicit shared and legacy rolling identities free of isolated fields", () => {
@@ -62,6 +72,11 @@ describe("work-unit contract", () => {
     });
     assert.equal(shared.worktree_mode, "shared-worktree");
     assert.equal("execution_root" in shared, false);
+    const sharedPrompt = buildWorkerPrompt("verify exactly", shared, coordinationFor(shared));
+    assert.match(sharedPrompt, /explicit shared-worktree legacy\/manual compatibility/);
+    assert.match(sharedPrompt, /parent-only/);
+    assert.doesNotMatch(sharedPrompt, /^repository_id:/m);
+    assert.doesNotMatch(sharedPrompt, /^git_common_dir_identity:/m);
     const forbidden = { ...shared.rolling_unit_lineage, ...exactRoot };
     assert.throws(() => compileRollingWorkUnit({ ...shared, rolling_unit_lineage: forbidden }), /shared lineage forbids/);
   });
@@ -100,7 +115,9 @@ describe("work-unit contract", () => {
     const coordination = coordinationFor(unit);
     assert.equal(coordination.mode, "checkpointed");
     assert.equal(coordination.progress_interval_ms, 60_000);
-    assert.match(buildWorkerPrompt(unit.objective, unit, coordination), /phase, current result, next step, blocker/);
+    const prompt = buildWorkerPrompt(unit.objective, unit, coordination);
+    assert.match(prompt, /phase, current result, next step, blocker/);
+    assert.doesNotMatch(prompt, /\[Baton worktree worker policy\]/);
   });
 
   it("allows the director to make an explicit concrete contract", () => {
@@ -207,5 +224,6 @@ describe("work-unit contract", () => {
     assert.match(first, /PLAN_INSUFFICIENT/);
     assert.match(first, /file.*symbol.*missing_decision/);
     assert.match(first, /Do not spawn child agents/);
+    assert.doesNotMatch(first, /\[Baton worktree worker policy\]/);
   });
 });

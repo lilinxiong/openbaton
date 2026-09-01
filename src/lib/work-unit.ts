@@ -5,6 +5,7 @@ import {
   type ExactExecutionRootIdentity,
 } from "../adapters/contract.js";
 import type { WorktreeExecutionMode } from "./rolling-plan.js";
+import { renderWorktreeWorkerPolicy } from "./prompt.js";
 
 export type WorkUnitKind = "concrete" | "deliberative";
 export type CoordinationMode = "terminal-only" | "checkpointed";
@@ -367,8 +368,9 @@ export function coordinationFor(unit: WorkUnitContract): CoordinationPolicy {
 }
 
 export function buildWorkerPrompt(basePrompt: string, unit: WorkUnitContract, coordination: CoordinationPolicy): string {
+  const patchInstructions = String(basePrompt || unit.objective);
   const lines = [
-    String(basePrompt || unit.objective).trim(),
+    patchInstructions.trim(),
     "",
     "[Baton work unit]",
     `kind: ${unit.kind}`,
@@ -410,6 +412,21 @@ export function buildWorkerPrompt(basePrompt: string, unit: WorkUnitContract, co
         : "Perform verification only; do not write, create, delete, rename, chmod, stage, commit, or otherwise mutate any file.",
       "If the contract or a required decision is missing, stop. Return exactly one structured JSON object with code PLAN_INSUFFICIENT and string fields file, symbol, and missing_decision: {\"code\":\"PLAN_INSUFFICIENT\",\"file\":\"...\",\"symbol\":\"...\",\"missing_decision\":\"...\"}.",
     );
+    if (rolling.worktree_mode === "isolated-worktree" || rolling.worktree_mode === "shared-worktree") {
+      lines.push(
+        "",
+        renderWorktreeWorkerPolicy({
+          worktree_mode: rolling.worktree_mode,
+          repository_id: rolling.repository_id,
+          git_common_dir_identity: rolling.git_common_dir_identity,
+          execution_root: rolling.execution_root,
+          base_tree: rolling.base_tree,
+          worktree_record_id: rolling.worktree_record_id,
+          patch_instructions: patchInstructions,
+          permitted_validation: rolling.permitted_validation,
+        }),
+      );
+    }
   } else if ("mode" in unit) {
     const compiled = unit as CompiledWorkUnitContract;
     lines.push(

@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { createTerminalPrompt, isInteractiveIo } from "../src/lib/prompt.js";
+import {
+  createTerminalPrompt,
+  isInteractiveIo,
+  renderWorktreeWorkerPolicy,
+} from "../src/lib/prompt.js";
 
 function fakeTty(env: NodeJS.ProcessEnv = { NO_COLOR: "1" }) {
   const stdin = new PassThrough();
@@ -136,5 +140,43 @@ describe("terminal select prompts", () => {
       prompt.select({ message: "Select CLI", choices: [{ value: "alpha", label: "alpha" }] }),
       /interactive prompts require a TTY/,
     );
+  });
+});
+
+describe("worktree worker policy rendering", () => {
+  it("renders the exact isolated root and lossless patch and validation instructions", () => {
+    const patchInstructions = "replace only the named branch\nkeep `literal` syntax";
+    const permittedValidation = ["bun test test/exact.test.ts", "npm run check"];
+    const rendered = renderWorktreeWorkerPolicy({
+      worktree_mode: "isolated-worktree",
+      repository_id: "a".repeat(64),
+      git_common_dir_identity: "b".repeat(64),
+      execution_root: "/private/tmp/baton/root-a",
+      base_tree: "c".repeat(40),
+      worktree_record_id: "record-a",
+      patch_instructions: patchInstructions,
+      permitted_validation: permittedValidation,
+    });
+    assert.match(rendered, /execution_root: \/private\/tmp\/baton\/root-a/);
+    const framed = JSON.parse(rendered.match(/^instructions_json: (.+)$/m)?.[1] ?? "null");
+    assert.equal(framed.patch_instructions, patchInstructions);
+    assert.deepEqual(framed.permitted_validation, permittedValidation);
+    assert.match(rendered, /validation is not additional read or write authority/);
+  });
+
+  it("preserves explicit shared-worktree legacy compatibility without inventing a root", () => {
+    const rendered = renderWorktreeWorkerPolicy({
+      worktree_mode: "shared-worktree",
+      patch_instructions: "legacy patch",
+      permitted_validation: ["read"],
+    });
+    assert.match(rendered, /explicit shared-worktree legacy\/manual compatibility/);
+    assert.match(rendered, /does not claim or manufacture an isolated root/);
+    assert.throws(() => renderWorktreeWorkerPolicy({
+      worktree_mode: "shared-worktree",
+      execution_root: "/tmp/not-allowed",
+      patch_instructions: "legacy patch",
+      permitted_validation: ["read"],
+    }), /forbids exact-root identity/);
   });
 });
