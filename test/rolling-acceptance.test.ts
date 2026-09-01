@@ -88,6 +88,21 @@ describe("rolling execution acceptance", () => {
     const report = deriveRollingAcceptance({ units: [unit("z"), unit("a")], facts: [] }); assert.deepEqual(Object.keys(report.units), ["a@1", "z@1"]);
   });
 
+  it("orders facts by timestamp instant before fact identity", () => {
+    const u = unit("u");
+    const earlier = attemptRaw("terminal-result", { status: "errored", recorded_at: "2026-01-01T01:00:00+02:00" }, u, 1);
+    const later = attemptRaw("terminal-result", { status: "errored", recorded_at: "2026-01-01T00:30:00Z" }, u, 2);
+    const state = reduceRollingUnitVersion(u, facts([later, earlier]));
+    assert.ok(state.blockers.some((item) => item.code === "TERMINAL_RESULT_FAILED" && item.owner_key === "u@1:attempt-2"));
+  });
+
+  it("terminates self-referential gate evaluation with a cycle blocker", () => {
+    const cyclic = gate("cycle", "integration-acceptance", ["cycle@1"]);
+    const state = evaluateRollingGateVersion(cyclic, { gates: [cyclic], facts: [] });
+    assert.equal(state.state, "pending");
+    assert.ok(state.blockers.some((item) => item.code === "DEPENDENCY_CYCLE"));
+  });
+
   it("keeps terminal and release ownership local to each attempt", () => {
     const u = unit("u");
     const attemptOne = facts([

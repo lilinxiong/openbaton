@@ -181,7 +181,7 @@ function retryReferencesUnit(retry_of: string, identity: string): boolean {
 }
 function blocker(code: string, message: string, owner_type: OwnerType, owner_key: string, refs?: string[]): Blocker { return { code, message, owner_type, owner_key, ...(refs?.length ? { refs } : {}) }; }
 function compareBlockers(a: Blocker, b: Blocker): number { return a.owner_key.localeCompare(b.owner_key) || a.code.localeCompare(b.code) || (a.refs?.join("|") || "").localeCompare(b.refs?.join("|") || ""); }
-function orderFacts(facts: readonly RollingExecutionFact[]): RollingExecutionFact[] { return [...facts].sort((a, b) => a.recorded_at.localeCompare(b.recorded_at) || a.fact_id.localeCompare(b.fact_id)); }
+function orderFacts(facts: readonly RollingExecutionFact[]): RollingExecutionFact[] { return [...facts].sort((a, b) => (Date.parse(a.recorded_at) - Date.parse(b.recorded_at)) || a.fact_id.localeCompare(b.fact_id)); }
 
 /** Reduce exactly one immutable unit version; all other facts are ignored. */
 export function reduceRollingUnitVersion(unit: UnitVersion, facts: readonly RollingExecutionFact[]): RollingUnitVersionState {
@@ -237,12 +237,18 @@ function gateMap(context: RollingExecutionContext): Map<string, GateVersion> { r
 function evaluateGate(gate: GateVersion, units: Map<string, UnitVersion>, gates: Map<string, GateVersion>, facts: readonly RollingExecutionFact[], unitMemo: Map<string, RollingUnitVersionState>, gateMemo: Map<string, RollingGateVersionState>, stack: Set<string>): RollingGateVersionState {
   const identity = gateRef(gate); const previous = gateMemo.get(identity); if (previous) return previous;
   const dependencies = [...(gate.depends_on || [])].sort(); const dependencyStates: Record<string, string> = {}; const blockers: Blocker[] = [];
-  if (stack.has(identity)) blockers.push(blocker("DEPENDENCY_CYCLE", "gate dependency cycle", "gate_version", identity, [identity])); stack.add(identity);
+  if (stack.has(identity)) {
+    return { gate_key: gate.gate_key, version: gate.version, gate_ref: identity, gate_fingerprint: gateFingerprint(gate), type: gate.type, state: "pending", pending: true, ready: false, failed: false, accepted: false, depends_on: dependencies, dependency_states: {}, blockers: [blocker("DEPENDENCY_CYCLE", "gate dependency cycle", "gate_version", identity, [identity])], acceptance_fact_ids: [] };
+  }
+  stack.add(identity);
   for (const dependency of dependencies) {
     const parsed = parseRef(dependency); if (!parsed) { dependencyStates[dependency] = "missing"; blockers.push(blocker("UNKNOWN_DEPENDENCY", `unknown dependency ${dependency}`, "gate_version", identity, [dependency])); continue; }
     const unit = units.get(dependency); const depGate = gates.get(dependency);
     if (unit) { const state = unitMemo.get(dependency) || reduceRollingUnitVersion(unit, facts); unitMemo.set(dependency, state); dependencyStates[dependency] = state.state; if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${dependency} is not accepted`, "gate_version", identity, [dependency])); }
-    else if (depGate) { const state = evaluateGate(depGate, units, gates, facts, unitMemo, gateMemo, stack); dependencyStates[dependency] = state.state; if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${dependency} is not accepted`, "gate_version", identity, [dependency])); }
+    else if (depGate) {
+      if (stack.has(dependency)) { dependencyStates[dependency] = "pending"; blockers.push(blocker("DEPENDENCY_CYCLE", "gate dependency cycle", "gate_version", identity, [dependency])); }
+      else { const state = evaluateGate(depGate, units, gates, facts, unitMemo, gateMemo, stack); dependencyStates[dependency] = state.state; if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${dependency} is not accepted`, "gate_version", identity, [dependency])); }
+    }
     else { dependencyStates[dependency] = "missing"; blockers.push(blocker("UNKNOWN_DEPENDENCY", `unknown dependency ${dependency}`, "gate_version", identity, [dependency])); }
   }
   stack.delete(identity);
