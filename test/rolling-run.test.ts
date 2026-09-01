@@ -72,6 +72,39 @@ describe("rolling run v2 append storage", () => {
     assert.equal(fs.readFileSync(rollingRunFactLogPath(cwd, "run-1", env), "utf8"), before);
   });
 
+  it("serializes competing appends so exactly one delta is accepted", async () => {
+    const { cwd, env } = create();
+    const competing = (id: string, unitKey: string): PlanDelta => ({
+      schema_version: 1,
+      delta_id: id,
+      prepared_from_append_sequence: 0,
+      unit_versions: [{
+        schema_version: 1,
+        unit_key: unitKey,
+        version: 1,
+        task_keys: ["director:t1"],
+        depends_on: [],
+        execution_mode: "patch-only",
+        prompt: `implement ${unitKey}`,
+        write_paths: [`src/${unitKey}.ts`],
+        allowed_operations: ["write"],
+        input_fingerprints: { baseline: hash },
+      }],
+      gate_versions: [],
+      task_coverage: [{ schema_version: 1, task_key: "director:t1", kind: "unit", unit_versions: [`${unitKey}@1`] }],
+    });
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => appendRollingPlanDelta({ cwd, env, runId: "run-1", expected_append_sequence: 0, delta: competing("race-a", "unit-a") })),
+      Promise.resolve().then(() => appendRollingPlanDelta({ cwd, env, runId: "run-1", expected_append_sequence: 0, delta: competing("race-b", "unit-b") })),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    assert.ok(rejected);
+    assert.equal((rejected.reason as RollingRunError).code, "ROLLING_SEQUENCE_MISMATCH");
+    assert.equal((rejected.reason as RollingRunError).retryable, true);
+    assert.equal(readRollingExecutionRun(cwd, "run-1", { env }).accepted_deltas.length, 1);
+  });
+
   it("does not publish an accepted fact when atomic document persistence is interrupted", () => {
     const { cwd, env } = create();
     const original = fs.renameSync;

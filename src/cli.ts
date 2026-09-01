@@ -49,6 +49,7 @@ import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
 import { defaultCompiledApplyHandler } from "./lib/compiled-apply-cli.js";
+import { runRollingRun, type RollingRunHandler } from "./commands/run.js";
 
 
 interface RunOptions {
@@ -61,6 +62,8 @@ interface RunOptions {
   prompt?: SelectPrompt;
   /** Injectable boundary for the director-compiled apply protocol. */
   compiledApplyHandler?: CompiledApplyHandler;
+  /** Injectable boundary for the source-neutral rolling-run protocol. */
+  rollingRunHandler?: RollingRunHandler;
 }
 
 export type CompiledApplyOperation = "plan" | "status" | "accept-gate" | "reconcile";
@@ -212,6 +215,13 @@ Usage:
   baton apply [change] --host ${HOSTS} --run RUN --reconcile [--task NUMBER] [--json]
   baton apply [change] --host ${HOSTS} --run RUN --plan-file PATH|- [--dispatch]
                submit a director-compiled successor plan (compiled handler)
+  baton run start --host ${HOSTS} --source-file PATH|- [--plan-delta-file PATH|-] [--run-id RUN] [--dispatch] [--json]
+               create a source-neutral rolling v2 run; OpenSpec is one optional adapter
+  baton run RUN --append-plan PATH|- [--dispatch] [--json]
+  baton run RUN --status [--json]
+  baton run RUN --accept-gate GATE@VERSION --text SUMMARY [--dispatch] [--json]
+  baton run RUN --seal-task TASK --seal-file PATH|- [--json]
+  baton run RUN --reconcile [--task TASK] [--json]
   baton dispatch next --host HOST [--capacity N] --json
   baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
@@ -244,6 +254,7 @@ export async function run(argv: string[], {
   adapterProvider,
   prompt,
   compiledApplyHandler,
+  rollingRunHandler,
 }: RunOptions = {}): Promise<number> {
   const streamStdin = typeof stdin === "string" ? process.stdin : stdin;
   const injectedStdin = typeof stdin === "string" ? stdin : undefined;
@@ -285,6 +296,8 @@ export async function run(argv: string[], {
         return await cmdSpawn(args, cwd, stdout, env);
       case "apply":
         return await cmdApply(args, cwd, stdout, env, streamStdin, injectedStdin, compiledApplyHandler);
+      case "run":
+        return await runRollingRun(args, { cwd, stdout, stdin: streamStdin, injectedStdin, env, handler: rollingRunHandler });
       case "dispatch":
         return await runDispatch(args, { cwd, stdout, env });
       case "models":

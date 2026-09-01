@@ -11,6 +11,7 @@ import {
   reserveNext,
 } from "../lib/dispatch.js";
 import { sessionUid } from "../lib/spawn.js";
+import { refillRollingRun, synchronizeRollingTicketFacts } from "../lib/rolling-control.js";
 import type { WritableLike } from "../types.js";
 import type { NativeExecutionHandleKind } from "../adapters/contract.js";
 
@@ -149,6 +150,29 @@ interface DispatchCommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+async function projectRollingLifecycle(
+  cwd: string,
+  ticket: Awaited<ReturnType<typeof finishAgent>>,
+  env: NodeJS.ProcessEnv,
+  eventReason: string,
+  refill: boolean,
+): Promise<unknown | null> {
+  const runId = ticket.rolling_unit_lineage?.run_id;
+  if (!runId) return null;
+  try {
+    const recovery = synchronizeRollingTicketFacts({ cwd, env, run_id: runId });
+    const replenished = refill
+      ? await refillRollingRun({ cwd, env, run_id: runId, event_reason: eventReason })
+      : null;
+    return { run_id: runId, appended_execution_facts: recovery.appended, refill: replenished };
+  } catch (cause) {
+    const value = cause as Error & { code?: string };
+    // The native lifecycle mutation is already durable. Report a typed
+    // recovery diagnostic and let `baton run RUN --status` retry projection.
+    return { run_id: runId, recovery_required: true, code: value.code || "ROLLING_RECOVERY_REQUIRED", message: value.message };
+  }
+}
+
 export async function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): Promise<number> {
   // Establish the root tree scope before any reservation, refill, status, or
   // ticket-targeted dispatch operation can inspect project state.
@@ -173,7 +197,12 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       host,
       env,
     });
-    print(stdout, result, json);
+    const rolling = [];
+    for (const reserved of result.reserved) {
+      if (!reserved.rolling_unit_lineage?.run_id) continue;
+      rolling.push(await projectRollingLifecycle(cwd, reserved as never, env, "reservation", false));
+    }
+    print(stdout, rolling.length ? { ...result, rolling } : result, json);
     return result.blocked.length && result.reserved.length === 0 ? 1 : 0;
   }
 
@@ -186,7 +215,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       host,
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host), host, env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, "native-bind", false);
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host), host, env }) }, json);
     return 0;
   }
 
@@ -243,7 +273,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
     const ticket = await finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")!, env });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, flags.release ? "release" : "terminal-result", Boolean(ticket.slot_released_at));
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -266,7 +297,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       probeSequence: timeoutProbeSequence ? Number(timeoutProbeSequence) : null,
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, ticket.slot_released_at ? "release" : "terminal-result", Boolean(ticket.slot_released_at));
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -279,7 +311,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       env,
       ...(host ? { host } : {}),
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, "release", true);
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
     return 0;
   }
 
