@@ -152,6 +152,38 @@ describe("rolling task lifecycle and exact seals", () => {
     assert.equal(statusRollingExecutionRun(f.cwd, "run-1", { env: f.env }).task_lifecycle["task-1"]?.state, "sealed");
   });
 
+  it("permits a new exact seal after a manifest source refresh", () => {
+    const f = fixture();
+    const first = appendRollingPlanDelta({ cwd: f.cwd, env: f.env, runId: "run-1", expected_append_sequence: 0, delta: delta() });
+    const accepted = acceptUnit(f, first.append_sequence);
+    const sealed = appendRollingSeal({ cwd: f.cwd, env: f.env, runId: "run-1", expected_append_sequence: accepted.append_sequence, seal: seal() });
+    const refreshed = appendRollingPlanDelta({
+      cwd: f.cwd,
+      env: f.env,
+      runId: "run-1",
+      expected_append_sequence: sealed.append_sequence,
+      delta: {
+        schema_version: 1,
+        delta_id: "manifest-refresh",
+        prepared_from_append_sequence: sealed.append_sequence,
+        manifest_refreshes: [entry("task-1", "b".repeat(64))],
+        unit_versions: [],
+        gate_versions: [],
+        task_coverage: [],
+      },
+    });
+    assert.equal(statusRollingExecutionRun(f.cwd, "run-1", { env: f.env }).task_lifecycle["task-1"]?.state, "open");
+    const resealed = appendRollingSeal({
+      cwd: f.cwd,
+      env: f.env,
+      runId: "run-1",
+      expected_append_sequence: refreshed.append_sequence,
+      seal: seal("task-1", "b".repeat(64)),
+    });
+    assert.equal(resealed.seals.length, 2);
+    assert.equal(statusRollingExecutionRun(f.cwd, "run-1", { env: f.env }).task_lifecycle["task-1"]?.state, "sealed");
+  });
+
   it("allows an explicit typed no-op and reconciles only after a source fact", () => {
     const f = fixture();
     const noOp: PlanDelta = {

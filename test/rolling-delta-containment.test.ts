@@ -447,7 +447,7 @@ describe("rolling delta failure containment", () => {
     assert.ok(failure.diagnostics?.some((item) => item.code === "SEAL_SOURCE_FINGERPRINT_STALE"));
     assert.equal(fs.readFileSync(factLog, "utf8"), beforeLog);
     assert.equal(fs.readFileSync(checkpoint, "utf8"), beforeCheckpoint);
-    assert.equal(fs.existsSync(rollingRunAcceptedDocumentPath(f.cwd, runId, "seal-task-first", f.env)), false);
+    assert.equal(fs.existsSync(rollingRunAcceptedDocumentPath(f.cwd, runId, `seal-task-first-${HASH_B}`, f.env)), false);
 
     const status = statusRollingExecutionRun(f.cwd, runId, { env: f.env });
     assert.equal(status.seals.length, 0);

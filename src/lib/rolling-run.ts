@@ -582,7 +582,15 @@ export function appendRollingSeal(input: RollingRunAppendInput & { seal: TaskSea
   }
   const copied = structuredClone(seal) as TaskSeal;
   if (!copied.fingerprint) copied.fingerprint = fingerprintTaskSeal(copied);
-  return appendRollingFact({ ...input, kind: "seal", idempotency_key: `seal:${copied.task_key}`, document_id: `seal-${copied.task_key}`, payload: copied, document: copied });
+  const sourceIdentity = copied.source_fingerprint;
+  return appendRollingFact({
+    ...input,
+    kind: "seal",
+    idempotency_key: `seal:${copied.task_key}:${sourceIdentity}`,
+    document_id: `seal-${copied.task_key}-${sourceIdentity}`,
+    payload: copied,
+    document: copied,
+  });
 }
 
 export function rebuildRollingRunCheckpoint(cwd: string, runId: string, options: RollingRunReadOptions = {}): RollingCheckpoint {
