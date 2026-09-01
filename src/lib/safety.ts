@@ -324,7 +324,14 @@ function parentOwnedRefsPreserved(repoRoot: string, observed: string[], baseline
     if (!parsed) return false;
     const current = observedRefs.get(parsed.ref);
     if (!current) return false;
-    if (current !== parsed.object && !gitExitZero(repoRoot, ["merge-base", "--is-ancestor", parsed.object, current])) return false;
+    if (current === parsed.object) continue;
+    try {
+      if (!gitExitZero(repoRoot, ["merge-base", "--is-ancestor", parsed.object, current])) return false;
+    } catch {
+      // Captured or deserialized ref objects may be missing or invalid.  An
+      // audit converts every such ancestry failure into a ref violation.
+      return false;
+    }
   }
   return true;
 }

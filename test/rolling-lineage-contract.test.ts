@@ -97,6 +97,15 @@ describe("rolling lineage and schema-3 work-unit contract", () => {
       completionCriteria: ["x"],
       permittedValidation: ["test"],
     }), /mode must equal/);
+    assert.throws(() => compileRollingWorkUnit({ unsafe: true } as unknown, {
+      mode: "verification-only",
+      deliverable: "x",
+      doneWhen: "y",
+      rollingUnitLineage: rolling,
+      readContext: ["src/a"],
+      completionCriteria: ["x"],
+      permittedValidation: ["test"],
+    }), /objective must be a string/);
     assert.throws(() => compileRollingWorkUnit("patch", { mode: "patch-only", deliverable: "x", doneWhen: "y", rollingUnitLineage: { ...rolling, mode: "patch-only" }, readContext: ["src/a"], writePaths: [], allowedOperations: ["write"], completionCriteria: ["x"], permittedValidation: ["test"] }), /non-empty write_paths/);
   });
 

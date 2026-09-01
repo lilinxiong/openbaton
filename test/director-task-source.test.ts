@@ -53,7 +53,8 @@ describe("director task source adapter", () => {
     assert.equal(stale.status, "unavailable");
     assert.equal(stale.diagnostics[0]?.code, "FINGERPRINT_MISMATCH");
     assert.deepEqual(calls, []);
-    await adapter.reconcile({ source, task_key: item.task_key, conclusion: "done", expected_source_fingerprint: item.source_fingerprint });
+    const acknowledged = await adapter.reconcile({ source, task_key: item.task_key, conclusion: "done", expected_source_fingerprint: item.source_fingerprint });
+    assert.equal(acknowledged.status, "available", "a void callback is an explicit successful acknowledgement");
     assert.deepEqual(calls, ["callback"]);
     await adapter.reconcile({ source, task_key: item.task_key, conclusion: "done", expected_source_fingerprint: item.source_fingerprint });
     assert.deepEqual(calls, ["callback"]);

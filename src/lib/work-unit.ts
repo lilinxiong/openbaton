@@ -281,7 +281,13 @@ export function compileRollingWorkUnit(
   if (mode === "verification-only" && (writePaths.length || allowedOperations.length)) {
     throw new Error("verification-only rolling work unit forbids write_paths and allowed_operations");
   }
-  const objective = nonEmpty(options ? description : source.objective ?? source.description, "objective");
+  const objectiveInput = options
+    ? description ?? options.objective ?? options.description
+    : source.objective ?? source.description;
+  if (objectiveInput !== undefined && objectiveInput !== null && typeof objectiveInput !== "string") {
+    throw new Error("rolling work unit objective must be a string");
+  }
+  const objective = nonEmpty(objectiveInput, "objective");
   const contract: RollingWorkUnitContract = {
     schema_version: 3,
     kind: "concrete",

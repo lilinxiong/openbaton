@@ -55,6 +55,7 @@ export interface DirectorReconcileCallbackRequest {
 export type DirectorReconcileCallback = (
   request: DirectorReconcileCallbackRequest,
 ) =>
+  /** Resolving void is an explicit successful writeback acknowledgement. */
   | void
   | TaskManifestEntry
   | { task_key: string; source_fingerprint: string; source_state: "complete" | "pending" | "unavailable"; source_ref: unknown; conclusion?: string }
@@ -322,6 +323,10 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
           const value = raw.value as { source_state?: unknown };
           if (value.source_state === "complete") this.completed.set(request.task_key, { conclusion: request.conclusion, source_fingerprint: stored.fingerprint });
           return raw as TaskSourceReconcileResult;
+        }
+        if (raw === undefined) {
+          this.completed.set(request.task_key, { conclusion: request.conclusion, source_fingerprint: stored.fingerprint });
+          return this.localReconciliation(request, entry, request.conclusion);
         }
         if (raw && typeof raw === "object") {
           const value = raw as TaskManifestEntry | TaskSourceReconciliation;

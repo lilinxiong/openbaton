@@ -675,6 +675,18 @@ describe("stable asynchronous safety observations", () => {
     git(rewritten, "update-ref", "refs/heads/parent-integration", unrelated);
     assert.ok(auditWorktree(rewritten, rewrittenBaseline, policy).violations.some((item) => item.code === "E_REFS_MUTATION"));
     assert.ok((await auditWorktreeAsync(rewritten, rewrittenBaseline, policy)).violations.some((item) => item.code === "E_REFS_MUTATION"));
+
+    const unknown = fixture();
+    const unknownBaseline = await captureBaselineAsync(unknown);
+    const unknownFacts = await collectGitSafetyFacts(unknown);
+    unknownFacts.refs = unknownFacts.refs.map((entry) => entry.startsWith(`${unknownBaseline.branch_ref}\0`)
+      ? `${unknownBaseline.branch_ref}\0${"f".repeat(40)}`
+      : entry);
+    const unknownVerdict = await auditWorktreeAsync(unknown, unknownBaseline, policy, {
+      collectFacts: async () => unknownFacts,
+      collectToken: async () => deriveGitSafetyStabilityToken(unknownFacts),
+    });
+    assert.ok(unknownVerdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
   });
 
   it("audits v2 commit baselines and keeps prepared/outcome semantics", async () => {
