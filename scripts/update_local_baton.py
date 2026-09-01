@@ -459,7 +459,7 @@ def _parse_json_output(output: str) -> dict[str, Any]:
 
 
 _UNINSTALL_PLAN_KEYS = frozenset({
-    "hosts", "clean", "dry_run", "applied", "targets", "active_tickets", "constraints",
+    "hosts", "clean", "dry_run", "applied", "targets", "active_tickets", "retained_runtime_records", "constraints",
 })
 _UNINSTALL_TARGET_REQUIRED_KEYS = frozenset({
     "action", "path", "reason", "expected_fingerprint", "expected_mode", "expected_kind",
@@ -469,12 +469,14 @@ _UNINSTALL_TARGET_KEYS = frozenset({
     "action", "path", "host", "reason", "expected_fingerprint", "expected_mode", "expected_kind",
 })
 _UNINSTALL_TICKET_KEYS = frozenset({"path", "ticket_id", "status", "host"})
+_UNINSTALL_RETAINED_RECORD_KEYS = frozenset({"path", "kind", "reason"})
 _UNINSTALL_ACTIONS = frozenset({"remove", "already-absent", "conflict"})
 _UNINSTALL_KINDS = frozenset({"file", "directory", "absent"})
 _SAFE_UNINSTALL_CONSTRAINTS = frozenset({
     "preserve modified or ambiguous skills",
     "never remove package-manager executable",
     "never recurse outside explicit Baton/host integration paths",
+    "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
 })
 
 
@@ -556,6 +558,21 @@ def validate_uninstall_plan(
     if active:
         ids = ", ".join(str(item["ticket_id"]) for item in active)
         raise RuntimeError(f"clean uninstall blocked by active tickets: {ids}")
+
+    retained = plan["retained_runtime_records"]
+    if not isinstance(retained, list):
+        raise _invalid_uninstall_schema("retained_runtime_records must be an array")
+    retained_paths: set[str] = set()
+    for index, item in enumerate(retained):
+        record = _require_object(item, f"retained_runtime_records[{index}]")
+        _require_exact_keys(record, _UNINSTALL_RETAINED_RECORD_KEYS, f"retained_runtime_records[{index}]")
+        record_path = _require_string(record["path"], f"retained_runtime_records[{index}].path")
+        if record_path in retained_paths:
+            raise _invalid_uninstall_schema(f"retained_runtime_records contains duplicate path: {record_path}")
+        retained_paths.add(record_path)
+        if record["kind"] != "rolling-run-v2":
+            raise _invalid_uninstall_schema(f"retained_runtime_records[{index}].kind must be rolling-run-v2")
+        _require_string(record["reason"], f"retained_runtime_records[{index}].reason")
 
     targets = plan["targets"]
     if not isinstance(targets, list):
