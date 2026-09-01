@@ -21,6 +21,7 @@ import {
   worktreeRecordPath,
 } from "./paths.js";
 import type { SafetyOperation } from "./safety.js";
+import { canonicalizeJson, fingerprintJson, writeBytesAtomic } from "./json-utils.js";
 
 export type ChangeBundleOperation = SafetyOperation | "copy";
 
@@ -408,26 +409,12 @@ function now(value?: string | number | Date): string {
   return new Date(Number.isFinite(stamp) ? stamp : Date.now()).toISOString();
 }
 
-function sorted(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sorted);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted(value[key])]));
-}
-
 export function canonicalizeWorktreeExecution(value: unknown): string {
-  return JSON.stringify(sorted(value));
-}
-
-function withoutFingerprint(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutFingerprint);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => key !== "fingerprint")
-    .map(([key, item]) => [key, withoutFingerprint(item)]));
+  return canonicalizeJson(value);
 }
 
 export function fingerprintWorktreeRuntimeRecord(value: unknown): string {
-  return crypto.createHash("sha256").update(canonicalizeWorktreeExecution(withoutFingerprint(value))).digest("hex");
+  return fingerprintJson(value);
 }
 
 function add(diagnostics: RuntimeRecordDiagnostic[], code: string, message: string, pathName?: string): void {
@@ -919,25 +906,7 @@ export function assertIsolatedWorktreeExecution(runState: unknown, unitMode?: Wo
 }
 
 function atomicBytes(file: string, bytes: Buffer): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  let descriptor: number | undefined;
-  try {
-    descriptor = fs.openSync(temporary, "wx", 0o600);
-    fs.writeFileSync(descriptor, bytes);
-    fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = undefined;
-    fs.renameSync(temporary, file);
-    try {
-      const directory = fs.openSync(path.dirname(file), "r");
-      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
-    } catch { /* directory fsync is not available on every platform */ }
-  } catch (cause) {
-    if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch { /* noop */ }
-    try { fs.unlinkSync(temporary); } catch { /* preserve the original error */ }
-    throw cause;
-  }
+  writeBytesAtomic(file, bytes, { fsyncDirectory: true });
 }
 
 function atomicJson(file: string, value: unknown): void {

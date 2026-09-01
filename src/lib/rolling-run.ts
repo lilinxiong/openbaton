@@ -47,6 +47,7 @@ import {
 import { withOwnedLock } from "./owned-lock.js";
 import { sessionUidFromEnv, validateSessionScope } from "./session-scope.js";
 import { readApplyRun, statusApplyRun, type ApplyRunState, type ApplyRunStatusReport } from "./apply-run.js";
+import { readJsonFile, sha256Hex, writeBytesAtomic } from "./json-utils.js";
 
 export const ROLLING_RUN_SCHEMA_VERSION = 2 as const;
 export const ROLLING_FACT_SCHEMA_VERSION = 2 as const;
@@ -180,7 +181,7 @@ function now(value: string | number | Date | undefined): string {
   const stamp = value instanceof Date ? value.getTime() : typeof value === "number" ? value : Date.parse(value || "");
   return new Date(Number.isFinite(stamp) ? stamp : Date.now()).toISOString();
 }
-function sha(value: unknown): string { return crypto.createHash("sha256").update(canonicalizeRolling(value)).digest("hex"); }
+function sha(value: unknown): string { return sha256Hex(canonicalizeRolling(value)); }
 function factFingerprint(value: Omit<RollingFact, "fingerprint">): string {
   return sha(value);
 }
@@ -189,22 +190,7 @@ function error(message: string, code: string, retryable = false): never { throw 
 
 /** Replace a file in one rename, with a private temporary file and fsync. */
 function atomicBytes(file: string, bytes: Buffer): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(temp, "wx", 0o600);
-    fs.writeFileSync(fd, bytes);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = undefined;
-    fs.renameSync(temp, file);
-    try { fs.chmodSync(file, 0o600); } catch { /* mode is set by openSync */ }
-  } catch (cause) {
-    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* noop */ }
-    try { fs.unlinkSync(temp); } catch { /* noop */ }
-    throw cause;
-  }
+  writeBytesAtomic(file, bytes, { chmodAfter: true });
 }
 function atomicJson(file: string, value: unknown): void {
   atomicBytes(file, Buffer.from(`${canonicalizeRolling(value)}\n`, "utf8"));
@@ -287,7 +273,7 @@ function rollingFactDocumentPath(cwd: string, runId: string, fact: Pick<RollingF
 function factDocumentMatches(cwd: string, runId: string, fact: RollingFact, env?: NodeJS.ProcessEnv): boolean {
   const file = rollingFactDocumentPath(cwd, runId, fact, env);
   if (!fs.existsSync(file)) return false;
-  try { return documentFingerprint(JSON.parse(fs.readFileSync(file, "utf8"))) === fact.document_fingerprint; } catch { return false; }
+  try { return documentFingerprint(readJsonFile(file)) === fact.document_fingerprint; } catch { return false; }
 }
 function requireFactDocuments(cwd: string, runId: string, facts: RollingFact[], env?: NodeJS.ProcessEnv): void {
   for (const fact of facts) if (!factDocumentMatches(cwd, runId, fact, env)) error(`accepted document missing or corrupt: ${fact.document_id}`, "ROLLING_STATE_CORRUPT");
@@ -332,7 +318,7 @@ function readIdentityFromFacts(cwd: string, runId: string, env?: NodeJS.ProcessE
   const checkpoint = rollingRunCheckpointPath(cwd, runId, env);
   if (fs.existsSync(checkpoint)) {
     try {
-      const cached = validateIdentity(JSON.parse(fs.readFileSync(checkpoint, "utf8")), runId);
+      const cached = validateIdentity(readJsonFile(checkpoint), runId);
       if (canonicalizeRolling(cached) !== canonicalizeRolling(identity)) error("rolling checkpoint identity differs from source fact", "ROLLING_STATE_CORRUPT");
     } catch (cause) {
       if (cause instanceof RollingRunError && cause.code === "ROLLING_STATE_CORRUPT" && String((cause as Error).message).includes("differs from source")) throw cause;
@@ -648,7 +634,7 @@ export function readRollingExecutionRun(cwd: string, runId: string, options: Rol
   const checkpointFile = rollingRunCheckpointPath(cwd, runId, env);
   if (options.rebuild_checkpoint !== false) {
     try {
-      const cached = fs.existsSync(checkpointFile) ? JSON.parse(fs.readFileSync(checkpointFile, "utf8")) as RollingCheckpoint : undefined;
+      const cached = fs.existsSync(checkpointFile) ? readJsonFile(checkpointFile) as RollingCheckpoint : undefined;
       if (!cached || cached.append_sequence !== checkpoint.append_sequence || cached.fact_ids.join("\u0000") !== checkpoint.fact_ids.join("\u0000")) writeCheckpoint(cwd, runId, checkpoint, env);
     } catch { writeCheckpoint(cwd, runId, checkpoint, env); }
   }

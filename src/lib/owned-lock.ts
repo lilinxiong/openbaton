@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { readJsonFile } from "./json-utils.js";
 
 export interface LockOwnerRecord {
   version: 1;
@@ -59,7 +60,7 @@ function expired(owner: LockOwnerRecord | null, mtime: number, now: number, stal
 function readOwner(file: string): { owner: LockOwnerRecord | null; mtime: number } {
   const stat = fs.statSync(file);
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    const parsed = readJsonFile(file);
     return { owner: validOwner(parsed) ? parsed : null, mtime: stat.mtimeMs };
   } catch { return { owner: null, mtime: stat.mtimeMs }; }
 }

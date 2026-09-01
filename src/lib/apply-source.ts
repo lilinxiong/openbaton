@@ -19,6 +19,7 @@ import {
   type GitIndexControlFingerprint,
 } from "./git-index-control.js";
 import { parseTasks } from "./openspec.js";
+import { canonicalizeJson, sha256Hex } from "./json-utils.js";
 
 export { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
 
@@ -358,18 +359,6 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (isRecord(value)) {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sha256(value: Uint8Array | string): string {
-  return crypto.createHash("sha256").update(value).digest("hex");
-}
-
 function normalizeRepoRoot(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) throw new TypeError("repo_root is required");
   return path.resolve(value);
@@ -497,7 +486,7 @@ function normalizeUnitDeclarations(repoRoot: string, units: ApplySourceUnitDecla
       }
       const predecessor = prior.predecessor || entry.predecessor;
       if (prior.origin === "predecessor-produced"
-        && canonical(prior.predecessor) !== canonical(entry.predecessor)) {
+        && canonicalizeJson(prior.predecessor) !== canonicalizeJson(entry.predecessor)) {
         throw new ApplySourceInputError("APPLY_SOURCE_PREDECESSOR_INVALID", `input ${entry.path} has conflicting predecessor facts`);
       }
       merged.set(entry.path, {
@@ -621,7 +610,7 @@ function normalizeOpenSpec(value: ApplySourceOpenSpecIdentity = {}): NormalizedA
     || stringValue(value.taskSnapshotFingerprint)
     || stringValue(value.selected_task_snapshot_identity)
     || stringValue(value.selectedTaskSnapshotIdentity)
-    || sha256(canonical({ selected_tasks: selectedTasks, selected_task_numbers: uniqueNumbers }));
+    || sha256Hex(canonicalizeJson({ selected_tasks: selectedTasks, selected_task_numbers: uniqueNumbers }));
   const ledger = normalizeTaskLedger(value);
   const ledgerIdentity = stringValue(value.task_ledger_identity)
     || stringValue(value.taskLedgerIdentity)
@@ -823,8 +812,8 @@ async function captureOpenSpecFromFiles(
     const pending = parsed.filter((task) => task.status === "pending").map((task) => ({ number: task.number, description: task.description, section: task.section }));
     selectedTasks = pending;
     selectedNumbers = pending.map((task) => task.number).sort();
-    selectedFingerprint = sha256(canonical(selectedTasks));
-    const ledgerDigest = sha256(Buffer.from(ledgerBytes, "utf8"));
+    selectedFingerprint = sha256Hex(canonicalizeJson(selectedTasks));
+    const ledgerDigest = sha256Hex(Buffer.from(ledgerBytes, "utf8"));
     ledgerCurrent = { ...ledger, sha256: ledgerDigest, fingerprint: ledgerDigest };
   }
   return {
@@ -879,7 +868,7 @@ function requestPredecessorFacts(request: ApplySourceCaptureRequest): ApplySourc
 }
 
 function sourceFingerprint(value: Omit<CompiledApplySourceFacts, "fingerprint">): string {
-  return sha256(canonical(value));
+  return sha256Hex(canonicalizeJson(value));
 }
 
 function compatibilityViews<T extends CompiledApplySourceFacts>(value: T): T {
@@ -915,7 +904,7 @@ function compatibilityViews<T extends CompiledApplySourceFacts>(value: T): T {
 }
 
 function unitFingerprint(value: Omit<ApplySourceUnitFacts, "fingerprint">): string {
-  return sha256(canonical(value));
+  return sha256Hex(canonicalizeJson(value));
 }
 
 /**
@@ -959,13 +948,13 @@ export async function captureCompiledApplySourceFacts(
 
 function sourceDifferences(expected: CompiledApplySourceFacts, actual: CompiledApplySourceFacts): string[] {
   const changed: string[] = [];
-  if (canonical(expected.repository) !== canonical(actual.repository)) changed.push("repository");
-  if (canonical(expected.open_spec) !== canonical(actual.open_spec)) changed.push("open_spec");
+  if (canonicalizeJson(expected.repository) !== canonicalizeJson(actual.repository)) changed.push("repository");
+  if (canonicalizeJson(expected.open_spec) !== canonicalizeJson(actual.open_spec)) changed.push("open_spec");
   const expectedUnits = new Map(expected.units.map((unit) => [unit.unit_id, unit]));
   const actualUnits = new Map(actual.units.map((unit) => [unit.unit_id, unit]));
   const unitIds = [...new Set([...expectedUnits.keys(), ...actualUnits.keys()])].sort();
   for (const id of unitIds) {
-    if (canonical(expectedUnits.get(id)) !== canonical(actualUnits.get(id))) changed.push(`unit:${id}`);
+    if (canonicalizeJson(expectedUnits.get(id)) !== canonicalizeJson(actualUnits.get(id))) changed.push(`unit:${id}`);
   }
   if (!changed.length && expected.repo_root !== actual.repo_root) changed.push("repo_root");
   return changed;

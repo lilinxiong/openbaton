@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { sha256Hex } from "./json-utils.js";
 
 export type OpenSpecTaskStatus = "pending" | "done" | "skipped";
 
@@ -308,7 +309,7 @@ function stableJson(value: unknown): string {
 }
 
 function sha256Bytes(file: string): string {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return sha256Hex(fs.readFileSync(file));
 }
 
 function pathIsWithin(target: string, root: string): boolean {
@@ -500,7 +501,7 @@ export function resolveOpenSpecApplyInstructions(
   // projection for observability, but must not invalidate the semantic task
   // snapshot when the CLI reallocates them.
   const fingerprintedSelectedTasks = selectedTasks.map(({ number, description, section }) => ({ number, description, section }));
-  const selectedTaskSnapshotFingerprint = crypto.createHash("sha256").update(stableJson(fingerprintedSelectedTasks), "utf8").digest("hex");
+  const selectedTaskSnapshotFingerprint = sha256Hex(stableJson(fingerprintedSelectedTasks));
   const taskLedger: OpenSpecTaskLedgerIdentity = { path: taskLedgerFile.path, identity: taskLedgerFile.path, sha256: taskLedgerFile.sha256, fingerprint: taskLedgerFile.sha256 };
   return {
     changeName,

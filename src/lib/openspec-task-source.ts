@@ -31,6 +31,7 @@ import type {
   TaskSourceRefreshRequest,
   TaskSourceResult,
 } from "./task-source.js";
+import { sha256Hex } from "./json-utils.js";
 
 export interface OpenSpecTaskSourceSelection {
   change?: string;
@@ -126,7 +127,7 @@ function previousWriteFingerprint(text: string, line: number, conclusion: string
   if (line < 0 || line >= lines.length || conclusionAt(text, line) !== conclusion) return null;
   lines[line] = lines[line].replace(/^(\s*)- \[[xX]\]/, "$1- [ ]");
   lines.splice(line + 1, 1);
-  return crypto.createHash("sha256").update(lines.join(separator), "utf8").digest("hex");
+  return sha256Hex(lines.join(separator));
 }
 
 function previousBatchWriteFingerprint(
@@ -152,7 +153,7 @@ function previousBatchWriteFingerprint(
     lines[task.line_index] = lines[task.line_index]!.replace(/^(\s*)- \[[xX]\]/, "$1- [ ]");
     lines.splice(task.line_index + 1, 1);
   }
-  return crypto.createHash("sha256").update(lines.join(separator), "utf8").digest("hex");
+  return sha256Hex(lines.join(separator));
 }
 
 function cleanConclusion(value: string): string { return String(value || "").replace(/\s+/g, " ").trim(); }

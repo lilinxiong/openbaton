@@ -41,6 +41,7 @@ import {
   type RollingUnitLineage,
 } from "./receipt.js";
 import { auditCommitOutcomeAsync, auditPreparedCommitAsync, auditWorktreeAsync, type AsyncSafetyOptions, type SafetyOperation } from "./safety.js";
+import { canonicalizeJson, readJsonFile } from "./json-utils.js";
 import { writeTaskConclusionByNumber } from "./openspec.js";
 import { recordRouteHealth } from "./route-health.js";
 import { readRouteSnapshot, type ExecutableRoute } from "./routes.js";
@@ -160,7 +161,7 @@ export function dispatchCompatibilityBlockers(cwd: string, env: NodeJS.ProcessEn
     const file = path.join(dir, name);
     let value: unknown;
     try {
-      value = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+      value = readJsonFile(file) as unknown;
     } catch {
       continue;
     }
@@ -856,23 +857,13 @@ interface CompiledApplyContext {
   quotaSuccessor?: boolean;
 }
 
-/** Stable comparison for immutable compiled protocol fields. */
-function stableCompiledValue(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableCompiledValue).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableCompiledValue(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 function sortedCompiledStrings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item ?? "").trim()).filter(Boolean).sort();
 }
 
 function sameCompiledStrings(left: unknown, right: unknown): boolean {
-  return stableCompiledValue(sortedCompiledStrings(left)) === stableCompiledValue(sortedCompiledStrings(right));
+  return canonicalizeJson(sortedCompiledStrings(left)) === canonicalizeJson(sortedCompiledStrings(right));
 }
 
 function isCompiledApplyTicket(ticket: SpawnTicket): boolean {
@@ -893,7 +884,7 @@ function compiledLineageForTicket(ticket: SpawnTicket): CompiledApplyLineage | n
   try {
     const lineage = normalizeCompiledApplyLineage(ticket.compiled_apply_lineage);
     for (const field of ["run_id", "plan_revision", "plan_fingerprint", "unit_id", "task_refs", "mode"] as const) {
-      if (stableCompiledValue(lineage[field]) !== stableCompiledValue(unit[field])) {
+      if (canonicalizeJson(lineage[field]) !== canonicalizeJson(unit[field])) {
         throw compiledApplyError(ticket, `work-unit lineage mismatch in ${field}`);
       }
     }
@@ -1130,7 +1121,7 @@ function validateCompiledTicket(
   if (receipt.host !== host || ticket.selection?.host !== host
     || !ticket.selection
     || !receipt.selection
-    || stableCompiledValue(ticket.selection) !== stableCompiledValue(receipt.selection)
+    || canonicalizeJson(ticket.selection) !== canonicalizeJson(receipt.selection)
     || ticket.selection.selected_model_id !== ticket.model_id
     || ticket.selection.selected_model_id !== receipt.route.card_id
     || ticket.route_id !== receipt.route.route_id
@@ -1151,7 +1142,7 @@ function validateCompiledTicket(
     || receipt.baseline !== null
     || receipt.commit_baseline !== null
     || receipt.scope.write_allowlist.length !== 0
-    || stableCompiledValue(receipt.scope.allowed_operations) !== stableCompiledValue(["read"])) {
+    || canonicalizeJson(receipt.scope.allowed_operations) !== canonicalizeJson(["read"])) {
     throw compiledApplyError(ticket, "verification-only Receipt carries write authority", "COMPILED_SCOPE_MISMATCH");
   }
   return { lineage, state, plan, unit, receipt, quotaSuccessor };

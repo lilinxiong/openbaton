@@ -10,6 +10,7 @@ import {
   type ExactExecutionRootIdentity,
 } from "../adapters/contract.js";
 import type { WorktreeExecutionMode } from "./rolling-plan.js";
+import { readJsonFile } from "./json-utils.js";
 
 export type ReceiptOperation = "read" | "commit" | SafetyOperation;
 export type ExecutionMode = "read-only" | "write" | "commit-only";
@@ -701,7 +702,7 @@ export function writeReceipt(cwd: string, receipt: DelegationReceipt, env?: Node
 export function readReceipt(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): DelegationReceipt {
   const file = receiptPath(cwd, receiptId, env);
   if (!fs.existsSync(file)) throw new ReceiptError(`receipt not found: ${receiptId}`, "RECEIPT_NOT_FOUND");
-  const receipt = normalizeReceipt(JSON.parse(fs.readFileSync(file, "utf8")));
+  const receipt = normalizeReceipt(readJsonFile(file));
   if (receipt.receipt_id !== receiptId) {
     throw new ReceiptError(`Receipt id does not match its path: ${receiptId}`, "RECEIPT_ID_MISMATCH");
   }

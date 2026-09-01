@@ -48,6 +48,7 @@ import {
   type IntegrationRecord,
   type IntegrationResolutionResult,
 } from "./worktree-execution.js";
+import { sha256Hex } from "./json-utils.js";
 
 export type WorktreeIntegrationErrorCode =
   | "INTEGRATION_INPUT_INVALID"
@@ -161,7 +162,7 @@ function identity(value: string, label: string): string {
 }
 
 function sha(value: string): string {
-  return crypto.createHash("sha256").update(value).digest("hex");
+  return sha256Hex(value);
 }
 
 function integrationId(runId: string, repositoryId: string, bundleId: string): string {

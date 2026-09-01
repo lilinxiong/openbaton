@@ -4,9 +4,9 @@
  * This module deliberately has no persistence or scheduling side effects.  It
  * validates the director's plan before a dispatcher is allowed to consume it.
  */
-import crypto from "node:crypto";
 import path from "node:path";
 import type { SafetyOperation } from "./safety.js";
+import { canonicalizeJson, sha256Hex } from "./json-utils.js";
 
 export const APPLY_EXECUTION_PLAN_SCHEMA_VERSION = 1 as const;
 export const APPLY_PLAN_OPERATIONS: readonly SafetyOperation[] = ["write", "create", "delete", "rename", "chmod"];
@@ -233,21 +233,15 @@ function unknownKeys(value: Record<string, unknown>, allowed: readonly string[],
 }
 function issue(out: ApplyPlanDiagnostic[], code: string, message: string, path?: string, refs?: string[]): void { out.push({ code, message, ...(path ? { path } : {}), ...(refs ? { refs } : {}) }); }
 
-function sortedObject(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortedObject);
-  if (!record(value)) return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedObject(value[key])]));
-}
-
 /** Stable JSON used for both receipts and plan fingerprints. */
 export function canonicalizeApplyPlan(value: ApplyExecutionPlan | unknown): string {
-  return JSON.stringify(sortedObject(value));
+  return canonicalizeJson(value);
 }
 
 function fingerprintValue(value: ApplyExecutionPlan | unknown): string {
   const copy = record(value) ? { ...value } : value;
   if (record(copy)) delete copy.fingerprint;
-  return crypto.createHash("sha256").update(canonicalizeApplyPlan(copy)).digest("hex");
+  return sha256Hex(canonicalizeApplyPlan(copy));
 }
 
 export function fingerprintApplyExecutionPlan(plan: ApplyExecutionPlan): string { return fingerprintValue(plan); }

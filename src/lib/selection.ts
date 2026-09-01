@@ -25,6 +25,7 @@ function quotaPoolForCandidate(candidate: QuotaCandidate): SelectionQuotaPool {
 import { taskCapabilityExclusion, type TaskCapabilityExclusion } from "./task-suitability.js";
 import { availabilityForRoute } from "./model-availability.js";
 import type { ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
+import { readJsonFile, sha256Hex, writeJsonAtomic } from "./json-utils.js";
 
 export type SelectionProposalStatus = "pending_confirmation" | "approved";
 
@@ -1281,27 +1282,21 @@ export function createSelectionProposal(cwd: string, {
 }
 
 export function selectionSourceFingerprint(value: unknown): string {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return sha256Hex(JSON.stringify(value));
 }
 
 export function writeSelectionProposal(cwd: string, proposal: SelectionProposal, env?: NodeJS.ProcessEnv): SelectionProposal {
   const dir = selectionsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${proposal.id}.json`);
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(proposal, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } finally {
-    if (fs.existsSync(temp)) fs.unlinkSync(temp);
-  }
+  writeJsonAtomic(file, proposal);
   return proposal;
 }
 
 export function readSelectionProposal(cwd: string, id: string, env?: NodeJS.ProcessEnv): SelectionProposal {
   const file = path.join(selectionsDir(cwd, env), `${id}.json`);
   if (!fs.existsSync(file)) throw new Error(`selection proposal not found: ${id}`);
-  const value = JSON.parse(fs.readFileSync(file, "utf8")) as SelectionProposal;
+  const value = readJsonFile(file) as SelectionProposal;
   if (value.schema_version !== 2) {
     throw new Error(`SELECTION_PROPOSAL_SCHEMA_UNSUPPORTED: ${value.schema_version}; create a new proposal`);
   }

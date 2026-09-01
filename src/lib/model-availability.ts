@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { modelAvailabilityPath } from "./paths.js";
 import { sessionUidFromEnv } from "./session-scope.js";
+import { readJsonFile, sha256Hex, writeJsonAtomic } from "./json-utils.js";
 
 export const MODEL_AVAILABILITY_SCHEMA_VERSION = 2;
 const HISTORICAL_MODEL_AVAILABILITY_SCHEMA_VERSION = 1;
@@ -129,7 +130,7 @@ function validSessionUid(value: unknown): value is string {
 /** Never persist account labels or credentials; only a one-way scope digest. */
 export function accountScopeDigest(value: string | null | undefined = DEFAULT_ACCOUNT_SCOPE): string {
   const scope = String(value || DEFAULT_ACCOUNT_SCOPE).trim() || DEFAULT_ACCOUNT_SCOPE;
-  return crypto.createHash("sha256").update(scope).digest("hex");
+  return sha256Hex(scope);
 }
 
 function key(value: Pick<ModelAvailabilityRecord, "session_uid" | "host" | "account_scope" | "route_id">): string {
@@ -205,7 +206,7 @@ export function readModelAvailability(cwd: string, env?: NodeJS.ProcessEnv): Mod
   const file = modelAvailabilityPath(cwd, env);
   if (!fs.existsSync(file)) return emptyStore();
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    const parsed = readJsonFile(file) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw invalidAvailability(file, "root must be an object");
     }
@@ -248,14 +249,8 @@ export function readModelAvailability(cwd: string, env?: NodeJS.ProcessEnv): Mod
 function writeModelAvailability(cwd: string, store: ModelAvailabilityStore, env?: NodeJS.ProcessEnv): void {
   const file = modelAvailabilityPath(cwd, env);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temporary, `${JSON.stringify(store, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temporary, file);
-    fs.chmodSync(file, 0o600);
-  } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-  }
+  writeJsonAtomic(file, store);
+  fs.chmodSync(file, 0o600);
 }
 
 interface AvailabilityLock {
@@ -266,7 +261,7 @@ interface AvailabilityLock {
 
 function lockOwnerIsAlive(file: string): boolean | null {
   try {
-    const value = JSON.parse(fs.readFileSync(file, "utf8")) as { pid?: unknown };
+    const value = readJsonFile(file) as { pid?: unknown };
     const pid = Number(value.pid);
     if (!Number.isInteger(pid) || pid < 1) return null;
     try {
@@ -326,7 +321,7 @@ function acquireAvailabilityLock(cwd: string, env: NodeJS.ProcessEnv | undefined
 function releaseAvailabilityLock(lock: AvailabilityLock): void {
   fs.closeSync(lock.fd);
   try {
-    const value = JSON.parse(fs.readFileSync(lock.file, "utf8")) as { token?: unknown };
+    const value = readJsonFile(lock.file) as { token?: unknown };
     if (value.token === lock.token) fs.unlinkSync(lock.file);
   } catch { /* already reclaimed or replaced */ }
 }

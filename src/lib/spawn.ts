@@ -46,6 +46,7 @@ import {
   type WorkUnitContract,
   type WorkUnitKind,
 } from "./work-unit.js";
+import { readJsonFile, writeJsonAtomic } from "./json-utils.js";
 
 export type TicketStatus = "queued" | "dispatching" | "running" | "completed" | "errored" | "timed_out" | "closed" | "done";
 
@@ -159,7 +160,7 @@ export function listSpawns(cwd: string, env?: NodeJS.ProcessEnv): SpawnTicket[] 
   return fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) as unknown)
+    .map((f) => readJsonFile(path.join(dir, f)) as unknown)
     .filter(isCurrentSpawnRecord)
     .map((value) => normalizeSpawnTicket(value))
     .sort((a, b) => String(a.id).localeCompare(String(b.id)));
@@ -411,7 +412,7 @@ export function readSpawn(cwd: string, id: string, env?: NodeJS.ProcessEnv): Spa
     err.code = "SPAWN_NOT_FOUND";
     throw err;
   }
-  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+  const raw = readJsonFile(file) as unknown;
   if (!isCurrentSpawnRecord(raw)) {
     const err = new Error(`spawn is not a current-format ticket: ${id}`) as CodedError;
     err.code = "TICKET_FORMAT_UNSUPPORTED";
@@ -431,13 +432,7 @@ export function writeSpawn(cwd: string, ticket: SpawnTicket, env?: NodeJS.Proces
   const dir = spawnsDir(cwd, env);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${ticket.id}.json`);
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temp, JSON.stringify(ticket, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } finally {
-    if (fs.existsSync(temp)) fs.unlinkSync(temp);
-  }
+  writeJsonAtomic(file, ticket);
   return ticket;
 }
 

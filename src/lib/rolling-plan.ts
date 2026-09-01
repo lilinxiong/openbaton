@@ -5,8 +5,8 @@
  * source, persist a run, schedule a unit, or infer missing execution facts.
  * Every document is versioned and its wire representation is snake_case.
  */
-import crypto from "node:crypto";
 import type { SafetyOperation } from "./safety.js";
+import { canonicalizeJson, sha256Hex } from "./json-utils.js";
 
 export const ROLLING_PROTOCOL_SCHEMA_VERSION = 1 as const;
 export const TASK_SOURCE_DESCRIPTOR_SCHEMA_VERSION = 1 as const;
@@ -332,14 +332,9 @@ export function resolveWorktreeExecutionMode(state: unknown, requested?: unknown
 }
 
 
-function sortedObject(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortedObject);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedObject(value[key])]));
-}
 /** Canonical JSON: object keys sorted recursively; array order is semantic. */
 export function canonicalizeRolling(value: unknown): string {
-  return JSON.stringify(sortedObject(value));
+  return canonicalizeJson(value);
 }
 
 const OPAQUE_FINGERPRINT_SUBTREES = new Set([
@@ -362,7 +357,7 @@ function withoutFingerprints(value: unknown, omitSequence = false): unknown {
   return copy;
 }
 function sha(value: unknown, omitSequence = false): string {
-  return crypto.createHash("sha256").update(canonicalizeRolling(withoutFingerprints(value, omitSequence))).digest("hex");
+  return sha256Hex(canonicalizeRolling(withoutFingerprints(value, omitSequence)));
 }
 
 export function fingerprintTaskSourceDescriptor(value: TaskSourceDescriptor | unknown): string { return sha(value); }
@@ -654,5 +649,5 @@ export { RollingProtocolValidationError as RollingPlanValidationError };
 /** Derive a stable Baton key without inspecting the adapter-owned reference. */
 export function deriveTaskKey(sourceKind: RollingSourceKind, sourceRef: unknown): string {
   if (!SOURCES.has(sourceKind)) throw new RollingProtocolValidationError([{ code: "INVALID_SOURCE_KIND", message: "source_kind is unsupported" }]);
-  return `${sourceKind}:${crypto.createHash("sha256").update(canonicalizeRolling(sourceRef)).digest("hex").slice(0, 32)}`;
+  return `${sourceKind}:${sha256Hex(canonicalizeRolling(sourceRef)).slice(0, 32)}`;
 }

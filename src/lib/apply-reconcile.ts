@@ -20,6 +20,7 @@ import {
 import { readReceipt, type DelegationReceipt, type CompiledApplyLineage } from "./receipt.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { applyRunStateLockPath, compiledApplyRunStatePath } from "./paths.js";
+import { writeJsonAtomic } from "./json-utils.js";
 
 export type ApplyReconcileErrorCode =
   | "RUN_STATE_LOCK_BUSY" | "RUN_STATE_INVALID" | "RUN_NOT_FOUND"
@@ -81,12 +82,7 @@ function sanitizeEvidence(value: unknown, limit = 240): string {
 function itemAccepted(item: ApplyRunItemState | undefined): boolean { return item?.status === "accepted" || item?.status === "reconciled"; }
 function itemFailed(item: ApplyRunItemState | undefined): boolean { return item?.status === "failed" || item?.status === "blocked" || item?.status === "terminal-unreleased"; }
 function stateFile(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string { return compiledApplyRunStatePath(cwd, runId, env); }
-function atomicJson(file: string, value: unknown): void {
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  try { fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" }); fs.renameSync(temp, file); }
-  finally { try { if (fs.existsSync(temp)) fs.unlinkSync(temp); } catch { /* best effort */ } }
-}
+function atomicJson(file: string, value: unknown): void { writeJsonAtomic(file, value); }
 function withLock<T>(file: string, fn: () => T): T {
   fs.mkdirSync(path.dirname(file), { recursive: true }); const start = Date.now();
   while (true) {

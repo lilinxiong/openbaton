@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { batonHomeDir, skillPath } from "./paths.js";
 import { hostSkillFiles, hostIds, type HostId } from "./hosts.js";
+import { readJsonFile, sha256Hex, writeJsonAtomic } from "./json-utils.js";
 
 export const INSTALL_MANIFEST_SCHEMA = 1 as const;
 export const INSTALL_MANIFEST_NAME = "install-manifest.json";
@@ -45,7 +46,7 @@ function sameFiles(left: InstallManifestFile[] | undefined, right: InstallManife
 
 function digestFile(file: string): string | null {
   try {
-    return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    return sha256Hex(fs.readFileSync(file));
   } catch {
     return null;
   }
@@ -76,7 +77,7 @@ export function directoryFingerprint(directory: string): string | null {
     const stat = fs.lstatSync(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
     visit(directory, "");
-    return crypto.createHash("sha256").update(rows.join("\n")).digest("hex");
+    return sha256Hex(rows.join("\n"));
   } catch {
     return null;
   }
@@ -206,7 +207,7 @@ export function readInstallManifest(env?: NodeJS.ProcessEnv): InstallManifest | 
   if (!fs.existsSync(file)) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    parsed = readJsonFile(file);
   } catch (error) {
     throw new Error(`INSTALL_MANIFEST_INVALID: ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -221,13 +222,7 @@ export function writeInstallManifest(manifest: InstallManifest, env?: NodeJS.Pro
   const value = normalizeManifest(manifest);
   const file = installManifestPath(env);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temporary, file);
-  } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-  }
+  writeJsonAtomic(file, value);
   return file;
 }
 

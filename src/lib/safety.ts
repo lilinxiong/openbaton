@@ -11,6 +11,7 @@ import {
 } from "./git-safety-facts.js";
 import { isRuntimeTurnDiffRef } from "./git-record-consumers.js";
 import { collectGitScalar, type GitProcessOptions } from "./git-safety-process.js";
+import { sha256Hex } from "./json-utils.js";
 
 export type SafetyOperation = "write" | "create" | "delete" | "rename" | "chmod";
 
@@ -175,7 +176,7 @@ function git(cwd: string, args: string[]): string {
 
 function checksumFile(file: string): string | null {
   if (!fs.existsSync(file)) return null;
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return sha256Hex(fs.readFileSync(file));
 }
 
 function checksumWorktreePath(root: string, rel: string): string {
@@ -191,7 +192,7 @@ function checksumWorktreePath(root: string, rel: string): string {
 }
 
 function checksumValue(value: unknown): string {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return sha256Hex(JSON.stringify(value));
 }
 
 function gitExitZero(cwd: string, args: string[]): boolean {

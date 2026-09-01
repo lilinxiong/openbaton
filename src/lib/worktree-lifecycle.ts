@@ -31,6 +31,7 @@ import {
   type WorktreeRecord,
 } from "./worktree-execution.js";
 import { resolveOwningRepository } from "./worktree-topology.js";
+import { sha256Hex } from "./json-utils.js";
 
 export type WorktreeLifecycleErrorCode =
   | "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH"
@@ -142,7 +143,7 @@ function timestamp(value?: string | number | Date): string {
   return result.toISOString();
 }
 
-function sha(value: string): string { return crypto.createHash("sha256").update(value).digest("hex"); }
+function sha(value: string): string { return sha256Hex(value); }
 function within(root: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));

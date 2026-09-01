@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { RepositoryLocalUnitPart } from "./rolling-plan.js";
+import { sha256Hex } from "./json-utils.js";
 
 export const WORKTREE_TOPOLOGY_SCHEMA_VERSION = 1 as const;
 
@@ -102,7 +103,7 @@ export class WorktreeTopologyError extends Error {
 }
 
 function sha(value: string): string {
-  return crypto.createHash("sha256").update(value).digest("hex");
+  return sha256Hex(value);
 }
 
 function canonicalExisting(value: string): string {

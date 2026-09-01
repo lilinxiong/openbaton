@@ -8,6 +8,7 @@ import {
   type GateVersion,
   type UnitVersion,
 } from "./rolling-plan.js";
+import { sha256Hex } from "./json-utils.js";
 
 export const ROLLING_ACCEPTANCE_SCHEMA_VERSION = 1 as const;
 
@@ -86,7 +87,7 @@ const KINDS: readonly FactKind[] = ["reservation", "native-attempt", "terminal-r
 function record(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
 function text(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
 function positive(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value > 0; }
-function hash(value: unknown): string { return crypto.createHash("sha256").update(canonicalizeRolling(value)).digest("hex"); }
+function hash(value: unknown): string { return sha256Hex(canonicalizeRolling(value)); }
 function ref(key: string, version: number): string { return `${key}@${version}`; }
 function parseRef(value: string): { key: string; version: number } | undefined { const match = value.match(REF_RE); return match ? { key: match[1]!, version: Number(match[2]) } : undefined; }
 function fail(message: string, diagnostics: readonly string[] = []): never { throw new RollingAcceptanceError(message, diagnostics); }

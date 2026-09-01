@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { sha256Hex } from "./json-utils.js";
 
 export interface ConversationPromotion {
   schema_version: 1;
@@ -25,7 +26,7 @@ export function promoteConversation(text: string): ConversationPromotion {
   const inferred = lines.filter((line) => !explicit.includes(line) && !excluded.includes(line) && INFERRED.test(line));
   return {
     schema_version: 1,
-    source_hash: crypto.createHash("sha256").update(normalized).digest("hex"),
+    source_hash: sha256Hex(normalized),
     explicit,
     inferred,
     unresolved,

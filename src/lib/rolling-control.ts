@@ -64,6 +64,7 @@ import { resolveWorktreeTopology } from "./worktree-topology.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./routes.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapterRegistry, type TaskSourceDiagnostic } from "./task-source.js";
+import { sha256Hex } from "./json-utils.js";
 
 export const ROLLING_CONTROL_SCHEMA_VERSION = 1 as const;
 export const ROLLING_EXECUTION_DOCUMENT_KIND = "execution" as const;
@@ -199,7 +200,7 @@ function stamp(value: RollingControlContext["now"]): string {
 }
 
 function hash(value: unknown): string {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return sha256Hex(JSON.stringify(value));
 }
 
 function sourceFromRun(run: RollingExecutionRun): TaskSourceDescriptor {

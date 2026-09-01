@@ -11,6 +11,7 @@ import {
   writeInstallManifest,
   type AdapterOwnership,
 } from "./install-manifest.js";
+import { readJsonFile } from "./json-utils.js";
 
 export interface BundledAdapterPackage {
   id: string;
@@ -40,7 +41,7 @@ function readBundledManifest(directory: string): { id: string; manifest: ReturnT
   if (!fs.existsSync(file)) return null;
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    raw = readJsonFile(file);
   } catch (error) {
     throw new Error(`ADAPTER_PACKAGE_INVALID: ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }

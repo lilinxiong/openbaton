@@ -20,6 +20,7 @@ import {
   type ReflogSummary,
   type StatusRecord,
 } from "./git-record-consumers.js";
+import { sha256Hex } from "./json-utils.js";
 
 export interface GitSafetyFacts {
   head: string;
@@ -57,7 +58,7 @@ export interface GitSafetyStabilityToken {
 
 /** Canonical digest of every caller-owned control fact used by setup. */
 export function fingerprintGitSafetyStabilityToken(token: GitSafetyStabilityToken): string {
-  return crypto.createHash("sha256").update(JSON.stringify({
+  return sha256Hex(JSON.stringify({
     head: token.head,
     branchRef: token.branchRef,
     refsDigest: token.refsDigest,
@@ -68,7 +69,7 @@ export function fingerprintGitSafetyStabilityToken(token: GitSafetyStabilityToke
       checksum: token.indexControl.checksum,
       entryCount: token.indexControl.entryCount,
     },
-  })).digest("hex");
+  }));
 }
 
 export function assertGitSafetyStabilityTokenUnchanged(
@@ -231,7 +232,7 @@ function selectIndexControlAlgorithm(options: GitSafetyFactsOptions): typeof GIT
 }
 
 function refsDigest(refs: readonly string[]): string {
-  return crypto.createHash("sha256").update(JSON.stringify(refs)).digest("hex");
+  return sha256Hex(JSON.stringify(refs));
 }
 
 /** Derive the token without rereading Git; only compact facts are retained. */
@@ -470,7 +471,7 @@ export async function consumeGitBinaryPaths(chunks: AsyncIterable<Buffer>): Prom
 }
 
 function terminalSurfaceFingerprint(facts: StableGitSafetyFacts): string {
-  return crypto.createHash("sha256").update(JSON.stringify({
+  return sha256Hex(JSON.stringify({
     head: facts.head,
     branch: facts.branch,
     branch_ref: facts.branchRef,
@@ -482,7 +483,7 @@ function terminalSurfaceFingerprint(facts: StableGitSafetyFacts): string {
     git_operation: facts.gitOperation ?? null,
     commit: facts.commit ?? null,
     stability_token: facts.stabilityToken,
-  })).digest("hex");
+  }));
 }
 
 async function materializeVisibleResultTree(

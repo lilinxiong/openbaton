@@ -17,6 +17,7 @@ import type {
   ApplySourceReadLink,
 } from "./apply-source.js";
 import { canonicalizeRolling } from "./rolling-plan.js";
+import { sha256Hex } from "./json-utils.js";
 
 export const ROLLING_INPUTS_SCHEMA_VERSION = 1 as const;
 
@@ -369,7 +370,7 @@ function clone(value: unknown): unknown {
 
 function hash(value: unknown): string {
   const canonical = canonicalizeRolling(clone(value));
-  return crypto.createHash("sha256").update(typeof canonical === "string" ? canonical : "null").digest("hex");
+  return sha256Hex(typeof canonical === "string" ? canonical : "null");
 }
 
 function canonicalLabel(raw: unknown, fallback?: string): string {

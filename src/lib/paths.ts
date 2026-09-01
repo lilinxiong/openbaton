@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { sha256Hex } from "./json-utils.js";
 
 export const BATON_DIR = ".baton";
 export const CONFIG_NAME = "config.toml";
@@ -141,7 +142,7 @@ export function canonicalWorkspaceRoot(cwd: string): string {
 }
 
 export function workspaceId(cwd: string): string {
-  return crypto.createHash("sha256").update(canonicalWorkspaceRoot(cwd)).digest("hex");
+  return sha256Hex(canonicalWorkspaceRoot(cwd));
 }
 
 /** User-global runtime namespace for one canonical workspace. */
