@@ -194,10 +194,10 @@ function ticketFor(record: WorktreeRecord, tickets: readonly WorktreeStatusTicke
 
 function nativeLiveness(record: WorktreeRecord, tickets: readonly WorktreeStatusTicket[]): WorktreeIsolationStatus["native_liveness"] {
   const ticket = ticketFor(record, tickets);
+  if (ticket && ["completed", "errored", "timed_out", "closed"].includes(ticket.status)) return "terminal";
   const probed = ticket?.liveness?.state;
   if (probed === "running" || probed === "pending_init") return "running";
   if (probed === "shutdown" || probed === "interrupted" || probed === "not_found") return "missing";
-  if (ticket && ["completed", "failed", "errored", "timed-out", "cancelled"].includes(ticket.status)) return "terminal";
   if (record.lifecycle_state === "worker_active") return record.native_handle ? "unknown" : "missing";
   if (record.lifecycle_state === "terminal_awaiting_audit") return "terminal";
   return "none";
@@ -329,7 +329,7 @@ async function statusForRecord(
   catch (error) { diagnostics.push({ code: "INTEGRATION_RECORD_INVALID", message: error instanceof Error ? error.message : String(error), record_id: record.record_id }); }
   if (record.bundle_id && !bundle) diagnostics.push({ code: "BUNDLE_RECORD_MISSING", message: "worktree references a missing bundle manifest", record_id: record.record_id });
   if (record.integration_id && !integration) diagnostics.push({ code: "INTEGRATION_RECORD_MISSING", message: "worktree references a missing integration record", record_id: record.record_id });
-  if (bundle && typeof bundle.transport.internal_ref === "string" && typeof bundle.transport.internal_commit === "string") {
+  if (bundle && record.lifecycle_state !== "cleaned" && typeof bundle.transport.internal_ref === "string" && typeof bundle.transport.internal_commit === "string") {
     const expectedRef = `refs/baton/change-bundles/${bundle.bundle_id}`;
     if (bundle.transport.internal_ref !== expectedRef) diagnostics.push({ code: "BUNDLE_INTERNAL_REF_INVALID", message: "bundle internal ref is outside its exact namespace", record_id: record.record_id });
     else {

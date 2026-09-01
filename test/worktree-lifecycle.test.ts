@@ -289,6 +289,19 @@ describe("worktree recovery, status, and cleanup", () => {
     const replay = await cleanupWorktreeAttempt({ cwd: f.repo, run_id: record.run_id, unit_key: record.unit_key, attempt_id: record.attempt_id, env: f.env, release_downstream_base: true });
     assert.equal(replay.replayed, true);
     assert.equal(replay.record.cleanup.status, "cleaned");
+    const status = await collectWorktreeRunStatus({
+      cwd: f.repo,
+      run_id: record.run_id,
+      env: f.env,
+      tickets: [{
+        status: "completed",
+        slot_released_at: "2026-09-01T00:00:00.000Z",
+        liveness: { state: "running" },
+        rolling_unit_lineage: { run_id: record.run_id, unit_key: record.unit_key, unit_version: record.unit_version },
+      }],
+    });
+    assert.equal(status.units[0]?.native_liveness, "terminal");
+    assert.equal(status.units[0]?.diagnostics.some((item) => item.code === "BUNDLE_INTERNAL_REF_MISSING"), false);
   });
 
   it("refuses a rewritten cleanup target, preserves it, and records a visible cleanup failure", async () => {
