@@ -9,6 +9,7 @@
  */
 import path from "node:path";
 import {
+  ROLLING_WORKTREE_STATE_SCHEMA_VERSION,
   RollingProtocolValidationError,
   validatePlanDelta as validatePlanDeltaShape,
   type GateType,
@@ -20,6 +21,7 @@ import {
   type TaskManifestEntry,
   type UnitExecutionMode,
   type UnitVersion,
+  type WorktreeExecutionMode,
 } from "./rolling-plan.js";
 import type { SafetyOperation } from "./safety.js";
 
@@ -80,6 +82,13 @@ export interface PlanDeltaFixedFacts {
   /** Previously accepted deltas may be supplied instead of flattened facts. */
   accepted_deltas?: readonly PlanDelta[];
   deltas?: readonly PlanDelta[];
+
+  /** Rolling checkpoint identity used to gate immutable worktree mode. */
+  rolling_run_schema_version?: number;
+  run_schema_version?: number;
+  run_execution_mode?: WorktreeExecutionMode;
+  worktree_mode?: WorktreeExecutionMode;
+  identity?: { execution_mode?: WorktreeExecutionMode; [key: string]: unknown };
 }
 
 /** A nested form is useful when passing a run snapshot plus other context. */
@@ -711,9 +720,141 @@ function checkFingerprintMap(value: unknown): boolean {
     && Object.values(value).every((item) => typeof item === "string" && HASH.test(item));
 }
 
+interface WorktreeRunContext {
+  schema_version?: number;
+  mode?: WorktreeExecutionMode;
+  raw_mode?: unknown;
+}
+
+function worktreeRunContext(context: unknown): WorktreeRunContext {
+  const source = contextSource(context);
+  const identity = isRecord(source.identity) ? source.identity : {};
+  const schema = source.rolling_run_schema_version ?? source.run_schema_version ?? source.schema_version;
+  const rawMode = source.run_execution_mode ?? source.worktree_mode ?? identity.execution_mode;
+  return {
+    ...(integer(schema) ? { schema_version: schema } : {}),
+    ...(rawMode === "isolated-worktree" || rawMode === "shared-worktree" ? { mode: rawMode } : {}),
+    ...(rawMode !== undefined ? { raw_mode: rawMode } : {}),
+  };
+}
+
+function effectiveWorktreeMode(unit: UnitVersion, run: WorktreeRunContext): WorktreeExecutionMode | undefined {
+  if (unit.worktree_mode === "isolated-worktree" || unit.worktree_mode === "shared-worktree") return unit.worktree_mode;
+  if (run.mode === "shared-worktree" || run.schema_version !== ROLLING_WORKTREE_STATE_SCHEMA_VERSION) return "shared-worktree";
+  return undefined;
+}
+
+function checkWorktreeModeContract(
+  fact: VersionFact<UnitVersion>,
+  index: FactIndex,
+  context: unknown,
+  diagnostics: RollingDiagnostic[],
+): void {
+  const unit = fact.value;
+  const pathName = ownerPath("unit", fact.id);
+  const run = worktreeRunContext(context);
+  const explicit = unit.worktree_mode;
+
+  if (run.raw_mode !== undefined && !run.mode) {
+    issue(diagnostics, "INVALID_WORKTREE_MODE", "rolling run has an unsupported worktree execution mode", `${pathName}.worktree_mode`, [fact.id, String(run.raw_mode)]);
+    return;
+  }
+  if (unit.execution_mode === "verification-only") {
+    if (explicit !== undefined) issue(diagnostics, "FORBIDDEN_FIELD", "verification-only units do not own a worktree mode", `${pathName}.worktree_mode`, [fact.id]);
+    return;
+  }
+  if (explicit === "isolated-worktree" && run.schema_version !== ROLLING_WORKTREE_STATE_SCHEMA_VERSION) {
+    issue(diagnostics, "ROLLING_V2_REQUIRED", "isolated worktree execution requires rolling-run v2 state", `${pathName}.worktree_mode`, [fact.id]);
+  }
+  if (run.schema_version === ROLLING_WORKTREE_STATE_SCHEMA_VERSION && !run.mode) {
+    issue(diagnostics, "WORKTREE_MODE_REQUIRED", "rolling-run v2 state must persist an explicit worktree execution mode", `${pathName}.worktree_mode`, [fact.id]);
+  }
+  if (run.mode === "isolated-worktree" && explicit === undefined) {
+    issue(diagnostics, "WORKTREE_MODE_REQUIRED", "isolated writing units must persist isolated-worktree mode before dispatch", `${pathName}.worktree_mode`, [fact.id]);
+  }
+  if (run.mode && explicit && run.mode !== explicit) {
+    issue(diagnostics, "WORKTREE_MODE_IMMUTABLE", "unit worktree mode cannot differ from the active rolling run", `${pathName}.worktree_mode`, [fact.id, run.mode, explicit]);
+  }
+
+  const current = effectiveWorktreeMode(unit, run);
+  const predecessors = [...index.units.values()]
+    .filter((candidate) => candidate.id !== fact.id && candidate.key === fact.key && candidate.version < fact.version)
+    .sort((left, right) => right.version - left.version || left.id.localeCompare(right.id));
+  const previous = predecessors[0];
+  if (previous) {
+    const priorMode = effectiveWorktreeMode(previous.value, run);
+    if (current && priorMode && current !== priorMode) {
+      issue(diagnostics, "WORKTREE_MODE_IMMUTABLE", `unit ${fact.key} cannot change worktree mode across versions`, `${pathName}.worktree_mode`, [previous.id, fact.id]);
+    }
+  }
+}
+
+function checkRepositoryParts(
+  fact: VersionFact<UnitVersion>,
+  normalized: UnitVersion,
+  index: FactIndex,
+  diagnostics: RollingDiagnostic[],
+): void {
+  const unit = fact.value;
+  if (!Array.isArray(unit.repository_parts)) return;
+  const pathName = ownerPath("unit", fact.id);
+  if (unit.execution_mode !== "patch-only") {
+    issue(diagnostics, "FORBIDDEN_FIELD", "only writing units may declare repository-local parts", `${pathName}.repository_parts`, [fact.id]);
+    return;
+  }
+  const operations = normalizeOperations(unit.allowed_operations).values;
+  const unitPaths = new Set(Array.isArray(normalized.write_paths) ? normalized.write_paths : []);
+  const claimed = new Set<string>();
+  const parts = new Map<string, { order: number; value: AnyRecord }>();
+  const normalizedParts: AnyRecord[] = [];
+  for (const [partIndex, rawPart] of unit.repository_parts.entries()) {
+    if (!isRecord(rawPart)) continue;
+    const partPath = `${pathName}.repository_parts.${partIndex}`;
+    if (text(rawPart.part_key) && integer(rawPart.integration_order)) parts.set(rawPart.part_key, { order: rawPart.integration_order, value: rawPart });
+    const copy = clone(rawPart);
+    const normalizedPaths: string[] = [];
+    for (const rawPath of Array.isArray(rawPart.write_paths) ? rawPart.write_paths : []) {
+      const result = normalizeWritePath(rawPath, operations);
+      if (!result.value) {
+        issue(diagnostics, result.error?.includes(".git") ? "FORBIDDEN_PATH" : "INVALID_SCOPE", result.error || "repository part path is invalid", `${partPath}.write_paths`, [fact.id, String(rawPath)]);
+        continue;
+      }
+      normalizedPaths.push(result.value);
+      if (!unitPaths.has(result.value)) issue(diagnostics, "REPOSITORY_PART_SCOPE_MISMATCH", `repository part path ${result.value} is outside the unit scope`, `${partPath}.write_paths`, [fact.id, result.value]);
+      if (claimed.has(result.value)) issue(diagnostics, "DUPLICATE_REPOSITORY_PART_SCOPE", `write path ${result.value} is claimed by more than one repository part`, `${partPath}.write_paths`, [fact.id, result.value]);
+      claimed.add(result.value);
+    }
+    copy.write_paths = normalizedPaths;
+    normalizedParts.push(copy);
+  }
+  for (const unitPath of unitPaths) if (!claimed.has(unitPath)) {
+    issue(diagnostics, "REPOSITORY_PART_SCOPE_MISMATCH", `unit write path ${unitPath} is not assigned to a repository-local part`, `${pathName}.repository_parts`, [fact.id, unitPath]);
+  }
+  for (const [partKey, part] of parts) {
+    for (const dependency of Array.isArray(part.value.depends_on) ? part.value.depends_on : []) {
+      const predecessor = parts.get(String(dependency));
+      if (predecessor && predecessor.order >= part.order) {
+        issue(diagnostics, "INVALID_INTEGRATION_ORDER", `repository part ${partKey} must follow dependency ${String(dependency)}`, `${pathName}.repository_parts`, [String(dependency), partKey]);
+      }
+    }
+  }
+  const integrationGates = new Set<string>([
+    ...(Array.isArray(unit.integration_gate_keys) ? unit.integration_gate_keys : []),
+    ...unit.repository_parts.flatMap((part) => isRecord(part) && Array.isArray(part.integration_gate_keys) ? part.integration_gate_keys.filter(text) : []),
+  ]);
+  for (const gateKey of integrationGates) {
+    const gate = resolveVersion(gateKey, index.gates);
+    if (!gate) issue(diagnostics, "UNKNOWN_DEPENDENCY", `unit ${fact.id} requires unknown integration gate ${gateKey}`, `${pathName}.integration_gate_keys`, [fact.id, gateKey]);
+    else if ((gate.value as GateVersion).type !== "integration-acceptance") issue(diagnostics, "INVALID_INTEGRATION_GATE", `gate ${gate.id} is not an integration-acceptance gate`, `${pathName}.integration_gate_keys`, [fact.id, gate.id]);
+  }
+  normalized.repository_parts = normalizedParts as unknown as UnitVersion["repository_parts"];
+}
+
 function checkUnitContract(
   fact: VersionFact<UnitVersion>,
   normalized: UnitVersion,
+  index: FactIndex,
+  context: unknown,
   diagnostics: RollingDiagnostic[],
 ): void {
   const pathName = ownerPath("unit", fact.id);
@@ -769,6 +910,8 @@ function checkUnitContract(
     delete (normalized as unknown as AnyRecord).write_paths;
     delete (normalized as unknown as AnyRecord).allowed_operations;
   }
+  checkWorktreeModeContract(fact, index, context, diagnostics);
+  checkRepositoryParts(fact, normalized, index, diagnostics);
 }
 
 function checkGateContract(
@@ -844,8 +987,15 @@ function checkDependencies(
     edges.get(from)!.add(`${target.kind}:${target.id}`);
   }
   if (fact.kind === "unit") {
-    const requiredGates = (fact.value as UnitVersion).required_gate_keys;
-    if (requiredGates !== undefined) {
+    const unit = fact.value as UnitVersion;
+    const requiredGates = new Set([
+      ...(Array.isArray(unit.required_gate_keys) ? unit.required_gate_keys : []),
+      ...(Array.isArray(unit.integration_gate_keys) ? unit.integration_gate_keys : []),
+      ...(Array.isArray(unit.repository_parts)
+        ? unit.repository_parts.flatMap((part) => Array.isArray(part.integration_gate_keys) ? part.integration_gate_keys : [])
+        : []),
+    ]);
+    if (requiredGates.size > 0) {
       for (const gateKey of requiredGates) {
         const target = resolveVersion(gateKey, index.gates);
         if (!target) {
@@ -873,8 +1023,14 @@ function addKnownDependencies(
     if (target) edges.get(from)!.add(`${target.kind}:${target.id}`);
   }
   if (fact.kind !== "unit") return;
-  const requiredGates = (fact.value as UnitVersion).required_gate_keys;
-  if (!Array.isArray(requiredGates)) return;
+  const unit = fact.value as UnitVersion;
+  const requiredGates = [
+    ...(Array.isArray(unit.required_gate_keys) ? unit.required_gate_keys : []),
+    ...(Array.isArray(unit.integration_gate_keys) ? unit.integration_gate_keys : []),
+    ...(Array.isArray(unit.repository_parts)
+      ? unit.repository_parts.flatMap((part) => Array.isArray(part.integration_gate_keys) ? part.integration_gate_keys : [])
+      : []),
+  ];
   for (const gateKey of requiredGates) {
     const target = resolveVersion(gateKey, index.gates);
     if (target) edges.get(from)!.add(`gate:${target.id}`);
@@ -1059,7 +1215,7 @@ export function validatePlanDeltaAgainstFacts(input: unknown, context: PlanDelta
     const node = index.nodes.get(`unit:${fact.id}`);
     if (!node) continue;
     checkTaskRefs(node, index, diagnostics);
-    checkUnitContract(fact, normalizedUnits.get(fact.id) || clone(fact.value), diagnostics);
+    checkUnitContract(fact, normalizedUnits.get(fact.id) || clone(fact.value), index, context, diagnostics);
   }
   for (const fact of [...index.localGates.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     const node = index.nodes.get(`gate:${fact.id}`);

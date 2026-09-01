@@ -20,6 +20,16 @@ export const ROLLING_FACT_LOG_NAME = "facts.ndjson";
 export const ROLLING_ACCEPTED_DOCUMENTS_DIR = "accepted-documents";
 export const ROLLING_CHECKPOINT_NAME = "checkpoint.json";
 export const ROLLING_LOCK_NAME = ".lock";
+/** Versioned worktree-execution records live inside one rolling-run root. */
+export const ROLLING_WORKTREES_DIR = "worktrees";
+export const ROLLING_SNAPSHOTS_DIR = "snapshots";
+export const ROLLING_BUNDLES_DIR = "bundles";
+export const ROLLING_INTEGRATIONS_DIR = "integrations";
+export const WORKTREE_RECORD_NAME = "record-v1.json";
+export const SNAPSHOT_MANIFEST_NAME = "manifest-v1.json";
+export const BUNDLE_MANIFEST_NAME = "manifest-v1.json";
+export const INTEGRATION_RECORD_NAME = "record-v1.json";
+export const WORKTREE_EXECUTION_ROOT_DIR = "root";
 export const SELECTIONS_DIR = "selections";
 export const RECEIPTS_DIR = "receipts";
 export const TMP_DIR = "tmp";
@@ -225,6 +235,97 @@ export function rollingRunCheckpointPath(cwd: string, runId: string, env?: NodeJ
 export function rollingRunLockPath(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
   return path.join(rollingRunRoot(cwd, runId, env), ROLLING_LOCK_NAME);
 }
+
+/** Baton-owned detached worktrees for one rolling run. */
+export function rollingRunWorktreesDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_WORKTREES_DIR);
+}
+
+/** One attempt namespace. Every externally supplied component is one segment. */
+export function worktreeAttemptDir(
+  cwd: string,
+  runId: string,
+  unitKey: string,
+  attemptId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    rollingRunWorktreesDir(cwd, runId, env),
+    rollingPathSegment("unit key", unitKey),
+    rollingPathSegment("attempt id", attemptId),
+  );
+}
+
+/** The exact directory that may later be registered as a detached Git worktree. */
+export function worktreeExecutionRootPath(
+  cwd: string,
+  runId: string,
+  unitKey: string,
+  attemptId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(worktreeAttemptDir(cwd, runId, unitKey, attemptId, env), WORKTREE_EXECUTION_ROOT_DIR);
+}
+
+/** Version-1 lifecycle record for one worktree attempt. */
+export function worktreeRecordPath(
+  cwd: string,
+  runId: string,
+  unitKey: string,
+  attemptId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(worktreeAttemptDir(cwd, runId, unitKey, attemptId, env), WORKTREE_RECORD_NAME);
+}
+
+export function rollingRunSnapshotsDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_SNAPSHOTS_DIR);
+}
+
+export function snapshotManifestPath(cwd: string, runId: string, snapshotId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(
+    rollingRunSnapshotsDir(cwd, runId, env),
+    rollingPathSegment("snapshot id", snapshotId),
+    SNAPSHOT_MANIFEST_NAME,
+  );
+}
+
+export function rollingRunBundlesDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_BUNDLES_DIR);
+}
+
+export function bundleManifestPath(cwd: string, runId: string, bundleId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(
+    rollingRunBundlesDir(cwd, runId, env),
+    rollingPathSegment("bundle id", bundleId),
+    BUNDLE_MANIFEST_NAME,
+  );
+}
+
+export function rollingRunIntegrationsDir(cwd: string, runId: string, env?: NodeJS.ProcessEnv): string {
+  return path.join(rollingRunRoot(cwd, runId, env), ROLLING_INTEGRATIONS_DIR);
+}
+
+export function integrationRecordPath(
+  cwd: string,
+  runId: string,
+  repositoryId: string,
+  integrationId: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return path.join(
+    rollingRunIntegrationsDir(cwd, runId, env),
+    rollingPathSegment("repository id", repositoryId),
+    rollingPathSegment("integration id", integrationId),
+    INTEGRATION_RECORD_NAME,
+  );
+}
+
+// Compact aliases for callers that already operate inside a rolling run.
+export const rollingWorktreesDir = rollingRunWorktreesDir;
+export const rollingSnapshotsDir = rollingRunSnapshotsDir;
+export const rollingBundlesDir = rollingRunBundlesDir;
+export const rollingIntegrationsDir = rollingRunIntegrationsDir;
 
 // Keep the vocabulary close to the existing compiled-apply helpers for callers
 // that use "dir" or "document" rather than "root" or "accepted document".

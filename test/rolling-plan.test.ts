@@ -2,12 +2,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   RollingProtocolValidationError,
+  RollingWorktreeModeError,
   assertPlanDelta,
   canonicalizeRolling,
   deriveTaskKey,
   fingerprintUnitVersion,
   parsePlanDelta,
   parseTaskManifestPage,
+  resolveWorktreeExecutionMode,
   serializePlanDelta,
   serializeTaskManifestPage,
   validateGateVersion,
@@ -15,6 +17,7 @@ import {
   type PlanDelta,
   type TaskManifestPage,
 } from "../src/lib/rolling-plan.js";
+import { validatePlanDeltaAgainstFacts } from "../src/lib/rolling-delta.js";
 
 const hash = "a".repeat(64);
 
@@ -133,5 +136,91 @@ describe("rolling protocol", () => {
     const result = validateGateVersion({ schema_version: 1, gate_key: "g", version: 1, type: "device", task_keys: ["t"], depends_on: [] });
     assert.equal(result.valid, false);
     assert.equal(result.diagnostics[0]?.code, "UNKNOWN_GATE_TYPE");
+  });
+
+  it("gates immutable isolated mode on rolling-run v2 without migrating legacy state", () => {
+    assert.equal(resolveWorktreeExecutionMode({ schema_version: 1 }), "shared-worktree");
+    assert.equal(resolveWorktreeExecutionMode({ schema_version: 2, identity: { execution_mode: "isolated-worktree" } }), "isolated-worktree");
+    assert.equal(resolveWorktreeExecutionMode({ schema_version: 2, identity: { execution_mode: "shared-worktree" } }, "shared-worktree"), "shared-worktree");
+    assert.throws(
+      () => resolveWorktreeExecutionMode({ schema_version: 1 }, "isolated-worktree"),
+      (error: unknown) => error instanceof RollingWorktreeModeError && error.code === "ROLLING_V2_REQUIRED",
+    );
+    assert.throws(
+      () => resolveWorktreeExecutionMode({ schema_version: 2, identity: { execution_mode: "isolated-worktree" } }, "shared-worktree"),
+      (error: unknown) => error instanceof RollingWorktreeModeError && error.code === "WORKTREE_MODE_IMMUTABLE",
+    );
+    assert.throws(
+      () => resolveWorktreeExecutionMode({ schema_version: 2 }),
+      (error: unknown) => error instanceof RollingWorktreeModeError && error.code === "WORKTREE_MODE_REQUIRED",
+    );
+  });
+
+  it("requires an explicit isolated unit mode that matches rolling-run v2 state", () => {
+    const proposed = delta();
+    proposed.unit_versions[0] = { ...proposed.unit_versions[0]!, worktree_mode: "isolated-worktree" };
+    const context = {
+      schema_version: 2,
+      identity: { execution_mode: "isolated-worktree" as const },
+      manifest_entries: page().entries,
+    };
+    assert.equal(validatePlanDeltaAgainstFacts(proposed, context).valid, true);
+
+    const incompatible = validatePlanDeltaAgainstFacts(proposed, { ...context, schema_version: 1 });
+    assert.equal(incompatible.valid, false);
+    assert.ok(incompatible.diagnostics.some((item) => item.code === "ROLLING_V2_REQUIRED"));
+
+    const mismatched = validatePlanDeltaAgainstFacts(proposed, { ...context, identity: { execution_mode: "shared-worktree" as const } });
+    assert.equal(mismatched.valid, false);
+    assert.ok(mismatched.diagnostics.some((item) => item.code === "WORKTREE_MODE_IMMUTABLE"));
+
+    const implicit = delta();
+    const missing = validatePlanDeltaAgainstFacts(implicit, context);
+    assert.equal(missing.valid, false);
+    assert.ok(missing.diagnostics.some((item) => item.code === "WORKTREE_MODE_REQUIRED"));
+  });
+
+  it("preserves explicit repository-local dependencies and integration gates", () => {
+    const proposed = delta();
+    proposed.unit_versions[0] = {
+      ...proposed.unit_versions[0]!,
+      worktree_mode: "isolated-worktree",
+      write_paths: ["src/a.ts", "vendor/sub/b.ts"],
+      repository_parts: [
+        { part_key: "part-main", repository_id: "b".repeat(64), write_paths: ["src/a.ts"], depends_on: [], integration_order: 0 },
+        { part_key: "part-sub", repository_id: "c".repeat(64), write_paths: ["vendor/sub/b.ts"], depends_on: ["part-main"], integration_order: 1 },
+      ],
+      integration_gate_keys: ["gate-integration"],
+    };
+    proposed.gate_versions.push({
+      schema_version: 1,
+      gate_key: "gate-integration",
+      version: 1,
+      type: "integration-acceptance",
+      task_keys: ["director:t1"],
+      depends_on: [],
+      acceptance_contract: { required: true },
+    });
+    proposed.task_coverage[0] = {
+      ...proposed.task_coverage[0]!,
+      gate_versions: ["gate-1@1", "gate-integration@1"],
+    };
+    const result = validatePlanDeltaAgainstFacts(proposed, {
+      schema_version: 2,
+      identity: { execution_mode: "isolated-worktree" },
+      manifest_entries: page().entries,
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.normalized?.unit_versions[0]?.repository_parts?.map((part) => part.part_key), ["part-main", "part-sub"]);
+
+    const noGate = structuredClone(proposed);
+    delete noGate.unit_versions[0]!.integration_gate_keys;
+    const invalid = validatePlanDeltaAgainstFacts(noGate, {
+      schema_version: 2,
+      identity: { execution_mode: "isolated-worktree" },
+      manifest_entries: page().entries,
+    });
+    assert.equal(invalid.valid, false);
+    assert.ok(invalid.diagnostics.some((item) => item.code === "INTEGRATION_GATE_REQUIRED"));
   });
 });

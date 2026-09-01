@@ -20,6 +20,8 @@ export const TASK_SEAL_SCHEMA_VERSION = 1 as const;
 export const SUPERSESSION_SCHEMA_VERSION = 1 as const;
 export const LOCAL_FAILURE_SCHEMA_VERSION = 1 as const;
 export const RETRY_ATTEMPT_SCHEMA_VERSION = 1 as const;
+/** Worktree isolation is available only on the durable rolling-run v2 state. */
+export const ROLLING_WORKTREE_STATE_SCHEMA_VERSION = 2 as const;
 /** Short aliases used by callers that treat the protocol as one wire schema. */
 export const ROLLING_SCHEMA_VERSION = ROLLING_PROTOCOL_SCHEMA_VERSION;
 export const TASK_SOURCE_SCHEMA_VERSION = TASK_SOURCE_DESCRIPTOR_SCHEMA_VERSION;
@@ -28,11 +30,28 @@ export const TASK_MANIFEST_SCHEMA_VERSION = TASK_MANIFEST_PAGE_SCHEMA_VERSION;
 export type RollingSourceKind = "openspec" | "director";
 export type TaskSourceState = "pending" | "complete" | "unavailable";
 export type UnitExecutionMode = "patch-only" | "verification-only";
+/**
+ * Where a writing unit executes. This is deliberately separate from
+ * `UnitExecutionMode`, which is the patch/verification contract already
+ * persisted by rolling protocol v1 documents.
+ */
+export type WorktreeExecutionMode = "isolated-worktree" | "shared-worktree";
 export type UnitRouteProfile = "coding" | "runner" | "longctx";
 export type GateType = "safety-precondition" | "integration-acceptance" | "evidence";
 export type CoverageKind = "unit" | "gate" | "no-op";
 export type FailureOwner = "manifest_entry" | "delta" | "unit_version" | "attempt" | "gate_version" | "seal" | "reconciliation";
 export type RetryAttemptState = "pending" | "reserved" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface RepositoryLocalUnitPart {
+  part_key: string;
+  repository_id: string;
+  write_paths: string[];
+  /** Repository-local predecessors, expressed as sibling part keys. */
+  depends_on: string[];
+  /** Stable deterministic parent integration order for this semantic unit. */
+  integration_order: number;
+  integration_gate_keys?: string[];
+}
 
 export interface TaskSourceDescriptor {
   schema_version: typeof TASK_SOURCE_DESCRIPTOR_SCHEMA_VERSION;
@@ -82,6 +101,8 @@ export interface UnitVersion {
   task_keys: string[];
   depends_on: string[];
   execution_mode: UnitExecutionMode;
+  /** Explicit worktree policy. Absence is reserved for legacy/shared state. */
+  worktree_mode?: WorktreeExecutionMode;
   /** Configured host profile selected by policy, never a raw model override. */
   route_profile?: UnitRouteProfile;
   prompt?: string;
@@ -94,6 +115,10 @@ export interface UnitVersion {
   permitted_validation?: string[];
   input_fingerprints?: Record<string, string>;
   required_gate_keys?: string[];
+  /** Required when one semantic unit is explicitly split across repositories. */
+  repository_parts?: RepositoryLocalUnitPart[];
+  /** Parent-owned gates that order/accept cross-repository integration. */
+  integration_gate_keys?: string[];
   fingerprint?: string;
 }
 
@@ -202,12 +227,22 @@ export class RollingProtocolValidationError extends Error {
   }
 }
 
+export class RollingWorktreeModeError extends Error {
+  readonly code: "ROLLING_V2_REQUIRED" | "WORKTREE_MODE_INVALID" | "WORKTREE_MODE_REQUIRED" | "WORKTREE_MODE_IMMUTABLE";
+  constructor(message: string, code: RollingWorktreeModeError["code"]) {
+    super(message);
+    this.name = "RollingWorktreeModeError";
+    this.code = code;
+  }
+}
+
 type AnyRecord = Record<string, unknown>;
 const HASH = /^[0-9a-f]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const OPERATIONS = new Set<SafetyOperation>(["write", "create", "delete", "rename", "chmod"]);
 const GATES = new Set<GateType>(["safety-precondition", "integration-acceptance", "evidence"]);
 const SOURCES = new Set<RollingSourceKind>(["openspec", "director"]);
+const WORKTREE_MODES = new Set<WorktreeExecutionMode>(["isolated-worktree", "shared-worktree"]);
 
 function isRecord(value: unknown): value is AnyRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -258,6 +293,49 @@ function checkObject(value: unknown, path: string, out: RollingDiagnostic[]): va
   if (!isRecord(value)) { issue(out, "INVALID_SHAPE", "expected an object", path); return false; }
   return true;
 }
+
+function worktreeMode(value: unknown): WorktreeExecutionMode | undefined {
+  return typeof value === "string" && WORKTREE_MODES.has(value as WorktreeExecutionMode)
+    ? value as WorktreeExecutionMode
+    : undefined;
+}
+
+/**
+ * Resolve one persisted rolling run's worktree policy without migrating it.
+ * Version-1/manual state has only the explicit compatibility result
+ * `shared-worktree`; isolated mode is never inferred after a setup failure.
+ */
+export function resolveWorktreeExecutionMode(state: unknown, requested?: unknown): WorktreeExecutionMode {
+  const source = isRecord(state) ? state : {};
+  const identity = isRecord(source.identity) ? source.identity : {};
+  const schemaVersion = source.schema_version;
+  const rawPersisted = identity.execution_mode ?? source.worktree_mode ?? source.execution_mode;
+  const persisted = worktreeMode(rawPersisted);
+  const desired = worktreeMode(requested);
+  if (rawPersisted !== undefined && !persisted) {
+    throw new RollingWorktreeModeError("persisted worktree execution mode is unsupported", "WORKTREE_MODE_INVALID");
+  }
+  if (requested !== undefined && !desired) {
+    throw new RollingWorktreeModeError("requested worktree execution mode is unsupported", "WORKTREE_MODE_INVALID");
+  }
+  if (persisted && desired && persisted !== desired) {
+    throw new RollingWorktreeModeError("an active rolling run cannot change worktree execution mode", "WORKTREE_MODE_IMMUTABLE");
+  }
+  const selected = desired || persisted;
+  if (schemaVersion !== ROLLING_WORKTREE_STATE_SCHEMA_VERSION) {
+    if (selected === "isolated-worktree") {
+      throw new RollingWorktreeModeError("isolated worktree execution requires rolling-run v2 state", "ROLLING_V2_REQUIRED");
+    }
+    return "shared-worktree";
+  }
+  if (!selected) {
+    throw new RollingWorktreeModeError("rolling-run v2 state must persist an explicit worktree execution mode", "WORKTREE_MODE_REQUIRED");
+  }
+  return selected;
+}
+
+export const assertWorktreeExecutionMode = resolveWorktreeExecutionMode;
+export const resolveRollingWorktreeMode = resolveWorktreeExecutionMode;
 
 function sortedObject(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortedObject);
@@ -350,19 +428,75 @@ function validatePage(input: unknown): RollingValidationResult<TaskManifestPage>
   return { valid: d.length === 0, diagnostics: d, ...(d.length === 0 ? { value: input as unknown as TaskManifestPage } : {}) };
 }
 
+function validateRepositoryPart(input: unknown, path: string): RollingValidationResult<RepositoryLocalUnitPart> {
+  const d: RollingDiagnostic[] = [];
+  if (!checkObject(input, path, d)) return { valid: false, diagnostics: d };
+  const v = input;
+  unknownFields(v, ["part_key", "repository_id", "write_paths", "depends_on", "integration_order", "integration_gate_keys"], path, d);
+  requiredString(v, "part_key", path, d, true);
+  requiredString(v, "repository_id", path, d);
+  if (nonEmpty(v.repository_id) && !HASH.test(v.repository_id)) issue(d, "INVALID_REPOSITORY_ID", "repository_id must be a SHA-256 hex identity", `${path}.repository_id`);
+  requiredArray(v, "write_paths", path, d);
+  requiredArray(v, "depends_on", path, d);
+  if (Array.isArray(v.write_paths) && (v.write_paths.length === 0 || !v.write_paths.every(nonEmpty))) issue(d, "INVALID_SHAPE", "write_paths must be a non-empty string array", `${path}.write_paths`);
+  uniqueStrings(v.depends_on, `${path}.depends_on`, d);
+  if (!integer(v.integration_order) || (v.integration_order as number) < 0) issue(d, "INVALID_INTEGRATION_ORDER", "integration_order must be a non-negative integer", `${path}.integration_order`);
+  if (v.integration_gate_keys !== undefined) {
+    if (!stringArray(v.integration_gate_keys)) issue(d, "INVALID_SHAPE", "integration_gate_keys must be an array of strings", `${path}.integration_gate_keys`);
+    else uniqueStrings(v.integration_gate_keys, `${path}.integration_gate_keys`, d);
+  }
+  return { valid: d.length === 0, diagnostics: d, ...(d.length === 0 ? { value: input as unknown as RepositoryLocalUnitPart } : {}) };
+}
+
 function validateUnit(input: unknown, path = "unit_versions"): RollingValidationResult<UnitVersion> {
   const d: RollingDiagnostic[] = [];
   if (!checkObject(input, path, d)) return { valid: false, diagnostics: d };
   const v = input;
-  unknownFields(v, ["schema_version", "unit_key", "version", "task_keys", "depends_on", "execution_mode", "route_profile", "prompt", "recipe", "description", "write_paths", "allowed_operations", "read_context", "completion_criteria", "permitted_validation", "input_fingerprints", "required_gate_keys", "fingerprint"], path, d);
+  unknownFields(v, ["schema_version", "unit_key", "version", "task_keys", "depends_on", "execution_mode", "worktree_mode", "route_profile", "prompt", "recipe", "description", "write_paths", "allowed_operations", "read_context", "completion_criteria", "permitted_validation", "input_fingerprints", "required_gate_keys", "repository_parts", "integration_gate_keys", "fingerprint"], path, d);
   checkVersion(v, path, d, UNIT_VERSION_SCHEMA_VERSION); requiredString(v, "unit_key", path, d, true);
   if (!integer(v.version) || (v.version as number) < 1) issue(d, "INVALID_VERSION", "version must be a positive integer", `${path}.version`);
   requiredArray(v, "task_keys", path, d); requiredArray(v, "depends_on", path, d); uniqueStrings(v.task_keys, `${path}.task_keys`, d); uniqueStrings(v.depends_on, `${path}.depends_on`, d);
   if (!new Set<UnitExecutionMode>(["patch-only", "verification-only"]).has(v.execution_mode as UnitExecutionMode)) issue(d, "INVALID_MODE", "execution_mode is unsupported", `${path}.execution_mode`);
+  if (v.worktree_mode !== undefined && !WORKTREE_MODES.has(v.worktree_mode as WorktreeExecutionMode)) issue(d, "INVALID_WORKTREE_MODE", "worktree_mode is unsupported", `${path}.worktree_mode`);
   if (v.route_profile !== undefined && !new Set(["coding", "runner", "longctx"]).has(v.route_profile as string)) issue(d, "INVALID_ROUTE_PROFILE", "route_profile is unsupported", `${path}.route_profile`);
-  for (const key of ["write_paths", "completion_criteria", "permitted_validation", "required_gate_keys"]) if (v[key] !== undefined && !stringArray(v[key])) issue(d, "INVALID_SHAPE", `${key} must be an array of strings`, `${path}.${key}`);
+  for (const key of ["write_paths", "completion_criteria", "permitted_validation", "required_gate_keys", "integration_gate_keys"]) if (v[key] !== undefined && !stringArray(v[key])) issue(d, "INVALID_SHAPE", `${key} must be an array of strings`, `${path}.${key}`);
+  for (const key of ["required_gate_keys", "integration_gate_keys"] as const) if (stringArray(v[key])) uniqueStrings(v[key], `${path}.${key}`, d);
   if (v.allowed_operations !== undefined && (!Array.isArray(v.allowed_operations) || !(v.allowed_operations as unknown[]).every((x) => typeof x === "string" && OPERATIONS.has(x as SafetyOperation)))) issue(d, "INVALID_OPERATION", "allowed_operations contains an unsupported operation", `${path}.allowed_operations`);
   if (v.input_fingerprints !== undefined && (!isRecord(v.input_fingerprints) || !Object.values(v.input_fingerprints).every((x) => typeof x === "string" && HASH.test(x)))) issue(d, "INVALID_FINGERPRINT", "input_fingerprints must map names to SHA-256 strings", `${path}.input_fingerprints`);
+  if (v.repository_parts !== undefined) {
+    if (!Array.isArray(v.repository_parts) || v.repository_parts.length === 0) issue(d, "INVALID_REPOSITORY_PARTS", "repository_parts must be a non-empty array", `${path}.repository_parts`);
+    else {
+      const keys = new Set<string>();
+      const repositories = new Set<string>();
+      const orders = new Set<number>();
+      for (const [index, part] of v.repository_parts.entries()) {
+        const partPath = `${path}.repository_parts.${index}`;
+        d.push(...validateRepositoryPart(part, partPath).diagnostics);
+        if (!isRecord(part)) continue;
+        if (nonEmpty(part.part_key)) {
+          if (keys.has(part.part_key)) issue(d, "DUPLICATE_REPOSITORY_PART", `duplicate part_key ${part.part_key}`, `${partPath}.part_key`);
+          keys.add(part.part_key);
+        }
+        if (nonEmpty(part.repository_id)) {
+          if (repositories.has(part.repository_id)) issue(d, "DUPLICATE_REPOSITORY_PART", "repository-local parts must have distinct repository identities", `${partPath}.repository_id`);
+          repositories.add(part.repository_id);
+        }
+        if (integer(part.integration_order)) {
+          if (orders.has(part.integration_order)) issue(d, "DUPLICATE_INTEGRATION_ORDER", `duplicate integration_order ${part.integration_order}`, `${partPath}.integration_order`);
+          orders.add(part.integration_order);
+        }
+      }
+      for (const [index, part] of v.repository_parts.entries()) if (isRecord(part) && Array.isArray(part.depends_on)) {
+        for (const dependency of part.depends_on) {
+          if (dependency === part.part_key) issue(d, "INVALID_REPOSITORY_DEPENDENCY", "a repository part cannot depend on itself", `${path}.repository_parts.${index}.depends_on`);
+          else if (nonEmpty(dependency) && !keys.has(dependency)) issue(d, "UNKNOWN_REPOSITORY_PART", `unknown repository part ${dependency}`, `${path}.repository_parts.${index}.depends_on`);
+        }
+      }
+      if (v.repository_parts.length > 1 && (!Array.isArray(v.integration_gate_keys) || v.integration_gate_keys.length === 0)) {
+        issue(d, "INTEGRATION_GATE_REQUIRED", "multi-repository units require explicit parent integration gates", `${path}.integration_gate_keys`);
+      }
+    }
+  }
   checkHash(v.fingerprint, "fingerprint", path, d);
   return { valid: d.length === 0, diagnostics: d, ...(d.length === 0 ? { value: input as unknown as UnitVersion } : {}) };
 }
@@ -466,6 +600,7 @@ function serialize<T>(value: T, validator: (value: unknown) => RollingValidation
 export const validateTaskSourceDescriptor = (value: unknown) => validateDescriptor(value);
 export const validateTaskManifestEntry = (value: unknown) => validateEntry(value);
 export const validateTaskManifestPage = (value: unknown) => validatePage(value);
+export const validateRepositoryLocalUnitPart = (value: unknown) => validateRepositoryPart(value, "repository_part");
 export const validateUnitVersion = (value: unknown) => validateUnit(value);
 export const validateGateVersion = (value: unknown) => validateGate(value);
 export const validateTaskCoverage = (value: unknown) => validateCoverage(value);
@@ -478,6 +613,7 @@ export const validatePlanDelta = (value: unknown) => validateDelta(value);
 export const assertTaskSourceDescriptor = (value: unknown) => assertResult(validateDescriptor(value));
 export const assertTaskManifestEntry = (value: unknown) => assertResult(validateEntry(value));
 export const assertTaskManifestPage = (value: unknown) => assertResult(validatePage(value));
+export const assertRepositoryLocalUnitPart = (value: unknown) => assertResult(validateRepositoryPart(value, "repository_part"));
 export const assertUnitVersion = (value: unknown) => assertResult(validateUnit(value));
 export const assertGateVersion = (value: unknown) => assertResult(validateGate(value));
 export const assertTaskCoverage = (value: unknown) => assertResult(validateCoverage(value));

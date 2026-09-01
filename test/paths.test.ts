@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   batonDir,
+  bundleManifestPath,
   canonicalWorkspaceRoot,
   compiledApplyRunBodyPath,
   compiledApplyRunDir,
@@ -13,6 +14,7 @@ import {
   dispatchLockPath,
   hostDispatchStatePath,
   hostRouteSnapshotPath,
+  integrationRecordPath,
   rollingRunAcceptedDocumentPath,
   rollingRunAcceptedDocumentsDir,
   rollingRunCheckpointPath,
@@ -22,6 +24,10 @@ import {
   rollingRunFactPath,
   rollingRunLockPath,
   rollingRunRoot,
+  rollingRunBundlesDir,
+  rollingRunIntegrationsDir,
+  rollingRunSnapshotsDir,
+  rollingRunWorktreesDir,
   rollingRunsDir,
   ROLLING_RUNS_DIR,
   ROLLING_PATH_SEGMENT_INVALID,
@@ -30,6 +36,10 @@ import {
   runsDir,
   selectionsDir,
   spawnsDir,
+  snapshotManifestPath,
+  worktreeAttemptDir,
+  worktreeExecutionRootPath,
+  worktreeRecordPath,
   workspaceId,
 } from "../src/lib/paths.js";
 import { buildSpawnTicket, listSpawns, readSpawn, writeSpawn } from "../src/lib/spawn.js";
@@ -178,5 +188,34 @@ describe("global Baton storage paths", () => {
     fs.mkdirSync(spawnsDir(cwd), { recursive: true });
     fs.writeFileSync(path.join(spawnsDir(cwd), "corrupt.json"), "{not-json}\n");
     assert.throws(() => listSpawns(cwd), SyntaxError);
+  }));
+
+  it("derives versioned worktree, snapshot, bundle, and integration paths inside one rolling run", () => withHome(() => {
+    const repo = gitRepo("baton-worktree-runtime-paths-");
+    const runRoot = rollingRunRoot(repo, "run-1");
+    assert.equal(rollingRunWorktreesDir(repo, "run-1"), path.join(runRoot, "worktrees"));
+    assert.equal(worktreeAttemptDir(repo, "run-1", "unit-1", "attempt-1"), path.join(runRoot, "worktrees", "unit-1", "attempt-1"));
+    assert.equal(worktreeExecutionRootPath(repo, "run-1", "unit-1", "attempt-1"), path.join(runRoot, "worktrees", "unit-1", "attempt-1", "root"));
+    assert.equal(worktreeRecordPath(repo, "run-1", "unit-1", "attempt-1"), path.join(runRoot, "worktrees", "unit-1", "attempt-1", "record-v1.json"));
+    assert.equal(rollingRunSnapshotsDir(repo, "run-1"), path.join(runRoot, "snapshots"));
+    assert.equal(snapshotManifestPath(repo, "run-1", "snapshot-1"), path.join(runRoot, "snapshots", "snapshot-1", "manifest-v1.json"));
+    assert.equal(rollingRunBundlesDir(repo, "run-1"), path.join(runRoot, "bundles"));
+    assert.equal(bundleManifestPath(repo, "run-1", "bundle-1"), path.join(runRoot, "bundles", "bundle-1", "manifest-v1.json"));
+    assert.equal(rollingRunIntegrationsDir(repo, "run-1"), path.join(runRoot, "integrations"));
+    assert.equal(integrationRecordPath(repo, "run-1", "a".repeat(64), "integration-1"), path.join(runRoot, "integrations", "a".repeat(64), "integration-1", "record-v1.json"));
+  }));
+
+  it("rejects every unsafe worktree runtime path segment", () => withHome(() => {
+    const repo = gitRepo("baton-worktree-runtime-unsafe-");
+    const unsafe = ["", " ", ".", "..", "../escape", "nested/path", "nested\\path", "bad\u0000id", "/tmp/escape", "C:escape"];
+    const rejects = (fn: () => unknown) => assert.throws(fn, (error: unknown) => (error as { code?: string }).code === ROLLING_PATH_SEGMENT_INVALID);
+    for (const value of unsafe) {
+      rejects(() => worktreeRecordPath(repo, "run", value, "attempt"));
+      rejects(() => worktreeRecordPath(repo, "run", "unit", value));
+      rejects(() => snapshotManifestPath(repo, "run", value));
+      rejects(() => bundleManifestPath(repo, "run", value));
+      rejects(() => integrationRecordPath(repo, "run", value, "integration"));
+      rejects(() => integrationRecordPath(repo, "run", "a".repeat(64), value));
+    }
   }));
 });
