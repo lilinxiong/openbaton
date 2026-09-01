@@ -44,6 +44,8 @@ export interface GitProcessResult {
 export interface GitProcessOptions {
   cwd: string;
   args: string[];
+  /** Explicit environment additions for operations such as alternate indexes. */
+  env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   stderrLimit?: number;
   /** Delay before escalation when a cancelled child ignores SIGTERM. */
@@ -86,6 +88,9 @@ export async function runGitProcess(options: GitProcessOptions): Promise<GitProc
   try {
     child = spawn("git", options.args, {
       cwd: options.cwd,
+      // Safety/setup commands must not opportunistically refresh the caller's
+      // index stat cache. Git still takes mandatory locks for mutating commands.
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     } satisfies SpawnOptions) as ChildProcessWithoutNullStreams;
   } catch (cause) {

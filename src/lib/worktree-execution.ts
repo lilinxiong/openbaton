@@ -22,7 +22,7 @@ import {
 } from "./paths.js";
 import type { SafetyOperation } from "./safety.js";
 
-export const WORKTREE_RECORD_SCHEMA_VERSION = 1 as const;
+export const WORKTREE_RECORD_SCHEMA_VERSION = 2 as const;
 export const SNAPSHOT_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const INTEGRATION_RECORD_SCHEMA_VERSION = 1 as const;
@@ -64,6 +64,15 @@ export type RetentionReason =
 export type CleanupStatus = "retained" | "eligible" | "cleaning" | "cleaned" | "failed";
 export type IntegrationState = "queued" | "integrating" | "awaiting_parent_resolution" | "integrated" | "accepted" | "failed";
 
+export interface WorktreeSetupFailureDiagnostic {
+  code: string;
+  message: string;
+  stage: "registration" | "materialization" | "identity_verification";
+  execution_root_state: "absent" | "directory" | "other";
+  registration_present: boolean;
+  recorded_at: string;
+}
+
 export interface CleanupState {
   schema_version: typeof CLEANUP_STATE_SCHEMA_VERSION;
   status: CleanupStatus;
@@ -98,6 +107,7 @@ export interface WorktreeRecord {
   unit_version: number;
   attempt_id: string;
   setup_state: WorktreeSetupState;
+  setup_failure: WorktreeSetupFailureDiagnostic | null;
   lifecycle_state: WorktreeLifecycleState;
   native_handle: string | null;
   bundle_id: string | null;
@@ -200,6 +210,7 @@ export interface WorktreeTransitionInput {
   expected_revision?: number;
   recorded_at?: string | number | Date;
   setup_state?: WorktreeSetupState;
+  setup_failure?: WorktreeSetupFailureDiagnostic | null;
   native_handle?: string | null;
   bundle_id?: string | null;
   integration_id?: string | null;
@@ -377,6 +388,18 @@ function validateTransition(input: unknown, root: string): RollingValidationResu
   return { valid: diagnostics.length === 0, diagnostics, ...(diagnostics.length ? {} : { value: input as unknown as WorktreeLifecycleTransition }) };
 }
 
+function validateSetupFailure(input: unknown, root: string): RollingValidationResult<WorktreeSetupFailureDiagnostic> {
+  const diagnostics: RuntimeRecordDiagnostic[] = [];
+  if (!isRecord(input)) return { valid: false, diagnostics: [{ code: "INVALID_SHAPE", message: "setup failure must be an object", path: root }] };
+  exactFields(input, ["code", "message", "stage", "execution_root_state", "registration_present", "recorded_at"], root, diagnostics);
+  if (!text(input.code) || !text(input.message)) add(diagnostics, "INVALID_SHAPE", "setup failure code and message are required", root);
+  if (!["registration", "materialization", "identity_verification"].includes(String(input.stage))) add(diagnostics, "INVALID_STATE", "unsupported setup failure stage", `${root}.stage`);
+  if (!["absent", "directory", "other"].includes(String(input.execution_root_state))) add(diagnostics, "INVALID_STATE", "unsupported execution root state", `${root}.execution_root_state`);
+  if (typeof input.registration_present !== "boolean") add(diagnostics, "INVALID_SHAPE", "registration_present must be boolean", `${root}.registration_present`);
+  if (!iso(input.recorded_at)) add(diagnostics, "INVALID_TIMESTAMP", "recorded_at must be an ISO timestamp", `${root}.recorded_at`);
+  return { valid: diagnostics.length === 0, diagnostics, ...(diagnostics.length ? {} : { value: input as unknown as WorktreeSetupFailureDiagnostic }) };
+}
+
 export function validateWorktreeRecord(input: unknown): RollingValidationResult<WorktreeRecord> {
   const diagnostics: RuntimeRecordDiagnostic[] = [];
   const root = "worktree_record";
@@ -384,7 +407,7 @@ export function validateWorktreeRecord(input: unknown): RollingValidationResult<
   exactFields(input, [
     "schema_version", "record_id", "revision", "execution_mode", "repository_id", "repository_root", "git_common_dir",
     "git_common_dir_identity", "execution_root", "base_tree", "run_id", "unit_key", "unit_version", "attempt_id",
-    "setup_state", "lifecycle_state", "native_handle", "bundle_id", "integration_id", "retention_reasons", "cleanup",
+    "setup_state", "setup_failure", "lifecycle_state", "native_handle", "bundle_id", "integration_id", "retention_reasons", "cleanup",
     "transition_log", "created_at", "updated_at", "fingerprint",
   ], root, diagnostics);
   if (input.schema_version !== WORKTREE_RECORD_SCHEMA_VERSION) add(diagnostics, "UNKNOWN_SCHEMA", `schema_version must be ${WORKTREE_RECORD_SCHEMA_VERSION}`, `${root}.schema_version`);
@@ -397,6 +420,9 @@ export function validateWorktreeRecord(input: unknown): RollingValidationResult<
   for (const key of ["repository_root", "git_common_dir", "execution_root"] as const) if (!absolute(input[key])) add(diagnostics, "INVALID_PATH", `${key} must be a normalized absolute path`, `${root}.${key}`);
   if (!safeInteger(input.unit_version, 1)) add(diagnostics, "INVALID_VERSION", "unit_version must be positive", `${root}.unit_version`);
   if (!SETUP_STATES.has(input.setup_state as WorktreeSetupState)) add(diagnostics, "INVALID_STATE", "unsupported setup_state", `${root}.setup_state`);
+  if (input.setup_failure !== null) diagnostics.push(...validateSetupFailure(input.setup_failure, `${root}.setup_failure`).diagnostics);
+  if (input.setup_state === "failed" && input.setup_failure === null) add(diagnostics, "INVALID_SHAPE", "failed setup requires a diagnostic", `${root}.setup_failure`);
+  if (input.setup_state !== "failed" && input.setup_failure !== null) add(diagnostics, "INVALID_STATE", "only failed setup may retain a diagnostic", `${root}.setup_failure`);
   if (!LIFECYCLE_STATES.has(input.lifecycle_state as WorktreeLifecycleState)) add(diagnostics, "INVALID_STATE", "unsupported lifecycle_state", `${root}.lifecycle_state`);
   for (const key of ["native_handle", "bundle_id", "integration_id"] as const) if (input[key] !== null && !text(input[key])) add(diagnostics, "INVALID_SHAPE", `${key} must be a non-empty string or null`, `${root}.${key}`);
   uniqueStrings(input.retention_reasons, RETENTION_REASONS as Set<string>, `${root}.retention_reasons`, diagnostics);
@@ -562,6 +588,7 @@ export function initializeWorktreeRecord(input: CreateWorktreeRecordInput): Work
     unit_version: input.unit_version,
     attempt_id: input.attempt_id,
     setup_state: "planned",
+    setup_failure: null,
     lifecycle_state: "preparing",
     native_handle: null,
     bundle_id: null,
@@ -623,6 +650,10 @@ export function applyWorktreeLifecycleTransition(recordInput: WorktreeRecord, in
   next.revision += 1;
   next.lifecycle_state = input.to_state;
   if (input.setup_state !== undefined) next.setup_state = input.setup_state;
+  if (Object.prototype.hasOwnProperty.call(input, "setup_failure")) next.setup_failure = input.setup_failure ? structuredClone(input.setup_failure) : null;
+  if (next.setup_state === "failed" && next.setup_failure === null) {
+    throw new WorktreeExecutionError("failed setup transitions require a durable diagnostic", "WORKTREE_TRANSITION_INVALID");
+  }
   if (Object.prototype.hasOwnProperty.call(input, "native_handle")) next.native_handle = input.native_handle ?? null;
   if (Object.prototype.hasOwnProperty.call(input, "bundle_id")) next.bundle_id = input.bundle_id ?? null;
   if (Object.prototype.hasOwnProperty.call(input, "integration_id")) next.integration_id = input.integration_id ?? null;

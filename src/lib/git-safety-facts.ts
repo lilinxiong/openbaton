@@ -53,6 +53,35 @@ export interface GitSafetyStabilityToken {
   indexControl: GitIndexControlFingerprint;
 }
 
+/** Canonical digest of every caller-owned control fact used by setup. */
+export function fingerprintGitSafetyStabilityToken(token: GitSafetyStabilityToken): string {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    head: token.head,
+    branchRef: token.branchRef,
+    refsDigest: token.refsDigest,
+    reflog: { count: token.reflog.count, checksum: token.reflog.checksum },
+    stagedTree: token.stagedTree,
+    indexControl: {
+      algorithm: token.indexControl.algorithm,
+      checksum: token.indexControl.checksum,
+      entryCount: token.indexControl.entryCount,
+    },
+  })).digest("hex");
+}
+
+export function assertGitSafetyStabilityTokenUnchanged(
+  before: GitSafetyStabilityToken,
+  after: GitSafetyStabilityToken,
+): void {
+  if (!sameStabilityToken(before, after)) {
+    throw new GitSafetyError({
+      code: "GIT_BASELINE_RACED",
+      command: "git worktree caller control invariance",
+      message: "Git caller control facts changed during isolated worktree setup",
+    });
+  }
+}
+
 export interface StableGitSafetyFacts extends GitSafetyFacts {
   stabilityToken: GitSafetyStabilityToken;
 }
