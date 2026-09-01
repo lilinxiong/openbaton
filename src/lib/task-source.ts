@@ -232,6 +232,29 @@ function validateEntries(entries: readonly TaskManifestEntry[], adapter: TaskSou
   return out;
 }
 
+function validateReconciliation(value: unknown, adapter: TaskSourceAdapter): TaskSourceReconciliation | TaskManifestEntry {
+  const manifest = validateTaskManifestEntry(value);
+  if (manifest.valid) return validateEntries([value as TaskManifestEntry], adapter)[0]!;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw operationError("INVALID_ENTRY", `adapter ${adapter.id} returned an invalid reconciliation`);
+  }
+  const item = value as Record<string, unknown>;
+  const allowed = new Set(["task_key", "source_fingerprint", "source_state", "source_ref", "conclusion"]);
+  const valid = Object.keys(item).every((key) => allowed.has(key))
+    && typeof item.task_key === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u.test(item.task_key)
+    && typeof item.source_fingerprint === "string" && /^[0-9a-f]{64}$/u.test(item.source_fingerprint)
+    && ["complete", "pending", "unavailable"].includes(String(item.source_state))
+    && Object.hasOwn(item, "source_ref")
+    && (item.conclusion === undefined || typeof item.conclusion === "string");
+  if (!valid) throw operationError("INVALID_ENTRY", `adapter ${adapter.id} returned an invalid reconciliation`);
+  return value as TaskSourceReconciliation;
+}
+
+function validateReconciliations(value: unknown, adapter: TaskSourceAdapter): readonly (TaskSourceReconciliation | TaskManifestEntry)[] {
+  if (!Array.isArray(value)) throw operationError("INVALID_ENTRY", `adapter ${adapter.id} returned an invalid reconciliation batch`);
+  return value.map((item) => validateReconciliation(item, adapter));
+}
+
 /** Deterministic registry for source adapters. Each registry owns its map. */
 export class TaskSourceAdapterRegistry {
   private readonly adapters = new Map<string, TaskSourceAdapter>();
@@ -318,10 +341,11 @@ export class TaskSourceAdapterRegistry {
       const raw = await adapter.reconcile(request);
       if (isResult(raw)) {
         if (raw.status === "unavailable") return raw as TaskSourceUnavailableResult<TaskSourceReconciliation | TaskManifestEntry>;
-        return available(raw.value as TaskSourceReconciliation | TaskManifestEntry, raw.diagnostics);
+        return available(validateReconciliation(raw.value, adapter), raw.diagnostics);
       }
-      return available(raw as TaskSourceReconciliation | TaskManifestEntry);
+      return available(validateReconciliation(raw, adapter));
     } catch (error) {
+      if (error instanceof TaskSourceAdapterError && error.code === "INVALID_ENTRY") throw error;
       return unavailable("RECONCILIATION_UNAVAILABLE", `task source ${adapter.id} is temporarily unavailable during reconciliation`, error);
     }
   }
@@ -345,10 +369,11 @@ export class TaskSourceAdapterRegistry {
       const raw = await adapter.reconcile_batch(request);
       if (isResult(raw)) {
         if (raw.status === "unavailable") return raw as TaskSourceUnavailableResult<readonly (TaskSourceReconciliation | TaskManifestEntry)[]>;
-        return available(raw.value as readonly (TaskSourceReconciliation | TaskManifestEntry)[], raw.diagnostics);
+        return available(validateReconciliations(raw.value, adapter), raw.diagnostics);
       }
-      return available(raw as readonly (TaskSourceReconciliation | TaskManifestEntry)[]);
+      return available(validateReconciliations(raw, adapter));
     } catch (error) {
+      if (error instanceof TaskSourceAdapterError && error.code === "INVALID_ENTRY") throw error;
       return unavailable("RECONCILIATION_UNAVAILABLE", `task source ${adapter.id} is temporarily unavailable during batch reconciliation`, error);
     }
   }

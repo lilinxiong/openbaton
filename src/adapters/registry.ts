@@ -28,8 +28,12 @@ function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
     resolveCommand: () => manifest.catalog.command.startsWith("/") ? manifest.catalog.command : `${directory}/${manifest.catalog.command}`,
     discoverModels: async (options = {}) => {
       const catalog = await adapter.discoverModels(options);
+      const catalogCapabilities = { ...(catalog.capabilities || {}) } as Record<string, unknown>;
+      // Exact-root support is a native adapter contract. A catalog subprocess
+      // may report live quotas, but it cannot grant or override this capability.
+      delete catalogCapabilities.exact_execution_root;
       const capabilities = {
-        ...(catalog.capabilities || {}),
+        ...catalogCapabilities,
         ...(manifest.native.exact_execution_root === undefined ? {} : { exact_execution_root: manifest.native.exact_execution_root }),
       };
       return { cli: catalog.adapter_id, adapter_id: catalog.adapter_id, version: catalog.version, models: catalog.models.map((model) => ({

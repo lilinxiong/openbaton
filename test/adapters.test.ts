@@ -67,7 +67,9 @@ describe("manifest adapter registry", () => {
     const beta = await getCliAdapter("beta", env).discoverModels({ env });
     assert.equal(alpha.adapter_id, "alpha");
     assert.equal(alpha.models[0].id, "alpha-model");
+    assert.equal(alpha.capabilities?.exact_execution_root, true);
     assert.equal(beta.adapter_id, "beta");
     assert.equal(beta.models[0].service_tiers[0].id, "standard");
+    assert.equal(beta.capabilities?.exact_execution_root, undefined);
   });
 });

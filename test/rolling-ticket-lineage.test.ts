@@ -106,6 +106,7 @@ describe("rolling spawn-ticket lineage", () => {
     const env = fakeEnv(home, { BATON_SESSION_ID: "rolling-ticket-invalid" });
     try {
       const built = ticket(cwd, env);
+      assert.equal(validateSpawnTicketLineage({ ...built, rolling_unit_lineage: { ...patchLineage, unit_version: 5 } }), "ROLLING_LINEAGE_MISMATCH");
       assert.throws(() => normalizeSpawnTicket({ ...built, rolling_unit_lineage: { ...patchLineage, unit_version: 5 } }), /lineage mismatch|not normalized/);
       assert.throws(() => normalizeSpawnTicket({ ...built, rolling_unit_lineage: undefined }), /requires rolling unit lineage/);
       assert.throws(() => normalizeSpawnTicket({ ...built, work_unit: { ...built.work_unit, rolling_unit_lineage: { ...patchLineage, unit_version: 5 } } }), /lineage mismatch/);

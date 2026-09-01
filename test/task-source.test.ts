@@ -78,4 +78,20 @@ describe("source-neutral task adapter registry", () => {
     assert.equal(refreshed.diagnostics[0]?.code, "REFRESH_UNAVAILABLE");
     assert.deepEqual(await registry.diagnostics(source), { ok: true, status: "available", value: diagnostics, diagnostics: [] });
   });
+
+  it("rejects malformed single and batch reconciliation values before exposing them", async () => {
+    const calls: string[] = [];
+    const registry = new TaskSourceAdapterRegistry([adapter("alpha", calls, {
+      reconcile: async () => ({ task_key: "director:one", source_fingerprint: null, source_state: "complete", source_ref: {} }) as any,
+      reconcile_batch: async () => [{ task_key: "director:one", source_fingerprint: hash, source_state: "complete" }] as any,
+    })]);
+    await assert.rejects(
+      registry.reconcile(source, "director:one", "done", hash),
+      (error: unknown) => error instanceof TaskSourceAdapterError && error.code === "INVALID_ENTRY",
+    );
+    await assert.rejects(
+      registry.reconcileBatch(source, [{ task_key: "director:one", conclusion: "done", expected_source_fingerprint: hash, expected_source_state: "pending" }]),
+      (error: unknown) => error instanceof TaskSourceAdapterError && error.code === "INVALID_ENTRY",
+    );
+  });
 });

@@ -343,6 +343,7 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
 
 /** Pure ticket-side lineage validator; legacy tickets intentionally return null. */
 export function validateSpawnTicketLineage(value: unknown): string | null {
+  let mismatchCode = "COMPILED_LINEAGE_MISMATCH";
   try {
     if (!value || typeof value !== "object" || Array.isArray(value)) return "COMPILED_LINEAGE_MALFORMED";
     const ticket = value as SpawnTicket & Record<string, unknown>;
@@ -352,6 +353,7 @@ export function validateSpawnTicketLineage(value: unknown): string | null {
     if (ticket.compiled_apply_lineage === undefined) {
       const unit = ticket.work_unit as unknown as Record<string, unknown> | null;
       if (ticket.rolling_unit_lineage !== undefined) {
+        mismatchCode = "ROLLING_LINEAGE_MISMATCH";
         normalizeSpawnTicket(ticket);
         return null;
       }
@@ -362,7 +364,7 @@ export function validateSpawnTicketLineage(value: unknown): string | null {
     normalizeSpawnTicket(ticket);
     return null;
   } catch (error) {
-    return error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code) : "COMPILED_LINEAGE_MISMATCH";
+    return error instanceof Error && "code" in error ? String((error as Error & { code?: unknown }).code) : mismatchCode;
   }
 }
 
