@@ -87,9 +87,10 @@ function safeRelative(value: string): boolean {
     && value !== "." && !value.startsWith("../") && !value.split("/").includes(".git");
 }
 
-function validAllowlistEntry(value: string): boolean {
+function validAllowlistEntry(value: unknown): value is string {
+  if (typeof value !== "string") return false;
   const normalized = value.replace(/\*+/gu, "placeholder");
-  return typeof value === "string" && Boolean(value) && !value.includes("\\")
+  return Boolean(value) && !value.includes("\\")
     && !/[\u0000-\u001f\u007f]/u.test(value) && !path.posix.isAbsolute(value)
     && path.posix.normalize(normalized) === normalized && normalized !== "."
     && !normalized.startsWith("../") && !normalized.split("/").includes(".git");
@@ -255,7 +256,7 @@ export async function auditTerminalWorktree(input: TerminalWorktreeAuditInput): 
   const nonTextFacts: WorktreeNonTextFacts = {
     raw_changes: facts.changes,
     binary_paths: facts.binaryPaths,
-    mode_changes: facts.changes.filter((change) => change.old_mode !== change.new_mode)
+    mode_changes: facts.changes.filter((change) => facts.modeChangedPaths.includes(change.path))
       .map((change) => ({ path: change.path, old_mode: change.old_mode, new_mode: change.new_mode })),
     renames: facts.changes.filter((change) => change.status === "R")
       .map((change) => ({ source: change.original_path!, target: change.path, ...(change.score === undefined ? {} : { score: change.score }) })),

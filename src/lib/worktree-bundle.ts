@@ -143,7 +143,17 @@ async function freezeInternalCommit(
   if (existing !== null && existing !== commit) {
     throw new WorktreeBundleError("Baton-owned bundle ref points to another immutable commit", "CHANGE_BUNDLE_INTERNAL_REF_CONFLICT");
   }
-  if (existing === null) await runGitProcess({ cwd: record.execution_root, args: ["update-ref", internalRef, commit, "0".repeat(commit.length)], spawn });
+  if (existing === null) {
+    try {
+      await runGitProcess({ cwd: record.execution_root, args: ["update-ref", internalRef, commit, "0".repeat(commit.length)], spawn });
+    } catch (cause) {
+      const raced = await optionalObject(record.execution_root, internalRef, spawn);
+      if (raced !== commit) {
+        if (raced !== null) throw new WorktreeBundleError("Baton-owned bundle ref points to another immutable commit", "CHANGE_BUNDLE_INTERNAL_REF_CONFLICT");
+        throw cause;
+      }
+    }
+  }
   return { internal_base_commit: baseCommit, internal_commit: commit, internal_ref: internalRef };
 }
 

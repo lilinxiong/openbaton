@@ -28,10 +28,11 @@ function repository(prefix: string, file = "tracked.txt"): string {
 }
 
 function controlState(cwd: string): { head: string; status: string; index: Buffer } {
+  const index = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
   return {
     head: git(cwd, ["rev-parse", "HEAD"]),
     status: git(cwd, ["status", "--porcelain=v2", "--branch"]),
-    index: fs.readFileSync(path.join(cwd, ".git", "index")),
+    index: fs.readFileSync(index),
   };
 }
 
@@ -42,6 +43,7 @@ describe("worktree repository topology", () => {
     fs.rmdirSync(linked);
     git(repo, ["worktree", "add", "--detach", "-q", linked, "HEAD"]);
     const before = controlState(repo);
+    const linkedBefore = controlState(linked);
 
     const normal = resolveOwningRepository(repo, "tracked.txt");
     const future = resolveOwningRepository(repo, "src/future.ts");
@@ -55,6 +57,7 @@ describe("worktree repository topology", () => {
     assert.equal(linkedOwner.repository.repository_id, normal.repository.repository_id);
     assert.equal(linkedOwner.repository.git_common_dir_identity, normal.repository.git_common_dir_identity);
     assert.deepEqual(controlState(repo), before);
+    assert.deepEqual(controlState(linked), linkedBefore);
   });
 
   it("treats nested repositories as literal independent owners", () => {

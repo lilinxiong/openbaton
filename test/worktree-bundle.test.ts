@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -147,6 +147,28 @@ describe("immutable ChangeBundle v1", () => {
     });
     assert.equal(recovered.bundle?.state, "ready_for_integration");
     assert.equal(recovered.record.lifecycle_state, "bundle_ready");
+  });
+
+  it("accepts a deterministic internal ref concurrently created by an identical freezer", async () => {
+    const f = await fixture("ref-race");
+    fs.writeFileSync(path.join(f.execution, "file.txt"), "result after ref race\n");
+    let raced = false;
+    const racingSpawn = ((command: string, args: readonly string[], options: Parameters<typeof nodeSpawn>[2]) => {
+      if (!raced && args[0] === "update-ref" && String(args[1]).startsWith("refs/baton/change-bundles/")) {
+        raced = true;
+        execFileSync(command, [...args], { cwd: options?.cwd, env: options?.env as NodeJS.ProcessEnv, stdio: "ignore" });
+      }
+      return nodeSpawn(command, args, options);
+    }) as typeof nodeSpawn;
+    const result = await createWorktreeChangeBundle({
+      record: f.record,
+      receipt: f.receipt,
+      terminal_conclusion: "identical concurrent freeze",
+      env: f.env,
+      spawn: racingSpawn,
+    });
+    assert.equal(raced, true);
+    assert.equal(result.bundle?.state, "ready_for_integration");
   });
 
   it("does not create a bundle from worker false-success text when the tree is empty", async () => {

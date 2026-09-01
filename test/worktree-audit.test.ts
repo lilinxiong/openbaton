@@ -103,7 +103,18 @@ describe("terminal isolated-worktree audit", () => {
     assert.ok(audit.non_text_facts?.renames.some((item) => item.source === "rename.txt" && item.target === "renamed.txt"));
     assert.ok(audit.non_text_facts?.copies.some((item) => item.source === "copy-source.txt" && item.target === "copied.txt"));
     assert.ok(audit.non_text_facts?.mode_changes.some((item) => item.path === "mode.sh"));
+    assert.deepEqual(audit.non_text_facts?.mode_changes.map((item) => item.path), ["mode.sh"]);
     assert.equal(audit.non_text_facts?.symlinks.find((item) => item.path === "link")?.target, "text.txt");
+  });
+
+  it("rejects a non-string allowlist entry as a Receipt lineage mismatch", async () => {
+    const f = await fixture("invalid-allowlist");
+    const audit = await auditTerminalWorktree({
+      record: f.record,
+      receipt: { ...f.receipt, write_allowlist: [42 as any] },
+    });
+    assert.equal(audit.accepted, false);
+    assert.ok(audit.violations.some((item) => item.code === "E_RECEIPT_LINEAGE_MISMATCH"));
   });
 
   it("rejects false-success no-op, scope, operation, symlink, and staged-control violations with bounded evidence", async () => {

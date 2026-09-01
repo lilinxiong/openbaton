@@ -573,7 +573,8 @@ export async function captureStableGitTerminalTree(
         .flatMap((change) => [change.original_path, change.path].filter((item): item is string => Boolean(item))).filter((item, index, all) => all.indexOf(item) === index).sort(),
       gitlinkPaths: changes.filter((change) => change.old_mode === "160000" || change.new_mode === "160000")
         .flatMap((change) => [change.original_path, change.path].filter((item): item is string => Boolean(item))).filter((item, index, all) => all.indexOf(item) === index).sort(),
-      modeChangedPaths: changes.filter((change) => change.old_mode !== change.new_mode).map((change) => change.path).sort(),
+      modeChangedPaths: changes.filter((change) => change.old_mode !== change.new_mode
+        && change.old_mode !== "000000" && change.new_mode !== "000000").map((change) => change.path).sort(),
       baseIndexControl,
       terminal: after,
     };

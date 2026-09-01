@@ -195,6 +195,29 @@ describe("worktree execution state", () => {
     assert.equal(recovered.fingerprint, record.fingerprint);
     assert.equal(fs.existsSync(file), true);
 
+    const concurrent = fixture("baton-worktree-concurrent-promotion-");
+    const concurrentRecord = initializeWorktreeRecord(concurrent.input);
+    const concurrentFile = worktreeRecordPath(concurrent.cwd, concurrentRecord.run_id, concurrentRecord.unit_key, concurrentRecord.attempt_id, concurrent.env);
+    const concurrentTemp = `${concurrentFile}.tmp-concurrent`;
+    fs.mkdirSync(path.dirname(concurrentFile), { recursive: true });
+    fs.writeFileSync(concurrentTemp, `${JSON.stringify(concurrentRecord)}\n`, { mode: 0o600 });
+    const originalRename = fs.renameSync;
+    fs.renameSync = ((source: fs.PathLike, destination: fs.PathLike) => {
+      if (String(source) === concurrentTemp && String(destination) === concurrentFile) {
+        originalRename(source, destination);
+        throw new Error("simulated concurrent promotion");
+      }
+      return originalRename(source, destination);
+    }) as typeof fs.renameSync;
+    try {
+      assert.equal(
+        readPersistedWorktreeRecord(concurrent.cwd, concurrentRecord.run_id, concurrentRecord.unit_key, concurrentRecord.attempt_id, concurrent.env).fingerprint,
+        concurrentRecord.fingerprint,
+      );
+    } finally {
+      fs.renameSync = originalRename;
+    }
+
     const divergent = fixture("baton-worktree-divergent-");
     const primary = initializeWorktreeRecord(divergent.input);
     persistWorktreeRecord(divergent.cwd, primary, divergent.env);

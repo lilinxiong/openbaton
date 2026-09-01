@@ -987,7 +987,16 @@ function recoverAtomicRecord<T extends { fingerprint: string }>(
   if (sameRevision.some((candidate) => candidate.fingerprint !== selected.fingerprint)) {
     throw new WorktreeExecutionError(`conflicting atomic candidates exist for ${file}`, "WORKTREE_RECORD_CONFLICT");
   }
-  if (!selected.primary) fs.renameSync(selected.file, file);
+  if (!selected.primary) {
+    try { fs.renameSync(selected.file, file); }
+    catch (cause) {
+      try {
+        const promoted = parser(fs.readFileSync(file, "utf8"));
+        if (promoted.fingerprint === selected.fingerprint) return selected.value;
+      } catch { /* The original rename failure remains authoritative. */ }
+      throw cause;
+    }
+  }
   return selected.value;
 }
 

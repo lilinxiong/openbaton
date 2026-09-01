@@ -131,8 +131,11 @@ function potentialRealPath(value: string): { canonical: string; probe_dir: strin
   const suffix = path.relative(existing, value);
   const canonical = path.resolve(canonicalExistingPath, suffix);
   let probe = fs.existsSync(canonical) ? canonical : path.dirname(canonical);
-  while (fs.existsSync(probe) && !fs.statSync(probe).isDirectory()) probe = path.dirname(probe);
-  while (!fs.existsSync(probe)) probe = path.dirname(probe);
+  while (!fs.existsSync(probe) || !fs.statSync(probe).isDirectory()) {
+    const parent = path.dirname(probe);
+    if (parent === probe) throw new WorktreeTopologyError(`no existing ancestor directory for ${value}`, "WORKTREE_PATH_INVALID");
+    probe = parent;
+  }
   return { canonical, probe_dir: canonicalExisting(probe) };
 }
 
