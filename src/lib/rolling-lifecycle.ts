@@ -654,8 +654,16 @@ function taskLifecycle(taskKey: string, source: AnyRecord, manifest: Map<string,
 export function deriveTaskLifecycle(taskKey: string, context?: RollingLifecycleContext): RollingTaskLifecycle;
 export function deriveTaskLifecycle(context: RollingLifecycleContext, taskKey: string): RollingTaskLifecycle;
 export function deriveTaskLifecycle(first: string | RollingLifecycleContext, second: string | RollingLifecycleContext = {}): RollingTaskLifecycle {
-  const taskKey = typeof first === "string" ? first : String(second);
-  const source = contextOf(typeof first === "string" ? second : first);
+  let taskKey: string;
+  let source: AnyRecord;
+  if (typeof first === "string") {
+    taskKey = first;
+    source = contextOf(second);
+  } else {
+    if (typeof second !== "string") throw new TypeError("deriveTaskLifecycle requires a task key");
+    taskKey = second;
+    source = contextOf(first);
+  }
   const deltas = contextDeltas(source);
   const manifest = contextManifest(source, deltas);
   const versions = contextVersions(source, deltas);

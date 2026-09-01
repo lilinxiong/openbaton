@@ -641,6 +641,42 @@ describe("stable asynchronous safety observations", () => {
     assert.equal((await auditWorktreeAsync(cwd, asyncBaseline, policy)).accepted, false);
   });
 
+  it("allows only additions and descendant advances for parent-owned refs", async () => {
+    const policy = { write_allowlist: [], allowed_operations: [], shared_refs: "parent-owned" as const };
+
+    const advanced = fixture();
+    git(advanced, "branch", "parent-integration");
+    const advancedBaseline = captureBaseline(advanced);
+    const descendant = git(
+      advanced,
+      "commit-tree",
+      advancedBaseline.index_tree,
+      "-p",
+      advancedBaseline.head,
+      "-m",
+      "parent integration",
+    ).trim();
+    git(advanced, "update-ref", "refs/heads/parent-integration", descendant);
+    git(advanced, "tag", "new-parent-tag");
+    assert.equal(auditWorktree(advanced, advancedBaseline, policy).accepted, true);
+    assert.equal((await auditWorktreeAsync(advanced, advancedBaseline, policy)).accepted, true);
+
+    const deleted = fixture();
+    git(deleted, "branch", "parent-integration");
+    const deletedBaseline = captureBaseline(deleted);
+    git(deleted, "update-ref", "-d", "refs/heads/parent-integration");
+    assert.ok(auditWorktree(deleted, deletedBaseline, policy).violations.some((item) => item.code === "E_REFS_MUTATION"));
+    assert.ok((await auditWorktreeAsync(deleted, deletedBaseline, policy)).violations.some((item) => item.code === "E_REFS_MUTATION"));
+
+    const rewritten = fixture();
+    git(rewritten, "branch", "parent-integration");
+    const rewrittenBaseline = captureBaseline(rewritten);
+    const unrelated = git(rewritten, "commit-tree", rewrittenBaseline.index_tree, "-m", "unrelated parent history").trim();
+    git(rewritten, "update-ref", "refs/heads/parent-integration", unrelated);
+    assert.ok(auditWorktree(rewritten, rewrittenBaseline, policy).violations.some((item) => item.code === "E_REFS_MUTATION"));
+    assert.ok((await auditWorktreeAsync(rewritten, rewrittenBaseline, policy)).violations.some((item) => item.code === "E_REFS_MUTATION"));
+  });
+
   it("audits v2 commit baselines and keeps prepared/outcome semantics", async () => {
     const cwd = fixture();
     fs.appendFileSync(path.join(cwd, "allowed.txt"), "STAGED\n");

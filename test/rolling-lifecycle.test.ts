@@ -100,6 +100,16 @@ function acceptUnit(f: ReturnType<typeof fixture>, sequence: number, state = "ac
 }
 
 describe("rolling task lifecycle and exact seals", () => {
+  it("rejects a context-first call without a string task key", () => {
+    const unsafeCall = deriveTaskLifecycle as (...args: unknown[]) => unknown;
+    assert.throws(() => unsafeCall({ manifest_entries: [entry()] }), {
+      name: "TypeError",
+      message: "deriveTaskLifecycle requires a task key",
+    });
+    assert.throws(() => unsafeCall({ manifest_entries: [entry()] }, {}), TypeError);
+    assert.equal(deriveTaskLifecycle({ manifest_entries: [entry()] }, "task-1").state, "unplanned");
+  });
+
   it("moves from unplanned to open and stays open after all known work is accepted", () => {
     const context: RollingLifecycleContext = {
       manifest_entries: [entry()],
