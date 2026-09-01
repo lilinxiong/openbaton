@@ -19,8 +19,9 @@ import {
   startRollingControl,
   statusRollingControl,
 } from "../lib/rolling-control.js";
+import { cleanupWorktreeAttempt } from "../lib/worktree-lifecycle.js";
 
-export type RollingRunOperation = "start" | "append-plan" | "status" | "accept-gate" | "seal-task" | "reconcile";
+export type RollingRunOperation = "start" | "append-plan" | "status" | "accept-gate" | "seal-task" | "reconcile" | "cleanup";
 
 export interface RollingRunInvocation {
   operation: RollingRunOperation;
@@ -40,6 +41,11 @@ export interface RollingRunInvocation {
   seal: TaskSeal | null;
   reconcile: boolean;
   task: string | null;
+  cleanup_unit: string | null;
+  attempt: string | null;
+  release_downstream_base: boolean;
+  discard_rejected_evidence: boolean;
+  release_user_retention: boolean;
   dispatch: boolean;
   json: boolean;
 }
@@ -81,8 +87,8 @@ function valueAt(args: readonly string[], key: string): string | undefined {
 }
 
 function validateTokens(args: readonly string[]): void {
-  const valueFlags = new Set(["host", "run-id", "worktree-mode", "source-file", "plan-delta-file", "append-plan", "accept-gate", "text", "seal-task", "seal-file", "task"]);
-  const booleanFlags = new Set(["status", "reconcile", "dispatch", "json"]);
+  const valueFlags = new Set(["host", "run-id", "worktree-mode", "source-file", "plan-delta-file", "append-plan", "accept-gate", "text", "seal-task", "seal-file", "task", "cleanup-unit", "attempt"]);
+  const booleanFlags = new Set(["status", "reconcile", "release-downstream-base", "discard-rejected-evidence", "release-user-retention", "dispatch", "json"]);
   const seen = new Set<string>();
   let positional = 0;
   for (let index = 0; index < args.length; index += 1) {
@@ -118,7 +124,7 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
   for (let index = 0; index < args.length; index += 1) {
     if (args[index]!.startsWith("--")) {
       const key = args[index]!.slice(2);
-      if (!["status", "reconcile", "dispatch", "json"].includes(key)) index += 1;
+      if (!["status", "reconcile", "release-downstream-base", "discard-rejected-evidence", "release-user-retention", "dispatch", "json"].includes(key)) index += 1;
       continue;
     }
     positional = args[index]!;
@@ -142,15 +148,17 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
   const sealTaskRaw = valueAt(args, "seal-task");
   const sealFileRaw = valueAt(args, "seal-file");
   const taskRaw = valueAt(args, "task");
+  const cleanupUnitRaw = valueAt(args, "cleanup-unit");
+  const attemptRaw = valueAt(args, "attempt");
   const status = args.includes("--status");
   const reconcile = args.includes("--reconcile");
-  const modes = Number(starting) + Number(appendRaw !== undefined) + Number(status) + Number(gateRaw !== undefined) + Number(sealTaskRaw !== undefined || sealFileRaw !== undefined) + Number(reconcile);
-  if (modes !== 1) invalid("rolling run operations are mutually exclusive: start, --append-plan, --status, --accept-gate, --seal-task, or --reconcile");
+  const modes = Number(starting) + Number(appendRaw !== undefined) + Number(status) + Number(gateRaw !== undefined) + Number(sealTaskRaw !== undefined || sealFileRaw !== undefined) + Number(reconcile) + Number(cleanupUnitRaw !== undefined);
+  if (modes !== 1) invalid("rolling run operations are mutually exclusive: start, --append-plan, --status, --accept-gate, --seal-task, --reconcile, or --cleanup-unit");
 
   if (starting) {
     if (!host) invalid("baton run start requires --host HOST");
     if (sourceRaw === undefined) invalid("baton run start requires --source-file PATH|-");
-    if (appendRaw !== undefined || status || gateRaw !== undefined || sealTaskRaw !== undefined || sealFileRaw !== undefined || reconcile || taskRaw !== undefined) invalid("baton run start received a flag for another operation");
+    if (appendRaw !== undefined || status || gateRaw !== undefined || sealTaskRaw !== undefined || sealFileRaw !== undefined || reconcile || taskRaw !== undefined || cleanupUnitRaw !== undefined || attemptRaw !== undefined) invalid("baton run start received a flag for another operation");
   } else {
     if (host !== null || worktreeMode !== null || runIdRaw !== undefined || sourceRaw !== undefined || initialDeltaRaw !== undefined) invalid("existing rolling run operations use accepted run identity and forbid --host, --worktree-mode, --run-id, --source-file, and --plan-delta-file");
   }
@@ -159,11 +167,14 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
   if (textRaw !== undefined && !textRaw.trim()) invalid("--text SUMMARY must not be empty");
   if ((sealTaskRaw === undefined) !== (sealFileRaw === undefined)) invalid("--seal-task and --seal-file are required together");
   if (taskRaw !== undefined && !reconcile) invalid("--task only accompanies --reconcile");
+  if ((cleanupUnitRaw === undefined) !== (attemptRaw === undefined)) invalid("--cleanup-unit and --attempt are required together");
+  const cleanupReleaseFlags = args.includes("--release-downstream-base") || args.includes("--discard-rejected-evidence") || args.includes("--release-user-retention");
+  if (cleanupReleaseFlags && cleanupUnitRaw === undefined) invalid("cleanup release flags only accompany --cleanup-unit");
   if (args.includes("--dispatch") && !(starting || appendRaw !== undefined || gateRaw !== undefined)) invalid("--dispatch only accompanies start, --append-plan, or --accept-gate");
 
   const stdinUsers = [sourceRaw, initialDeltaRaw, appendRaw, sealFileRaw].filter((value) => value === "-");
   if (stdinUsers.length > 1) invalid("one invocation may consume stdin for only one document");
-  const operation: RollingRunOperation = starting ? "start" : appendRaw !== undefined ? "append-plan" : status ? "status" : gateRaw !== undefined ? "accept-gate" : reconcile ? "reconcile" : "seal-task";
+  const operation: RollingRunOperation = starting ? "start" : appendRaw !== undefined ? "append-plan" : status ? "status" : gateRaw !== undefined ? "accept-gate" : reconcile ? "reconcile" : cleanupUnitRaw !== undefined ? "cleanup" : "seal-task";
   return {
     operation,
     cwd,
@@ -182,6 +193,11 @@ function parseInvocation(args: string[], cwd: string, env: NodeJS.ProcessEnv): R
     seal: null,
     reconcile,
     task: taskRaw === undefined ? null : scalar(taskRaw, "task"),
+    cleanup_unit: cleanupUnitRaw === undefined ? null : scalar(cleanupUnitRaw, "cleanup-unit"),
+    attempt: attemptRaw === undefined ? null : scalar(attemptRaw, "attempt"),
+    release_downstream_base: args.includes("--release-downstream-base"),
+    discard_rejected_evidence: args.includes("--discard-rejected-evidence"),
+    release_user_retention: args.includes("--release-user-retention"),
     dispatch: args.includes("--dispatch"),
     json: args.includes("--json"),
   };
@@ -215,7 +231,8 @@ export const defaultRollingRunHandler: RollingRunHandler = async (input) => {
   if (input.operation === "status") return statusRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id });
   if (input.operation === "accept-gate") return acceptRollingGate({ cwd: input.cwd, env: input.env, run_id: input.run_id, gate_ref: input.accept_gate!, evidence: input.text!, dispatch: input.dispatch ? true : undefined });
   if (input.operation === "seal-task") return sealRollingTask({ cwd: input.cwd, env: input.env, run_id: input.run_id, seal: input.seal! });
-  return reconcileRollingTasks({ cwd: input.cwd, env: input.env, run_id: input.run_id, task_key: input.task });
+  if (input.operation === "reconcile") return reconcileRollingTasks({ cwd: input.cwd, env: input.env, run_id: input.run_id, task_key: input.task });
+  return cleanupWorktreeAttempt({ cwd: input.cwd, env: input.env, run_id: input.run_id, unit_key: input.cleanup_unit!, attempt_id: input.attempt!, release_downstream_base: input.release_downstream_base, discard_rejected_evidence: input.discard_rejected_evidence, release_user_retention: input.release_user_retention });
 };
 
 function writeResult(stdout: WritableLike, result: unknown, json: boolean): void {

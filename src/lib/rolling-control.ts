@@ -31,6 +31,7 @@ import {
   type UnitVersion,
   type WorktreeExecutionMode,
 } from "./rolling-plan.js";
+import { recoverWorktreeRun, type WorktreeRunIsolationStatus } from "./worktree-lifecycle.js";
 import {
   appendRollingFact,
   appendRollingPlanDelta,
@@ -158,7 +159,8 @@ export interface RollingControlStatus {
   task_status: Record<string, RollingTaskControlStatus>;
   acceptance: RollingAcceptanceProjection;
   tickets: Array<{ ticket_id: string; unit_ref: string; status: string; released: boolean }>;
-  recovery: { appended_execution_facts: number; source_diagnostics: readonly TaskSourceDiagnostic[] };
+  isolation: WorktreeRunIsolationStatus;
+  recovery: { appended_execution_facts: number; repaired_worktree_record_ids: string[]; source_diagnostics: readonly TaskSourceDiagnostic[] };
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -568,6 +570,7 @@ function nextAction(state: RollingTaskControlState, runId: string, taskKey: stri
 export async function statusRollingControl(context: RollingControlContext & { run_id: string }): Promise<RollingControlStatus> {
   const recovered = synchronizeRollingTicketFacts(context);
   const run = recovered.run;
+  const worktreeRecovery = await recoverWorktreeRun({ cwd: context.cwd, env: context.env, run_id: context.run_id, tickets: recovered.tickets, at: context.now });
   const source = sourceFromRun(run);
   const sourceDiagnostics = await rollingTaskSourceRegistry(context.cwd, source).diagnostics(source);
   const acceptance = deriveRollingAcceptance({ units: allUnits(run), gates: allGates(run), facts: executionFacts(run) });
@@ -629,7 +632,8 @@ export async function statusRollingControl(context: RollingControlContext & { ru
     task_status,
     acceptance,
     tickets: recovered.tickets.map((ticket) => ({ ticket_id: ticket.id, unit_ref: `${ticket.rolling_unit_lineage!.unit_key}@${ticket.rolling_unit_lineage!.unit_version}`, status: ticket.status, released: Boolean(ticket.slot_released_at) })),
-    recovery: { appended_execution_facts: recovered.appended, source_diagnostics: sourceDiagnostics.diagnostics },
+    isolation: worktreeRecovery.status,
+    recovery: { appended_execution_facts: recovered.appended, repaired_worktree_record_ids: worktreeRecovery.repaired_record_ids, source_diagnostics: sourceDiagnostics.diagnostics },
   };
 }
 
@@ -785,6 +789,16 @@ export function formatRollingControlStatus(status: RollingControlStatus): string
     if (task.next_legal_action) lines.push(`    next ${task.next_legal_action}`);
     for (const blocker of task.blockers.slice(0, 3)) lines.push(`    blocked ${blocker.code}: ${blocker.message}`);
   }
+  for (const isolation of status.isolation.units) {
+    lines.push(`  isolation ${isolation.unit_ref}/${isolation.attempt_id}  ${isolation.lifecycle_state}  ${isolation.native_liveness}`);
+    lines.push(`    root ${isolation.execution_root}  base ${isolation.base_tree}`);
+    if (isolation.diff.total_changed_paths) lines.push(`    diff ${isolation.diff.total_changed_paths} paths +${isolation.diff.additions} -${isolation.diff.deletions}${isolation.diff.truncated ? " (bounded)" : ""}: ${isolation.diff.changed_paths.join(", ")}`);
+    if (isolation.bundle) lines.push(`    bundle ${isolation.bundle.bundle_id}  ${isolation.bundle.state}`);
+    if (isolation.integration) lines.push(`    integration ${isolation.integration.integration_id}  ${isolation.integration.state}  queue ${isolation.integration.queue_position}`);
+    if (isolation.retention_reasons.length) lines.push(`    retained ${isolation.retention_reasons.join(", ")}`);
+    lines.push(`    cleanup ${isolation.cleanup.status}`);
+  }
+  for (const diagnostic of status.isolation.orphan_diagnostics.slice(0, 5)) lines.push(`  isolation warning ${diagnostic.code}: ${diagnostic.message}${diagnostic.path ? ` (${diagnostic.path})` : ""}`);
   if (status.next_legal_action) lines.push(`  next ${status.next_legal_action}`);
   return `${lines.join("\n")}\n`;
 }

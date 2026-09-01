@@ -73,6 +73,17 @@ describe("rolling run CLI grammar", () => {
     assert.equal(received.source.source_kind, "director");
     assert.equal(received.delta.delta_id, "delta-cli");
     assert.equal(received.dispatch, true);
+
+    const cleanup = await command([
+      "run", "run-cli", "--cleanup-unit", "unit-cli", "--attempt", "attempt-2",
+      "--release-downstream-base", "--release-user-retention", "--json",
+    ], { cwd, env, rollingRunHandler: async (input) => { received = input; return { cleanup: true }; } });
+    assert.equal(cleanup.code, 0, cleanup.stderr);
+    assert.equal(received.operation, "cleanup");
+    assert.equal(received.cleanup_unit, "unit-cli");
+    assert.equal(received.attempt, "attempt-2");
+    assert.equal(received.release_downstream_base, true);
+    assert.equal(received.release_user_retention, true);
   });
 
   it("keeps operations mutually exclusive and stdin single-owner", async () => {
@@ -87,6 +98,8 @@ describe("rolling run CLI grammar", () => {
       ["run", "run-1", "--seal-task", "task"],
       ["run", "run-1", "--status", "--host", "alpha"],
       ["run", "run-1", "--status", "--worktree-mode", "isolated-worktree"],
+      ["run", "run-1", "--cleanup-unit", "unit-cli"],
+      ["run", "run-1", "--status", "--release-downstream-base"],
       ["run", "start", "--host", "alpha", "--source-file", "-", "--worktree-mode", "unknown"],
     ];
     for (const argv of cases) {

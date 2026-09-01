@@ -225,6 +225,8 @@ Usage:
   baton run RUN --accept-gate GATE@VERSION --text SUMMARY [--dispatch] [--json]
   baton run RUN --seal-task TASK --seal-file PATH|- [--json]
   baton run RUN --reconcile [--task TASK] [--json]
+  baton run RUN --cleanup-unit UNIT --attempt ATTEMPT [--release-downstream-base] [--discard-rejected-evidence] [--release-user-retention] [--json]
+               remove only an exact eligible worktree and its disposable Baton reachability artifacts
   baton integration begin --run RUN --repository-id SHA256 --bundle-id ID --expected-before-tree GIT_OBJECT [--order-override N] [--json]
                admit the current cwd to the repository queue; does not apply a bundle
   baton integration apply --run RUN --repository-id SHA256 --bundle-id ID [--idempotency-key ID] [--json]

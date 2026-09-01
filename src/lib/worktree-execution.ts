@@ -865,7 +865,8 @@ export function applyWorktreeLifecycleTransition(recordInput: WorktreeRecord, in
   }
 
   const sameStateSetup = input.phase === "setup" && input.to_state === record.lifecycle_state && input.setup_state !== undefined;
-  if (!sameStateSetup && !ALLOWED_TRANSITIONS.has(`${record.lifecycle_state}>${input.to_state}`)) {
+  const sameStateCleanup = input.phase === "cleanup" && input.to_state === record.lifecycle_state && input.cleanup !== undefined;
+  if (!sameStateSetup && !sameStateCleanup && !ALLOWED_TRANSITIONS.has(`${record.lifecycle_state}>${input.to_state}`)) {
     throw new WorktreeExecutionError(`illegal lifecycle transition ${record.lifecycle_state} -> ${input.to_state}`, "WORKTREE_TRANSITION_INVALID");
   }
   if (input.phase === "setup") {
