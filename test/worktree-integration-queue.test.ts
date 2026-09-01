@@ -19,6 +19,7 @@ import {
 } from "../src/lib/worktree-execution.js";
 import {
   WorktreeIntegrationError,
+  applyWorktreeIntegration,
   beginWorktreeIntegration,
   enqueueWorktreeIntegration,
   listIntegrationQueue,
@@ -161,6 +162,41 @@ function captureVisibleTree(root: string): string {
     git(root, ["add", "-A", "--", "."], env);
     return git(root, ["write-tree"], env);
   } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+function resultTree(root: string, content: string | Uint8Array): string {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "baton-integration-result-index-"));
+  const index = path.join(temporary, "index");
+  const env = { GIT_INDEX_FILE: index };
+  const original = fs.readFileSync(path.join(root, "file.txt"));
+  try {
+    git(root, ["read-tree", "HEAD^{tree}"], env);
+    fs.writeFileSync(path.join(root, "file.txt"), content);
+    git(root, ["add", "--", "file.txt"], env);
+    return git(root, ["write-tree"], env);
+  } finally {
+    fs.writeFileSync(path.join(root, "file.txt"), original);
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
+function renamedResultTree(root: string, target: string): string {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "baton-integration-rename-index-"));
+  const index = path.join(temporary, "index");
+  const env = { GIT_INDEX_FILE: index };
+  const source = path.join(root, "file.txt");
+  const destination = path.join(root, target);
+  const original = fs.readFileSync(source);
+  try {
+    git(root, ["read-tree", "HEAD^{tree}"], env);
+    fs.renameSync(source, destination);
+    git(root, ["add", "-A", "--", "."], env);
+    return git(root, ["write-tree"], env);
+  } finally {
+    fs.rmSync(destination, { force: true });
+    fs.writeFileSync(source, original);
     fs.rmSync(temporary, { recursive: true, force: true });
   }
 }
@@ -330,7 +366,265 @@ describe("repository integration queue", () => {
     assert.deepEqual(listIntegrationQueue(f.root, "run-owner-b", f.repositoryId, f.env), []);
   });
 
-  it("exposes only cwd-targeted begin through the CLI transport", async () => {
+  it("applies a clean bundle through isolated object plumbing without changing caller control state", async () => {
+    const f = repositoryFixture();
+    const runId = "run-clean-apply";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-clean")]]);
+    const bundleTree = resultTree(f.root, "bundle result\n");
+    const bundle = signedBundle({
+      run: runId,
+      bundle: "bundle-clean",
+      unit: "unit-clean",
+      repositoryId: f.repositoryId,
+      commonId: f.commonId,
+      tree: f.baseTree,
+      resultTree: bundleTree,
+    });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    fs.writeFileSync(path.join(f.root, "unrelated.txt"), "pre-existing caller content\n");
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      expected_before_tree: expected,
+      env: f.env,
+      at: "2026-09-01T00:00:02.000Z",
+    });
+    const callerControl = {
+      head: git(f.root, ["rev-parse", "HEAD"]),
+      index: fs.readFileSync(path.join(f.root, ".git", "index")),
+      status: git(f.root, ["status", "--porcelain=v2", "--branch"]),
+      content: fs.readFileSync(path.join(f.root, "file.txt"), "utf8"),
+    };
+    const applied = await applyWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      idempotency_key: "clean-apply",
+      env: f.env,
+      at: "2026-09-01T00:00:03.000Z",
+    });
+    assert.equal(applied.record.state, "integrated");
+    assert.equal(applied.record.before_tree, expected);
+    assert.equal(applied.record.application?.bundle_base_tree, f.baseTree);
+    assert.equal(applied.record.application?.bundle_result_tree, bundleTree);
+    assert.notEqual(applied.record.after_tree, bundleTree);
+    assert.deepEqual(applied.record.conflicts, []);
+    assert.equal(git(f.root, ["show", `${applied.record.after_tree}:file.txt`]), "bundle result");
+    assert.equal(git(f.root, ["show", `${applied.record.after_tree}:unrelated.txt`]), "pre-existing caller content");
+    const replay = await applyWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      idempotency_key: "clean-apply",
+      env: f.env,
+    });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.record.fingerprint, applied.record.fingerprint);
+    assert.equal(git(f.root, ["rev-parse", "HEAD"]), callerControl.head);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, ".git", "index")), callerControl.index);
+    assert.equal(git(f.root, ["status", "--porcelain=v2", "--branch"]), callerControl.status);
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), callerControl.content);
+    assert.equal(fs.readFileSync(path.join(f.root, "unrelated.txt"), "utf8"), "pre-existing caller content\n");
+  });
+
+  it("recovers a clean result when publication crashes after the application intent", async () => {
+    const f = repositoryFixture();
+    const runId = "run-apply-crash";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-crash")]]);
+    const bundleTree = resultTree(f.root, "recovered result\n");
+    const bundle = signedBundle({
+      run: runId,
+      bundle: "bundle-crash",
+      unit: "unit-crash",
+      repositoryId: f.repositoryId,
+      commonId: f.commonId,
+      tree: f.baseTree,
+      resultTree: bundleTree,
+    });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      expected_before_tree: expected,
+      env: f.env,
+    });
+
+    const originalRename = fs.renameSync;
+    let integrationPublications = 0;
+    fs.renameSync = ((source: fs.PathLike, destination: fs.PathLike) => {
+      const target = String(destination);
+      if (target.includes(`${path.sep}integrations${path.sep}`) && target.endsWith(`${path.sep}record-v1.json`)) {
+        integrationPublications += 1;
+        if (integrationPublications === 2) throw new Error("simulated integration publication crash");
+      }
+      return originalRename(source, destination);
+    }) as typeof fs.renameSync;
+    try {
+      await assert.rejects(applyWorktreeIntegration({
+        repository_root: f.root,
+        run_id: runId,
+        repository_id: f.repositoryId,
+        bundle_id: bundle.bundle_id,
+        idempotency_key: "crash-apply",
+        env: f.env,
+      }), /simulated integration publication crash/u);
+    } finally {
+      fs.renameSync = originalRename;
+    }
+    assert.equal(integrationPublications, 2);
+    const intent = listIntegrationQueue(f.root, runId, f.repositoryId, f.env)[0];
+    assert.equal(intent?.state, "integrating");
+    assert.equal(intent?.application?.idempotency_key, "apply:crash-apply");
+
+    const recovered = await applyWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      idempotency_key: "crash-apply",
+      env: f.env,
+    });
+    assert.equal(recovered.replayed, false);
+    assert.equal(recovered.record.state, "integrated");
+    assert.equal(recovered.record.after_tree, bundleTree);
+  });
+
+  it("persists deterministic stage-fact conflicts for parent resolution without touching the caller", async () => {
+    const f = repositoryFixture();
+    const runId = "run-conflicted-apply";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-conflict")]]);
+    const bundleTree = resultTree(f.root, "bundle side\n");
+    const bundle = signedBundle({
+      run: runId,
+      bundle: "bundle-conflict",
+      unit: "unit-conflict",
+      repositoryId: f.repositoryId,
+      commonId: f.commonId,
+      tree: f.baseTree,
+      resultTree: bundleTree,
+    });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    fs.writeFileSync(path.join(f.root, "file.txt"), "parent side\n");
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      expected_before_tree: expected,
+      env: f.env,
+    });
+    const callerControl = {
+      head: git(f.root, ["rev-parse", "HEAD"]),
+      index: fs.readFileSync(path.join(f.root, ".git", "index")),
+      status: git(f.root, ["status", "--porcelain=v2", "--branch"]),
+    };
+    const applied = await applyWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      idempotency_key: "conflict-apply",
+      env: f.env,
+    });
+    assert.equal(applied.record.state, "awaiting_parent_resolution");
+    assert.equal(applied.record.after_tree, undefined);
+    assert.equal(applied.record.conflicts.length, 1);
+    assert.equal(applied.record.conflicts[0]?.path, "file.txt");
+    assert.equal(applied.record.conflicts[0]?.kind, "content");
+    assert.match(applied.record.conflicts[0]?.detail ?? "", /^types=CONFLICT \(contents\);stages=1:100644:[0-9a-f]+,2:100644:[0-9a-f]+,3:100644:[0-9a-f]+$/u);
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), "parent side\n");
+    assert.equal(git(f.root, ["rev-parse", "HEAD"]), callerControl.head);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, ".git", "index")), callerControl.index);
+    assert.equal(git(f.root, ["status", "--porcelain=v2", "--branch"]), callerControl.status);
+  });
+
+  it("classifies binary conflicts from stable merge-tree message types", async () => {
+    const f = repositoryFixture();
+    const runId = "run-binary-conflict";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-binary")]]);
+    const bundleTree = resultTree(f.root, Buffer.from([0, 98, 117, 110, 100, 108, 101, 10]));
+    const bundle = signedBundle({
+      run: runId,
+      bundle: "bundle-binary",
+      unit: "unit-binary",
+      repositoryId: f.repositoryId,
+      commonId: f.commonId,
+      tree: f.baseTree,
+      resultTree: bundleTree,
+    });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    const parentBytes = Buffer.from([0, 112, 97, 114, 101, 110, 116, 10]);
+    fs.writeFileSync(path.join(f.root, "file.txt"), parentBytes);
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      expected_before_tree: expected,
+      env: f.env,
+    });
+    const applied = await applyWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      env: f.env,
+    });
+    assert.equal(applied.record.state, "awaiting_parent_resolution");
+    assert.equal(applied.record.conflicts[0]?.kind, "binary");
+    assert.match(applied.record.conflicts[0]?.detail ?? "", /types=CONFLICT \(binary\)/u);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, "file.txt")), parentBytes);
+  });
+
+  it("classifies rename conflicts from stable merge-tree message types", async () => {
+    const f = repositoryFixture();
+    const runId = "run-rename-conflict";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-rename")]]);
+    const bundleTree = renamedResultTree(f.root, "bundle-name.txt");
+    const bundle = signedBundle({
+      run: runId,
+      bundle: "bundle-rename",
+      unit: "unit-rename",
+      repositoryId: f.repositoryId,
+      commonId: f.commonId,
+      tree: f.baseTree,
+      resultTree: bundleTree,
+    });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    fs.renameSync(path.join(f.root, "file.txt"), path.join(f.root, "parent-name.txt"));
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      expected_before_tree: expected,
+      env: f.env,
+    });
+    const applied = await applyWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      env: f.env,
+    });
+    assert.equal(applied.record.state, "awaiting_parent_resolution");
+    assert.ok(applied.record.conflicts.some((conflict) => conflict.kind === "rename"));
+    assert.equal(fs.existsSync(path.join(f.root, "file.txt")), false);
+    assert.equal(fs.readFileSync(path.join(f.root, "parent-name.txt"), "utf8"), "base\n");
+  });
+
+  it("exposes only cwd-targeted parent integration operations through the CLI transport", async () => {
     const stdout: string[] = [];
     let received: unknown;
     const code = await run([
@@ -351,5 +645,26 @@ describe("repository integration queue", () => {
     assert.equal((received as any).cwd, "/current/repository");
     assert.equal((received as any).order_override, 3);
     assert.equal(JSON.parse(stdout.join("")).record.state, "integrating");
+
+    stdout.length = 0;
+    received = undefined;
+    const applyCode = await run([
+      "integration", "apply",
+      "--run", "run-cli",
+      "--repository-id", "a".repeat(64),
+      "--bundle-id", "bundle-cli",
+      "--idempotency-key", "apply-cli",
+      "--json",
+    ], {
+      cwd: "/current/repository",
+      stdout: { write(value: unknown) { stdout.push(String(value)); return true; } },
+      stderr: { write() { return true; } },
+      integrationHandler(input) { received = input; return { record: { state: "integrated" } }; },
+    });
+    assert.equal(applyCode, 0);
+    assert.equal((received as any).operation, "apply");
+    assert.equal((received as any).cwd, "/current/repository");
+    assert.equal((received as any).idempotency_key, "apply-cli");
+    assert.equal(JSON.parse(stdout.join("")).record.state, "integrated");
   });
 });

@@ -165,10 +165,32 @@ export interface ChangeBundleManifest {
   fingerprint: string;
 }
 
+export type IntegrationConflictKind =
+  | "content"
+  | "add_add"
+  | "rename"
+  | "delete_modify"
+  | "mode"
+  | "binary"
+  | "symlink"
+  | "gitlink";
+
 export interface IntegrationConflict {
   path: string;
-  kind: "content" | "add_add" | "rename" | "delete_modify" | "mode" | "binary" | "symlink" | "gitlink" | string;
+  kind: IntegrationConflictKind;
   detail?: string;
+}
+
+/** Immutable recovery boundary persisted before any bundle merge plumbing. */
+export interface IntegrationApplicationIntent {
+  schema_version: 1;
+  idempotency_key: string;
+  context: "baton-temporary-object-merge";
+  before_tree: string;
+  bundle_base_tree: string;
+  bundle_result_tree: string;
+  prepared_at: string;
+  fingerprint: string;
 }
 
 /** Frozen parent-side facts authorizing one narrow begin-integration action. */
@@ -216,6 +238,8 @@ export interface IntegrationRecord {
   before_tree: string;
   after_tree?: string;
   conflicts: IntegrationConflict[];
+  /** Optional so records written before application support remain readable. */
+  application?: IntegrationApplicationIntent;
   /** Optional so pre-ordering v1 records remain readable via queue_position. */
   queue_order?: IntegrationQueueOrderProvenance;
   /** Optional so persisted v1 records written before begin authorization remain readable. */
@@ -566,7 +590,7 @@ export function validateIntegrationRecord(input: unknown): RollingValidationResu
   if (!isRecord(input)) return { valid: false, diagnostics: [{ code: "INVALID_SHAPE", message: "integration record must be an object", path: root }] };
   exactFields(input, [
     "schema_version", "integration_id", "revision", "run_id", "repository_id", "git_common_dir_identity", "bundle_id",
-    "queue_position", "state", "before_tree", "after_tree", "conflicts", "queue_order", "authorization", "resolution_id", "idempotency_keys", "created_at", "updated_at", "fingerprint",
+    "queue_position", "state", "before_tree", "after_tree", "conflicts", "application", "queue_order", "authorization", "resolution_id", "idempotency_keys", "created_at", "updated_at", "fingerprint",
   ], root, diagnostics);
   if (input.schema_version !== INTEGRATION_RECORD_SCHEMA_VERSION) add(diagnostics, "UNKNOWN_SCHEMA", `schema_version must be ${INTEGRATION_RECORD_SCHEMA_VERSION}`, `${root}.schema_version`);
   for (const key of ["integration_id", "run_id", "bundle_id"] as const) requiredIdentity(input, key, root, diagnostics);
@@ -576,7 +600,35 @@ export function validateIntegrationRecord(input: unknown): RollingValidationResu
   if (!INTEGRATION_STATES.has(input.state as IntegrationState)) add(diagnostics, "INVALID_STATE", "unsupported integration state", `${root}.state`);
   requiredHash(input, "before_tree", root, diagnostics, true);
   if (input.after_tree !== undefined && (!text(input.after_tree) || !GIT_OBJECT.test(input.after_tree))) add(diagnostics, "INVALID_HASH", "after_tree has an invalid hash", `${root}.after_tree`);
-  if (!Array.isArray(input.conflicts) || !input.conflicts.every((item) => isRecord(item) && text(item.path) && text(item.kind))) add(diagnostics, "INVALID_SHAPE", "conflicts must contain path/kind objects", `${root}.conflicts`);
+  if (!Array.isArray(input.conflicts) || !input.conflicts.every((item) => isRecord(item) && text(item.path)
+    && ["content", "add_add", "rename", "delete_modify", "mode", "binary", "symlink", "gitlink"].includes(String(item.kind)))) {
+    add(diagnostics, "INVALID_SHAPE", "conflicts must contain a bounded path/kind classification", `${root}.conflicts`);
+  }
+  if (input.application !== undefined) {
+    const application = input.application;
+    const applicationRoot = `${root}.application`;
+    if (!isRecord(application)) add(diagnostics, "INVALID_SHAPE", "application must be an object", applicationRoot);
+    else {
+      exactFields(application, [
+        "schema_version", "idempotency_key", "context", "before_tree", "bundle_base_tree", "bundle_result_tree",
+        "prepared_at", "fingerprint",
+      ], applicationRoot, diagnostics);
+      if (application.schema_version !== 1 || application.context !== "baton-temporary-object-merge") {
+        add(diagnostics, "UNKNOWN_SCHEMA", "application must use temporary object-merge schema 1", applicationRoot);
+      }
+      requiredIdentity(application, "idempotency_key", applicationRoot, diagnostics);
+      for (const key of ["before_tree", "bundle_base_tree", "bundle_result_tree"] as const) {
+        requiredHash(application, key, applicationRoot, diagnostics, true);
+      }
+      if (application.before_tree !== input.before_tree) add(diagnostics, "INVALID_STATE", "application before_tree must equal integration before_tree", applicationRoot);
+      if (!iso(application.prepared_at)) add(diagnostics, "INVALID_TIMESTAMP", "application prepared_at must be an ISO timestamp", `${applicationRoot}.prepared_at`);
+      requiredHash(application, "fingerprint", applicationRoot, diagnostics);
+      if (HASH.test(String(application.fingerprint || ""))
+        && application.fingerprint !== fingerprintWorktreeRuntimeRecord(application)) {
+        add(diagnostics, "FINGERPRINT_MISMATCH", "application fingerprint does not match", `${applicationRoot}.fingerprint`);
+      }
+    }
+  }
   if (input.queue_order !== undefined) {
     const order = input.queue_order;
     const orderRoot = `${root}.queue_order`;
@@ -1012,6 +1064,7 @@ const INTEGRATION_IMMUTABLE_FIELDS = [
 ] as const satisfies readonly (keyof IntegrationRecord)[];
 
 const INTEGRATION_STATE_TRANSITIONS = new Set<string>([
+  "integrating>integrating",
   "queued>integrating",
   "queued>failed",
   "integrating>awaiting_parent_resolution",
@@ -1030,6 +1083,9 @@ function extendsIntegrationRecord(current: IntegrationRecord, candidate: Integra
       === canonicalizeWorktreeExecution(current.idempotency_keys)
     && (!current.authorization || candidate.authorization?.fingerprint === current.authorization.fingerprint)
     && (!current.queue_order || candidate.queue_order?.fingerprint === current.queue_order.fingerprint)
+    && (!current.application || candidate.application?.fingerprint === current.application.fingerprint)
+    && (`${current.state}>${candidate.state}` !== "integrating>integrating"
+      || (current.application === undefined && candidate.application !== undefined))
     && INTEGRATION_STATE_TRANSITIONS.has(`${current.state}>${candidate.state}`);
 }
 
