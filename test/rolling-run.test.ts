@@ -131,12 +131,12 @@ describe("rolling run v2 append storage", () => {
     const plan = { schema_version: 1, identity: { plan_id: "p", change_id: "c" }, source_snapshot: { repo_root: "/repo", revision: "head" }, selected_tasks: ["1"], units: [{ id: "u1", mode: "patch-only", task_ids: ["1"], write_paths: ["src/a.ts"], allowed_operations: ["write"] }] } as any;
     createApplyRun({ cwd, env, runId: "legacy", host: "codex", plan });
     const runRoot = path.join(env.HOME!, ".baton");
-    const snapshot = new Map<string, string>();
-    const collect = (dir: string) => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); const stat = fs.statSync(file); if (stat.isDirectory()) collect(file); else snapshot.set(file, fs.readFileSync(file, "utf8")); } };
-    collect(runRoot);
+    const collect = (dir: string, snapshot = new Map<string, string>()) => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); const stat = fs.statSync(file); if (stat.isDirectory()) collect(file, snapshot); else snapshot.set(file, fs.readFileSync(file, "utf8")); } return snapshot; };
+    const before = collect(runRoot);
     const status = normalizeLegacyCompiledRunStatus(cwd, "legacy", { env });
     assert.equal(status.legacy, true);
-    collect(runRoot);
-    for (const [file, bytes] of snapshot) assert.equal(fs.readFileSync(file, "utf8"), bytes);
+    const after = collect(runRoot);
+    assert.deepEqual([...after.keys()].sort(), [...before.keys()].sort());
+    for (const [file, bytes] of before) assert.equal(after.get(file), bytes);
   });
 });

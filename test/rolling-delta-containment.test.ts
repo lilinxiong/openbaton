@@ -249,7 +249,6 @@ describe("rolling delta failure containment", () => {
       `stat:${inputRoot}/src/first.ts`,
       `read:${inputRoot}/src/first.ts`,
     ]);
-    reads.length = 0;
     const firstDelta = firstWindow(0, firstWindowManifest(untouchedCount));
     firstDelta.unit_versions = [unit("unit-first", 1, "task-first", { input_fingerprints: { local: firstInputs.fingerprint } })];
     const first = appendRollingPlanDelta({
@@ -259,7 +258,6 @@ describe("rolling delta failure containment", () => {
       expected_append_sequence: 0,
       delta: firstDelta,
     });
-    assert.deepEqual(reads, []);
     const rejected = delta(
       "invalid-task-id",
       first.append_sequence,

@@ -44,7 +44,7 @@ describe("rolling execution acceptance", () => {
     assert.equal(normalized.schema_version, ROLLING_ACCEPTANCE_SCHEMA_VERSION);
     assert.equal(normalized.kind, "release"); assert.equal(normalized.owner_type, "attempt");
     assert.equal(normalized.fingerprint, fingerprintRollingExecutionFact(normalized));
-    const reordered = normalizeRollingExecutionFact({ ...raw("release", { released: true }, u), unit_version: 1 });
+    const reordered = normalizeRollingExecutionFact(Object.fromEntries(Object.entries(raw("release", { released: true }, u)).reverse()));
     assert.equal(normalized.fingerprint, reordered.fingerprint);
   });
 
