@@ -262,6 +262,29 @@ function validateNdjsonState(file: string, label: string): void {
   }
 }
 
+function directoryCount(directory: string, depth: number): number {
+  if (!fs.existsSync(directory)) return 0;
+  requireDirectory(directory, "rolling isolation namespace");
+  let count = 0;
+  const visit = (root: string, remaining: number): void => {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (remaining === 1) count += 1;
+      else visit(path.join(root, entry.name), remaining - 1);
+    }
+  };
+  visit(directory, depth);
+  return count;
+}
+
+function isolationInventory(run: string): string {
+  const worktrees = directoryCount(path.join(run, "worktrees"), 2);
+  const snapshots = directoryCount(path.join(run, "snapshots"), 1);
+  const bundles = directoryCount(path.join(run, "bundles"), 1);
+  const integrations = directoryCount(path.join(run, "integrations"), 2);
+  return `worktrees=${worktrees}, snapshots=${snapshots}, bundles=${bundles}, integrations=${integrations}`;
+}
+
 /** Inventory accepted rolling-run records before clean uninstall. These are
  * append-only audit state, not disposable installation artifacts. A runtime
  * namespace containing one is retained as a whole so uninstall cannot leave
@@ -283,7 +306,7 @@ function retainedRollingRuns(runtime: string, env: NodeJS.ProcessEnv | undefined
     records.push({
       path: display(run, env),
       kind: "rolling-run-v2",
-      reason: "auditable append-only rolling run retained by clean uninstall",
+      reason: `auditable rolling run and isolation evidence retained by clean uninstall (${isolationInventory(run)})`,
     });
   }
   return records;
@@ -351,6 +374,7 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
       "never recurse outside explicit Baton/host integration paths",
       ...(clean && active.length ? ["blocked by active dispatch tickets; no mutation is permitted"] : []),
       ...(retained_runtime_records.length ? ["preserve auditable rolling-run v2 records and their containing workspace runtime namespaces"] : []),
+      ...(retained_runtime_records.length ? ["preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence"] : []),
     ],
   };
 }

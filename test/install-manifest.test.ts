@@ -11,7 +11,14 @@ import {
 } from "../src/lib/install-manifest.js";
 import { applyUninstallPlan, buildUninstallPlan } from "../src/lib/uninstall.js";
 import { createRollingExecutionRun } from "../src/lib/rolling-run.js";
-import { batonDir, rollingRunFactLogPath } from "../src/lib/paths.js";
+import {
+  batonDir,
+  bundleManifestPath,
+  integrationRecordPath,
+  rollingRunFactLogPath,
+  snapshotManifestPath,
+  worktreeAttemptDir,
+} from "../src/lib/paths.js";
 
 function isolatedEnv(): { home: string; cwd: string; env: NodeJS.ProcessEnv } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-install-manifest-home-"));
@@ -94,14 +101,29 @@ describe("install manifest ownership", () => {
         selection: { tasks: [{ id: "audit-task", description: "retain audit state" }] },
       },
     });
+    const retainedPaths = [
+      worktreeAttemptDir(cwd, "audit-run", "unit-a", "attempt-a", env),
+      path.dirname(snapshotManifestPath(cwd, "audit-run", "snapshot-a", env)),
+      path.dirname(bundleManifestPath(cwd, "audit-run", "bundle-a", env)),
+      path.dirname(integrationRecordPath(cwd, "audit-run", "repository-a", "integration-a", env)),
+    ];
+    for (const directory of retainedPaths) fs.mkdirSync(directory, { recursive: true });
 
     const plan = buildUninstallPlan({ cwd, env, clean: true, dry_run: false });
     assert.equal(plan.retained_runtime_records.length, 1);
     assert.match(plan.retained_runtime_records[0]!.path, /rolling-runs-v2\/audit-run$/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /worktrees=1/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /snapshots=1/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /bundles=1/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /integrations=1/);
+    assert.ok(plan.constraints.includes(
+      "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
+    ));
     const runtime = batonDir(cwd, env);
     assert.equal(plan.targets.some((target) => target.path.endsWith(path.relative(env.HOME!, runtime))), false);
 
     applyUninstallPlan(plan, { env });
     assert.equal(fs.existsSync(rollingRunFactLogPath(cwd, "audit-run", env)), true);
+    for (const directory of retainedPaths) assert.equal(fs.existsSync(directory), true);
   });
 });

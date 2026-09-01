@@ -45,7 +45,10 @@ if (args[0] === "uninstall" && args.includes("--dry-run")) {
   if (mode === "stale") plan.targets = [{ action: "remove", path: "~/.baton/stale", reason: "clean removes Baton-owned global file", expected_kind: "file", expected_mode: 420, expected_fingerprint: "stale" }];
   if (mode === "retained") {
     plan.retained_runtime_records = [{ path: "~/.baton/workspaces/example/v2/runs/rolling-runs-v2/run-1/facts.ndjson", kind: "rolling-run-v2", reason: "retain auditable rolling execution record" }];
-    plan.constraints = ["preserve auditable rolling-run v2 records and their containing workspace runtime namespaces"];
+    plan.constraints = [
+      "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
+      "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
+    ];
   }
   if (mode === "malformed-preflight") {
     console.log(JSON.stringify({ hosts: plan.hosts, clean: true, dry_run: true, targets: [], active_tickets: [], constraints: [] }));
@@ -115,7 +118,16 @@ if [ "\${1:-}" = "run" ] && { [ "\${2:-}" = "test" ] || [ "\${2:-}" = "check" ];
   [ "\${FAKE_FAIL:-}" = "check" ] && exit 23
   exit 0
 fi
-if [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build" ]; then [ "\${FAKE_FAIL:-}" = "build" ] && exit 24 || cp "$FAKE_CLI_TEMPLATE" "$FAKE_CHECKOUT/dist/bin/baton.js"; chmod +x "$FAKE_CHECKOUT/dist/bin/baton.js"; exit 0; fi
+if [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build" ]; then
+  [ "\${FAKE_FAIL:-}" = "build" ] && exit 24
+  cp "$FAKE_CLI_TEMPLATE" "$FAKE_CHECKOUT/dist/bin/baton.js"
+  chmod +x "$FAKE_CHECKOUT/dist/bin/baton.js"
+  mkdir -p "$FAKE_CHECKOUT/dist/src/lib"
+  for module in worktree-setup worktree-audit worktree-bundle worktree-integration worktree-lifecycle; do
+    touch "$FAKE_CHECKOUT/dist/src/lib/$module.js"
+  done
+  exit 0
+fi
 if [ "\${1:-}" = "link" ]; then [ "\${FAKE_FAIL:-}" = "link" ] && exit 25 || ln -sfn "$FAKE_CHECKOUT/dist/bin/baton.js" "$FAKE_BIN/baton"; exit 0; fi
 if [ "\${1:-}" = "remove" ] || [ "\${1:-}" = "uninstall" ] || [ "\${1:-}" = "unlink" ]; then [ "\${FAKE_FAIL:-}" = "remove" ] && exit 26 || rm -f "$FAKE_BIN/baton"; exit 0; fi
 exit 0

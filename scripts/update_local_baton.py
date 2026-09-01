@@ -477,6 +477,7 @@ _SAFE_UNINSTALL_CONSTRAINTS = frozenset({
     "never remove package-manager executable",
     "never recurse outside explicit Baton/host integration paths",
     "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
+    "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
 })
 
 
@@ -670,6 +671,23 @@ def verify_installation(
     missing_hosts = [str(path) for path in _manifest_host_files(baton_home(values)) if not path.is_file()]
     if missing_hosts:
         raise RuntimeError("verification failed: missing manifest-owned host skills: " + ", ".join(missing_hosts))
+    required_runtime_modules = (
+        "worktree-setup.js",
+        "worktree-audit.js",
+        "worktree-bundle.js",
+        "worktree-integration.js",
+        "worktree-lifecycle.js",
+    )
+    missing_runtime_modules = [
+        str(repo_root / "dist" / "src" / "lib" / name)
+        for name in required_runtime_modules
+        if not (repo_root / "dist" / "src" / "lib" / name).is_file()
+    ]
+    if missing_runtime_modules:
+        raise RuntimeError(
+            "verification failed: missing rolling isolation runtime modules: "
+            + ", ".join(missing_runtime_modules)
+        )
     config = baton_home(values) / "config.toml"
     if not config.is_file() or re.search(r"(?m)^\s*\[cli(?:\.|\s*\])", config.read_text(encoding="utf-8")):
         raise RuntimeError("verification failed: initialization restored a CLI profile")
@@ -683,7 +701,8 @@ def recovery_guidance(repo_root: Path = REPO_ROOT) -> str:
     return (
         "Recovery (cleanup has begun): inspect `command -v baton` and `~/.baton`, "
         f"then repair the link with `bun link` and initialize with `{cli} init`; "
-        "verify with `baton version`. Existing CLI profiles are not restored automatically."
+        "verify with `baton version`. Inspect retained rolling-run status before removing "
+        "any worktree, bundle refs, or integration context. Existing CLI profiles are not restored automatically."
     )
 
 
