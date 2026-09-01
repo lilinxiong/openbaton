@@ -2,6 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+export {
+  EXACT_EXECUTION_ROOT_IDENTITY_FIELDS,
+  extractExactExecutionRootIdentity,
+  normalizeExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootAcknowledgement,
+  type ExactExecutionRootCapability,
+  type ExactExecutionRootIdentity,
+  type ExactExecutionRootRequest,
+} from "./contract.js";
 
 /** Public Adapter SDK contract. Keep this file free of provider-specific names. */
 export const ADAPTER_SDK_VERSION = "1.0" as const;
@@ -62,7 +72,11 @@ export interface AdapterManifest {
     signal: string;
     environment?: string;
   };
-  native: { execution_handle_kind: ExecutionHandleKind };
+  native: {
+    execution_handle_kind: ExecutionHandleKind;
+    /** Omitted means unsupported/unknown and never authorizes isolated dispatch. */
+    exact_execution_root?: boolean;
+  };
   runtime_skill: { source: string; destination: string };
   quota: AdapterManifestQuota;
 }
@@ -139,14 +153,17 @@ export function validateAdapterManifest(value: unknown, directory: string): Adap
   if (!["json", "json-lines"].includes(protocol)) throw new Error(`ADAPTER_MANIFEST_INVALID: unsupported catalog protocol ${protocol}`);
   if (c.timeout_ms !== undefined && (!Number.isInteger(c.timeout_ms) || Number(c.timeout_ms) <= 0)) throw new Error("ADAPTER_MANIFEST_INVALID: catalog.timeout_ms");
   const i = object(raw.invocation, "invocation"); exactKeys(i, ["signal", "environment"], "invocation");
-  const n = object(raw.native, "native"); exactKeys(n, ["execution_handle_kind"], "native");
+  const n = object(raw.native, "native"); exactKeys(n, ["execution_handle_kind", "exact_execution_root"], "native");
+  if (n.exact_execution_root !== undefined && typeof n.exact_execution_root !== "boolean") {
+    throw new Error("ADAPTER_MANIFEST_INVALID: native.exact_execution_root must be boolean");
+  }
   const s = object(raw.runtime_skill, "runtime_skill"); exactKeys(s, ["source", "destination"], "runtime_skill");
   const source = stringField(s.source, "runtime_skill.source");
   const destination = stringField(s.destination, "runtime_skill.destination");
   if (!RELATIVE(source) || !RELATIVE(destination)) throw new Error("ADAPTER_MANIFEST_INVALID: runtime skill paths must be relative and traversal-free");
   const quota = normalizeAdapterManifestQuota(raw.quota);
   if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) throw new Error("ADAPTER_MANIFEST_INVALID: adapter directory missing");
-  return { schema: 1, adapter: { id, display_name: stringField(a.display_name, "adapter.display_name"), package_name: stringField(a.package_name, "adapter.package_name"), package_version: stringField(a.package_version, "adapter.package_version"), sdk_version: sdk }, catalog: { command, args: c.args as string[], protocol, ...(c.timeout_ms === undefined ? {} : { timeout_ms: c.timeout_ms as number }) }, invocation: { signal: stringField(i.signal, "invocation.signal"), ...(i.environment === undefined ? {} : { environment: stringField(i.environment, "invocation.environment") }) }, native: { execution_handle_kind: stringField(n.execution_handle_kind, "native.execution_handle_kind") }, runtime_skill: { source, destination }, quota };
+  return { schema: 1, adapter: { id, display_name: stringField(a.display_name, "adapter.display_name"), package_name: stringField(a.package_name, "adapter.package_name"), package_version: stringField(a.package_version, "adapter.package_version"), sdk_version: sdk }, catalog: { command, args: c.args as string[], protocol, ...(c.timeout_ms === undefined ? {} : { timeout_ms: c.timeout_ms as number }) }, invocation: { signal: stringField(i.signal, "invocation.signal"), ...(i.environment === undefined ? {} : { environment: stringField(i.environment, "invocation.environment") }) }, native: { execution_handle_kind: stringField(n.execution_handle_kind, "native.execution_handle_kind"), ...(n.exact_execution_root === undefined ? {} : { exact_execution_root: n.exact_execution_root as boolean }) }, runtime_skill: { source, destination }, quota };
 }
 
 function manifestDirectories(env: NodeJS.ProcessEnv): string[] {

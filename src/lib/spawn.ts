@@ -14,7 +14,12 @@ import {
   type RollingUnitLineage,
 } from "./receipt.js";
 import type { CodedError, ModelCard, ModelSelectionApproval, UnknownRecord } from "../types.js";
-import type { NativeExecutionHandleKind } from "../adapters/contract.js";
+import {
+  extractExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+  type NativeExecutionHandleKind,
+} from "../adapters/contract.js";
 import {
   assertSessionScope,
   sessionScope,
@@ -72,7 +77,7 @@ export type AgentProbeActivity = "status" | "output" | "heartbeat";
 export type ExecutionHandleSource = "native-return" | "manual";
 
 /** Host-neutral native child handle. */
-export interface NativeExecutionHandle {
+export interface NativeExecutionHandle extends Partial<ExactExecutionRootIdentity> {
   kind: NativeExecutionHandleKind;
   value: string;
   source: ExecutionHandleSource;
@@ -88,7 +93,7 @@ export interface TicketLiveness {
   observed_at: string;
 }
 
-export interface SpawnTicket extends UnknownRecord {
+export interface SpawnTicket extends UnknownRecord, Partial<ExactExecutionRootIdentity> {
   schema_version: number;
   id: string;
   session_uid: string;
@@ -179,7 +184,13 @@ function normalizeExecutionHandle(value: unknown): NativeExecutionHandle | null 
     ? item.source
     : null;
   if (!source) return null;
-  return { kind: item.kind, value: handle, source };
+  let exactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    exactRoot = extractExactExecutionRootIdentity(item);
+  } catch {
+    throw new Error("native execution handle exact-root acknowledgement is partial or invalid");
+  }
+  return { kind: item.kind, value: handle, source, ...(exactRoot || {}) };
 }
 
 function sameCanonicalValue(left: unknown, right: unknown): boolean {
@@ -254,6 +265,19 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
     unitRecord = normalizedUnit as unknown as Record<string, unknown>;
     assertRollingTicketExecutionMode(ticket, normalizedUnit);
   }
+  let ticketExactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    ticketExactRoot = extractExactExecutionRootIdentity(ticket);
+  } catch {
+    throw new Error("spawn ticket exact-root identity is partial or invalid");
+  }
+  const unitExactRoot = unitRecord?.schema_version === 3
+    ? extractExactExecutionRootIdentity(ticket.work_unit)
+    : undefined;
+  if ((ticketExactRoot === undefined) !== (unitExactRoot === undefined)
+    || (ticketExactRoot && !sameExactExecutionRootIdentity(ticketExactRoot, unitExactRoot))) {
+    throw new Error("spawn ticket exact-root identity mismatch");
+  }
   if (ticket.rolling_unit_lineage !== undefined) {
     const normalized = normalizeRollingUnitLineage(ticket.rolling_unit_lineage);
     if (JSON.stringify(normalized) !== JSON.stringify(ticket.rolling_unit_lineage)) {
@@ -282,6 +306,13 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
     if (normalized.mode === "patch-only" && ticket.mode === "read-only" && ticket.read_only !== true) throw new Error("patch-only ticket read_only mismatch");
   }
   const existing = normalizeExecutionHandle(ticket.execution_handle);
+  const handleExactRoot = existing ? extractExactExecutionRootIdentity(existing) : undefined;
+  if (existing && ticketExactRoot && (!handleExactRoot || !sameExactExecutionRootIdentity(handleExactRoot, ticketExactRoot))) {
+    throw new Error("native execution handle exact-root acknowledgement mismatch");
+  }
+  if (existing && !ticketExactRoot && handleExactRoot) {
+    throw new Error("shared or legacy ticket cannot bind an isolated execution handle");
+  }
   ticket.execution_handle = existing;
   // A terminal ticket that never received a native handle never owned a
   // host slot. Normalize that fact on reads as well as writes so legacy
@@ -298,6 +329,9 @@ export function normalizeSpawnTicket(value: unknown): SpawnTicket {
     const live = ticket.liveness as unknown as Record<string, unknown>;
     const liveHandle = normalizeExecutionHandle(live.execution_handle);
     if (liveHandle) {
+      if (!sameExactExecutionRootIdentity(liveHandle, existing)) {
+        throw new Error("liveness execution handle exact-root acknowledgement mismatch");
+      }
       ticket.liveness = {
         ...ticket.liveness,
         execution_handle: liveHandle,
@@ -678,6 +712,9 @@ export function buildSpawnTicket({
     throw new Error("rolling work unit lineage mismatch");
   }
   const coordination = coordinationFor(workUnit);
+  const exactRoot = workUnit.schema_version === 3
+    ? extractExactExecutionRootIdentity(workUnit)
+    : undefined;
   return {
     schema_version: 8,
     id,
@@ -714,6 +751,7 @@ export function buildSpawnTicket({
     history: [{ event: "ticket_queued", at: createdAt }],
     ...(lineage ? { compiled_apply_lineage: lineage } : {}),
     ...(rollingLineage ? { rolling_unit_lineage: rollingLineage } : {}),
+    ...(exactRoot || {}),
   };
 }
 

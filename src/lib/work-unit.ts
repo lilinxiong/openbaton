@@ -1,4 +1,10 @@
 import { normalizeRollingUnitLineage, type RollingUnitLineage } from "./receipt.js";
+import {
+  extractExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+} from "../adapters/contract.js";
+import type { WorktreeExecutionMode } from "./rolling-plan.js";
 
 export type WorkUnitKind = "concrete" | "deliberative";
 export type CoordinationMode = "terminal-only" | "checkpointed";
@@ -14,7 +20,7 @@ export interface WorkUnitContract {
 }
 
 /** A rolling unit contract carries only the immutable unit-version boundary. */
-export interface RollingWorkUnitContract extends WorkUnitContract {
+export interface RollingWorkUnitContract extends WorkUnitContract, Partial<ExactExecutionRootIdentity> {
   schema_version: 3;
   kind: "concrete";
   mode: CompiledWorkUnitMode;
@@ -25,6 +31,8 @@ export interface RollingWorkUnitContract extends WorkUnitContract {
   completion_criteria: readonly string[];
   permitted_validation: readonly string[];
   coordination: "terminal-only";
+  /** Omitted only for legacy rolling contracts. */
+  worktree_mode?: WorktreeExecutionMode;
 }
 
 /**
@@ -89,6 +97,18 @@ export interface CompileWorkUnitOptions {
   permitted_validation?: readonly string[];
   rollingUnitLineage?: unknown;
   rolling_unit_lineage?: unknown;
+  worktreeMode?: WorktreeExecutionMode;
+  worktree_mode?: WorktreeExecutionMode;
+  repositoryId?: string;
+  repository_id?: string;
+  gitCommonDirIdentity?: string;
+  git_common_dir_identity?: string;
+  executionRoot?: string;
+  execution_root?: string;
+  baseTree?: string;
+  base_tree?: string;
+  worktreeRecordId?: string;
+  worktree_record_id?: string;
 }
 
 export interface CompileCompiledWorkUnitOptions extends Omit<CompileWorkUnitOptions, "kind" | "mode" | "executionMode" | "execution_mode"> {
@@ -194,7 +214,8 @@ export function compileRollingWorkUnit(
     const allowedObjectFields = [
       "schema_version", "kind", "objective", "deliverable", "done_when", "mode",
       "rolling_unit_lineage", "read_context", "write_paths", "allowed_operations",
-      "completion_criteria", "permitted_validation", "coordination",
+      "completion_criteria", "permitted_validation", "coordination", "worktree_mode",
+      "repository_id", "git_common_dir_identity", "execution_root", "base_tree", "worktree_record_id",
     ];
     if (Object.keys(objectInput).some((key) => !allowedObjectFields.includes(key))) {
       throw new Error("rolling work unit contains an unknown field");
@@ -222,6 +243,31 @@ export function compileRollingWorkUnit(
   if (rollingLineage.mode !== mode) {
     throw new Error("rolling work unit mode must equal rolling unit lineage mode");
   }
+  const suppliedWorktreeMode = source.worktree_mode ?? source.worktreeMode ?? rollingLineage.worktree_mode;
+  if (suppliedWorktreeMode !== rollingLineage.worktree_mode) {
+    throw new Error("rolling work unit worktree_mode must equal rolling unit lineage worktree_mode");
+  }
+  const worktreeMode = rollingLineage.worktree_mode;
+  let sourceExactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    sourceExactRoot = extractExactExecutionRootIdentity(Object.fromEntries(Object.entries({
+      repository_id: source.repository_id ?? source.repositoryId,
+      git_common_dir_identity: source.git_common_dir_identity ?? source.gitCommonDirIdentity,
+      execution_root: source.execution_root ?? source.executionRoot,
+      base_tree: source.base_tree ?? source.baseTree,
+      worktree_record_id: source.worktree_record_id ?? source.worktreeRecordId,
+    }).filter(([, value]) => value !== undefined)));
+  } catch {
+    throw new Error("rolling work unit exact-root identity is partial or invalid");
+  }
+  const lineageExactRoot = extractExactExecutionRootIdentity(rollingLineage);
+  if (objectInput && (sourceExactRoot === undefined) !== (lineageExactRoot === undefined)) {
+    throw new Error("rolling work unit exact-root identity mismatch");
+  }
+  if (sourceExactRoot && !sameExactExecutionRootIdentity(sourceExactRoot, lineageExactRoot)) {
+    throw new Error("rolling work unit exact-root identity mismatch");
+  }
+  const exactRoot = sourceExactRoot ?? lineageExactRoot;
   const writePaths = optionalStrings(source.write_paths ?? source.writePaths, "write_paths");
   const allowedOperations = optionalStrings(source.allowed_operations ?? source.allowedOperations, "allowed_operations") as WorkUnitOperation[];
   const validOperations = new Set<WorkUnitOperation>(["write", "create", "delete", "rename", "chmod"]);
@@ -249,6 +295,8 @@ export function compileRollingWorkUnit(
     completion_criteria: strings(source.completion_criteria ?? source.completionCriteria, "completion_criteria"),
     permitted_validation: strings(source.permitted_validation ?? source.permittedValidation, "permitted_validation"),
     coordination: "terminal-only",
+    ...(worktreeMode === undefined ? {} : { worktree_mode: worktreeMode }),
+    ...(exactRoot || {}),
   };
   return freezeDeep(contract);
 }

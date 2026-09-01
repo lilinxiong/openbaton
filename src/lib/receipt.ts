@@ -4,13 +4,19 @@ import path from "node:path";
 import { receiptsDir } from "./paths.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 import { validateIndexControlBaselineMetadata, type CommitBaseline, type GitBaseline, type SafetyOperation } from "./safety.js";
+import {
+  extractExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+} from "../adapters/contract.js";
+import type { WorktreeExecutionMode } from "./rolling-plan.js";
 
 export type ReceiptOperation = "read" | "commit" | SafetyOperation;
 export type ExecutionMode = "read-only" | "write" | "commit-only";
 export type CompiledApplyMode = "patch-only" | "verification-only";
 
 /** Immutable identity carried from a rolling unit version into its artifacts. */
-export interface RollingUnitLineage {
+export interface RollingUnitLineage extends Partial<ExactExecutionRootIdentity> {
   schema_version: 1;
   run_id: string;
   unit_key: string;
@@ -18,6 +24,8 @@ export interface RollingUnitLineage {
   unit_fingerprint: string;
   task_keys: readonly string[];
   mode: CompiledApplyMode;
+  /** Omitted only for legacy rolling artifacts. */
+  worktree_mode?: WorktreeExecutionMode;
 }
 
 type RollingUnitLineageInput = {
@@ -28,6 +36,12 @@ type RollingUnitLineageInput = {
   unit_fingerprint?: unknown;
   task_keys?: unknown;
   mode?: unknown;
+  worktree_mode?: unknown;
+  repository_id?: unknown;
+  git_common_dir_identity?: unknown;
+  execution_root?: unknown;
+  base_tree?: unknown;
+  worktree_record_id?: unknown;
 };
 
 /** Immutable identity carried from a compiled apply unit into its artifacts. */
@@ -40,17 +54,45 @@ export interface CompiledApplyLineage {
   mode: CompiledApplyMode;
 }
 
-/** Purely normalize and validate the seven-field rolling unit identity. */
+function isolatedIdentity(value: unknown, mode: unknown, label: string): ExactExecutionRootIdentity | undefined {
+  let identity: ExactExecutionRootIdentity | undefined;
+  try {
+    identity = extractExactExecutionRootIdentity(value);
+  } catch (error) {
+    const code = error instanceof Error && error.message.includes("PARTIAL")
+      ? "ISOLATED_EXECUTION_IDENTITY_PARTIAL"
+      : "ISOLATED_EXECUTION_IDENTITY_INVALID";
+    throw new ReceiptError(`${label} exact-root identity is invalid`, code);
+  }
+  if (mode === undefined) {
+    if (identity) throw new ReceiptError(`${label} legacy lineage cannot carry exact-root identity`, "ISOLATED_EXECUTION_MODE_REQUIRED");
+    return undefined;
+  }
+  if (mode !== "isolated-worktree" && mode !== "shared-worktree") {
+    throw new ReceiptError(`${label} worktree_mode is invalid`, "ISOLATED_EXECUTION_MODE_INVALID");
+  }
+  if (mode === "isolated-worktree" && !identity) {
+    throw new ReceiptError(`${label} isolated lineage requires exact-root identity`, "ISOLATED_EXECUTION_IDENTITY_PARTIAL");
+  }
+  if (mode === "shared-worktree" && identity) {
+    throw new ReceiptError(`${label} shared lineage forbids exact-root identity`, "ISOLATED_EXECUTION_IDENTITY_FORBIDDEN");
+  }
+  return identity;
+}
+
+/** Purely normalize and validate rolling unit identity and optional isolation lineage. */
 export function normalizeRollingUnitLineage(value: unknown): RollingUnitLineage {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ReceiptError("rolling unit lineage must be an object", "ROLLING_LINEAGE_MALFORMED");
   }
   const input = value as RollingUnitLineageInput;
-  const allowed = ["schema_version", "run_id", "unit_key", "unit_version", "unit_fingerprint", "task_keys", "mode"];
+  const baseFields = ["schema_version", "run_id", "unit_key", "unit_version", "unit_fingerprint", "task_keys", "mode"];
+  const isolationFields = ["worktree_mode", "repository_id", "git_common_dir_identity", "execution_root", "base_tree", "worktree_record_id"];
+  const allowed = [...baseFields, ...isolationFields];
   if (Object.keys(input as object).some((key) => !allowed.includes(key))) {
     throw new ReceiptError("rolling unit lineage contains an unknown field", "ROLLING_LINEAGE_UNKNOWN_FIELD");
   }
-  for (const field of allowed) {
+  for (const field of baseFields) {
     if (!(field in input)) throw new ReceiptError(`rolling unit lineage ${field} is required`, "ROLLING_LINEAGE_PARTIAL");
   }
   if (input.schema_version !== 1) {
@@ -84,6 +126,7 @@ export function normalizeRollingUnitLineage(value: unknown): RollingUnitLineage 
   if (input.mode !== "patch-only" && input.mode !== "verification-only") {
     throw new ReceiptError("rolling unit lineage mode is invalid", "ROLLING_LINEAGE_UNKNOWN_MODE");
   }
+  const exactRoot = isolatedIdentity(input, input.worktree_mode, "rolling unit lineage");
   return freezeLineage({
     schema_version: 1,
     run_id: requiredText("run_id"),
@@ -92,6 +135,8 @@ export function normalizeRollingUnitLineage(value: unknown): RollingUnitLineage 
     unit_fingerprint: input.unit_fingerprint,
     task_keys: taskKeys,
     mode: input.mode,
+    ...(input.worktree_mode === undefined ? {} : { worktree_mode: input.worktree_mode as WorktreeExecutionMode }),
+    ...(exactRoot || {}),
   });
 }
 
@@ -162,7 +207,7 @@ export function validateCompiledApplyLineage(value: unknown): string | null {
 
 export const assertValidCompiledApplyLineage = normalizeCompiledApplyLineage;
 
-export interface DelegationReceipt {
+export interface DelegationReceipt extends Partial<ExactExecutionRootIdentity> {
   schema_version: 4;
   /** Host profile that owns this receipt; local-only receipts may omit it. */
   host?: string;
@@ -255,6 +300,7 @@ export function buildReadOnlyReceipt({
   }
   const timestamp = (issuedAt instanceof Date ? issuedAt : new Date(issuedAt)).toISOString();
   const attempts = Math.max(1, Math.floor(maxAttempts));
+  const exactRoot = rollingLineage ? extractExactExecutionRootIdentity(rollingLineage) : undefined;
   return {
     schema_version: 4,
     ...(host ? { host } : {}),
@@ -283,6 +329,7 @@ export function buildReadOnlyReceipt({
     selection: selection ? structuredClone(selection) : null,
     ...(lineage ? { compiled_apply_lineage: lineage } : {}),
     ...(rollingLineage ? { rolling_unit_lineage: rollingLineage } : {}),
+    ...(exactRoot || {}),
   };
 }
 
@@ -349,6 +396,26 @@ export function buildWriteReceipt({
   if (rollingLineage && rollingLineage.mode !== "patch-only") {
     throw new ReceiptError("verification-only rolling lineage cannot authorize writes", "ROLLING_LINEAGE_EXECUTION_MODE_MISMATCH");
   }
+  const exactRoot = rollingLineage ? extractExactExecutionRootIdentity(rollingLineage) : undefined;
+  let baseExactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    baseExactRoot = extractExactExecutionRootIdentity(base);
+  } catch (error) {
+    throw new ReceiptError("base Receipt exact-root identity is partial or invalid",
+      error instanceof Error && error.message.includes("PARTIAL")
+        ? "ISOLATED_EXECUTION_IDENTITY_PARTIAL"
+        : "ISOLATED_EXECUTION_IDENTITY_INVALID");
+  }
+  const baseRollingExactRoot = base.rolling_unit_lineage
+    ? extractExactExecutionRootIdentity(normalizeRollingUnitLineage(base.rolling_unit_lineage))
+    : undefined;
+  if ((baseExactRoot === undefined) !== (baseRollingExactRoot === undefined)
+    || (baseExactRoot && !sameExactExecutionRootIdentity(baseExactRoot, baseRollingExactRoot))) {
+    throw new ReceiptError("base Receipt exact-root identity does not match rolling lineage", "ISOLATED_EXECUTION_IDENTITY_MISMATCH");
+  }
+  if (baseExactRoot && exactRoot && !sameExactExecutionRootIdentity(baseExactRoot, exactRoot)) {
+    throw new ReceiptError("supplied rolling exact-root identity does not match the base Receipt", "ISOLATED_EXECUTION_IDENTITY_MISMATCH");
+  }
   return {
     ...structuredClone(base),
     execution: { ...base.execution, mode: "write" },
@@ -361,6 +428,7 @@ export function buildWriteReceipt({
     commit_baseline: null,
     ...(lineage ? { compiled_apply_lineage: lineage } : {}),
     ...(rollingLineage ? { rolling_unit_lineage: rollingLineage } : {}),
+    ...(exactRoot || {}),
   };
 }
 
@@ -481,6 +549,20 @@ function validateReceiptBaselines(receipt: DelegationReceipt): void {
       throw new ReceiptError("patch-only rolling lineage requires write execution", "ROLLING_LINEAGE_EXECUTION_MODE_MISMATCH");
     }
   }
+  let receiptExactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    receiptExactRoot = extractExactExecutionRootIdentity(receipt);
+  } catch (error) {
+    throw new ReceiptError("Receipt exact-root identity is partial or invalid",
+      error instanceof Error && error.message.includes("PARTIAL")
+        ? "ISOLATED_EXECUTION_IDENTITY_PARTIAL"
+        : "ISOLATED_EXECUTION_IDENTITY_INVALID");
+  }
+  const rollingExactRoot = rollingLineage ? extractExactExecutionRootIdentity(rollingLineage) : undefined;
+  if ((receiptExactRoot === undefined) !== (rollingExactRoot === undefined)
+    || (receiptExactRoot && !sameExactExecutionRootIdentity(receiptExactRoot, rollingExactRoot))) {
+    throw new ReceiptError("Receipt exact-root identity does not match rolling lineage", "ISOLATED_EXECUTION_IDENTITY_MISMATCH");
+  }
   const baselineError = receipt.baseline
     ? validateIndexControlBaselineMetadata(receipt.baseline)
     : receipt.commit_baseline
@@ -526,7 +608,7 @@ export function validateTicketReceiptLineage(
     read_only: boolean;
     compiled_apply_lineage?: unknown;
     rolling_unit_lineage?: unknown;
-  },
+  } & Partial<ExactExecutionRootIdentity>,
   receipt: DelegationReceipt,
 ): string | null {
   try {
@@ -544,6 +626,19 @@ export function validateTicketReceiptLineage(
     const receiptRollingLineage = receipt.rolling_unit_lineage;
     if ((ticketRollingLineage === undefined) !== (receiptRollingLineage === undefined)) return "ROLLING_LINEAGE_MISMATCH";
     if (ticketRollingLineage !== undefined && JSON.stringify(normalizeRollingUnitLineage(ticketRollingLineage)) !== JSON.stringify(receiptRollingLineage)) return "ROLLING_LINEAGE_MISMATCH";
+    let ticketExactRoot: ExactExecutionRootIdentity | undefined;
+    try {
+      ticketExactRoot = extractExactExecutionRootIdentity(ticket);
+    } catch (error) {
+      return error instanceof Error && error.message.includes("PARTIAL")
+        ? "ISOLATED_EXECUTION_IDENTITY_PARTIAL"
+        : "ISOLATED_EXECUTION_IDENTITY_INVALID";
+    }
+    const receiptExactRoot = extractExactExecutionRootIdentity(receipt);
+    if ((ticketExactRoot === undefined) !== (receiptExactRoot === undefined)
+      || (ticketExactRoot && !sameExactExecutionRootIdentity(ticketExactRoot, receiptExactRoot))) {
+      return "ISOLATED_EXECUTION_IDENTITY_MISMATCH";
+    }
     if ((ticket.host || ticket.target_host || null) !== (receipt.host || null)) return "COMPILED_LINEAGE_HOST_MISMATCH";
     if (ticket.model_id !== receipt.route.card_id || (ticket.route_id || null) !== (receipt.route.route_id || null)) return "COMPILED_LINEAGE_ROUTE_MODEL_MISMATCH";
     if ((ticket.service_tier || null) !== (receipt.route.service_tier || null)) return "COMPILED_LINEAGE_ROUTE_MODEL_MISMATCH";

@@ -1,12 +1,25 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { discoverAdapterManifests, validateAdapterManifest } from "../src/adapters/sdk.js";
+import { discoverAdapterManifests, normalizeExactExecutionRootIdentity, validateAdapterManifest } from "../src/adapters/sdk.js";
 import { getCliAdapter, listCliAdapters } from "../src/adapters/registry.js";
 import { normalizeCliRuntimeCapabilities } from "../src/adapters/shared.js";
 import { fixtureAdapterEnv, FIXTURE_ALPHA, FIXTURE_BETA } from "./home.js";
 
 describe("manifest adapter registry", () => {
+  it("normalizes only complete canonical exact-root identities", () => {
+    const identity = {
+      repository_id: "a".repeat(64),
+      git_common_dir_identity: "b".repeat(64),
+      execution_root: "/tmp/baton/worktrees/run/unit/attempt",
+      base_tree: "c".repeat(40),
+      worktree_record_id: "worktree-run-unit-attempt",
+    };
+    assert.deepEqual(normalizeExactExecutionRootIdentity(identity), identity);
+    assert.throws(() => normalizeExactExecutionRootIdentity({ ...identity, base_tree: undefined }), /BASE_TREE_INVALID/);
+    assert.throws(() => normalizeExactExecutionRootIdentity({ ...identity, execution_root: "/tmp/baton/../caller" }), /PATH_NONCANONICAL/);
+    assert.throws(() => normalizeExactExecutionRootIdentity({ ...identity, provider: "codex" }), /UNKNOWN_FIELD/);
+  });
   it("discovers alpha/beta deterministically", () => {
     const env = fixtureAdapterEnv();
     assert.deepEqual(discoverAdapterManifests(env).map((m) => m.adapter.id), ["alpha", "beta"]);
@@ -34,6 +47,13 @@ describe("manifest adapter registry", () => {
     const normalized = validateAdapterManifest({ ...manifest, quota }, FIXTURE_ALPHA);
     assert.deepEqual(normalized.quota, { max_concurrent_subagents: 2, max_depth: 3 });
     assert.throws(() => validateAdapterManifest({ ...manifest, quota: { ...quota, max_concurrent_subagents: 3 } }, FIXTURE_ALPHA), /aliases conflict/);
+  });
+  it("validates the optional exact-root native capability without provider fields", () => {
+    const manifest = JSON.parse(fs.readFileSync(`${FIXTURE_ALPHA}/adapter.json`, "utf8")) as Record<string, unknown>;
+    const native = { ...(manifest.native as Record<string, unknown>), exact_execution_root: true };
+    assert.equal(validateAdapterManifest({ ...manifest, native }, FIXTURE_ALPHA).native.exact_execution_root, true);
+    assert.throws(() => validateAdapterManifest({ ...manifest, native: { ...native, exact_execution_root: "yes" } }, FIXTURE_ALPHA), /must be boolean/);
+    assert.throws(() => validateAdapterManifest({ ...manifest, native: { ...native, provider_workspace: true } }, FIXTURE_ALPHA), /unknown native field/);
   });
   it("rejects duplicate and malformed manifests", () => {
     assert.throws(() => discoverAdapterManifests({ ...fixtureAdapterEnv(), BATON_ADAPTER_PATHS: [FIXTURE_ALPHA, FIXTURE_ALPHA].join(":" ) }), /ADAPTER_DUPLICATE/);

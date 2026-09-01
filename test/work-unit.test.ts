@@ -3,12 +3,89 @@ import assert from "node:assert/strict";
 import {
   buildWorkerPrompt,
   compilePatchOnlyWorkUnit,
+  compileRollingWorkUnit,
   compileVerificationOnlyWorkUnit,
   compileWorkUnit,
   coordinationFor,
 } from "../src/lib/work-unit.js";
+import { buildSpawnTicket, normalizeSpawnTicket, sessionTicketId, sessionUid } from "../src/lib/spawn.js";
 
 describe("work-unit contract", () => {
+  const exactRoot = {
+    repository_id: "a".repeat(64),
+    git_common_dir_identity: "b".repeat(64),
+    execution_root: "/tmp/baton/worktrees/run/unit/attempt",
+    base_tree: "c".repeat(40),
+    worktree_record_id: "record-run-unit-attempt",
+  } as const;
+  const isolatedLineage = {
+    schema_version: 1 as const,
+    run_id: "rolling-run",
+    unit_key: "rolling-unit",
+    unit_version: 1,
+    unit_fingerprint: "d".repeat(64),
+    task_keys: ["director:task"],
+    mode: "patch-only" as const,
+    worktree_mode: "isolated-worktree" as const,
+    ...exactRoot,
+  };
+
+  it("compiles one canonical isolated rolling identity across lineage and work unit", () => {
+    const unit = compileRollingWorkUnit("apply isolated patch", {
+      mode: "patch-only",
+      rollingUnitLineage: isolatedLineage,
+      deliverable: "patch",
+      doneWhen: "done",
+      readContext: ["src/a.ts"],
+      writePaths: ["src/a.ts"],
+      allowedOperations: ["write"],
+      completionCriteria: ["test passes"],
+      permittedValidation: ["bun test"],
+    });
+    assert.equal(unit.worktree_mode, "isolated-worktree");
+    for (const [field, value] of Object.entries(exactRoot)) assert.equal((unit as any)[field], value);
+    assert.deepEqual(compileRollingWorkUnit(unit), unit);
+    assert.throws(() => compileRollingWorkUnit({ ...unit, execution_root: "/tmp/other" }), /identity mismatch/);
+    const partial = { ...unit } as any;
+    delete partial.base_tree;
+    assert.throws(() => compileRollingWorkUnit(partial), /partial|mismatch/);
+  });
+
+  it("keeps explicit shared and legacy rolling identities free of isolated fields", () => {
+    const sharedLineage = { ...isolatedLineage, worktree_mode: "shared-worktree" as const } as any;
+    for (const field of Object.keys(exactRoot)) delete sharedLineage[field];
+    const shared = compileRollingWorkUnit("verify", {
+      mode: "verification-only",
+      rollingUnitLineage: { ...sharedLineage, mode: "verification-only" },
+      deliverable: "evidence", doneWhen: "done", readContext: ["src/a.ts"],
+      completionCriteria: ["checked"], permittedValidation: ["read"],
+    });
+    assert.equal(shared.worktree_mode, "shared-worktree");
+    assert.equal("execution_root" in shared, false);
+    const forbidden = { ...shared.rolling_unit_lineage, ...exactRoot };
+    assert.throws(() => compileRollingWorkUnit({ ...shared, rolling_unit_lineage: forbidden }), /shared lineage forbids/);
+  });
+
+  it("binds an isolated ticket and native handle to one acknowledged exact root", () => {
+    const env = { ...process.env, BATON_SESSION_ID: "exact-root-unit-test" };
+    const ticket = buildSpawnTicket({
+      id: sessionTicketId("spn", sessionUid(env), 1), cwd: "/tmp", env,
+      description: "apply isolated patch", prompt: "apply isolated patch", modelId: "alpha/default",
+      routeId: "alpha/default", targetHost: "alpha", taskKind: "concrete",
+      rollingUnitLineage: isolatedLineage, readContext: ["src/a.ts"], writePaths: ["src/a.ts"],
+      allowedOperations: ["write"], completionCriteria: ["done"], permittedValidation: ["bun test"],
+    });
+    for (const [field, value] of Object.entries(exactRoot)) assert.equal((ticket as any)[field], value);
+    ticket.execution_handle = { kind: "alpha-task", value: "native-1", source: "native-return", ...exactRoot };
+    assert.deepEqual(normalizeSpawnTicket(ticket).execution_handle, ticket.execution_handle);
+    assert.throws(() => normalizeSpawnTicket({
+      ...ticket,
+      execution_handle: { ...ticket.execution_handle!, execution_root: "/tmp/other" },
+    }), /acknowledgement mismatch/);
+    const partial = structuredClone(ticket) as any;
+    delete partial.worktree_record_id;
+    assert.throws(() => normalizeSpawnTicket(partial), /partial|mismatch/);
+  });
   it("requires an explicit kind", () => {
     assert.throws(() => compileWorkUnit("implement the parser and run its unit tests" as string, undefined as never), /work unit kind is required/);
   });
