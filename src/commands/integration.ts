@@ -1,5 +1,10 @@
 import type { WritableLike } from "../types.js";
-import { applyWorktreeIntegration, beginWorktreeIntegration } from "../lib/worktree-integration.js";
+import {
+  acceptWorktreeIntegration,
+  applyWorktreeIntegration,
+  beginWorktreeIntegration,
+  resolveWorktreeIntegration,
+} from "../lib/worktree-integration.js";
 
 export interface IntegrationBeginInvocation {
   operation: "begin";
@@ -24,11 +29,38 @@ export interface IntegrationApplyInvocation {
   json: boolean;
 }
 
-export type IntegrationCommandInvocation = IntegrationBeginInvocation | IntegrationApplyInvocation;
+export interface IntegrationResolveInvocation {
+  operation: "resolve";
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  run_id: string;
+  repository_id: string;
+  bundle_id: string;
+  resolved_tree: string;
+  conclusion: string;
+  idempotency_key: string | null;
+  json: boolean;
+}
+
+export interface IntegrationAcceptInvocation {
+  operation: "accept";
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  run_id: string;
+  repository_id: string;
+  bundle_id: string;
+  conclusion: string;
+  idempotency_key: string | null;
+  json: boolean;
+}
+
+export type IntegrationCommandInvocation = IntegrationBeginInvocation | IntegrationApplyInvocation | IntegrationResolveInvocation | IntegrationAcceptInvocation;
 export type IntegrationCommandHandler = (input: IntegrationCommandInvocation) => unknown | Promise<unknown>;
 type ParsedIntegrationInvocation =
   | Omit<IntegrationBeginInvocation, "cwd" | "env">
-  | Omit<IntegrationApplyInvocation, "cwd" | "env">;
+  | Omit<IntegrationApplyInvocation, "cwd" | "env">
+  | Omit<IntegrationResolveInvocation, "cwd" | "env">
+  | Omit<IntegrationAcceptInvocation, "cwd" | "env">;
 
 interface IntegrationCommandOptions {
   cwd: string;
@@ -47,12 +79,16 @@ function invalid(message: string): never {
 
 function parse(args: readonly string[]): ParsedIntegrationInvocation {
   const operation = args[0];
-  if (operation !== "begin" && operation !== "apply") {
-    invalid("usage: baton integration begin|apply --run RUN --repository-id SHA256 --bundle-id ID [operation options] [--json]");
+  if (operation !== "begin" && operation !== "apply" && operation !== "resolve" && operation !== "accept") {
+    invalid("usage: baton integration begin|apply|resolve|accept --run RUN --repository-id SHA256 --bundle-id ID [operation options] [--json]");
   }
   const valueFlags = new Set(operation === "begin"
     ? ["run", "repository-id", "bundle-id", "expected-before-tree", "order-override"]
-    : ["run", "repository-id", "bundle-id", "idempotency-key"]);
+    : operation === "resolve"
+      ? ["run", "repository-id", "bundle-id", "resolved-tree", "conclusion", "idempotency-key"]
+      : operation === "accept"
+        ? ["run", "repository-id", "bundle-id", "conclusion", "idempotency-key"]
+        : ["run", "repository-id", "bundle-id", "idempotency-key"]);
   const seen = new Map<string, string>();
   let json = false;
   for (let index = 1; index < args.length; index += 1) {
@@ -79,19 +115,18 @@ function parse(args: readonly string[]): ParsedIntegrationInvocation {
     invalid("--run and --bundle-id must be stable identifiers");
   }
   if (!/^[0-9a-f]{64}$/u.test(repositoryId)) invalid("--repository-id must be sha256");
-  if (operation === "apply") {
+  if (operation !== "begin") {
     const idempotencyKey = seen.get("idempotency-key") ?? null;
     if (idempotencyKey !== null && !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(idempotencyKey)) {
       invalid("--idempotency-key must be a stable identifier");
     }
-    return {
-      operation,
-      run_id: runId,
-      repository_id: repositoryId,
-      bundle_id: bundleId,
-      idempotency_key: idempotencyKey,
-      json,
-    };
+    if (operation === "apply") return { operation, run_id: runId, repository_id: repositoryId, bundle_id: bundleId, idempotency_key: idempotencyKey, json };
+    const conclusion = required("conclusion");
+    if (conclusion.length > 1000) invalid("--conclusion must contain at most 1000 characters");
+    if (operation === "accept") return { operation, run_id: runId, repository_id: repositoryId, bundle_id: bundleId, conclusion, idempotency_key: idempotencyKey, json };
+    const resolvedTree = required("resolved-tree");
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(resolvedTree)) invalid("--resolved-tree must be a Git object id");
+    return { operation, run_id: runId, repository_id: repositoryId, bundle_id: bundleId, resolved_tree: resolvedTree, conclusion, idempotency_key: idempotencyKey, json };
   }
   const expectedBeforeTree = required("expected-before-tree");
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(expectedBeforeTree)) invalid("--expected-before-tree must be a Git object id");
@@ -111,8 +146,8 @@ function parse(args: readonly string[]): ParsedIntegrationInvocation {
   };
 }
 
-export const defaultIntegrationCommandHandler: IntegrationCommandHandler = (input) => input.operation === "begin"
-  ? beginWorktreeIntegration({
+export const defaultIntegrationCommandHandler: IntegrationCommandHandler = (input) => {
+  if (input.operation === "begin") return beginWorktreeIntegration({
     repository_root: input.cwd,
     run_id: input.run_id,
     repository_id: input.repository_id,
@@ -120,8 +155,8 @@ export const defaultIntegrationCommandHandler: IntegrationCommandHandler = (inpu
     expected_before_tree: input.expected_before_tree,
     ...(input.order_override === null ? {} : { order_override: input.order_override }),
     env: input.env,
-  })
-  : applyWorktreeIntegration({
+  });
+  if (input.operation === "apply") return applyWorktreeIntegration({
     repository_root: input.cwd,
     run_id: input.run_id,
     repository_id: input.repository_id,
@@ -129,6 +164,26 @@ export const defaultIntegrationCommandHandler: IntegrationCommandHandler = (inpu
     ...(input.idempotency_key === null ? {} : { idempotency_key: input.idempotency_key }),
     env: input.env,
   });
+  if (input.operation === "resolve") return resolveWorktreeIntegration({
+    repository_root: input.cwd,
+    run_id: input.run_id,
+    repository_id: input.repository_id,
+    bundle_id: input.bundle_id,
+    resolved_tree: input.resolved_tree,
+    conclusion: input.conclusion,
+    ...(input.idempotency_key === null ? {} : { idempotency_key: input.idempotency_key }),
+    env: input.env,
+  });
+  return acceptWorktreeIntegration({
+    repository_root: input.cwd,
+    run_id: input.run_id,
+    repository_id: input.repository_id,
+    bundle_id: input.bundle_id,
+    conclusion: input.conclusion,
+    ...(input.idempotency_key === null ? {} : { idempotency_key: input.idempotency_key }),
+    env: input.env,
+  });
+};
 
 /** CLI transport for parent-only integration boundaries; cwd is always the target. */
 export async function runIntegration(

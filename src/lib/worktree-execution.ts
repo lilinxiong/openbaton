@@ -193,6 +193,36 @@ export interface IntegrationApplicationIntent {
   fingerprint: string;
 }
 
+/** Parent-authored conflict result; this never rewrites the worker bundle. */
+export interface IntegrationResolutionResult {
+  schema_version: 1;
+  resolution_id: string;
+  integration_id: string;
+  bundle_id: string;
+  before_tree: string;
+  bundle_result_tree: string;
+  resolved_tree: string;
+  conflict_fingerprint: string;
+  conclusion: string;
+  operations: ChangeBundleOperation[];
+  changed_paths: string[];
+  non_text_facts: Record<string, unknown>;
+  submitted_at: string;
+  fingerprint: string;
+}
+
+/** Recovery boundary persisted before the accepted tree touches the caller. */
+export interface IntegrationAcceptanceIntent {
+  schema_version: 1;
+  idempotency_key: string;
+  before_tree: string;
+  after_tree: string;
+  integration_fingerprint: string;
+  conclusion: string;
+  prepared_at: string;
+  fingerprint: string;
+}
+
 /** Frozen parent-side facts authorizing one narrow begin-integration action. */
 export interface IntegrationBeginAuthorization {
   schema_version: 1;
@@ -244,6 +274,10 @@ export interface IntegrationRecord {
   queue_order?: IntegrationQueueOrderProvenance;
   /** Optional so persisted v1 records written before begin authorization remain readable. */
   authorization?: IntegrationBeginAuthorization;
+  /** Separately fingerprinted parent-authored conflict resolution. */
+  resolution?: IntegrationResolutionResult;
+  /** Persisted before final caller application for restart recovery. */
+  acceptance?: IntegrationAcceptanceIntent;
   resolution_id?: string;
   idempotency_keys: string[];
   created_at: string;
@@ -590,7 +624,7 @@ export function validateIntegrationRecord(input: unknown): RollingValidationResu
   if (!isRecord(input)) return { valid: false, diagnostics: [{ code: "INVALID_SHAPE", message: "integration record must be an object", path: root }] };
   exactFields(input, [
     "schema_version", "integration_id", "revision", "run_id", "repository_id", "git_common_dir_identity", "bundle_id",
-    "queue_position", "state", "before_tree", "after_tree", "conflicts", "application", "queue_order", "authorization", "resolution_id", "idempotency_keys", "created_at", "updated_at", "fingerprint",
+    "queue_position", "state", "before_tree", "after_tree", "conflicts", "application", "queue_order", "authorization", "resolution", "acceptance", "resolution_id", "idempotency_keys", "created_at", "updated_at", "fingerprint",
   ], root, diagnostics);
   if (input.schema_version !== INTEGRATION_RECORD_SCHEMA_VERSION) add(diagnostics, "UNKNOWN_SCHEMA", `schema_version must be ${INTEGRATION_RECORD_SCHEMA_VERSION}`, `${root}.schema_version`);
   for (const key of ["integration_id", "run_id", "bundle_id"] as const) requiredIdentity(input, key, root, diagnostics);
@@ -627,6 +661,47 @@ export function validateIntegrationRecord(input: unknown): RollingValidationResu
         && application.fingerprint !== fingerprintWorktreeRuntimeRecord(application)) {
         add(diagnostics, "FINGERPRINT_MISMATCH", "application fingerprint does not match", `${applicationRoot}.fingerprint`);
       }
+    }
+  }
+  if (input.resolution !== undefined) {
+    const resolution = input.resolution;
+    const resolutionRoot = `${root}.resolution`;
+    if (!isRecord(resolution)) add(diagnostics, "INVALID_SHAPE", "resolution must be an object", resolutionRoot);
+    else {
+      exactFields(resolution, [
+        "schema_version", "resolution_id", "integration_id", "bundle_id", "before_tree", "bundle_result_tree",
+        "resolved_tree", "conflict_fingerprint", "conclusion", "operations", "changed_paths", "non_text_facts",
+        "submitted_at", "fingerprint",
+      ], resolutionRoot, diagnostics);
+      if (resolution.schema_version !== 1) add(diagnostics, "UNKNOWN_SCHEMA", "resolution must use schema 1", resolutionRoot);
+      for (const key of ["resolution_id", "integration_id", "bundle_id"] as const) requiredIdentity(resolution, key, resolutionRoot, diagnostics);
+      for (const key of ["before_tree", "bundle_result_tree", "resolved_tree"] as const) requiredHash(resolution, key, resolutionRoot, diagnostics, true);
+      requiredHash(resolution, "conflict_fingerprint", resolutionRoot, diagnostics);
+      requiredHash(resolution, "fingerprint", resolutionRoot, diagnostics);
+      if (!text(resolution.conclusion) || String(resolution.conclusion).length > 1000) add(diagnostics, "INVALID_SHAPE", "resolution conclusion must be concise", `${resolutionRoot}.conclusion`);
+      uniqueStrings(resolution.operations, OPERATIONS as Set<string>, `${resolutionRoot}.operations`, diagnostics);
+      uniqueStrings(resolution.changed_paths, null, `${resolutionRoot}.changed_paths`, diagnostics);
+      if (!isRecord(resolution.non_text_facts)) add(diagnostics, "INVALID_SHAPE", "resolution non_text_facts must be an object", `${resolutionRoot}.non_text_facts`);
+      if (!iso(resolution.submitted_at)) add(diagnostics, "INVALID_TIMESTAMP", "resolution submitted_at must be an ISO timestamp", `${resolutionRoot}.submitted_at`);
+      if (resolution.integration_id !== input.integration_id || resolution.bundle_id !== input.bundle_id || resolution.before_tree !== input.before_tree) add(diagnostics, "INVALID_STATE", "resolution lineage must match the integration record", resolutionRoot);
+      if (input.resolution_id !== resolution.resolution_id || input.after_tree !== resolution.resolved_tree) add(diagnostics, "INVALID_STATE", "resolution identity and tree must match the integration result", resolutionRoot);
+      if (HASH.test(String(resolution.fingerprint || "")) && resolution.fingerprint !== fingerprintWorktreeRuntimeRecord(resolution)) add(diagnostics, "FINGERPRINT_MISMATCH", "resolution fingerprint does not match", `${resolutionRoot}.fingerprint`);
+    }
+  }
+  if (input.acceptance !== undefined) {
+    const acceptance = input.acceptance;
+    const acceptanceRoot = `${root}.acceptance`;
+    if (!isRecord(acceptance)) add(diagnostics, "INVALID_SHAPE", "acceptance must be an object", acceptanceRoot);
+    else {
+      exactFields(acceptance, ["schema_version", "idempotency_key", "before_tree", "after_tree", "integration_fingerprint", "conclusion", "prepared_at", "fingerprint"], acceptanceRoot, diagnostics);
+      if (acceptance.schema_version !== 1) add(diagnostics, "UNKNOWN_SCHEMA", "acceptance must use schema 1", acceptanceRoot);
+      requiredIdentity(acceptance, "idempotency_key", acceptanceRoot, diagnostics);
+      for (const key of ["before_tree", "after_tree"] as const) requiredHash(acceptance, key, acceptanceRoot, diagnostics, true);
+      for (const key of ["integration_fingerprint", "fingerprint"] as const) requiredHash(acceptance, key, acceptanceRoot, diagnostics);
+      if (!text(acceptance.conclusion) || String(acceptance.conclusion).length > 1000) add(diagnostics, "INVALID_SHAPE", "acceptance conclusion must be concise", `${acceptanceRoot}.conclusion`);
+      if (!iso(acceptance.prepared_at)) add(diagnostics, "INVALID_TIMESTAMP", "acceptance prepared_at must be an ISO timestamp", `${acceptanceRoot}.prepared_at`);
+      if (acceptance.before_tree !== input.before_tree || acceptance.after_tree !== input.after_tree) add(diagnostics, "INVALID_STATE", "acceptance trees must match the integration record", acceptanceRoot);
+      if (HASH.test(String(acceptance.fingerprint || "")) && acceptance.fingerprint !== fingerprintWorktreeRuntimeRecord(acceptance)) add(diagnostics, "FINGERPRINT_MISMATCH", "acceptance fingerprint does not match", `${acceptanceRoot}.fingerprint`);
     }
   }
   if (input.queue_order !== undefined) {
@@ -1072,6 +1147,7 @@ const INTEGRATION_STATE_TRANSITIONS = new Set<string>([
   "integrating>failed",
   "awaiting_parent_resolution>integrated",
   "awaiting_parent_resolution>failed",
+  "integrated>integrated",
   "integrated>accepted",
   "integrated>failed",
 ]);
@@ -1084,8 +1160,12 @@ function extendsIntegrationRecord(current: IntegrationRecord, candidate: Integra
     && (!current.authorization || candidate.authorization?.fingerprint === current.authorization.fingerprint)
     && (!current.queue_order || candidate.queue_order?.fingerprint === current.queue_order.fingerprint)
     && (!current.application || candidate.application?.fingerprint === current.application.fingerprint)
+    && (!current.resolution || candidate.resolution?.fingerprint === current.resolution.fingerprint)
+    && (!current.acceptance || candidate.acceptance?.fingerprint === current.acceptance.fingerprint)
     && (`${current.state}>${candidate.state}` !== "integrating>integrating"
       || (current.application === undefined && candidate.application !== undefined))
+    && (`${current.state}>${candidate.state}` !== "integrated>integrated"
+      || (current.acceptance === undefined && candidate.acceptance !== undefined))
     && INTEGRATION_STATE_TRANSITIONS.has(`${current.state}>${candidate.state}`);
 }
 

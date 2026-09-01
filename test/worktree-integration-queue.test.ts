@@ -6,8 +6,10 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { run } from "../src/cli.js";
 import { worktreeExecutionRootPath } from "../src/lib/paths.js";
-import { appendRollingPlanDelta, createRollingExecutionRun } from "../src/lib/rolling-run.js";
-import type { PlanDelta, UnitVersion } from "../src/lib/rolling-plan.js";
+import { appendRollingFact, appendRollingPlanDelta, createRollingExecutionRun, readRollingExecutionRun } from "../src/lib/rolling-run.js";
+import { fingerprintUnitVersion, type GateVersion, type PlanDelta, type UnitVersion } from "../src/lib/rolling-plan.js";
+import { deriveRollingAcceptance, normalizeRollingExecutionFact } from "../src/lib/rolling-acceptance.js";
+import { ROLLING_EXECUTION_DOCUMENT_KIND, statusRollingControl } from "../src/lib/rolling-control.js";
 import {
   CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION,
   fingerprintWorktreeRuntimeRecord,
@@ -19,10 +21,12 @@ import {
 } from "../src/lib/worktree-execution.js";
 import {
   WorktreeIntegrationError,
+  acceptWorktreeIntegration,
   applyWorktreeIntegration,
   beginWorktreeIntegration,
   enqueueWorktreeIntegration,
   listIntegrationQueue,
+  resolveWorktreeIntegration,
 } from "../src/lib/worktree-integration.js";
 import { resolveOwningRepository } from "../src/lib/worktree-topology.js";
 
@@ -112,6 +116,39 @@ function createPlanRun(root: string, env: NodeJS.ProcessEnv, runId: string, delt
       })),
     };
     appendRollingPlanDelta({ cwd: root, env, runId, expected_append_sequence: index, delta });
+  }
+}
+
+function appendAcceptedUnitFacts(root: string, env: NodeJS.ProcessEnv, runId: string, unit: UnitVersion): void {
+  const unitFingerprint = unit.fingerprint || fingerprintUnitVersion(unit);
+  const attemptOwner = `${unit.unit_key}@${unit.version}:attempt-1`;
+  const facts = [
+    { kind: "reservation", owner_type: "attempt", owner_key: attemptOwner, attempt: 1, reservation_id: "integration-test-reservation", state: "reserved" },
+    { kind: "native-attempt", owner_type: "attempt", owner_key: attemptOwner, attempt: 1, state: "running" },
+    { kind: "terminal-result", owner_type: "attempt", owner_key: attemptOwner, attempt: 1, status: "completed", result: "ready" },
+    { kind: "safety-verdict", owner_type: "unit_version", owner_key: `${unit.unit_key}@${unit.version}`, accepted: true, violations: [] },
+    { kind: "parent-acceptance", owner_type: "unit_version", owner_key: `${unit.unit_key}@${unit.version}`, accepted: true, evidence: "bundle audited" },
+    { kind: "release", owner_type: "attempt", owner_key: attemptOwner, attempt: 1, released: true },
+  ].map((fact) => normalizeRollingExecutionFact({
+    schema_version: 1,
+    unit_key: unit.unit_key,
+    unit_version: unit.version,
+    unit_fingerprint: unitFingerprint,
+    recorded_at: "2026-09-01T00:00:05.000Z",
+    ...fact,
+  }));
+  for (const fact of facts) {
+    appendRollingFact({
+      cwd: root,
+      env,
+      runId,
+      kind: ROLLING_EXECUTION_DOCUMENT_KIND,
+      idempotency_key: `test:${fact.fact_id}`,
+      fact_id: `execution:${fact.fact_id}`,
+      document_id: `execution-${fact.fact_id}`,
+      payload: fact,
+      document: fact,
+    });
   }
 }
 
@@ -497,6 +534,89 @@ describe("repository integration queue", () => {
     assert.equal(recovered.record.after_tree, bundleTree);
   });
 
+  it("accepts a clean integrated tree into the caller while retaining unrelated dirty content and index state", async () => {
+    const f = repositoryFixture();
+    const runId = "run-clean-accept";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-accept")]]);
+    const bundleTree = resultTree(f.root, "accepted bundle result\n");
+    const bundle = signedBundle({ run: runId, bundle: "bundle-accept", unit: "unit-accept", repositoryId: f.repositoryId, commonId: f.commonId, tree: f.baseTree, resultTree: bundleTree });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    fs.writeFileSync(path.join(f.root, "unrelated.txt"), "keep caller dirt\n");
+    const expected = captureVisibleTree(f.root);
+    const head = git(f.root, ["rev-parse", "HEAD"]);
+    const index = fs.readFileSync(path.join(f.root, ".git", "index"));
+    await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, expected_before_tree: expected, env: f.env });
+    await applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, env: f.env });
+    const accepted = await acceptWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      conclusion: "accepted clean integration",
+      idempotency_key: "accept-clean",
+      env: f.env,
+    });
+    assert.equal(accepted.record.state, "accepted");
+    assert.deepEqual(accepted.accepted_gate_refs, []);
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), "accepted bundle result\n");
+    assert.equal(fs.readFileSync(path.join(f.root, "unrelated.txt"), "utf8"), "keep caller dirt\n");
+    assert.equal(git(f.root, ["rev-parse", "HEAD"]), head);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, ".git", "index")), index);
+    const replay = await acceptWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, conclusion: "accepted clean integration", idempotency_key: "accept-clean", env: f.env });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.record.fingerprint, accepted.record.fingerprint);
+  });
+
+  it("accepts the producer integration gate with the exact result tree for downstream base selection", async () => {
+    const f = repositoryFixture();
+    const runId = "run-gate-accept";
+    const unit = plannedUnit("unit-gate");
+    createRollingExecutionRun({ cwd: f.root, runId, host: "codex", adapter: "director", source_kind: "director", execution_mode: "isolated-worktree", env: f.env, source: { schema_version: 1, source_kind: "director", adapter: "director", selection: { run: runId } } });
+    const gate: GateVersion = { schema_version: 1, gate_key: "integration-unit-gate", version: 1, type: "integration-acceptance", task_keys: unit.task_keys, depends_on: [unit.unit_key], acceptance_contract: { requires_parent: true } };
+    appendRollingPlanDelta({
+      cwd: f.root,
+      env: f.env,
+      runId,
+      delta: {
+        schema_version: 1,
+        delta_id: "delta-gate-accept",
+        prepared_from_append_sequence: 0,
+        manifest_additions: [{
+          schema_version: 1,
+          task_key: unit.task_keys[0]!,
+          source_kind: "director",
+          source_ref: { id: unit.task_keys[0]! },
+          display_id: unit.task_keys[0]!,
+          title: unit.task_keys[0]!,
+          source_fingerprint: "d".repeat(64),
+          source_state: "pending",
+          discovery_sequence: 0,
+        }],
+        unit_versions: [unit],
+        gate_versions: [gate],
+        task_coverage: [{ schema_version: 1, task_key: unit.task_keys[0]!, kind: "unit", unit_versions: [`${unit.unit_key}@${unit.version}`], gate_versions: [`${gate.gate_key}@${gate.version}`] }],
+      },
+    });
+    appendAcceptedUnitFacts(f.root, f.env, runId, unit);
+    const acceptedRun = readRollingExecutionRun(f.root, runId, { env: f.env });
+    const acceptedProjection = deriveRollingAcceptance({ units: acceptedRun.accepted_deltas.flatMap((delta) => delta.unit_versions || []), gates: acceptedRun.accepted_deltas.flatMap((delta) => delta.gate_versions || []), facts: acceptedRun.facts.filter((fact) => fact.kind === ROLLING_EXECUTION_DOCUMENT_KIND).map((fact) => fact.payload) });
+    assert.equal(acceptedProjection.units[`${unit.unit_key}@${unit.version}`]?.state, "accepted");
+    const bundleTree = resultTree(f.root, "gate accepted result\n");
+    const bundle = signedBundle({ run: runId, bundle: "bundle-gate", unit: unit.unit_key, repositoryId: f.repositoryId, commonId: f.commonId, tree: f.baseTree, resultTree: bundleTree });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, expected_before_tree: expected, env: f.env });
+    const applied = await applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, env: f.env });
+    const accepted = await acceptWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, conclusion: "accept integration gate", env: f.env });
+    assert.deepEqual(accepted.accepted_gate_refs, ["integration-unit-gate@1"]);
+    const run = readRollingExecutionRun(f.root, runId, { env: f.env });
+    const gateFact = run.facts.find((fact) => fact.kind === ROLLING_EXECUTION_DOCUMENT_KIND && (fact.payload as any)?.kind === "gate-acceptance");
+    assert.equal((gateFact?.payload as any)?.result_tree, applied.record.after_tree);
+    const status = await statusRollingControl({ cwd: f.root, env: f.env, run_id: runId });
+    assert.equal(status.task_status[unit.task_keys[0]!]!.state, "accepted");
+    assert.match(status.task_status[unit.task_keys[0]!]!.next_legal_action ?? "", /--seal-task/u);
+  });
+
   it("persists deterministic stage-fact conflicts for parent resolution without touching the caller", async () => {
     const f = repositoryFixture();
     const runId = "run-conflicted-apply";
@@ -545,6 +665,42 @@ describe("repository integration queue", () => {
     assert.equal(git(f.root, ["rev-parse", "HEAD"]), callerControl.head);
     assert.deepEqual(fs.readFileSync(path.join(f.root, ".git", "index")), callerControl.index);
     assert.equal(git(f.root, ["status", "--porcelain=v2", "--branch"]), callerControl.status);
+  });
+
+  it("freezes a separately fingerprinted parent resolution, preserves the bundle, and accepts the resolved tree", async () => {
+    const f = repositoryFixture();
+    const runId = "run-parent-resolution";
+    createPlanRun(f.root, f.env, runId, [[plannedUnit("unit-resolution")]]);
+    const bundleTree = resultTree(f.root, "bundle side\n");
+    const bundle = signedBundle({ run: runId, bundle: "bundle-resolution", unit: "unit-resolution", repositoryId: f.repositoryId, commonId: f.commonId, tree: f.baseTree, resultTree: bundleTree });
+    markBundleReady(f.root, f.env, bundle, f.commonDir);
+    fs.writeFileSync(path.join(f.root, "file.txt"), "parent side\n");
+    const expected = captureVisibleTree(f.root);
+    await beginWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, expected_before_tree: expected, env: f.env });
+    const conflicted = await applyWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, env: f.env });
+    assert.equal(conflicted.record.state, "awaiting_parent_resolution");
+    const bundleFingerprint = bundle.fingerprint;
+    const resolvedTree = resultTree(f.root, "parent resolved both sides\n");
+    const resolved = await resolveWorktreeIntegration({
+      repository_root: f.root,
+      run_id: runId,
+      repository_id: f.repositoryId,
+      bundle_id: bundle.bundle_id,
+      resolved_tree: resolvedTree,
+      conclusion: "combined the parent and worker semantics",
+      idempotency_key: "resolve-parent",
+      env: f.env,
+    });
+    assert.equal(resolved.record.state, "integrated");
+    assert.equal(resolved.record.after_tree, resolvedTree);
+    assert.equal(resolved.resolution.resolved_tree, resolvedTree);
+    assert.match(resolved.resolution.fingerprint, /^[0-9a-f]{64}$/u);
+    assert.notEqual(resolved.resolution.fingerprint, bundleFingerprint);
+    assert.equal(bundle.fingerprint, bundleFingerprint);
+    const accepted = await acceptWorktreeIntegration({ repository_root: f.root, run_id: runId, repository_id: f.repositoryId, bundle_id: bundle.bundle_id, conclusion: "accepted audited parent resolution", idempotency_key: "accept-resolution", env: f.env });
+    assert.equal(accepted.record.state, "accepted");
+    assert.equal(fs.readFileSync(path.join(f.root, "file.txt"), "utf8"), "parent resolved both sides\n");
+    assert.equal(bundle.fingerprint, bundleFingerprint);
   });
 
   it("classifies binary conflicts from stable merge-tree message types", async () => {
@@ -666,5 +822,50 @@ describe("repository integration queue", () => {
     assert.equal((received as any).cwd, "/current/repository");
     assert.equal((received as any).idempotency_key, "apply-cli");
     assert.equal(JSON.parse(stdout.join("")).record.state, "integrated");
+
+    stdout.length = 0;
+    received = undefined;
+    const resolveCode = await run([
+      "integration", "resolve",
+      "--run", "run-cli",
+      "--repository-id", "a".repeat(64),
+      "--bundle-id", "bundle-cli",
+      "--resolved-tree", "c".repeat(40),
+      "--conclusion", "resolved parent conflict",
+      "--idempotency-key", "resolve-cli",
+      "--json",
+    ], {
+      cwd: "/current/repository",
+      stdout: { write(value: unknown) { stdout.push(String(value)); return true; } },
+      stderr: { write() { return true; } },
+      integrationHandler(input) { received = input; return { record: { state: "integrated" } }; },
+    });
+    assert.equal(resolveCode, 0);
+    assert.equal((received as any).operation, "resolve");
+    assert.equal((received as any).resolved_tree, "c".repeat(40));
+    assert.equal((received as any).conclusion, "resolved parent conflict");
+    assert.equal((received as any).cwd, "/current/repository");
+
+    stdout.length = 0;
+    received = undefined;
+    const acceptCode = await run([
+      "integration", "accept",
+      "--run", "run-cli",
+      "--repository-id", "a".repeat(64),
+      "--bundle-id", "bundle-cli",
+      "--conclusion", "accepted parent result",
+      "--idempotency-key", "accept-cli",
+      "--json",
+    ], {
+      cwd: "/current/repository",
+      stdout: { write(value: unknown) { stdout.push(String(value)); return true; } },
+      stderr: { write() { return true; } },
+      integrationHandler(input) { received = input; return { record: { state: "accepted" } }; },
+    });
+    assert.equal(acceptCode, 0);
+    assert.equal((received as any).operation, "accept");
+    assert.equal((received as any).conclusion, "accepted parent result");
+    assert.equal((received as any).idempotency_key, "accept-cli");
+    assert.equal((received as any).cwd, "/current/repository");
   });
 });

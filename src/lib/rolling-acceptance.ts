@@ -46,7 +46,7 @@ interface SafetyVerdictFact extends UnitFactBase { kind: "safety-verdict"; accep
 interface ParentAcceptanceFact extends UnitFactBase { kind: "parent-acceptance"; accepted: boolean; evidence?: string; }
 interface RetryFact extends UnitFactBase { kind: "retry"; retry_kind: "route" | "native"; retry_of: string; reason?: string; }
 interface ReleaseFact extends UnitFactBase { kind: "release"; released: boolean; released_at?: string; }
-interface GateAcceptanceFact extends GateFactBase { kind: "gate-acceptance"; accepted: boolean; evidence?: string; }
+interface GateAcceptanceFact extends GateFactBase { kind: "gate-acceptance"; accepted: boolean; evidence?: string; result_tree?: Hash; }
 interface PlanInsufficientFact extends UnitFactBase { kind: "plan-insufficient"; file: string; symbol: string; missing_decision: string; }
 
 /** Canonical, discriminated facts accepted by the rolling evaluator. */
@@ -104,7 +104,7 @@ export function normalizeRollingExecutionFact(value: unknown): RollingExecutionF
   if (!record(value)) fail("execution fact must be an object");
   const source = structuredClone(value) as Record<string, unknown>; const kind = source.kind;
   if (typeof kind !== "string" || !(KINDS as readonly string[]).includes(kind)) fail("unsupported fact kind");
-  const kindFields = kind === "reservation" ? ["reservation_id", "state"] : kind === "native-attempt" ? ["state"] : kind === "terminal-result" ? ["status", "result", "result_id", "result_fingerprint"] : kind === "safety-verdict" ? ["accepted", "violations"] : kind === "parent-acceptance" ? ["accepted", "evidence"] : kind === "retry" ? ["retry_kind", "retry_of", "reason"] : kind === "release" ? ["released", "released_at"] : kind === "gate-acceptance" ? ["accepted", "evidence"] : ["file", "symbol", "missing_decision"];
+  const kindFields = kind === "reservation" ? ["reservation_id", "state"] : kind === "native-attempt" ? ["state"] : kind === "terminal-result" ? ["status", "result", "result_id", "result_fingerprint"] : kind === "safety-verdict" ? ["accepted", "violations"] : kind === "parent-acceptance" ? ["accepted", "evidence"] : kind === "retry" ? ["retry_kind", "retry_of", "reason"] : kind === "release" ? ["released", "released_at"] : kind === "gate-acceptance" ? ["accepted", "evidence", "result_tree"] : ["file", "symbol", "missing_decision"];
   allowed(source, [...commonFields(kind as FactKind), ...kindFields]);
   if (source.schema_version !== undefined && source.schema_version !== ROLLING_ACCEPTANCE_SCHEMA_VERSION) fail("unsupported schema_version");
   source.schema_version = ROLLING_ACCEPTANCE_SCHEMA_VERSION; required(source, "recorded_at");
@@ -116,6 +116,7 @@ export function normalizeRollingExecutionFact(value: unknown): RollingExecutionF
     source.owner_type = "gate_version"; const gateId = ref(source.gate_key as string, source.gate_version as number);
     if (source.owner_key !== undefined && source.owner_key !== gateId) fail("gate owner_key does not match gate version");
     source.owner_key = gateId; if (typeof source.accepted !== "boolean") fail("gate acceptance requires accepted");
+    if (source.result_tree !== undefined && (!text(source.result_tree) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(source.result_tree as string))) fail("gate acceptance result_tree is malformed");
   } else {
     required(source, "unit_key");
     if (!positive(source.unit_version) || !text(source.unit_fingerprint) || !HASH_RE.test(source.unit_fingerprint)) fail("malformed unit owner");
@@ -233,6 +234,20 @@ function values<T>(value: readonly T[] | Readonly<Record<string, T>> | undefined
 function normalizeFacts(facts: readonly unknown[] | undefined): RollingExecutionFact[] { return (facts || []).map(normalizeRollingExecutionFact); }
 function unitMap(context: RollingExecutionContext): Map<string, UnitVersion> { return new Map(values(context.units).map((unit) => [unitRef(unit), unit])); }
 function gateMap(context: RollingExecutionContext): Map<string, GateVersion> { return new Map(values(context.gates).map((gate) => [gateRef(gate), gate])); }
+function resolveUnitDependency(value: string, units: Map<string, UnitVersion>): [string, UnitVersion] | undefined {
+  const exact = parseRef(value);
+  if (exact) { const unit = units.get(value); return unit ? [value, unit] : undefined; }
+  let selected: [string, UnitVersion] | undefined;
+  for (const [identity, unit] of units) if (unit.unit_key === value && (!selected || unit.version > selected[1].version)) selected = [identity, unit];
+  return selected;
+}
+function resolveGateDependency(value: string, gates: Map<string, GateVersion>): [string, GateVersion] | undefined {
+  const exact = parseRef(value);
+  if (exact) { const gate = gates.get(value); return gate ? [value, gate] : undefined; }
+  let selected: [string, GateVersion] | undefined;
+  for (const [identity, gate] of gates) if (gate.gate_key === value && (!selected || gate.version > selected[1].version)) selected = [identity, gate];
+  return selected;
+}
 
 function evaluateGate(gate: GateVersion, units: Map<string, UnitVersion>, gates: Map<string, GateVersion>, facts: readonly RollingExecutionFact[], unitMemo: Map<string, RollingUnitVersionState>, gateMemo: Map<string, RollingGateVersionState>, stack: Set<string>): RollingGateVersionState {
   const identity = gateRef(gate); const previous = gateMemo.get(identity); if (previous) return previous;
@@ -242,12 +257,15 @@ function evaluateGate(gate: GateVersion, units: Map<string, UnitVersion>, gates:
   }
   stack.add(identity);
   for (const dependency of dependencies) {
-    const parsed = parseRef(dependency); if (!parsed) { dependencyStates[dependency] = "missing"; blockers.push(blocker("UNKNOWN_DEPENDENCY", `unknown dependency ${dependency}`, "gate_version", identity, [dependency])); continue; }
-    const unit = units.get(dependency); const depGate = gates.get(dependency);
-    if (unit) { const state = unitMemo.get(dependency) || reduceRollingUnitVersion(unit, facts); unitMemo.set(dependency, state); dependencyStates[dependency] = state.state; if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${dependency} is not accepted`, "gate_version", identity, [dependency])); }
-    else if (depGate) {
-      if (stack.has(dependency)) { dependencyStates[dependency] = "pending"; blockers.push(blocker("DEPENDENCY_CYCLE", "gate dependency cycle", "gate_version", identity, [dependency])); }
-      else { const state = evaluateGate(depGate, units, gates, facts, unitMemo, gateMemo, stack); dependencyStates[dependency] = state.state; if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${dependency} is not accepted`, "gate_version", identity, [dependency])); }
+    const resolvedUnit = resolveUnitDependency(dependency, units); const resolvedGate = resolvedUnit ? undefined : resolveGateDependency(dependency, gates);
+    if (resolvedUnit) {
+      const [resolvedIdentity, unit] = resolvedUnit; const state = unitMemo.get(resolvedIdentity) || reduceRollingUnitVersion(unit, facts); unitMemo.set(resolvedIdentity, state); dependencyStates[dependency] = state.state;
+      if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${resolvedIdentity} is not accepted`, "gate_version", identity, [resolvedIdentity]));
+    }
+    else if (resolvedGate) {
+      const [resolvedIdentity, depGate] = resolvedGate;
+      if (stack.has(resolvedIdentity)) { dependencyStates[dependency] = "pending"; blockers.push(blocker("DEPENDENCY_CYCLE", "gate dependency cycle", "gate_version", identity, [resolvedIdentity])); }
+      else { const state = evaluateGate(depGate, units, gates, facts, unitMemo, gateMemo, stack); dependencyStates[dependency] = state.state; if (!state.accepted) blockers.push(blocker("DEPENDENCY_NOT_ACCEPTED", `dependency ${resolvedIdentity} is not accepted`, "gate_version", identity, [resolvedIdentity])); }
     }
     else { dependencyStates[dependency] = "missing"; blockers.push(blocker("UNKNOWN_DEPENDENCY", `unknown dependency ${dependency}`, "gate_version", identity, [dependency])); }
   }

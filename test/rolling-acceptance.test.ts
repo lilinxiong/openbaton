@@ -82,6 +82,16 @@ describe("rolling execution acceptance", () => {
     assert.equal(report.units["dep@1"]?.accepted, true); assert.equal(report.gates["target@1"]?.state, "ready"); assert.equal(report.implicit_run_wide_barrier, false);
   });
 
+  it("resolves a stable dependency to its highest unit version without inheriting predecessor acceptance", () => {
+    const predecessor = unit("dep", 1); const current = unit("dep", 2); const target = gate("target", "integration-acceptance", ["dep"]);
+    const predecessorOnly = evaluateRollingGateVersion(target, { units: [predecessor, current], gates: [target], facts: success(predecessor) });
+    assert.equal(predecessorOnly.state, "pending");
+    assert.equal(predecessorOnly.dependency_states.dep, "queued");
+    assert.ok(predecessorOnly.blockers.some((item) => item.code === "DEPENDENCY_NOT_ACCEPTED" && item.refs?.includes("dep@2")));
+    const currentAccepted = evaluateRollingGateVersion(target, { units: [predecessor, current], gates: [target], facts: [...success(predecessor), ...success(current)] });
+    assert.equal(currentAccepted.state, "ready");
+  });
+
   it("keeps accepted state monotonic after a later failed retry and sorts maps/blockers", () => {
     const u = unit("u"); const later = facts([raw("retry", { retry_kind: "native", retry_of: "u@1:attempt-1" }, u), raw("terminal-result", { status: "errored" }, u)]);
     const state = reduceRollingUnitVersion(u, [...success(u), ...later]); assert.equal(state.accepted, true); assert.equal(state.state, "accepted");

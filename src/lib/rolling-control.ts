@@ -95,6 +95,7 @@ export interface AcceptRollingGateInput extends RollingControlContext {
   run_id: string;
   gate_ref: string;
   evidence: string;
+  result_tree?: string;
   dispatch?: boolean;
 }
 
@@ -691,6 +692,7 @@ export async function acceptRollingGate(input: AcceptRollingGateInput): Promise<
     owner_key: input.gate_ref,
     accepted: true,
     evidence: input.evidence,
+    ...(input.result_tree ? { result_tree: input.result_tree } : {}),
     recorded_at: stamp(input.now),
   });
   appendRollingFact({

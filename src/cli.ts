@@ -229,6 +229,10 @@ Usage:
                admit the current cwd to the repository queue; does not apply a bundle
   baton integration apply --run RUN --repository-id SHA256 --bundle-id ID [--idempotency-key ID] [--json]
                merge the admitted bundle in isolated Git object plumbing; does not mutate the caller checkout
+  baton integration resolve --run RUN --repository-id SHA256 --bundle-id ID --resolved-tree GIT_OBJECT --conclusion TEXT [--idempotency-key ID] [--json]
+               audit and freeze a parent resolution without rewriting the worker bundle
+  baton integration accept --run RUN --repository-id SHA256 --bundle-id ID --conclusion TEXT [--idempotency-key ID] [--json]
+               apply the frozen result to the caller and accept matching rolling integration gates
   baton dispatch next --host HOST [--capacity N] --json
   baton dispatch bind TICKET --execution-handle KIND=VALUE [--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
