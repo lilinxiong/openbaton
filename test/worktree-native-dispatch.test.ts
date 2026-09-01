@@ -122,6 +122,25 @@ async function fixture(home: string, session: string, writePath = "tracked.txt")
 }
 
 describe("isolated native dispatch", () => {
+  it("does not blame an active isolated worker for parent-owned shared ref movement", async () => withHome(async (home) => {
+    const f = await fixture(home, "native-parent-ref-movement");
+    try {
+      await reserveNext(f.cwd, { capacity: 1, limit: 1, host: HOST, env: f.env });
+      bindAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env });
+      git(f.cwd, ["tag", "parent-integration-moved-refs"]);
+      fs.writeFileSync(path.join(f.executionRoot, "tracked.txt"), "worker after parent integration\n");
+
+      const terminal = await finishAgent(f.cwd, f.ticket.id, {
+        status: "completed", conclusion: "worker remained isolated", host: HOST, env: f.env,
+      });
+      assert.equal(terminal.status, "completed");
+      assert.equal(terminal.error, null);
+      assert.ok(!(terminal.safety_verdict as any).violations.some((item: any) => item.code === "E_REFS_MUTATION"));
+    } finally {
+      fs.rmSync(f.outer, { recursive: true, force: true });
+    }
+  }));
+
   it("propagates one exact root, requires identical acknowledgement, and retains terminal-unreleased lineage", async () => withHome(async (home) => {
     const f = await fixture(home, "native-success");
     try {

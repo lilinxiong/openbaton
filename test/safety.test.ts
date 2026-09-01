@@ -441,6 +441,11 @@ describe("stable asynchronous safety observations", () => {
     const refsVerdict = await auditWorktreeAsync(refs, refsBaseline, { write_allowlist: [], allowed_operations: [] });
     assert.equal(refsVerdict.accepted, false);
     assert.ok(refsVerdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
+    const parentOwnedRefsVerdict = await auditWorktreeAsync(refs, refsBaseline, {
+      write_allowlist: [], allowed_operations: [], shared_refs: "parent-owned",
+    });
+    assert.equal(parentOwnedRefsVerdict.accepted, true);
+    assert.ok(!parentOwnedRefsVerdict.violations.some((item) => item.code === "E_REFS_MUTATION"));
 
     const reflog = fixture();
     const reflogBaseline = await captureBaselineAsync(reflog);

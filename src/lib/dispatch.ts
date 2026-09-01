@@ -2431,10 +2431,12 @@ export async function finishAgent(cwd: string, id: string, {
       if (!receipt.baseline) throw new DispatchError(`ticket ${id} has no Git baseline`, "BASELINE_REQUIRED", { ticketId: id });
       const allowedOperations = receipt.scope.allowed_operations.filter((item): item is SafetyOperation =>
         ["write", "create", "delete", "rename", "chmod"].includes(item));
-      const verdict = await auditWorktreeAsync(isolatedTicketIdentity(ticket)?.execution_root || cwd, receipt.baseline, {
+      const isolatedIdentity = isolatedTicketIdentity(ticket);
+      const verdict = await auditWorktreeAsync(isolatedIdentity?.execution_root || cwd, receipt.baseline, {
         write_allowlist: receipt.scope.write_allowlist,
         allowed_operations: allowedOperations,
         peer_write_allowlists: peerWriteAllowlists(cwd, ticket, env),
+        ...(isolatedIdentity ? { shared_refs: "parent-owned" as const } : {}),
       }, safetyOptions);
       ticket.safety_verdict = verdict as unknown as UnknownRecord;
       if (!verdict.accepted) {

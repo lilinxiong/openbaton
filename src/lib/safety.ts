@@ -69,6 +69,12 @@ export interface SafetyPolicy {
   allowed_operations: SafetyOperation[];
   /** Allowlists of overlapping write tickets. Dirt on those paths is their audit, not this one. */
   peer_write_allowlists?: string[][];
+  /**
+   * Linked isolated roots share one common refs namespace with the parent.
+   * Parent-owned integration may advance it while this root remains active;
+   * root-local HEAD, branch, reflog, index, and path checks stay strict.
+   */
+  shared_refs?: "strict" | "parent-owned";
 }
 
 export interface SafetyViolation {
@@ -820,7 +826,7 @@ export function auditWorktree(worktree: string, baseline: GitBaseline, policy: S
   if (currentFormat && (gitOptional(root, ["symbolic-ref", "-q", "HEAD"])?.trim() || "") !== baseline.branch_ref) {
     violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the attached branch ref" });
   }
-  if (currentFormat && !sameList(refsSnapshot(root), baseline.refs)) {
+  if (currentFormat && policy.shared_refs !== "parent-owned" && !sameList(refsSnapshot(root), baseline.refs)) {
     violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
   }
   if (currentFormat) {
@@ -910,7 +916,9 @@ function auditWorktreeFromFacts(root: string, facts: StableGitSafetyFacts, basel
   if (facts.head !== baseline.head) violations.push({ code: "E_HEAD_MUTATION", message: "worker changed Git HEAD" });
   if (currentFormat && facts.branch !== baseline.branch) violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the current branch" });
   if (currentFormat && facts.branchRef !== baseline.branch_ref) violations.push({ code: "E_BRANCH_MUTATION", message: "worker changed the attached branch ref" });
-  if (currentFormat && !sameList(facts.refs, baseline.refs)) violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  if (currentFormat && policy.shared_refs !== "parent-owned" && !sameList(facts.refs, baseline.refs)) {
+    violations.push({ code: "E_REFS_MUTATION", message: "worker changed Git refs" });
+  }
   if (currentFormat && (facts.reflog.count !== baseline.head_reflog_count || facts.reflog.checksum !== baseline.head_reflog_checksum)) {
     violations.push({ code: "E_HEAD_REFLOG_MUTATION", message: "worker changed the HEAD reflog" });
   }
