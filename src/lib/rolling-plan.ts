@@ -348,6 +348,14 @@ export function canonicalizeRolling(value: unknown): string {
 }
 export const canonicalizeRollingPlan = canonicalizeRolling;
 
+const OPAQUE_FINGERPRINT_SUBTREES = new Set([
+  "selection",
+  "source_ref",
+  "metadata",
+  "acceptance_contract",
+  "read_context",
+]);
+
 function withoutFingerprints(value: unknown, omitSequence = false): unknown {
   if (Array.isArray(value)) return value.map((item) => withoutFingerprints(item, omitSequence));
   if (!isRecord(value)) return value;
@@ -355,7 +363,7 @@ function withoutFingerprints(value: unknown, omitSequence = false): unknown {
   for (const [key, item] of Object.entries(value)) {
     if (key === "fingerprint") continue;
     if (omitSequence && (key === "append_sequence" || key === "run_append_sequence" || key === "prepared_from_append_sequence")) continue;
-    copy[key] = withoutFingerprints(item, omitSequence);
+    copy[key] = OPAQUE_FINGERPRINT_SUBTREES.has(key) ? item : withoutFingerprints(item, omitSequence);
   }
   return copy;
 }

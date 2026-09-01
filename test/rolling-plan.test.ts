@@ -6,6 +6,9 @@ import {
   assertPlanDelta,
   canonicalizeRolling,
   deriveTaskKey,
+  fingerprintGateVersion,
+  fingerprintTaskManifestEntry,
+  fingerprintTaskSourceDescriptor,
   fingerprintUnitVersion,
   parsePlanDelta,
   parseTaskManifestPage,
@@ -94,6 +97,40 @@ describe("rolling protocol", () => {
     const right = { a: [3, { c: 5, d: 4 }], b: { a: 2, z: 1 } };
     assert.equal(canonicalizeRolling(left), canonicalizeRolling(right));
     assert.equal(deriveTaskKey("director", { id: "x", n: 1 }), deriveTaskKey("director", { n: 1, id: "x" }));
+  });
+
+  it("keeps adapter-owned fingerprint and sequence fields semantic inside opaque subtrees", () => {
+    const descriptor = {
+      ...page().source,
+      selection: { queue: "demo", fingerprint: "adapter-a", append_sequence: 1 },
+      fingerprint: "document-a",
+    };
+    assert.equal(
+      fingerprintTaskSourceDescriptor(descriptor),
+      fingerprintTaskSourceDescriptor({ ...descriptor, fingerprint: "document-b" }),
+    );
+    assert.notEqual(
+      fingerprintTaskSourceDescriptor(descriptor),
+      fingerprintTaskSourceDescriptor({ ...descriptor, selection: { ...descriptor.selection, fingerprint: "adapter-b" } }),
+    );
+
+    const entry = { ...page().entries[0]!, source_ref: { fingerprint: "source-a" }, metadata: { fingerprint: "metadata-a" } };
+    assert.notEqual(
+      fingerprintTaskManifestEntry(entry),
+      fingerprintTaskManifestEntry({ ...entry, metadata: { fingerprint: "metadata-b" } }),
+    );
+
+    const unit = { ...delta().unit_versions[0]!, read_context: { fingerprint: "read-a", prepared_from_append_sequence: 1 } };
+    assert.notEqual(
+      fingerprintUnitVersion(unit),
+      fingerprintUnitVersion({ ...unit, read_context: { ...unit.read_context, prepared_from_append_sequence: 2 } }),
+    );
+
+    const gate = { ...delta().gate_versions[0]!, acceptance_contract: { fingerprint: "accept-a", prepared_from_append_sequence: 1 } };
+    assert.notEqual(
+      fingerprintGateVersion(gate),
+      fingerprintGateVersion({ ...gate, acceptance_contract: { ...gate.acceptance_contract, fingerprint: "accept-b" } }),
+    );
   });
 
   it("round trips a locally complete delta with typed gates and contracts", () => {
