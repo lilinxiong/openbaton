@@ -106,6 +106,46 @@ baseline 校验。`--status` 只读，`--accept-gate` 记录 parent 证据，只
 `--read-only` 仍兼容；compiled 模式拒绝手工 scope flag。上述失败路径都
 fail closed，不猜测 route，也不接受部分结果。
 
+## Rolling execution planning v2
+
+通用 rolling kernel 移除了“必须先完成整份 change 规划”的启动门。只要一个有界
+`PlanDelta` 已包含完整且依赖就绪的 unit，Baton 就接受它、派发当前最大安全
+frontier，并允许在已有 native attempt queued、running、terminal 或 accepted 时
+继续追加后续 delta。manifest 中尚未规划的任务不会为首个 unit 增加仓库读取或
+语义拆解前提。
+
+`TaskSourceDescriptor` 让 kernel 与来源解耦。内置 director adapter 从调用方拥有
+的稳定 id 派生 task key；OpenSpec adapter 用 Markdown 稳定任务号做 reconciliation
+identity，Apply ordinal 只保留为非权威元数据。因此 Apply 结果重排不会改变任务
+所有权。
+
+每个已接受 unit/gate version 都有局部不可变 fingerprint。delta 的 append sequence
+只用于存储并发比较；追加无关工作不会使 active ticket 失效。只有 undispatched 或
+failed lineage 可以 supersede。调度失败、route 失败、输入 stale、gate 失败和
+`PLAN_INSUFFICIENT` 都只归属最小本地 owner。
+
+三类 gate 是 `safety-precondition`、`integration-acceptance` 和 `evidence`，只阻断
+显式依赖。terminal result、safety verdict、parent acceptance 与 release 是四类
+独立事实。已知 unit 全部通过后 task 仍保持 open；只有覆盖全部非 superseded
+版本的精确 seal，再加 source-adapter reconciliation，才能完成任务。
+
+来源中立的控制面为：
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+append-only log 与不可变 accepted documents 位于当前 workspace runtime 的
+`runs/rolling-runs-v2/`；checkpoint 只是可重建派生缓存。reconnect recovery 会把
+这些 facts 与普通 ticket、Receipt、reservation、bound native handle、terminal
+result、release 做幂等合并。clean uninstall 会清点并保留可审计 rolling run。
+compiled-v1 与手工 apply 记录继续按原协议读取，绝不会被静默迁移。
+
 ## Director 与调度
 
 director 负责讨论、只读分析、分类、依赖排序、授权和仓库 scope。

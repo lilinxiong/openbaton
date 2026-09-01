@@ -333,6 +333,39 @@ staleness、changed contract、scope 变化、安全门阻断的部分修改和
 `PLAN_INSUFFICIENT` 都应返回 director 重新决策。旧式手工 `baton apply` 的
 显式 scope 与 `--read-only` 仍兼容；compiled 模式拒绝手工 scope flag。
 
+## Rolling v2：大 change 快速、来源中立地启动
+
+新的大 change 不需要等主 agent 把整份 change 全部分析完才启动第一个 worker。
+director 先接受一个有界、依赖已就绪的 `PlanDelta`，派发其中的安全 frontier，
+然后在前序 worker queued/running 时继续追加后续 delta。已经派发的 unit 仍然是
+完整且不可变的；保持开放的只是未来工作发现。
+
+OpenSpec 不是前提。`TaskSourceDescriptor` 可以选择 Baton 内置 director source，
+也可以选择已安装的 source adapter。OpenSpec adapter 用 Markdown 中稳定的任务号
+（例如 `1.1`）做 reconciliation identity；Apply JSON 的临时 ordinal 只保留作诊断，
+因此 Apply 输出重排不会改变任务身份。
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+status 以 task 为主视图，区分 unplanned、planned、active、
+terminal-unreleased、blocked、accepted、sealed 和 reconciled。terminal success、
+safety verdict、parent acceptance、release 是四类独立且幂等的事实。gate 分为
+`safety-precondition`、`integration-acceptance`、`evidence`，只阻断显式依赖。
+失败版本保留审计记录；只有 lineage 可替换时 director 才能追加不可变 successor。
+task 只有在精确覆盖所有非 superseded 版本并由 source adapter reconciliation 后
+才真正完成。
+
+Rolling 状态位于当前 workspace runtime 的 `runs/rolling-runs-v2/`。clean
+uninstall 会清点并保留这些 append-only facts 和 accepted documents。已有手工或
+compiled-v1 `baton apply` run 继续使用原协议，绝不会被静默迁移。
+
 ## 第一次会话
 
 所有会产生 ticket 或对容量敏感的 dispatch 命令都要求 `BATON_SESSION_ID`。
@@ -364,6 +397,8 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
+baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
+baton run <run-id> --status --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

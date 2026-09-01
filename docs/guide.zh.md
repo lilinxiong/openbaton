@@ -169,6 +169,38 @@ revision 和 `PLAN_INSUFFICIENT` 都 fail closed，返回 director 重新编译�
 旧式手工 `baton apply` 的显式 scope 与 `--read-only` 仍保持兼容；compiled 模式
 拒绝手工 scope flag，不猜测计划。
 
+## 来源中立的 Rolling run
+
+新的多 unit 工作如果希望从第一个安全窗口立刻启动，而不是等待整份 change
+分析完成，应使用 `baton run`。OpenSpec 只是一个 source adapter，不是外层协议
+前提。director source 携带调用方提供的稳定 task id；OpenSpec source 把 Markdown
+稳定任务号映射成 Baton task key，Apply ordinal 只作诊断信息。
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+先提交一个完整、依赖已就绪的 unit contract；它 queued/running 时继续分析并
+追加下一个有界 delta。每个 delta 比较当前 append sequence，只增加局部 coverage，
+绝不改写 active 或 accepted 版本。存储竞争只需要重置 compare token 后机械重试；
+语义失败必须生成新 delta 或 successor version。
+
+task 在 parent 为所有已知非 superseded unit/gate 提交精确 seal 前始终保持 open。
+`safety-precondition`、`integration-acceptance`、`evidence` gate 只阻断显式边。
+terminal result、safety verdict、parent acceptance 和 release 是独立幂等事实，
+因此 reconnect recovery 可以补齐缺失事实，而不会重复启动 worker。只有 source
+adapter reconciliation 可以写任务 ledger。
+
+已接受的 rolling documents/facts 位于
+`~/.baton/workspaces/<workspace>/v2/runs/rolling-runs-v2/`。它们是审计记录，
+clean uninstall 会报告并保留。手工 apply 和 compiled-v1 run 保持兼容，绝不
+自动迁移。
+
 ## Director、scope 与调度
 
 讨论和只读分析留在 director。已授权的实现单元与分类后的机械单元使用所
@@ -250,6 +282,8 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
+baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
+baton run <run-id> --status --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

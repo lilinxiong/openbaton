@@ -193,6 +193,42 @@ capability, scope, and baseline checks. Source staleness, changed contracts,
 scope changes, safety-blocked partial mutation, stale successor revisions, and
 `PLAN_INSUFFICIENT` fail closed and return to the director for a new plan.
 
+## Rolling source-neutral runs
+
+Use `baton run` for new multi-unit work that should start from the first safe
+window instead of waiting for whole-change analysis. OpenSpec is one source
+adapter, not a required outer protocol. A director source embeds stable caller
+task ids; the OpenSpec source maps stable Markdown numbers to Baton task keys
+and retains Apply ordinals only as diagnostics.
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+Start with one complete dependency-ready unit contract. While it is queued or
+running, analyze and append the next bounded delta. Each delta compares the
+current append sequence, adds only local coverage, and never rewrites an
+active or accepted version. A storage race is retryable by rebasing only the
+compare token; a semantic failure requires a new delta or successor version.
+
+Task status remains open until the parent submits an exact seal for all known
+non-superseded unit and gate versions. `safety-precondition`,
+`integration-acceptance`, and `evidence` gates block only explicit edges.
+Terminal result, safety verdict, parent acceptance, and release remain
+separate idempotent facts, so reconnect recovery can repair a missing fact
+without starting a duplicate worker. Only adapter reconciliation writes the
+source task ledger.
+
+Accepted rolling documents and facts are stored in
+`~/.baton/workspaces/<workspace>/v2/runs/rolling-runs-v2/`. They are auditable
+records: clean uninstall reports and retains them. Manual apply and compiled
+run v1 remain compatible and are never auto-migrated.
+
 ## Director, scope, and scheduling
 
 Discussion and read-only analysis stay in the director session. Authorized
@@ -289,6 +325,8 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
+baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
+baton run <run-id> --status --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

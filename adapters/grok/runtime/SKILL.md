@@ -61,7 +61,48 @@ broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
 parent alone accepts gates and reconciles task checkboxes after all mapped units
 and gates pass; never complete a checkbox early.
 
-The compiled CLI operations are explicit and preserve manual compatibility:
+## Rolling v2 control loop
+
+For new multi-unit work, use the source-neutral rolling protocol. OpenSpec is
+an adapter, not a prerequisite. The accepted source descriptor owns stable
+task keys; OpenSpec adapters map Markdown numbers such as `1.1` to those keys
+and never use a transient Apply ordinal as reconciliation identity. A director
+source carries its stable task definitions in the descriptor selection.
+
+Start after the director has one small safe delta; do not wait for a complete
+large-change analysis. Append later deltas while existing tickets are queued,
+running, terminal, or accepted. An append may add independent work immediately
+but cannot replace an active or accepted unit version. Every delta is prepared
+against the current `append_sequence`; on a storage race, read status, preserve
+the unchanged semantic delta, rebase only the compare token, and retry.
+
+```text
+baton run start --host grok --source-file <source.json> [--plan-delta-file <delta.json>] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+Status is task-first and distinguishes unplanned, planned, active, blocked,
+terminal-unreleased, accepted, sealed, and reconciled work. Preserve the
+original `BATON_SESSION_ID` across reconnects. Status/reconciliation repairs
+missing ticket-derived facts idempotently; it must never create a duplicate
+ticket or native attempt. Terminal success alone is not acceptance: Baton
+records the terminal result, safety verdict, parent acceptance, and matching
+release as separate idempotent facts. Release keeps attempt ownership exact
+and triggers deterministic refill of the same run. Only accept an explicit
+typed gate after all of its dependencies are accepted. Only seal exact
+non-superseded coverage. Only reconcile sealed tasks; this is the sole
+source-writeback path.
+
+If a worker returns structured `PLAN_INSUFFICIENT`, keep the failure on the
+smallest unit version, append a director-authored successor delta, and continue
+unrelated safe frontier work. Never discard or silently migrate an active
+compiled-v1 run. Inspect v1 read-only or finish it with its original protocol.
+
+The older compiled CLI operations remain explicit compatibility surfaces:
 
 ```text
 baton apply <change> --host grok --plan-file <plan.json> [--dispatch] --json
@@ -71,7 +112,7 @@ baton apply <change> --host grok --run <run-id> --reconcile [--task <number>] --
 baton apply <change> --host grok --run <run-id> --plan-file <successor.json> [--dispatch] --json
 ```
 
-Use the run's current revision and fingerprint when appending a successor;
+Use a compiled run's current revision and fingerprint when appending a successor;
 stale source or changed contracts fail closed. `--status` is observational,
 `--accept-gate` records parent evidence, and only `--reconcile` writes the
 canonical OpenSpec ledger. Manual `baton apply` scope flags remain available

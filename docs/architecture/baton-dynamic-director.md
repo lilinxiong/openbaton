@@ -117,6 +117,52 @@ manual apply with explicit scopes or `--read-only` remains compatible, while
 compiled mode rejects manual scope flags. These failure paths fail closed
 without inventing a route or accepting partial work.
 
+## Rolling execution planning v2
+
+The generic rolling kernel removes the whole-change planning barrier. It
+accepts a bounded `PlanDelta` as soon as that delta contains one complete,
+dependency-ready unit, dispatches the maximal safe known frontier, and accepts
+later deltas while existing native attempts are queued, running, terminal, or
+accepted. Unplanned manifest tasks create no repository-read or semantic-plan
+prerequisite for that first unit.
+
+`TaskSourceDescriptor` makes the kernel source-neutral. The built-in director
+adapter derives stable task keys from caller-owned ids. The OpenSpec adapter
+derives reconciliation identity from the stable Markdown task number and keeps
+the Apply ordinal as separate non-authoritative metadata. This prevents Apply
+result ordering from changing task ownership.
+
+Each accepted unit and gate version has a local immutable fingerprint. Deltas
+compare an append sequence only for storage concurrency; appending unrelated
+work does not invalidate an active ticket. Supersession is allowed only for
+undispatched or failed lineage. Scheduling, route failure, input staleness,
+gate failure, and `PLAN_INSUFFICIENT` remain local to their smallest owner.
+
+The three gate types are `safety-precondition`, `integration-acceptance`, and
+`evidence`. They block explicit dependencies only. Terminal result, safety
+verdict, parent acceptance, and release are separate facts. A task remains
+open after its known units pass; only an exact seal over non-superseded
+coverage followed by source-adapter reconciliation completes it.
+
+The source-neutral control surface is:
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+The append-only log and immutable accepted documents live in the current
+workspace runtime under `runs/rolling-runs-v2/`; checkpoints are replaceable
+derived caches. Reconnect recovery joins those facts to ordinary tickets,
+Receipts, reservations, bound native handles, terminal results, and releases
+idempotently. Clean uninstall inventories and retains auditable rolling-run
+records. Compiled-v1 and manual apply records remain readable through their
+original protocols and are never silently migrated.
+
 ## Director and scheduling
 
 The director owns discussion, read-only analysis, classification, dependency

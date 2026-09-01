@@ -52,6 +52,9 @@ const commonInvariants: Array<[string, RegExp]> = [
   ["parent gate reconciliation", /(?=[\s\S]*parent)(?=[\s\S]*(?:accepts|accept) gates)(?=[\s\S]*reconcil(?:e|es))(?=[\s\S]*(?:checkbox|mapped unit))(?=[\s\S]*(?:never|not)[\s\S]*(?:early|before))/i],
   ["manual compatibility", /(?=[\s\S]*manual)(?=[\s\S]*(?:compatib|legacy))(?=[\s\S]*(?:compiled|scope flags))/i],
   ["compiled run operations", /(?=[\s\S]*--plan-file)(?=[\s\S]*--status)(?=[\s\S]*--accept-gate)(?=[\s\S]*--reconcile)(?=[\s\S]*(?:successor|revision))/i],
+  ["rolling run operations", /(?=[\s\S]*baton run start)(?=[\s\S]*--append-plan)(?=[\s\S]*--seal-task)(?=[\s\S]*--accept-gate)(?=[\s\S]*--reconcile)/i],
+  ["rolling incremental startup", /(?=[\s\S]*(?:small safe delta|small, safe delta))(?=[\s\S]*append later deltas)(?=[\s\S]*(?:queued|running|active))/i],
+  ["rolling recovery and acceptance", /(?=[\s\S]*idempoten)(?=[\s\S]*terminal success)(?=[\s\S]*parent acceptance)(?=[\s\S]*release)/i],
 ];
 
 describe("compiled OpenSpec runtime skill audit", () => {

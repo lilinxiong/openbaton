@@ -356,6 +356,44 @@ changes, safety-blocked partial mutation, and `PLAN_INSUFFICIENT` return to the
 director for a new decision. Legacy manual `baton apply` with explicit scopes
 and `--read-only` remains compatible; compiled mode rejects manual scope flags.
 
+## Rolling v2: fast, source-neutral startup
+
+New large changes do not need a complete whole-change plan before the first
+worker starts. A director accepts one bounded, dependency-ready `PlanDelta`,
+dispatches its safe frontier, and appends later deltas while earlier workers
+are queued or running. Every dispatched unit is still complete and immutable;
+only discovery of future work remains open.
+
+OpenSpec is optional. A `TaskSourceDescriptor` selects either the built-in
+director source or an installed source adapter. The OpenSpec adapter uses the
+stable Markdown task number (for example `1.1`) for reconciliation and keeps a
+transient Apply ordinal only as diagnostics, so reordered Apply JSON cannot
+change task identity.
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+Status is task-first and distinguishes unplanned, planned, active,
+terminal-unreleased, blocked, accepted, sealed, and reconciled work. Terminal
+success, the safety verdict, parent acceptance, and release are separate
+idempotent facts. Gates are typed as `safety-precondition`,
+`integration-acceptance`, or `evidence`, and block only explicit dependencies.
+A failed version remains auditable; the director may append an immutable
+successor only when the failed lineage is replaceable. Tasks become complete
+only after an exact non-superseded seal and adapter-owned reconciliation.
+
+Rolling state lives under the current workspace runtime in
+`runs/rolling-runs-v2/`. Clean uninstall inventories and retains these
+append-only facts and accepted documents. Existing manual and compiled-v1
+`baton apply` runs keep their original commands and are never silently
+migrated.
+
 ## First session
 
 Ticket-producing and capacity-sensitive dispatch commands require
@@ -389,6 +427,8 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
+baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
+baton run <run-id> --status --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
