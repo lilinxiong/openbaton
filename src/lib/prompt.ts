@@ -1,6 +1,10 @@
 import readline from "node:readline";
 import type { WritableLike } from "../types.js";
-import type { ExactExecutionRootIdentity } from "../adapters/contract.js";
+import {
+  EXACT_EXECUTION_ROOT_IDENTITY_FIELDS,
+  normalizeExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+} from "../adapters/contract.js";
 
 export interface PromptChoice<T> {
   value: T;
@@ -51,22 +55,15 @@ export function renderWorktreeWorkerPolicy(options: WorktreeWorkerPolicyOptions)
   if (mode !== "isolated-worktree" && mode !== "shared-worktree") {
     throw new Error("worker policy worktree_mode must be isolated-worktree or shared-worktree");
   }
-  const exactRootFields = [
-    "repository_id",
-    "git_common_dir_identity",
-    "execution_root",
-    "base_tree",
-    "worktree_record_id",
-  ] as const;
-  const exactRoot = Object.fromEntries(
-    exactRootFields.map((field) => [field, options[field]]),
-  ) as Partial<ExactExecutionRootIdentity>;
-  if (mode === "isolated-worktree" && exactRootFields.some((field) => !String(exactRoot[field] ?? "").trim())) {
-    throw new Error("isolated worker policy requires complete exact-root identity");
-  }
-  if (mode === "shared-worktree" && exactRootFields.some((field) => exactRoot[field] !== undefined)) {
+  const exactRootFields = EXACT_EXECUTION_ROOT_IDENTITY_FIELDS;
+  const suppliedFields = exactRootFields.filter((field) => options[field] !== undefined);
+  const supplied = Object.fromEntries(suppliedFields.map((field) => [field, options[field]]));
+  if (mode === "shared-worktree" && suppliedFields.length) {
     throw new Error("shared worker policy forbids exact-root identity");
   }
+  const exactRoot: ExactExecutionRootIdentity | undefined = mode === "isolated-worktree"
+    ? normalizeExactExecutionRootIdentity(supplied)
+    : undefined;
   if (!Array.isArray(options.permitted_validation)) {
     throw new Error("worker policy permitted_validation must be an array");
   }
@@ -77,7 +74,7 @@ export function renderWorktreeWorkerPolicy(options: WorktreeWorkerPolicyOptions)
   });
   const boundary = mode === "isolated-worktree"
     ? [
-      ...exactRootFields.map((field) => `${field}: ${exactRoot[field]}`),
+      ...exactRootFields.map((field) => `${field}: ${exactRoot![field]}`),
       "Treat execution_root as the only workspace boundary, not as permission beyond the Receipt scope.",
       "Do not read, write, traverse, resolve paths into, or run commands in the caller checkout or any sibling execution root. Reject symlink and repository-indirection escapes.",
     ]

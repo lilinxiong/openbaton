@@ -162,6 +162,16 @@ describe("worktree worker policy rendering", () => {
     assert.equal(framed.patch_instructions, patchInstructions);
     assert.deepEqual(framed.permitted_validation, permittedValidation);
     assert.match(rendered, /validation is not additional read or write authority/);
+    assert.throws(() => renderWorktreeWorkerPolicy({
+      worktree_mode: "isolated-worktree",
+      repository_id: "not-a-sha256",
+      git_common_dir_identity: "b".repeat(64),
+      execution_root: "/private/tmp/baton/../caller",
+      base_tree: "c".repeat(40),
+      worktree_record_id: "record-a",
+      patch_instructions: patchInstructions,
+      permitted_validation: permittedValidation,
+    }), /IDENTITY_INVALID|PATH_NONCANONICAL/);
   });
 
   it("preserves explicit shared-worktree legacy compatibility without inventing a root", () => {
@@ -178,5 +188,11 @@ describe("worktree worker policy rendering", () => {
       patch_instructions: "legacy patch",
       permitted_validation: ["read"],
     }), /forbids exact-root identity/);
+    assert.doesNotThrow(() => renderWorktreeWorkerPolicy({
+      worktree_mode: "shared-worktree",
+      execution_root: undefined,
+      patch_instructions: "legacy patch",
+      permitted_validation: ["read"],
+    }));
   });
 });
