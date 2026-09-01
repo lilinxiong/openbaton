@@ -245,21 +245,28 @@ function currentRuntimeDirectories(home: string): string[] {
     .filter((directory) => fs.existsSync(directory));
 }
 
-function validateNdjsonState(file: string, label: string): void {
+function validateNdjsonState(file: string, label: string): { partial_tail: boolean } {
   let text: string;
   try { text = fs.readFileSync(file, "utf8"); } catch { return stateInvalid(`${label} is unreadable: ${file}`); }
+  const terminated = text.endsWith("\n");
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
   if (!lines.length || lines.some((line) => !line.trim())) stateInvalid(`${label} is malformed: ${file}`);
-  for (const line of lines) {
+  let partialTail = false;
+  for (const [index, line] of lines.entries()) {
     try {
       const value = JSON.parse(line) as unknown;
       if (!value || typeof value !== "object" || Array.isArray(value)) stateInvalid(`${label} is malformed: ${file}`);
     } catch (error) {
       if ((error as { code?: string }).code === UNINSTALL_STATE_INVALID) throw error;
+      if (!terminated && index === lines.length - 1) {
+        partialTail = true;
+        continue;
+      }
       stateInvalid(`${label} is malformed: ${file}`);
     }
   }
+  return { partial_tail: partialTail };
 }
 
 function directoryCount(directory: string, depth: number): number {
@@ -299,14 +306,14 @@ function retainedRollingRuns(runtime: string, env: NodeJS.ProcessEnv | undefined
     requireDirectory(run, "rolling run entry");
     const log = path.join(run, ROLLING_FACT_LOG_NAME);
     if (!fs.existsSync(log)) stateInvalid(`rolling run fact log is missing: ${log}`);
-    validateNdjsonState(log, "rolling run fact log");
+    const logState = validateNdjsonState(log, "rolling run fact log");
     scanJsonStateDirectory(path.join(run, ROLLING_ACCEPTED_DOCUMENTS_DIR), "rolling accepted documents");
     const checkpoint = path.join(run, ROLLING_CHECKPOINT_NAME);
     if (fs.existsSync(checkpoint)) validateJsonState(checkpoint, "rolling checkpoint");
     records.push({
       path: display(run, env),
       kind: "rolling-run-v2",
-      reason: `auditable rolling run and isolation evidence retained by clean uninstall (${isolationInventory(run)})`,
+      reason: `auditable rolling run and isolation evidence retained by clean uninstall (${isolationInventory(run)}${logState.partial_tail ? ", crash-truncated final fact preserved" : ""})`,
     });
   }
   return records;

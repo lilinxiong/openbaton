@@ -9,7 +9,7 @@ import {
   fileFingerprint,
   readInstallManifest,
 } from "../src/lib/install-manifest.js";
-import { applyUninstallPlan, buildUninstallPlan } from "../src/lib/uninstall.js";
+import { applyUninstallPlan, buildUninstallPlan, UNINSTALL_STATE_INVALID } from "../src/lib/uninstall.js";
 import { createRollingExecutionRun } from "../src/lib/rolling-run.js";
 import {
   batonDir,
@@ -125,5 +125,52 @@ describe("install manifest ownership", () => {
     applyUninstallPlan(plan, { env });
     assert.equal(fs.existsSync(rollingRunFactLogPath(cwd, "audit-run", env)), true);
     for (const directory of retainedPaths) assert.equal(fs.existsSync(directory), true);
+  });
+
+  it("retains a rolling run whose final NDJSON fact was crash-truncated", async () => {
+    const { cwd, env } = isolatedEnv();
+    env.BATON_SESSION_ID = "clean-uninstall-partial-tail";
+    await initProject(cwd, { env });
+    createRollingExecutionRun({
+      cwd,
+      env,
+      runId: "partial-tail-run",
+      host: "codex",
+      source: {
+        schema_version: 1,
+        source_kind: "director",
+        adapter: "director",
+        selection: { tasks: [{ id: "audit-task", description: "retain valid prefix" }] },
+      },
+    });
+    fs.appendFileSync(rollingRunFactLogPath(cwd, "partial-tail-run", env), '{"schema_version":2');
+
+    const plan = buildUninstallPlan({ cwd, env, clean: true, dry_run: false });
+    assert.equal(plan.retained_runtime_records.length, 1);
+    assert.match(plan.retained_runtime_records[0]!.reason, /crash-truncated final fact preserved/);
+  });
+
+  it("rejects malformed non-final NDJSON facts during clean uninstall", async () => {
+    const { cwd, env } = isolatedEnv();
+    env.BATON_SESSION_ID = "clean-uninstall-malformed-middle";
+    await initProject(cwd, { env });
+    createRollingExecutionRun({
+      cwd,
+      env,
+      runId: "malformed-middle-run",
+      host: "codex",
+      source: {
+        schema_version: 1,
+        source_kind: "director",
+        adapter: "director",
+        selection: { tasks: [{ id: "audit-task", description: "reject malformed middle" }] },
+      },
+    });
+    fs.appendFileSync(rollingRunFactLogPath(cwd, "malformed-middle-run", env), 'not-json\n{"schema_version":2');
+
+    assert.throws(
+      () => buildUninstallPlan({ cwd, env, clean: true, dry_run: false }),
+      (error: unknown) => (error as { code?: string }).code === UNINSTALL_STATE_INVALID,
+    );
   });
 });
