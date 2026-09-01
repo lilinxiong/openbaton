@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { run } from "../src/cli.js";
+import { defaultRollingRunHandler } from "../src/commands/run.js";
+import { startRollingControl } from "../src/lib/rolling-control.js";
 import { deriveTaskKey, type PlanDelta, type TaskSourceDescriptor } from "../src/lib/rolling-plan.js";
 import { fakeEnv } from "./home.js";
 
@@ -120,5 +122,34 @@ describe("rolling run CLI grammar", () => {
       assert.equal(result.code, 1, `${argv.join(" ")}\n${result.stderr}`);
       assert.ok(result.stderr.trim().length > 0);
     }
+  });
+
+  it("keeps an omitted accept-gate dispatch flag false through the default handler", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-cli-no-dispatch-"));
+    const env = fakeEnv(fs.mkdtempSync(path.join(os.tmpdir(), "baton-rolling-cli-no-dispatch-home-")));
+    const guarded = delta();
+    guarded.unit_versions[0]!.required_gate_keys = ["gate-cli"];
+    guarded.unit_versions[0]!.input_fingerprints = { baseline: "a".repeat(64) };
+    guarded.gate_versions = [{
+      schema_version: 1,
+      gate_key: "gate-cli",
+      version: 1,
+      type: "safety-precondition",
+      task_keys: [...guarded.unit_versions[0]!.task_keys],
+      depends_on: [],
+      acceptance_contract: { required: true },
+    }];
+    guarded.task_coverage[0]!.gate_versions = ["gate-cli@1"];
+    await startRollingControl({ cwd, env, run_id: "run-no-dispatch", host: "alpha", source, delta: guarded, dispatch: false });
+    const accepted = await defaultRollingRunHandler({
+      operation: "accept-gate",
+      cwd,
+      env,
+      run_id: "run-no-dispatch",
+      accept_gate: "gate-cli@1",
+      text: "parent accepted",
+      dispatch: false,
+    } as any) as any;
+    assert.equal(accepted.dispatch, null);
   });
 });

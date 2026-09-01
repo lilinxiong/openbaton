@@ -533,6 +533,10 @@ export function deriveRollingSafeFrontier(input: RollingSchedulerInput = {}): Ro
       if (unit.worktree_mode === "isolated-worktree" && executionRoot && executionRoot.base_tree !== resultBase) {
         addBlocker(blockers, id, "INTEGRATION_RESULT_BASE_MISMATCH", `unit ${id} must inherit integration ${gateId} result base ${resultBase}`, [id, gateId]); ready = false; continue;
       }
+      const inherited = inheritedBaseTrees[id];
+      if (inherited !== undefined && inherited !== resultBase) {
+        addBlocker(blockers, id, "INTEGRATION_RESULT_BASE_CONFLICT", `unit ${id} inherits conflicting integration result bases`, [id, gateId]); ready = false; continue;
+      }
       inheritedBaseTrees[id] = resultBase;
     }
     if (ready) dependencyReady.push(id);

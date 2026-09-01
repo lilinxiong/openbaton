@@ -240,7 +240,7 @@ export const defaultRollingRunHandler: RollingRunHandler = async (input) => {
   if (input.operation === "start") return startRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id, host: input.host!, worktree_mode: input.worktree_mode || undefined, source: input.source!, delta: input.delta, dispatch: input.dispatch });
   if (input.operation === "append-plan") return appendRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id, delta: input.delta!, dispatch: input.dispatch });
   if (input.operation === "status") return statusRollingControl({ cwd: input.cwd, env: input.env, run_id: input.run_id });
-  if (input.operation === "accept-gate") return acceptRollingGate({ cwd: input.cwd, env: input.env, run_id: input.run_id, gate_ref: input.accept_gate!, evidence: input.text!, dispatch: input.dispatch ? true : undefined });
+  if (input.operation === "accept-gate") return acceptRollingGate({ cwd: input.cwd, env: input.env, run_id: input.run_id, gate_ref: input.accept_gate!, evidence: input.text!, dispatch: input.dispatch });
   if (input.operation === "seal-task") return sealRollingTask({ cwd: input.cwd, env: input.env, run_id: input.run_id, seal: input.seal! });
   if (input.operation === "reconcile") return reconcileRollingTasks({ cwd: input.cwd, env: input.env, run_id: input.run_id, task_key: input.task });
   if (input.operation === "freeze") return freezeRollingUnitBundle({ cwd: input.cwd, env: input.env, run_id: input.run_id, unit_key: input.freeze_unit!, attempt_id: input.attempt!, conclusion: input.text!, validation_summaries: input.validation ? [input.validation] : [], allow_noop: input.allow_noop });

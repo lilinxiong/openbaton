@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -277,7 +277,13 @@ describe("worktree recovery, status, and cleanup", () => {
     persistSnapshotManifest(f.repo, record.run_id, snapshot, f.env);
     record = advanceAccepted(f, record, bundle.bundle_id, integration.integration_id);
     const caller = { head: git(f.repo, ["rev-parse", "HEAD"]), status: git(f.repo, ["status", "--porcelain=v1"]), index: fs.readFileSync(path.join(f.repo, ".git", "index")) };
-    const cleaned = await cleanupWorktreeAttempt({ cwd: f.repo, run_id: record.run_id, unit_key: record.unit_key, attempt_id: record.attempt_id, env: f.env, release_downstream_base: true });
+    const gitCommands: string[][] = [];
+    const capturingSpawn = ((command: string, args: readonly string[], options: Parameters<typeof nodeSpawn>[2]) => {
+      gitCommands.push([...args]);
+      return nodeSpawn(command, args, options);
+    }) as typeof nodeSpawn;
+    const cleaned = await cleanupWorktreeAttempt({ cwd: f.repo, run_id: record.run_id, unit_key: record.unit_key, attempt_id: record.attempt_id, env: f.env, release_downstream_base: true, spawn: capturingSpawn });
+    assert.ok(gitCommands.some((args) => args[0] === "cat-file" && args[1] === "-e"));
     assert.equal(cleaned.record.lifecycle_state, "cleaned");
     assert.equal(cleaned.removed_worktree, true);
     assert.equal(cleaned.removed_internal_ref, internalRef);

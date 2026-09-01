@@ -129,7 +129,7 @@ describe("rolling control recovery", () => {
       assert.equal(lineage?.worktree_record_id, setup.record_id);
       assert.equal(lineage?.base_tree, setup.base_tree);
     } finally {
-      execFileSync("git", ["worktree", "remove", "--force", executionRoot], { cwd, stdio: "ignore" });
+      try { execFileSync("git", ["worktree", "remove", "--force", executionRoot], { cwd, stdio: "ignore" }); } catch { /* best effort */ }
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

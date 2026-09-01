@@ -118,12 +118,11 @@ export interface WorktreeCleanupEligibilityInput {
   discard_rejected_evidence?: boolean;
   release_user_retention?: boolean;
   terminal_ticket_released?: boolean;
+  spawn?: GitProcessOptions["spawn"];
   at?: string | number | Date;
 }
 
-export interface WorktreeCleanupInput extends WorktreeCleanupEligibilityInput {
-  spawn?: GitProcessOptions["spawn"];
-}
+export interface WorktreeCleanupInput extends WorktreeCleanupEligibilityInput {}
 
 export interface WorktreeCleanupResult {
   record: WorktreeRecord;
@@ -526,13 +525,25 @@ export async function recoverWorktreeRun(input: {
         && record.setup_state === "verified"
         && ticket?.slot_released_at
         && !ticket.liveness
-        && ["errored", "timed_out", "closed"].includes(ticket.status)) {
+        && ["completed", "errored", "timed_out", "closed"].includes(ticket.status)) {
         record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, {
           idempotency_key: `recovery-native-aborted-${record.record_id}`,
           phase: "native_execution",
           to_state: "rejected",
           native_handle: null,
           retention_reasons: ["rejected_result_evidence"],
+          recorded_at: timestamp(input.at),
+        }, input.env);
+      }
+      if (record.lifecycle_state === "worker_active"
+        && ticket
+        && ["completed", "errored", "timed_out", "closed"].includes(ticket.status)) {
+        record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, {
+          idempotency_key: `recovery-native-terminal-${record.record_id}`,
+          phase: "native_execution",
+          to_state: "terminal_awaiting_audit",
+          native_handle: record.native_handle,
+          retention_reasons: ["pending_audit", ...(ticket.slot_released_at ? [] : ["terminal_unreleased_ticket" as const])],
           recorded_at: timestamp(input.at),
         }, input.env);
       }
@@ -574,7 +585,7 @@ export async function markWorktreeCleanupEligible(input: WorktreeCleanupEligibil
   if (record.lifecycle_state === "cleanup_failed") {
     return transitionPersistedWorktreeRecord(root, input.run_id, input.unit_key, input.attempt_id, { idempotency_key: `cleanup-retry:${record.cleanup.attempts + 1}`, phase: "cleanup", to_state: "cleanup_eligible", retention_reasons: [], cleanup: { schema_version: CLEANUP_STATE_SCHEMA_VERSION, status: "eligible", attempts: record.cleanup.attempts, updated_at: timestamp(input.at) }, recorded_at: timestamp(input.at) }, input.env);
   }
-  if (record.lifecycle_state === "accepted" && input.release_downstream_base) await assertAcceptedTreeReachable(root, record, readIntegration(root, record, input.env), undefined);
+  if (record.lifecycle_state === "accepted" && input.release_downstream_base) await assertAcceptedTreeReachable(root, record, readIntegration(root, record, input.env), input.spawn);
   const reasons = deriveWorktreeRetentionReasons(record, input);
   if (reasons.length) throw new WorktreeLifecycleError("worktree still has retention reasons", "WORKTREE_CLEANUP_RETAINED", { retention_reasons: reasons });
   if (record.lifecycle_state !== "accepted" && record.lifecycle_state !== "rejected") throw new WorktreeLifecycleError(`worktree ${record.lifecycle_state} is not cleanup eligible`, "WORKTREE_CLEANUP_NOT_READY");

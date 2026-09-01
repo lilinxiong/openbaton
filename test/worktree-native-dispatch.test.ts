@@ -6,14 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import { runDispatch } from "../src/commands/dispatch.js";
 import { bindAgent, finishAgent, releaseAgent, reportAgentProbe, reserveNext } from "../src/lib/dispatch.js";
+import { collectGitSafetyFacts } from "../src/lib/git-safety-facts.js";
 import { markRouteAvailable } from "../src/lib/model-availability.js";
-import { worktreeExecutionRootPath } from "../src/lib/paths.js";
+import { worktreeExecutionRootPath, worktreeRecordPath } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, buildWriteReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { captureBaseline } from "../src/lib/safety.js";
 import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn } from "../src/lib/spawn.js";
 import { readPersistedWorktreeRecord } from "../src/lib/worktree-execution.js";
-import { cleanupWorktreeAttempt } from "../src/lib/worktree-lifecycle.js";
+import { cleanupWorktreeAttempt, recoverWorktreeRun } from "../src/lib/worktree-lifecycle.js";
 import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
 import { resolveOwningRepository } from "../src/lib/worktree-topology.js";
 import { configureCli } from "./configure.js";
@@ -238,6 +239,37 @@ describe("isolated native dispatch", () => {
       });
       assert.equal(cleaned.record.lifecycle_state, "cleaned");
     } finally {
+      fs.rmSync(f.outer, { recursive: true, force: true });
+    }
+  }));
+
+  it("persists a terminal ticket before a failed record transition and lets recovery finish the projection", async () => withHome(async (home) => {
+    const f = await fixture(home, "native-terminal-recovery");
+    const recordFile = worktreeRecordPath(f.cwd, f.runId, f.unitKey, f.attemptId, f.env);
+    const displaced = `${recordFile}.blocked`;
+    try {
+      await reserveNext(f.cwd, { capacity: 1, limit: 1, host: HOST, env: f.env });
+      bindAgent(f.cwd, f.ticket.id, { executionHandle: f.handle, host: HOST, env: f.env });
+      fs.writeFileSync(path.join(f.executionRoot, "tracked.txt"), "terminal before projection failure\n");
+      let moved = false;
+      await assert.rejects(finishAgent(f.cwd, f.ticket.id, {
+        status: "completed", conclusion: "terminal ticket survives", host: HOST, env: f.env,
+        safety: {
+          collectFacts: async (root, options) => {
+            const facts = await collectGitSafetyFacts(root, options);
+            if (!moved) { fs.renameSync(recordFile, displaced); moved = true; }
+            return facts;
+          },
+        },
+      }));
+      const terminal = readSpawn(f.cwd, f.ticket.id, f.env);
+      assert.equal(terminal.status, "completed");
+      fs.renameSync(displaced, recordFile);
+      const recovered = await recoverWorktreeRun({ cwd: f.cwd, run_id: f.runId, env: f.env, tickets: [terminal] });
+      assert.ok(recovered.repaired_record_ids.includes(f.setup.record.record_id));
+      assert.equal(readPersistedWorktreeRecord(f.cwd, f.runId, f.unitKey, f.attemptId, f.env).lifecycle_state, "terminal_awaiting_audit");
+    } finally {
+      if (fs.existsSync(displaced) && !fs.existsSync(recordFile)) fs.renameSync(displaced, recordFile);
       fs.rmSync(f.outer, { recursive: true, force: true });
     }
   }));

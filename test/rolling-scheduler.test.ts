@@ -247,6 +247,28 @@ describe("rolling scheduler", () => {
     assert.equal(oldBaseDisguisedAsResult.blockers["successor@1"]?.[0]?.code, "INTEGRATION_RESULT_BASE_MISSING");
   });
 
+  it("blocks a unit whose accepted integration gates expose conflicting result bases", () => {
+    const gates: GateVersion[] = ["first", "second"].map((key) => ({
+      schema_version: 1, gate_key: key, version: 1, type: "integration-acceptance",
+      task_keys: ["task-successor"], depends_on: [],
+    }));
+    const successor = unit("successor", 1, {
+      worktree_mode: "isolated-worktree",
+      integration_gate_keys: ["first@1", "second@1"],
+    });
+    const result = deriveRollingSafeFrontier({
+      accepted_deltas: [delta([successor], gates)],
+      runtime_facts: [
+        { kind: "integration-acceptance", gate_key: "first", gate_version: 1, state: "accepted", after_tree: "2".repeat(40) },
+        { kind: "integration-acceptance", gate_key: "second", gate_version: 1, state: "accepted", after_tree: "3".repeat(40) },
+      ],
+      capacity: 1,
+    });
+    assert.deepEqual(result.frontier, []);
+    assert.equal(result.blockers["successor@1"]?.[0]?.code, "INTEGRATION_RESULT_BASE_CONFLICT");
+    assert.equal(result.inherited_base_trees["successor@1"], "2".repeat(40));
+  });
+
   it("automatically holds reserved and running attempt scopes", () => {
     const reserved = unit("reserved");
     const running = unit("running");

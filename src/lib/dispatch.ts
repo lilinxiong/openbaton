@@ -2476,8 +2476,8 @@ export async function finishAgent(cwd: string, id: string, {
           const acceptance = acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.error.message, env);
           ticket.compiled_acceptance = acceptance;
         }
-        retainTerminalExactRoot(ticket, at, env);
         writeSpawn(cwd, ticket, env);
+        retainTerminalExactRoot(ticket, at, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
       }
@@ -2520,8 +2520,8 @@ export async function finishAgent(cwd: string, id: string, {
           const acceptance = acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.error.message, env);
           ticket.compiled_acceptance = acceptance;
         }
-        retainTerminalExactRoot(ticket, at, env);
         writeSpawn(cwd, ticket, env);
+        retainTerminalExactRoot(ticket, at, env);
         if (hostError) updateRouteHealth(cwd, ticket, hostError.status, hostError, at, env);
         return ticket;
       }
@@ -2595,8 +2595,8 @@ export async function finishAgent(cwd: string, id: string, {
         ticket.compiled_acceptance = acceptance;
       }
     }
-    retainTerminalExactRoot(ticket, at, env);
     writeSpawn(cwd, ticket, env);
+    retainTerminalExactRoot(ticket, at, env);
     updateRouteHealth(cwd, ticket, terminal as TerminalDispatchStatus, hostError, at, env);
     return ticket;
   }, { ...dispatchLock, env });
