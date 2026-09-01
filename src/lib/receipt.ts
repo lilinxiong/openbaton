@@ -205,7 +205,6 @@ export function validateCompiledApplyLineage(value: unknown): string | null {
   }
 }
 
-export const assertValidCompiledApplyLineage = normalizeCompiledApplyLineage;
 
 export interface DelegationReceipt extends Partial<ExactExecutionRootIdentity> {
   schema_version: 4;

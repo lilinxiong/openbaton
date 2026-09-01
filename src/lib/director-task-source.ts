@@ -381,9 +381,6 @@ export function createDirectorTaskSourceAdapter(
   return new DirectorTaskSourceAdapter(tasksOrOptions as readonly DirectorTaskDefinition[] & DirectorTaskSourceOptions, options);
 }
 
-export const createDirectorTaskSource = createDirectorTaskSourceAdapter;
-export const DirectorAdapter = DirectorTaskSourceAdapter;
-export const DirectorTaskSource = DirectorTaskSourceAdapter;
 
 // Keep this import visible to declaration emit consumers that use the adapter
 // as a concrete implementation of the shared contract.

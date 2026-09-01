@@ -265,4 +265,3 @@ export async function createDirtyBaselineSnapshot(input: DirtyBaselineSnapshotIn
   }
 }
 
-export const snapshotDirtyBaseline = createDirtyBaselineSnapshot;

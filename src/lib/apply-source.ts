@@ -23,7 +23,6 @@ import { parseTasks } from "./openspec.js";
 export { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
 
 export const APPLY_SOURCE_SCHEMA_VERSION = 1 as const;
-export const COMPILED_APPLY_SOURCE_SCHEMA_VERSION = APPLY_SOURCE_SCHEMA_VERSION;
 export const APPLY_PLAN_STALE = "APPLY_PLAN_STALE" as const;
 
 export type ApplySourceInputRole = "read" | "write";
@@ -336,7 +335,6 @@ export class ApplyPlanStaleError extends Error {
   }
 }
 
-export const ApplySourceStaleError = ApplyPlanStaleError;
 
 class ApplySourceInputError extends Error {
   readonly code: string;
@@ -958,9 +956,6 @@ export async function captureCompiledApplySourceFacts(
   return compatibilityViews({ ...withoutFingerprint, fingerprint: sourceFingerprint(withoutFingerprint) });
 }
 
-export const captureApplySourceFacts = captureCompiledApplySourceFacts;
-export const captureApplySourceSnapshot = captureCompiledApplySourceFacts;
-export const captureApplySource = captureCompiledApplySourceFacts;
 
 function sourceDifferences(expected: CompiledApplySourceFacts, actual: CompiledApplySourceFacts): string[] {
   const changed: string[] = [];
@@ -984,8 +979,6 @@ export function assertApplySourceCurrent(
   if (changed.length) throw new ApplyPlanStaleError(changed);
 }
 
-export const assertCompiledApplySourceCurrent = assertApplySourceCurrent;
-export const compareApplySourceFacts = sourceDifferences;
 
 /**
  * Capture, run the injected read-only validation, capture again, and invoke
@@ -1010,10 +1003,3 @@ export async function acceptCompiledApplySource<T>(
   return { result, source: after, before, after };
 }
 
-export const acceptApplySource = acceptCompiledApplySource;
-export const acceptApplySourceSnapshot = acceptCompiledApplySource;
-export const acceptCompiledApplyPlanSource = acceptCompiledApplySource;
-export const acceptApplyPlanSource = acceptCompiledApplySource;
-export const acceptCompiledApplyPlan = acceptCompiledApplySource;
-export const validateAndPersistApplySource = acceptCompiledApplySource;
-export const validateAndPersistCompiledApplySource = acceptCompiledApplySource;

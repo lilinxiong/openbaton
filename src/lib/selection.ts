@@ -471,10 +471,6 @@ export function deriveMinimumModelRequirements(
 }
 
 /** Compatibility aliases for callers that describe this as a task contract. */
-export const minimumModelRequirementsForTask = deriveMinimumModelRequirements;
-export const deriveMinimumRequirements = deriveMinimumModelRequirements;
-export const buildMinimumModelRequirements = deriveMinimumModelRequirements;
-export const minimumRequirementsForTask = deriveMinimumModelRequirements;
 
 function canonicalCapability(value: unknown): string {
   const text = String(value || "").trim().toLowerCase().replaceAll(/[_ ]+/g, "-");

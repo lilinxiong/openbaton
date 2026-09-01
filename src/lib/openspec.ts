@@ -525,7 +525,6 @@ export function resolveOpenSpecApplyInstructions(
   };
 }
 
-export const resolveOpenSpecApply = resolveOpenSpecApplyInstructions;
 export const readOpenSpecApplyInstructions = resolveOpenSpecApplyInstructions;
 
 export function loadTasksFromChangeDir(changeDir: string): OpenSpecChange {

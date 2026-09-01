@@ -396,5 +396,3 @@ export function createTaskSourceAdapterRegistry(adapters: readonly TaskSourceAda
   return new TaskSourceAdapterRegistry(adapters, options);
 }
 
-export const TaskSourceRegistry = TaskSourceAdapterRegistry;
-export const SourceAdapterRegistry = TaskSourceAdapterRegistry;

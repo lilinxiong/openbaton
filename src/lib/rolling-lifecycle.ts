@@ -684,8 +684,6 @@ export function deriveRollingTaskLifecycles(context: RollingLifecycleContext = {
   return taskKeys(source, manifest, coverage, seals).map((taskKey) => taskLifecycle(taskKey, source, manifest, versions, deltas, seals, states));
 }
 
-export const deriveTaskLifecycles = deriveRollingTaskLifecycles;
-export const deriveRollingTaskLifecycle = deriveRollingTaskLifecycles;
 
 /** Build the run-level status projection while retaining the phase-1 aliases. */
 export function deriveRollingLifecycle(context: RollingLifecycleContext = {}): RollingLifecycleReport {
@@ -712,8 +710,6 @@ export function deriveRollingLifecycle(context: RollingLifecycleContext = {}): R
   return { schema_version: ROLLING_LIFECYCLE_SCHEMA_VERSION, status, tasks, task_lifecycle, lifecycle_status, task_status, task_states };
 }
 
-export const deriveRollingTaskStatus = deriveRollingLifecycle;
-export const deriveTaskStatus = deriveRollingLifecycle;
 
 function exactSet(actual: readonly string[], expected: readonly string[]): boolean {
   return actual.length === expected.length && new Set(actual).size === actual.length && actual.every((item) => expected.includes(item));
@@ -794,10 +790,6 @@ export function validateTaskSealAgainstFacts(input: unknown, context: RollingLif
   return { valid: true, diagnostics: [], value: normalized, normalized };
 }
 
-export const validateRollingTaskSeal = validateTaskSealAgainstFacts;
-export const validateTaskSealWithFacts = validateTaskSealAgainstFacts;
-export const validateSealAgainstFacts = validateTaskSealAgainstFacts;
-export const validateRollingSeal = validateTaskSealAgainstFacts;
 export const validateTaskSeal = validateTaskSealAgainstFacts;
 
 export function assertTaskSealAgainstFacts(input: unknown, context: RollingLifecycleContext = {}): TaskSeal {
@@ -806,10 +798,6 @@ export function assertTaskSealAgainstFacts(input: unknown, context: RollingLifec
   return result.value as TaskSeal;
 }
 
-export const assertRollingTaskSeal = assertTaskSealAgainstFacts;
-export const assertTaskSealWithFacts = assertTaskSealAgainstFacts;
-export const assertSealAgainstFacts = assertTaskSealAgainstFacts;
-export const assertRollingSeal = assertTaskSealAgainstFacts;
 export const assertTaskSeal = assertTaskSealAgainstFacts;
 
 /** Convenience predicate used by scheduler/status callers. */
@@ -817,5 +805,3 @@ export function taskReadyToSeal(taskKey: string, context: RollingLifecycleContex
   return deriveTaskLifecycle(taskKey, context).ready_to_seal;
 }
 
-export const isTaskReadyToSeal = taskReadyToSeal;
-export const rollingTaskReadyToSeal = taskReadyToSeal;

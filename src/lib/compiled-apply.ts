@@ -230,14 +230,7 @@ async function ingest(input: CompiledApplyIngestionOptions, successor: boolean):
 }
 
 export async function ingestInitialApplyExecutionPlan(input: CompiledApplyIngestionOptions): Promise<CompiledApplyIngestionResult> { return ingest(input, false); }
-export const ingestInitialCompiledApplyPlan = ingestInitialApplyExecutionPlan;
-export const acceptInitialApplyExecutionPlan = ingestInitialApplyExecutionPlan;
-export const ingestApplyExecutionPlan = ingestInitialApplyExecutionPlan;
-export const acceptApplyExecutionPlan = ingestInitialApplyExecutionPlan;
 export async function ingestSuccessorApplyExecutionPlan(input: CompiledApplyIngestionOptions): Promise<CompiledApplyIngestionResult> { return ingest(input, true); }
-export const ingestSuccessorCompiledApplyPlan = ingestSuccessorApplyExecutionPlan;
-export const appendSuccessorApplyExecutionPlan = ingestSuccessorApplyExecutionPlan;
-export const ingestApplyExecutionPlanSuccessor = ingestSuccessorApplyExecutionPlan;
 
 export interface CompiledApplyFrontierOptions {
   cwd: string;
@@ -473,9 +466,3 @@ export async function materializeCompiledApplyFrontier(input: CompiledApplyFront
   return { run_id: runId, revision: run.current_revision, fingerprint: run.current_fingerprint, candidates: frontier, selected: entries.map((entry) => entry.planned.ticket.compiled_apply_lineage!.unit_id), materialized, blocked,
     capacity, available_capacity: available, run: finalRun };
 }
-export const materializeCompiledApply = materializeCompiledApplyFrontier;
-export const refillCompiledApplyFrontier = materializeCompiledApplyFrontier;
-export const materializeApplyFrontier = materializeCompiledApplyFrontier;
-export const materializeCompiledApplyFrontierStep = materializeCompiledApplyFrontier;
-export const refillApplyFrontier = materializeCompiledApplyFrontier;
-export const compiledApplyFrontierStep = materializeCompiledApplyFrontier;

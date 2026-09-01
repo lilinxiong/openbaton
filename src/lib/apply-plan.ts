@@ -9,7 +9,6 @@ import path from "node:path";
 import type { SafetyOperation } from "./safety.js";
 
 export const APPLY_EXECUTION_PLAN_SCHEMA_VERSION = 1 as const;
-export const APPLY_PLAN_SCHEMA_VERSION = APPLY_EXECUTION_PLAN_SCHEMA_VERSION;
 export const APPLY_PLAN_OPERATIONS: readonly SafetyOperation[] = ["write", "create", "delete", "rename", "chmod"];
 
 export type ApplyPlanUnitMode = "patch-only" | "verification-only";
@@ -672,7 +671,6 @@ function criticalPath(plan: ApplyExecutionPlan): Record<string, number> {
 }
 
 export function remainingCriticalPath(plan: ApplyExecutionPlan): Record<string, number> { return criticalPath(plan); }
-export const computeRemainingCriticalPath = remainingCriticalPath;
 
 function ownershipForbidden(value: unknown): boolean {
   if (!record(value)) return false;
@@ -826,10 +824,5 @@ export function parseApplyExecutionPlan(text: string): ApplyExecutionPlan {
 }
 
 export function serializeApplyExecutionPlan(plan: ApplyExecutionPlan): string { return canonicalizeApplyPlan(assertValidApplyExecutionPlan(plan)); }
-export const normalizeApplyExecutionPlan = canonicalizeApplyPlan;
 export const canonicalJson = canonicalizeApplyPlan;
 export const fingerprintPlan = fingerprintApplyExecutionPlan;
-export const validateExecutionPlan = validateApplyExecutionPlan;
-export const assertValidExecutionPlan = assertValidApplyExecutionPlan;
-export const parseExecutionPlan = parseApplyExecutionPlan;
-export const serializeExecutionPlan = serializeApplyExecutionPlan;

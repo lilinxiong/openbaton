@@ -23,9 +23,6 @@ export const RETRY_ATTEMPT_SCHEMA_VERSION = 1 as const;
 /** Worktree isolation is available only on the durable rolling-run v2 state. */
 export const ROLLING_WORKTREE_STATE_SCHEMA_VERSION = 2 as const;
 /** Short aliases used by callers that treat the protocol as one wire schema. */
-export const ROLLING_SCHEMA_VERSION = ROLLING_PROTOCOL_SCHEMA_VERSION;
-export const TASK_SOURCE_SCHEMA_VERSION = TASK_SOURCE_DESCRIPTOR_SCHEMA_VERSION;
-export const TASK_MANIFEST_SCHEMA_VERSION = TASK_MANIFEST_PAGE_SCHEMA_VERSION;
 
 export type RollingSourceKind = "openspec" | "director";
 export type TaskSourceState = "pending" | "complete" | "unavailable";
@@ -334,8 +331,6 @@ export function resolveWorktreeExecutionMode(state: unknown, requested?: unknown
   return selected;
 }
 
-export const assertWorktreeExecutionMode = resolveWorktreeExecutionMode;
-export const resolveRollingWorktreeMode = resolveWorktreeExecutionMode;
 
 function sortedObject(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortedObject);
@@ -346,7 +341,6 @@ function sortedObject(value: unknown): unknown {
 export function canonicalizeRolling(value: unknown): string {
   return JSON.stringify(sortedObject(value));
 }
-export const canonicalizeRollingPlan = canonicalizeRolling;
 
 const OPAQUE_FINGERPRINT_SUBTREES = new Set([
   "selection",
@@ -381,7 +375,6 @@ export function fingerprintSupersession(value: Supersession | unknown): string {
 export function fingerprintLocalFailure(value: LocalFailure | unknown): string { return sha(value); }
 export function fingerprintRetryAttempt(value: RetryAttempt | unknown): string { return sha(value); }
 export function fingerprintPlanDelta(value: PlanDelta | unknown): string { return sha(value); }
-export const rollingFingerprint = fingerprintPlanDelta;
 
 function validateDescriptor(input: unknown): RollingValidationResult<TaskSourceDescriptor> {
   const d: RollingDiagnostic[] = [];
@@ -630,14 +623,6 @@ export const assertSupersession = (value: unknown) => assertResult(validateSuper
 export const assertLocalFailure = (value: unknown) => assertResult(validateFailure(value));
 export const assertRetryAttempt = (value: unknown) => assertResult(validateAttempt(value));
 export const assertPlanDelta = (value: unknown) => assertResult(validateDelta(value));
-export const assertValidTaskSourceDescriptor = assertTaskSourceDescriptor;
-export const assertValidTaskManifestEntry = assertTaskManifestEntry;
-export const assertValidTaskManifestPage = assertTaskManifestPage;
-export const assertValidUnitVersion = assertUnitVersion;
-export const assertValidGateVersion = assertGateVersion;
-export const assertValidTaskCoverage = assertTaskCoverage;
-export const assertValidTaskSeal = assertTaskSeal;
-export const assertValidPlanDelta = assertPlanDelta;
 
 export const parseTaskSourceDescriptor = (text: string) => parse(text, validateDescriptor);
 export const parseTaskManifestEntry = (text: string) => parse(text, validateEntry);
@@ -650,11 +635,6 @@ export const parseSupersession = (text: string) => parse(text, validateSuper);
 export const parseLocalFailure = (text: string) => parse(text, validateFailure);
 export const parseRetryAttempt = (text: string) => parse(text, validateAttempt);
 export const parsePlanDelta = (text: string) => parse(text, validateDelta);
-export const parseTaskSource = parseTaskSourceDescriptor;
-export const parseManifestPage = parseTaskManifestPage;
-export const parseUnit = parseUnitVersion;
-export const parseGate = parseGateVersion;
-export const parseDelta = parsePlanDelta;
 
 export const serializeTaskSourceDescriptor = (value: TaskSourceDescriptor) => serialize(value, validateDescriptor);
 export const serializeTaskManifestEntry = (value: TaskManifestEntry) => serialize(value, validateEntry);
@@ -667,11 +647,6 @@ export const serializeSupersession = (value: Supersession) => serialize(value, v
 export const serializeLocalFailure = (value: LocalFailure) => serialize(value, validateFailure);
 export const serializeRetryAttempt = (value: RetryAttempt) => serialize(value, validateAttempt);
 export const serializePlanDelta = (value: PlanDelta) => serialize(value, validateDelta);
-export const serializeTaskSource = serializeTaskSourceDescriptor;
-export const serializeManifestPage = serializeTaskManifestPage;
-export const serializeUnit = serializeUnitVersion;
-export const serializeGate = serializeGateVersion;
-export const serializeDelta = serializePlanDelta;
 export const canonicalJson = canonicalizeRolling;
 export const fingerprintPlan = fingerprintPlanDelta;
 export { RollingProtocolValidationError as RollingPlanValidationError };
@@ -681,4 +656,3 @@ export function deriveTaskKey(sourceKind: RollingSourceKind, sourceRef: unknown)
   if (!SOURCES.has(sourceKind)) throw new RollingProtocolValidationError([{ code: "INVALID_SOURCE_KIND", message: "source_kind is unsupported" }]);
   return `${sourceKind}:${crypto.createHash("sha256").update(canonicalizeRolling(sourceRef)).digest("hex").slice(0, 32)}`;
 }
-export const stableTaskKey = deriveTaskKey;

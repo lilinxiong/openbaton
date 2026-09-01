@@ -463,7 +463,3 @@ export function assertRepositoryLocalDecomposition(cwd: string, input: Repositor
   return result.topology!;
 }
 
-export const resolveRepositoryTopology = resolveWorktreeTopology;
-export const resolveUnitRepositoryTopology = resolveWorktreeTopology;
-export const validateRepositoryLocalUnitParts = validateRepositoryLocalDecomposition;
-export const assertRepositoryLocalUnitParts = assertRepositoryLocalDecomposition;

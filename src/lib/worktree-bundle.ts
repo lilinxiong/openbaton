@@ -298,5 +298,3 @@ export async function createWorktreeChangeBundle(input: CreateWorktreeChangeBund
   return { audit, bundle: persisted, record: transitionReady(input, record, persisted), replayed: false };
 }
 
-export const freezeWorktreeChangeBundle = createWorktreeChangeBundle;
-export const buildChangeBundle = createWorktreeChangeBundle;

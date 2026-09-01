@@ -292,6 +292,3 @@ export async function materializeStandalonePlansBatchAsync(
   }
 }
 
-export const materializeBatchAsync = materializeStandalonePlansBatchAsync;
-export const materializeCompiledApplyBatchAsync = materializeStandalonePlansBatchAsync;
-export const materializePlansBatchAsync = materializeStandalonePlansBatchAsync;

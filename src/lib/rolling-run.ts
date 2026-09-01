@@ -170,8 +170,6 @@ export class RollingStorageRaceError extends RollingRunError {
   }
 }
 
-export const RollingSequenceMismatchError = RollingStorageRaceError;
-export const RollingAppendSequenceRaceError = RollingStorageRaceError;
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -592,14 +590,10 @@ export function createRollingExecutionRun(input: RollingRunCreateInput): Rolling
   }, { operation: ROLLING_RUN_LOCK_OPERATION });
 }
 
-export const createRollingRun = createRollingExecutionRun;
-export const startRollingExecutionRun = createRollingExecutionRun;
 
 export function appendRollingFact(input: RollingRunAppendInput): RollingCheckpoint {
   return withOwnedLock(rollingRunLockPath(input.cwd, input.runId, input.env), () => appendLocked(input, appendInput(input)), { operation: ROLLING_RUN_LOCK_OPERATION });
 }
-export const appendRollingRun = appendRollingFact;
-export const appendRollingExecutionFact = appendRollingFact;
 
 export function appendRollingPlanDelta(input: RollingPlanDeltaAppendInput): RollingCheckpoint {
   const delta = assertPlanDelta(input.delta);
@@ -639,7 +633,6 @@ export function rebuildRollingRunCheckpoint(cwd: string, runId: string, options:
     return checkpoint;
   }, { operation: ROLLING_RUN_LOCK_OPERATION });
 }
-export const rebuildRollingCheckpoint = rebuildRollingRunCheckpoint;
 
 export function readRollingExecutionRun(cwd: string, runId: string, options: RollingRunReadOptions = {}): RollingCheckpoint {
   const env = options.env || process.env;
@@ -661,8 +654,6 @@ export function readRollingExecutionRun(cwd: string, runId: string, options: Rol
   }
   return checkpoint;
 }
-export const readRollingRun = readRollingExecutionRun;
-export const readRollingExecutionRunState = readRollingExecutionRun;
 
 export interface RollingRunStatus extends RollingCheckpoint {
   status: RollingTaskLifecycleState;
@@ -690,7 +681,6 @@ export function statusRollingExecutionRun(cwd: string, runId: string, options: R
     task_states: lifecycle.task_states,
   };
 }
-export const statusRollingRun = statusRollingExecutionRun;
 
 export interface LegacyCompiledRunStatus {
   schema_version: 1;
@@ -711,5 +701,3 @@ export function normalizeLegacyCompiledRunStatus(cwd: string, runId: string, opt
   } catch (cause) { throw new RollingRunError(`legacy compiled run cannot be normalized: ${(cause as Error).message}`, "LEGACY_COMPILED_RUN_INVALID"); }
 }
 export const normalizeCompiledRunV1Status = normalizeLegacyCompiledRunStatus;
-export const inspectLegacyCompiledRun = normalizeLegacyCompiledRunStatus;
-export const readLegacyCompiledRunStatus = normalizeLegacyCompiledRunStatus;

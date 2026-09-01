@@ -840,7 +840,6 @@ export function initializeWorktreeRecord(input: CreateWorktreeRecordInput): Work
   return assertWorktreeRecord(value);
 }
 
-export const createWorktreeRecord = initializeWorktreeRecord;
 
 function transitionPayload(input: WorktreeTransitionInput): string {
   const { expected_revision: _expected, recorded_at: _recorded, ...semantic } = input;
@@ -1197,11 +1196,5 @@ export function readPersistedIntegrationRecord(
   );
 }
 
-export const readWorktreeRecord = readPersistedWorktreeRecord;
-export const writeWorktreeRecordAtomic = persistWorktreeRecord;
-export const transitionWorktreeRecord = transitionPersistedWorktreeRecord;
-export const writeSnapshotManifestAtomic = persistSnapshotManifest;
-export const writeChangeBundleManifestAtomic = persistChangeBundleManifest;
-export const writeIntegrationRecordAtomic = persistIntegrationRecord;
 export { resolveWorktreeExecutionMode };
 export type { WorktreeExecutionMode };

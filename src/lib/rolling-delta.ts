@@ -1251,13 +1251,7 @@ export function validatePlanDeltaAgainstFacts(input: unknown, context: PlanDelta
 }
 
 /** Common short name for callers that already know they are validating a delta. */
-export const validateRollingPlanDelta = validatePlanDeltaAgainstFacts;
-export const validateDeltaAgainstFacts = validatePlanDeltaAgainstFacts;
-export const validateRollingDelta = validatePlanDeltaAgainstFacts;
 export const validatePlanDelta = validatePlanDeltaAgainstFacts;
-export const validatePlanDeltaSemantics = validatePlanDeltaAgainstFacts;
-export const validateSemanticPlanDelta = validatePlanDeltaAgainstFacts;
-export const validatePlanDeltaWithFacts = validatePlanDeltaAgainstFacts;
 
 export function assertPlanDeltaAgainstFacts(input: unknown, context: PlanDeltaValidationContext = {}): PlanDelta {
   const result = validatePlanDeltaAgainstFacts(input, context);
@@ -1265,10 +1259,4 @@ export function assertPlanDeltaAgainstFacts(input: unknown, context: PlanDeltaVa
   return result.value as PlanDelta;
 }
 
-export const assertRollingPlanDelta = assertPlanDeltaAgainstFacts;
-export const assertDeltaAgainstFacts = assertPlanDeltaAgainstFacts;
-export const assertRollingDelta = assertPlanDeltaAgainstFacts;
 export const assertPlanDelta = assertPlanDeltaAgainstFacts;
-export const assertPlanDeltaSemantics = assertPlanDeltaAgainstFacts;
-export const assertSemanticPlanDelta = assertPlanDeltaAgainstFacts;
-export const assertPlanDeltaWithFacts = assertPlanDeltaAgainstFacts;

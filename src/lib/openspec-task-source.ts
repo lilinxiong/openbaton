@@ -46,7 +46,6 @@ export interface OpenSpecTaskSourceAdapterOptions {
 }
 
 export const OPENSPEC_TASK_SOURCE_ADAPTER_ID = "openspec" as const;
-export const OPEN_SPEC_TASK_SOURCE_ADAPTER_ID = OPENSPEC_TASK_SOURCE_ADAPTER_ID;
 
 const unavailableCodes = new Set([
   "NOT_FOUND", "TASKS_MISSING", "NO_CHANGE", "AMBIGUOUS_CHANGE", "EMPTY",
@@ -366,4 +365,3 @@ export function createOpenSpecTaskSourceAdapter(options: OpenSpecTaskSourceAdapt
   return new OpenSpecTaskSourceAdapter(options);
 }
 
-export const OpenSpecAdapter = OpenSpecTaskSourceAdapter;

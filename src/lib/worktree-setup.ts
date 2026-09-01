@@ -293,5 +293,3 @@ export async function setupDetachedWorktree(input: DetachedWorktreeSetupInput): 
   }
 }
 
-export const createDetachedWorktree = setupDetachedWorktree;
-export const verifyWorktreeMaterialization = verifyDetachedWorktreeMaterialization;

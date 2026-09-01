@@ -1323,8 +1323,3 @@ export async function acceptWorktreeIntegration(input: AcceptWorktreeIntegration
   return { record: result.record, bundle, replayed: result.replayed, accepted_gate_refs: acceptedGateRefs };
 }
 
-export const enqueueIntegration = enqueueWorktreeIntegration;
-export const beginIntegration = beginWorktreeIntegration;
-export const applyIntegration = applyWorktreeIntegration;
-export const resolveIntegration = resolveWorktreeIntegration;
-export const acceptIntegration = acceptWorktreeIntegration;

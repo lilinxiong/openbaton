@@ -19,7 +19,6 @@ import type {
 import { canonicalizeRolling } from "./rolling-plan.js";
 
 export const ROLLING_INPUTS_SCHEMA_VERSION = 1 as const;
-export const ROLLING_LOCAL_INPUTS_SCHEMA_VERSION = ROLLING_INPUTS_SCHEMA_VERSION;
 
 /** Canonical kinds.  The aliases accepted by declarations are normalized to these values. */
 export type RollingInputKind =
@@ -294,8 +293,6 @@ export class RollingInputError extends Error {
   }
 }
 
-export const RollingLocalInputError = RollingInputError;
-export const RollingInputCaptureError = RollingInputError;
 
 type RecordLike = Record<string, unknown>;
 type FactContainer = unknown;
@@ -992,18 +989,6 @@ export async function captureLocalInputs(request: RollingLocalInputCaptureReques
   return captureLocal(request, request.owner_kind);
 }
 
-export const captureUnitInputs = captureUnitLocalInputs;
-export const captureGateInputs = captureGateLocalInputs;
-export const captureUnitLocalInputFacts = captureUnitLocalInputs;
-export const captureGateLocalInputFacts = captureGateLocalInputs;
-export const captureUnitInputFacts = captureUnitLocalInputs;
-export const captureGateInputFacts = captureGateLocalInputs;
-export const captureUnitLocalInputSnapshot = captureUnitLocalInputs;
-export const captureGateLocalInputSnapshot = captureGateLocalInputs;
-export const captureRollingLocalInputs = captureLocalInputs;
-export const captureRollingInputFacts = captureLocalInputs;
-export const captureRollingInputs = captureLocalInputs;
-export const captureLocalInputFacts = captureLocalInputs;
 
 /**
  * Return the digest of an already captured local observation.  This overload
@@ -1016,23 +1001,12 @@ export function fingerprintLocalInputs(value: Pick<RollingLocalInputCapture, "ow
   return localFingerprint(value);
 }
 
-export const fingerprintUnitLocalInputs = fingerprintLocalInputs;
-export const fingerprintGateLocalInputs = fingerprintLocalInputs;
-export const fingerprintUnitInputs = fingerprintLocalInputs;
-export const fingerprintGateInputs = fingerprintLocalInputs;
-export const fingerprintRollingLocalInputs = fingerprintLocalInputs;
-export const fingerprintUnitInputFacts = fingerprintLocalInputs;
-export const fingerprintGateInputFacts = fingerprintLocalInputs;
-export const fingerprintRollingInputs = fingerprintLocalInputs;
 
 export function fingerprintInputComponent(value: Omit<RollingInputFingerprintComponent, "fingerprint"> | RollingInputFingerprintComponent): string {
   const { label, kind, identity, value: selected } = value;
   return componentFingerprint({ label, kind, identity, value: clone(selected) });
 }
 
-export const fingerprintLocalInputComponent = fingerprintInputComponent;
-export const canonicalizeRollingInputs = canonicalizeRolling;
-export const canonicalizeLocalInputs = canonicalizeRolling;
 
 /** Exposed for validators and diagnostics that need to explain path rejection. */
 export function normalizeRollingRepositoryPath(repoRoot: string, inputPath: string): string {
@@ -1044,5 +1018,3 @@ export function normalizeRollingInputLabel(label: string): string {
   return canonicalLabel(label);
 }
 
-export const normalizeInputLabel = normalizeRollingInputLabel;
-export const normalizeRepositoryPath = normalizeRollingRepositoryPath;

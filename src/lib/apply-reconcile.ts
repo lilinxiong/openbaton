@@ -248,8 +248,6 @@ export function acceptApplyUnit(input: ApplyUnitAcceptanceInput): ApplyAcceptanc
     return { accepted: true, id: input.unitId, kind: "unit", run_id: state.run_id, revision: state.current_revision, fingerprint: state.current_fingerprint, ticket_id: ticketId, receipt_id: receiptId, evidence: sanitizeEvidence(resultText) };
   });
 }
-export const acceptCompiledApplyUnit = acceptApplyUnit;
-export const recordCompiledUnitAcceptance = acceptApplyUnit;
 
 /** Accept a parent-owned gate after checking stable identity and dependencies. */
 export function acceptApplyGate(input: ApplyGateAcceptanceInput): ApplyAcceptanceResult {
@@ -268,16 +266,12 @@ export function acceptApplyGate(input: ApplyGateAcceptanceInput): ApplyAcceptanc
     return { accepted: true, id: input.gateId, kind: "gate", run_id: state.run_id, revision: state.current_revision, fingerprint: state.current_fingerprint, evidence };
   });
 }
-export const acceptCompiledApplyGate = acceptApplyGate;
-export const acceptParentGate = acceptApplyGate;
 
 export function deriveApplyTaskEligibility(input: { cwd: string; runId: string; env?: NodeJS.ProcessEnv; tasksPath?: string; task?: string; taskNumber?: string }): ApplyTaskEligibility[] {
   const env = input.env || process.env; const { state, plan } = current(input.cwd, input.runId, env); const file = taskLedgerPath(state, input.tasksPath, input.cwd, plan);
   if (!fs.existsSync(file)) throw new ApplyReconcileError(`task ledger not found: ${file}`, "TASK_LEDGER_MISSING");
   const parsed = parseTasks(fs.readFileSync(file, "utf8")); return taskEligibility(state, plan, parsed, input.task || input.taskNumber);
 }
-export const applyTaskEligibility = deriveApplyTaskEligibility;
-export const eligibleApplyTasks = deriveApplyTaskEligibility;
 
 /** Reconcile all eligible tasks (or one stable task number) under one ledger lock. */
 export function reconcileApplyRun(input: ApplyReconcileInput): ApplyReconcileResult {
@@ -312,6 +306,3 @@ export function reconcileApplyRun(input: ApplyReconcileInput): ApplyReconcileRes
     });
   });
 }
-export const reconcileApplyTasks = reconcileApplyRun;
-export const reconcileOpenSpecTasks = reconcileApplyRun;
-export const reconcileTasks = reconcileApplyRun;

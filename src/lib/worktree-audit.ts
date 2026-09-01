@@ -287,5 +287,3 @@ export async function auditTerminalWorktree(input: TerminalWorktreeAuditInput): 
   }, violations);
 }
 
-export const auditIsolatedWorktree = auditTerminalWorktree;
-export const auditWorktreeResult = auditTerminalWorktree;
