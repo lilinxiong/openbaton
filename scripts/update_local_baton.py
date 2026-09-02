@@ -459,7 +459,7 @@ def _parse_json_output(output: str) -> dict[str, Any]:
 
 
 _UNINSTALL_PLAN_KEYS = frozenset({
-    "hosts", "clean", "dry_run", "applied", "targets", "active_tickets", "constraints",
+    "hosts", "clean", "dry_run", "applied", "targets", "active_tickets", "retained_runtime_records", "constraints",
 })
 _UNINSTALL_TARGET_REQUIRED_KEYS = frozenset({
     "action", "path", "reason", "expected_fingerprint", "expected_mode", "expected_kind",
@@ -469,12 +469,15 @@ _UNINSTALL_TARGET_KEYS = frozenset({
     "action", "path", "host", "reason", "expected_fingerprint", "expected_mode", "expected_kind",
 })
 _UNINSTALL_TICKET_KEYS = frozenset({"path", "ticket_id", "status", "host"})
+_UNINSTALL_RETAINED_RECORD_KEYS = frozenset({"path", "kind", "reason"})
 _UNINSTALL_ACTIONS = frozenset({"remove", "already-absent", "conflict"})
 _UNINSTALL_KINDS = frozenset({"file", "directory", "absent"})
 _SAFE_UNINSTALL_CONSTRAINTS = frozenset({
     "preserve modified or ambiguous skills",
     "never remove package-manager executable",
     "never recurse outside explicit Baton/host integration paths",
+    "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
+    "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
 })
 
 
@@ -556,6 +559,21 @@ def validate_uninstall_plan(
     if active:
         ids = ", ".join(str(item["ticket_id"]) for item in active)
         raise RuntimeError(f"clean uninstall blocked by active tickets: {ids}")
+
+    retained = plan["retained_runtime_records"]
+    if not isinstance(retained, list):
+        raise _invalid_uninstall_schema("retained_runtime_records must be an array")
+    retained_paths: set[str] = set()
+    for index, item in enumerate(retained):
+        record = _require_object(item, f"retained_runtime_records[{index}]")
+        _require_exact_keys(record, _UNINSTALL_RETAINED_RECORD_KEYS, f"retained_runtime_records[{index}]")
+        record_path = _require_string(record["path"], f"retained_runtime_records[{index}].path")
+        if record_path in retained_paths:
+            raise _invalid_uninstall_schema(f"retained_runtime_records contains duplicate path: {record_path}")
+        retained_paths.add(record_path)
+        if record["kind"] != "rolling-run-v2":
+            raise _invalid_uninstall_schema(f"retained_runtime_records[{index}].kind must be rolling-run-v2")
+        _require_string(record["reason"], f"retained_runtime_records[{index}].reason")
 
     targets = plan["targets"]
     if not isinstance(targets, list):
@@ -653,6 +671,23 @@ def verify_installation(
     missing_hosts = [str(path) for path in _manifest_host_files(baton_home(values)) if not path.is_file()]
     if missing_hosts:
         raise RuntimeError("verification failed: missing manifest-owned host skills: " + ", ".join(missing_hosts))
+    required_runtime_modules = (
+        "worktree-setup.js",
+        "worktree-audit.js",
+        "worktree-bundle.js",
+        "worktree-integration.js",
+        "worktree-lifecycle.js",
+    )
+    missing_runtime_modules = [
+        str(repo_root / "dist" / "src" / "lib" / name)
+        for name in required_runtime_modules
+        if not (repo_root / "dist" / "src" / "lib" / name).is_file()
+    ]
+    if missing_runtime_modules:
+        raise RuntimeError(
+            "verification failed: missing rolling isolation runtime modules: "
+            + ", ".join(missing_runtime_modules)
+        )
     config = baton_home(values) / "config.toml"
     if not config.is_file() or re.search(r"(?m)^\s*\[cli(?:\.|\s*\])", config.read_text(encoding="utf-8")):
         raise RuntimeError("verification failed: initialization restored a CLI profile")
@@ -666,7 +701,8 @@ def recovery_guidance(repo_root: Path = REPO_ROOT) -> str:
     return (
         "Recovery (cleanup has begun): inspect `command -v baton` and `~/.baton`, "
         f"then repair the link with `bun link` and initialize with `{cli} init`; "
-        "verify with `baton version`. Existing CLI profiles are not restored automatically."
+        "verify with `baton version`. Inspect retained rolling-run status before removing "
+        "any worktree, bundle refs, or integration context. Existing CLI profiles are not restored automatically."
     )
 
 

@@ -77,7 +77,66 @@ The director follows this loop for every explicit apply request:
    the OpenSpec checkboxes and conclusions. A checkbox is never marked early.
    The parent owns final gates, repository evidence, staging, and publication.
 
-The compiled protocol is explicit and remains compatible with manual apply:
+## Rolling v2 protocol
+
+New multi-unit execution uses the source-neutral rolling run. OpenSpec is one
+optional task-source adapter; director-authored tasks use the same kernel. The
+source adapter provides stable task keys. Never substitute a transient source
+ordinal for that identity. Start as soon as one small, safe delta is known and
+append later deltas while existing units are queued, active, terminal, or
+accepted. A large change must not require whole-change analysis before the
+workspace begins moving.
+
+```text
+baton run start --host <host> --source-file <source.json> [--plan-delta-file <delta.json>] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
+baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin ... --json
+baton integration apply ... --json
+baton integration resolve ... --json
+baton integration accept ... --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
+```
+
+Writing units in a new run default to `isolated-worktree`; verification units
+remain rootless. Let Baton prepare only the selected capacity frontier. Never
+create a shared ticket when adapter exact-root capability, repository
+decomposition, immutable-base setup, or caller-invariance checks fail. Shared
+mode is permitted only when the run explicitly selected the legacy/manual
+compatibility path.
+
+After a terminal isolated ticket is released, the parent freezes its audited
+bundle, serializes `begin`/`apply`, supplies and audits a separate `resolve`
+tree when conflicts exist, and calls `accept` before treating the result as a
+downstream base. Workers never create bundles or integrate. For submodules,
+run this lifecycle at the literal submodule root and use a later explicit
+superproject gitlink unit. Cleanup only an eligible exact attempt; preserve all
+reported retention reasons and identity mismatches.
+
+Each delta is compared with the current append sequence. A storage race rebases
+only that compare token; it never changes an immutable unit or gate version.
+Ticket lifecycle and the rolling log are joined through idempotent recovery:
+status may repair missing reservation, native-attempt, terminal, safety,
+parent-acceptance, release, or retry facts, but never duplicates a ticket or
+attempt. Terminal success alone is not acceptance. The exact safety verdict,
+parent acceptance, and matching attempt release remain separate facts. Release,
+gate acceptance, and delta append deterministically refill the same run.
+
+Status is task-first and reports unplanned, planned, active, blocked,
+terminal-unreleased, accepted, sealed, and reconciled states plus the next
+legal action. `PLAN_INSUFFICIENT` stays on the smallest owner and asks the
+director for a successor delta without stopping unrelated frontier work. Only
+accept an explicit typed gate whose dependencies are accepted; only seal exact
+non-superseded coverage; only reconcile sealed tasks. Reconciliation is the
+sole task-source writeback. Preserve the original session identity across
+reconnects. Never silently migrate an active compiled-v1 run.
+
+The compiled protocol remains an explicit compatibility surface for existing
+runs and manual apply:
 
 ```text
 baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json

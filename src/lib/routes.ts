@@ -4,6 +4,7 @@ import path from "node:path";
 import { hostRouteSnapshotPath } from "./paths.js";
 import type { ProviderQuotaDisclosure } from "./provider-quotas.js";
 import type { ModelCard } from "../types.js";
+import { readJsonFile, sha256Hex, writeJsonAtomic } from "./json-utils.js";
 
 export interface ExecutableRoute {
   id: string;
@@ -157,11 +158,11 @@ export function publishRouteSnapshot(
     throw new Error(`HOST_MISMATCH: route snapshot cli ${cli} does not match host ${host || snapshotHost}`);
   }
   const routes = normalizeRouteCatalog(catalog);
-  const fingerprint = crypto.createHash("sha256").update(stableRoutes(routes)).digest("hex");
+  const fingerprint = sha256Hex(stableRoutes(routes));
   const file = hostRouteSnapshotPath(cwd, snapshotHost, env);
   let previous: Partial<RouteSnapshot> | null = null;
   if (fs.existsSync(file)) {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+    const parsed = readJsonFile(file) as Partial<RouteSnapshot>;
     if (!validSnapshot(parsed) || parsed.cli !== snapshotHost) {
       throw new Error(`ROUTE_SNAPSHOT_FORMAT_UNSUPPORTED: ${file}`);
     }
@@ -189,15 +190,7 @@ export function publishRouteSnapshot(
     provider_quotas: quotaUpdate ? structuredClone(providerQuotas || []) : structuredClone(previous?.provider_quotas || []),
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const content = `${JSON.stringify(snapshot, null, 2)}\n`;
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(temp, content, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } finally {
-    if (fs.existsSync(temp)) fs.unlinkSync(temp);
-  }
+  writeJsonAtomic(file, snapshot);
   return { changed: !sameCatalog, snapshot };
 }
 
@@ -223,7 +216,7 @@ export function readRouteSnapshot(cwd: string, options: RouteSnapshotReadOptions
   const file = hostRouteSnapshotPath(cwd, requestedHost, env);
   if (!fs.existsSync(file)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteSnapshot>;
+    const parsed = readJsonFile(file) as Partial<RouteSnapshot>;
     if (!validSnapshot(parsed) || parsed.cli !== requestedHost) return null;
     return parsed;
   } catch {

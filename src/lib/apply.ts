@@ -19,7 +19,7 @@ import { buildSpawnTicket, nextSpawnId } from "./spawn.js";
 import { buildReadOnlyReceipt } from "./receipt.js";
 import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./ticket-materialization.js";
 import { runsDir } from "./paths.js";
-import type { ApplyUnitScopeMap } from "./apply-scope.js";
+import type { ApplyUnitScopeMap } from "./apply/scope.js";
 import type { SpawnTicket } from "./spawn.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 

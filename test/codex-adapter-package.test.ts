@@ -12,15 +12,16 @@ import { loadConfig } from "../src/lib/config.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
+  installBundledAdapters,
   installBundledAdaptersAndRecord,
-} from "../src/lib/adapter-install.js";
+} from "../src/lib/install/adapter-install.js";
 import {
   buildInstallManifest,
   installManifestPath,
   readInstallManifest,
   writeInstallManifest,
   directoryFingerprint,
-} from "../src/lib/install-manifest.js";
+} from "../src/lib/install/manifest.js";
 import { buildUninstallPlan } from "../src/lib/uninstall.js";
 import { configPath, skillPath } from "../src/lib/paths.js";
 import { parseToml } from "../src/lib/toml.js";
@@ -60,6 +61,19 @@ lines.on("line", (line) => {
 }
 
 describe("external Codex adapter package", () => {
+  it("validates every source package before mutating the install root", () => {
+    const { root: sourceRoot } = { root: fs.mkdtempSync(path.join(os.tmpdir(), "baton-adapter-preflight-")) };
+    const valid = path.join(sourceRoot, "alpha");
+    fs.mkdirSync(valid);
+    fs.writeFileSync(path.join(valid, "adapter.json"), "{}\n");
+    const { env } = isolatedEnv();
+    assert.throws(() => installBundledAdapters(env, [
+      { id: "alpha", source: valid },
+      { id: "beta", source: path.join(sourceRoot, "missing") },
+    ]), /ADAPTER_PACKAGE_INVALID/);
+    assert.equal(fs.existsSync(adapterInstallDir("alpha", env)), false);
+  });
+
   it("discovers from the installed home without BATON_ADAPTER_PATHS", () => {
     const { env } = isolatedEnv();
     fs.mkdirSync(path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
@@ -68,6 +82,7 @@ describe("external Codex adapter package", () => {
     assert.deepEqual(manifests.map((manifest) => manifest.adapter.id), ["codex"]);
     assert.equal(manifests[0].catalog.command, "catalog.mjs");
     assert.equal(manifests[0].native.execution_handle_kind, "task_name");
+    assert.equal(manifests[0].native.exact_execution_root, true);
     assert.equal(manifests[0].quota.max_concurrent_subagents, 3);
     assert.equal(getCliAdapter("codex", env).host.defaultMaxConcurrent, 3);
     assert.equal(getCliAdapter("codex", env).host.defaultMaxDepth, 1);
@@ -193,6 +208,15 @@ describe("external Codex adapter package", () => {
     assert.match(sourceRuntimeText, /root agent tree/);
     assert.doesNotMatch(sourceRuntimeText, /host\/workspace-global/);
     assert.match(sourceRuntimeText, /\$baton/);
+    assert.match(sourceRuntimeText, /codex exec --json/);
+    assert.match(sourceRuntimeText, /-C "\$EXECUTION_ROOT"/);
+    assert.match(sourceRuntimeText, /tool workdir set[\s\S]*execution_root/);
+    assert.match(sourceRuntimeText, /ticket\.route_id/);
+    assert.match(sourceRuntimeText, /ticket\.reasoning_effort/);
+    assert.match(sourceRuntimeText, /thread\.started/);
+    assert.match(sourceRuntimeText, /Never use `spawn_agent` for isolated execution/);
+    assert.match(sourceRuntimeText, /explicitly shared[\s\S]*`spawn_agent`/);
+    assert.doesNotMatch(sourceRuntimeText, /--add-dir/);
     assert.doesNotMatch(sourceRuntimeText, /^disable-model-invocation:/m);
     assert.doesNotMatch(sourceRuntimeText, /^user-invocable:/m);
     assert.match(fs.readFileSync(sourceRuntimePolicy, "utf8"), /allow_implicit_invocation:\s*false/);

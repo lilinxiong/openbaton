@@ -11,7 +11,7 @@ import { getCliAdapter } from "../src/adapters/registry.js";
 import { markRouteAvailable } from "../src/lib/model-availability.js";
 import { withHome, fakeEnv, testTicketId } from "./home.js";
 import { configureCli } from "./configure.js";
-import { parseDispatchReservationEnvelope } from "../src/lib/dispatch-reservation.js";
+import { parseDispatchReservationEnvelope } from "../src/lib/dispatch/reservation.js";
 
 function capture() {
   const chunks: string[] = [];

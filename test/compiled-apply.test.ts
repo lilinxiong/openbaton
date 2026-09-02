@@ -3,11 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "bun:test";
-import { ingestInitialApplyExecutionPlan, ingestSuccessorApplyExecutionPlan, materializeCompiledApplyFrontier } from "../src/lib/compiled-apply.js";
+import { ingestInitialApplyExecutionPlan, ingestSuccessorApplyExecutionPlan, materializeCompiledApplyFrontier } from "../src/lib/apply/compiled.js";
 import { buildSelectionUnit } from "../src/lib/selection.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { compiledApplyRunStatePath } from "../src/lib/paths.js";
-import { readApplyRunPlanBody } from "../src/lib/apply-run.js";
+import { readApplyRunPlanBody } from "../src/lib/apply/run.js";
 import { sessionUidFromEnv } from "../src/lib/session-scope.js";
 import type { CompiledApplySourceFacts } from "../src/lib/apply-source.js";
 
@@ -46,6 +46,12 @@ describe("compiled apply orchestration", () => {
     const accepted = await ingestInitialApplyExecutionPlan({ cwd: f.cwd, env: f.env, host: "codex", change: "demo", runId: "run-1", plan: p, captureSource: () => structuredClone(snapshot) });
     assert.equal(accepted.plan.source_snapshot.fingerprint, snapshot.fingerprint);
     assert.equal(readApplyRunPlanBody(f.cwd, "run-1", "1", f.env).source_snapshot.fingerprint, snapshot.fingerprint);
+  });
+
+  it("resolves a relative source repository against the invocation cwd", async () => {
+    const f = setup(); const snapshot = source(f.cwd); const p = plan(".");
+    const accepted = await ingestInitialApplyExecutionPlan({ cwd: f.cwd, env: f.env, host: "codex", change: "demo", runId: "run-1", plan: p, captureSource: () => structuredClone(snapshot) });
+    assert.equal(accepted.run.current_revision, "1");
   });
 
   it("rejects an explicit source fingerprint mismatch before run persistence", async () => {

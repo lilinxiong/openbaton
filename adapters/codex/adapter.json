@@ -18,7 +18,8 @@
     "environment": "Codex Desktop thread runtime"
   },
   "native": {
-    "execution_handle_kind": "task_name"
+    "execution_handle_kind": "task_name",
+    "exact_execution_root": true
   },
   "runtime_skill": {
     "source": "runtime/SKILL.md",

@@ -2,8 +2,8 @@ import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { describe, it } from "bun:test";
-import { collectGitSafetyFacts, streamGitSafetyFact } from "../src/lib/git-safety-facts.ts";
-import { consumeNulRecords, consumeRefRecords } from "../src/lib/git-record-consumers.ts";
+import { collectGitSafetyFacts, streamGitSafetyFact } from "../src/lib/git/safety-facts.ts";
+import { consumeNulRecords, consumeRefRecords } from "../src/lib/git/record-consumers.ts";
 
 function fakeSpawn(chunks: AsyncIterable<Buffer> | Iterable<Buffer>, state: { killed: boolean; produced: number; closed?: boolean; exitCode?: number }) {
   return (() => {
@@ -29,7 +29,7 @@ describe("streamed Git safety facts", () => {
   it("collects every Receipt/verdict fact from real Git without aggregate output capture", async () => {
     const facts = await collectGitSafetyFacts(process.cwd());
     assert.match(facts.head, /^[0-9a-f]{40}$/);
-    assert.match(facts.branchRef, /^refs\/heads\//);
+    assert.ok(facts.branchRef === "" || /^refs\/heads\//.test(facts.branchRef));
     assert.ok(Array.isArray(facts.refs));
     assert.ok(facts.reflog.count >= 1);
     assert.match(facts.reflog.checksum, /^[0-9a-f]{64}$/);

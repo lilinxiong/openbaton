@@ -237,6 +237,15 @@ describe("dispatch session continuity", () => {
     ticket.started_at = ticket.created_at;
     ticket.execution_handle = { kind: "alpha-task", value: "quota-handle", source: "native-return" };
     ticket.routing_requirements = { required_reasoning_effort: "high", estimated_context_tokens: null };
+    Object.assign(ticket, {
+      successor_exclusion_matrix: [{ codes: ["OLD"], reasons: ["old attempt"] }],
+      successor_safety_verdict: { accepted: false },
+      replan_required: true,
+      replan_reason: "OLD_REPLAN",
+      semantic_replan_reason: "OLD_SEMANTIC_REPLAN",
+      plan_insufficient_evidence: { file: "old.ts", symbol: "old", missing_decision: "old" },
+      plan_insufficient_host_error: { code: "OLD_HOST_ERROR" },
+    });
     ticket.history.push({ event: "agent_bound", at: ticket.created_at });
     writeReceipt(cwd, receipt, env);
     writeSpawn(cwd, ticket, env);
@@ -266,6 +275,10 @@ describe("dispatch session continuity", () => {
     assert.equal(successor.route_id, successorRoute);
     assert.equal(successor.reasoning_effort, "high");
     assert.equal(successor.status, "queued");
+    for (const field of [
+      "successor_exclusion_matrix", "successor_safety_verdict", "replan_required", "replan_reason",
+      "semantic_replan_reason", "plan_insufficient_evidence", "plan_insufficient_host_error",
+    ]) assert.equal(successor[field], undefined, field);
   }));
 
   it("keeps ordinals independent and contiguous for interleaved sessions", () => withHome((home) => {
@@ -286,5 +299,22 @@ describe("dispatch session continuity", () => {
     assert.notEqual(first.session_uid, second.session_uid);
     assert.equal(nextSpawnId(cwd, "os", firstEnv), `os-${first.session_uid}-0003`);
     assert.equal(nextSpawnId(cwd, "os", secondEnv), `os-${second.session_uid}-0003`);
+  }));
+
+  it("does not reuse an ordinal hidden by a corrupt current-session ticket", () => withHome((home) => {
+    const cwd = newCwd("baton-dispatch-session-corrupt-ordinal-");
+    const env = fakeEnv(home, { BATON_SESSION_ID: "corrupt-ordinal-tree" });
+    const uid = sessionUid(env);
+    const directory = spawnsDir(cwd, env);
+    fs.mkdirSync(directory, { recursive: true });
+    const corruptPath = path.join(directory, `spn-${uid}-0007.json`);
+    const corruptBytes = "{\"schema_version\":8,\"corrupt\":true}\n";
+    fs.writeFileSync(corruptPath, corruptBytes);
+
+    const id = nextSpawnId(cwd, "spn", env);
+    assert.equal(id, `spn-${uid}-0008`);
+    const next = buildSpawnTicket({ cwd, env, id, description: "after corrupt ticket", prompt: "after corrupt ticket", modelId: "alpha/default", routeId: "alpha/default", taskKind: "concrete", targetHost: "alpha" });
+    writeSpawn(cwd, next, env);
+    assert.equal(fs.readFileSync(corruptPath, "utf8"), corruptBytes);
   }));
 });

@@ -1138,7 +1138,7 @@
               <div class="module">
                 <p class="module-label">git safety</p>
                 <h3>baseline、index、锁与审计</h3>
-                <p>保护 worktree/index/ref；worker 不 stage、branch、rebase。parent 保持 staging/commit 所有权。</p>
+                <p>保护调用方 checkout 的 index/ref；隔离 worker 不 stage、branch、rebase。parent 保持 bundle、integration、resolution 与最终 publication 所有权。</p>
               </div>
               <div class="module">
                 <p class="module-label">immutability</p>
@@ -1242,7 +1242,7 @@
               <div>
                 <p class="layer-kicker">Execution + persistence</p>
                 <h2 class="layer-title" id="layer-7-title">worker + worktree + <code>~/.baton</code> 持久化层</h2>
-                <p class="layer-intent">native worker 在允许范围内执行；调用方拥有 worktree，Baton 把控制平面证据保存在用户级 runtime。</p>
+                <p class="layer-intent">native worker 在允许范围内执行；滚动写入单元默认使用 Baton 管理的 detached worktree，显式 shared 模式才直接使用调用方 checkout。Baton 把控制平面与 integration 证据保存在用户级 runtime。</p>
               </div>
               <span class="source-seam">source: src/lib/spawn.ts · apply.ts · paths.ts</span>
             </div>
@@ -1255,7 +1255,7 @@
               <div class="module">
                 <p class="module-label">caller-owned files</p>
                 <h3>worktree / working tree</h3>
-                <p>源码文件属于调用方的 worktree；worker 不执行 Git 操作，parent 审计 diff、staging 与最终 publication。</p>
+                <p>隔离源码属于 Baton 管理的每次 attempt worktree；worker 不执行 Git 操作。parent 冻结 ChangeBundle、串行集成、解决冲突，并在 accept 前保持调用方 checkout 不变。</p>
               </div>
               <div class="module">
                 <p class="module-label">user-global runtime</p>

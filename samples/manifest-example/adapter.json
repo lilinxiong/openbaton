@@ -14,7 +14,10 @@
     "timeout_ms": 5000
   },
   "invocation": { "signal": "SAMPLE_ADAPTER_SESSION" },
-  "native": { "execution_handle_kind": "sample-native-task" },
+  "native": {
+    "execution_handle_kind": "sample-native-task",
+    "exact_execution_root": false
+  },
   "runtime_skill": {
     "source": "runtime/SKILL.md",
     "destination": ".baton/skills/sample-adapter/SKILL.md"

@@ -356,6 +356,74 @@ changes, safety-blocked partial mutation, and `PLAN_INSUFFICIENT` return to the
 director for a new decision. Legacy manual `baton apply` with explicit scopes
 and `--read-only` remains compatible; compiled mode rejects manual scope flags.
 
+## Rolling v2: fast, source-neutral startup
+
+New large changes do not need a complete whole-change plan before the first
+worker starts. A director accepts one bounded, dependency-ready `PlanDelta`,
+dispatches its safe frontier, and appends later deltas while earlier workers
+are queued or running. Every dispatched unit is still complete and immutable;
+only discovery of future work remains open.
+
+OpenSpec is optional. A `TaskSourceDescriptor` selects either the built-in
+director source or an installed source adapter. The OpenSpec adapter uses the
+stable Markdown task number (for example `1.1`) for reconciliation and keeps a
+transient Apply ordinal only as diagnostics, so reordered Apply JSON cannot
+change task identity.
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
+baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
+baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
+baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
+```
+
+New rolling runs default writing units to `isolated-worktree`; verification
+units remain rootless. Refill checks the adapter's
+`native.exact_execution_root=true` capability, resolves one owning repository,
+and creates verified detached roots only for the current capacity frontier.
+This bounds large-change startup work. Failure stops before ticket creation and
+never falls back to shared execution. `--worktree-mode shared-worktree` remains
+an explicit legacy/manual compatibility choice.
+
+After native completion and release, the parent freezes a `ChangeBundle v1`.
+The bundle records the immutable base/result trees, exact changed paths and
+operations, binary/mode/rename/symlink/gitlink facts, Receipt lineage, and a
+Baton-owned internal commit. Integration is serialized per repository:
+`begin` admits the exact caller baseline, `apply` uses isolated Git object
+plumbing, `resolve` records a separate parent-authored conflict result, and
+`accept` alone applies the frozen result to the caller. A clean caller checkout
+therefore does not mean workers made no progress; status reports execution and
+integration truth separately.
+
+Submodule files are executed, audited, bundled, and integrated from the
+submodule repository root. A later superproject unit owns the explicit gitlink
+update. Cleanup removes only an exact eligible root after all retention reasons
+are cleared; unresolved conflicts, live handles, ready bundles, downstream
+bases, and user retention remain visible and preserved.
+
+Status is task-first and distinguishes unplanned, planned, active,
+terminal-unreleased, blocked, accepted, sealed, and reconciled work. Terminal
+success, the safety verdict, parent acceptance, and release are separate
+idempotent facts. Gates are typed as `safety-precondition`,
+`integration-acceptance`, or `evidence`, and block only explicit dependencies.
+A failed version remains auditable; the director may append an immutable
+successor only when the failed lineage is replaceable. Tasks become complete
+only after an exact non-superseded seal and adapter-owned reconciliation.
+
+Rolling state lives under the current workspace runtime in
+`runs/rolling-runs-v2/`. Clean uninstall inventories and retains these
+append-only facts and accepted documents. Existing manual and compiled-v1
+`baton apply` runs keep their original commands and are never silently
+migrated.
+
 ## First session
 
 Ticket-producing and capacity-sensitive dispatch commands require
@@ -389,6 +457,12 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
+baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
+baton run <run-id> --status --json
+baton run <run-id> --freeze-unit <unit> --attempt attempt-1 --text "audited result" --json
+baton integration begin --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --expected-before-tree <tree> --json
+baton integration apply --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --json
+baton integration accept --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --conclusion "accepted" --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

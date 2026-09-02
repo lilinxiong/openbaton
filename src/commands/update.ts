@@ -4,9 +4,9 @@ import { packageRoot, batonHomeDir, skillPath, configPath, displayHomePath } fro
 import { loadConfig, saveConfig, normalizeConfig } from "../lib/config.js";
 import { parseToml } from "../lib/toml.js";
 import { refreshInstalledHostSkills } from "../lib/hosts.js";
-import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
+import { buildInstallManifest, writeInstallManifest } from "../lib/install/manifest.js";
 import { hostIds } from "../lib/hosts.js";
-import { installBundledAdapters } from "../lib/adapter-install.js";
+import { installBundledAdapters } from "../lib/install/adapter-install.js";
 
 export interface UpdateProjectOptions {
   forceSkill?: boolean;

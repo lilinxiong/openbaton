@@ -4,6 +4,7 @@ import path from "node:path";
 import { classifyTask } from "./cards.js";
 import { routeHealthPath } from "./paths.js";
 import type { ModelCard } from "../types.js";
+import { readJsonFile, writeJsonAtomic } from "./json-utils.js";
 
 export const DEFAULT_ROUTE_HEALTH_COOLDOWN_MS = 15 * 60 * 1000;
 
@@ -57,7 +58,7 @@ export function readRouteHealth(cwd: string, env?: NodeJS.ProcessEnv): RouteHeal
   const file = routeHealthPath(cwd, env);
   if (!fs.existsSync(file)) return emptyStore();
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<RouteHealthStore>;
+    const parsed = readJsonFile(file) as Partial<RouteHealthStore>;
     if (parsed.schema_version !== 1 || !Array.isArray(parsed.records)) return emptyStore();
     return { schema_version: 1, records: parsed.records as RouteHealthRecord[] };
   } catch {
@@ -67,14 +68,7 @@ export function readRouteHealth(cwd: string, env?: NodeJS.ProcessEnv): RouteHeal
 
 function writeRouteHealth(cwd: string, store: RouteHealthStore, env?: NodeJS.ProcessEnv): void {
   const file = routeHealthPath(cwd, env);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(store, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temp, file);
-  } finally {
-    if (fs.existsSync(temp)) fs.unlinkSync(temp);
-  }
+  writeJsonAtomic(file, store);
 }
 
 function healthKey(record: Pick<RouteHealthRecord, "route_id" | "profile" | "host" | "task_shape">): string {

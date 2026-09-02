@@ -11,20 +11,36 @@ import {
   reserveNext,
 } from "../lib/dispatch.js";
 import { sessionUid } from "../lib/spawn.js";
+import { refillRollingRun, synchronizeRollingTicketFacts } from "../lib/rolling-control.js";
 import type { WritableLike } from "../types.js";
-import type { NativeExecutionHandleKind } from "../adapters/contract.js";
+import {
+  normalizeExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+  type NativeExecutionHandleKind,
+} from "../adapters/contract.js";
+import type { NativeExecutionHandle } from "../lib/spawn.js";
+
+const EXACT_ROOT_FLAGS: ReadonlyArray<readonly [string, keyof ExactExecutionRootIdentity]> = [
+  ["repository-id", "repository_id"],
+  ["git-common-dir-identity", "git_common_dir_identity"],
+  ["execution-root", "execution_root"],
+  ["base-tree", "base_tree"],
+  ["worktree-record-id", "worktree_record_id"],
+];
+
+const EXACT_ROOT_USAGE = "--repository-id SHA256 --git-common-dir-identity SHA256 --execution-root ABSOLUTE_PATH --base-tree GIT_OBJECT --worktree-record-id ID";
 
 const USAGE = `usage:
   baton dispatch next --host HOST [--capacity N] [--limit N] --json
-  baton dispatch bind TICKET --execution-handle KIND=VALUE --host HOST --json
+  baton dispatch bind TICKET --execution-handle KIND=VALUE [${EXACT_ROOT_USAGE}] --host HOST --json
   baton dispatch defer TICKET --host HOST --code AGENT_LIMIT_REACHED [--observed-capacity N] --json
-  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
+  baton dispatch probe TICKET --host HOST --execution-handle KIND=VALUE [${EXACT_ROOT_USAGE}] --state pending_init|running|interrupted|shutdown|not_found [--activity status|output|heartbeat] --json
   baton dispatch progress TICKET --host HOST --phase PHASE --text "short status" [--next TEXT] [--blocker TEXT] [--needs-input] --json
   baton dispatch complete TICKET --host HOST --text "short conclusion" [--release] --json
   baton dispatch fail TICKET --host HOST --code CODE --message MESSAGE [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch timeout TICKET --host HOST --probe-sequence N [--message MESSAGE] [--remaining-percent N] [--reset-at ISO] [--release] --json
   baton dispatch close TICKET --host HOST [--message MESSAGE] [--release] --json
-  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE] --json
+  baton dispatch release TICKET --host HOST [--execution-handle KIND=VALUE [${EXACT_ROOT_USAGE}]] --json
   baton dispatch recover [--host HOST] [--stale-ms N] --json
   baton dispatch status --host HOST [--capacity N] --json
 
@@ -61,7 +77,7 @@ function validateFlags(args: string[]): void {
   const values = new Set([
     "host", "capacity", "limit", "execution-handle", "code", "message", "observed-capacity",
     "state", "activity", "phase", "text", "next", "blocker", "remaining-percent", "reset-at",
-    "probe-sequence", "stale-ms",
+    "probe-sequence", "stale-ms", ...EXACT_ROOT_FLAGS.map(([flag]) => flag),
   ]);
   const booleans = new Set(["json", "needs-input", "release"]);
   for (let index = 0; index < args.length; index += 1) {
@@ -92,7 +108,7 @@ function stringFlag(flags: FlagMap, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function executionHandleFlag(flags: FlagMap): { kind: NativeExecutionHandleKind; value: string; source: "manual" } | undefined {
+function executionHandleFlag(flags: FlagMap): NativeExecutionHandle | undefined {
   const raw = stringFlag(flags, "execution-handle");
   let kind: string | undefined;
   let value: string | undefined;
@@ -102,11 +118,18 @@ function executionHandleFlag(flags: FlagMap): { kind: NativeExecutionHandleKind;
     kind ||= raw.slice(0, separator);
     value ||= raw.slice(separator + 1);
   }
-  if (!kind && !value) return undefined;
+  const presentExactFlags = EXACT_ROOT_FLAGS.filter(([flag]) => stringFlag(flags, flag) !== undefined);
+  if (!kind && !value && presentExactFlags.length === 0) return undefined;
   if (!kind || !value || !/^[a-z][a-z0-9._-]*$/.test(kind)) {
     throw new Error(USAGE.trim());
   }
-  return { kind: kind as NativeExecutionHandleKind, value, source: "manual" };
+  if (presentExactFlags.length !== 0 && presentExactFlags.length !== EXACT_ROOT_FLAGS.length) {
+    throw new Error("exact execution-root acknowledgement requires all five identity flags");
+  }
+  const exactRoot = presentExactFlags.length === 0
+    ? undefined
+    : normalizeExactExecutionRootIdentity(Object.fromEntries(EXACT_ROOT_FLAGS.map(([flag, field]) => [field, stringFlag(flags, flag)])));
+  return { kind: kind as NativeExecutionHandleKind, value, source: "manual", ...exactRoot };
 }
 
 function print(stdout: WritableLike, value: unknown, json = true): void {
@@ -149,6 +172,29 @@ interface DispatchCommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+async function projectRollingLifecycle(
+  cwd: string,
+  ticket: Awaited<ReturnType<typeof finishAgent>>,
+  env: NodeJS.ProcessEnv,
+  eventReason: string,
+  refill: boolean,
+): Promise<unknown | null> {
+  const runId = ticket.rolling_unit_lineage?.run_id;
+  if (!runId) return null;
+  try {
+    const recovery = synchronizeRollingTicketFacts({ cwd, env, run_id: runId });
+    const replenished = refill
+      ? await refillRollingRun({ cwd, env, run_id: runId, event_reason: eventReason })
+      : null;
+    return { run_id: runId, appended_execution_facts: recovery.appended, refill: replenished };
+  } catch (cause) {
+    const value = cause as Error & { code?: string };
+    // The native lifecycle mutation is already durable. Report a typed
+    // recovery diagnostic and let `baton run RUN --status` retry projection.
+    return { run_id: runId, recovery_required: true, code: value.code || "ROLLING_RECOVERY_REQUIRED", message: value.message };
+  }
+}
+
 export async function runDispatch(args: string[], { cwd, stdout, env = process.env }: DispatchCommandOptions): Promise<number> {
   // Establish the root tree scope before any reservation, refill, status, or
   // ticket-targeted dispatch operation can inspect project state.
@@ -173,7 +219,12 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       host,
       env,
     });
-    print(stdout, result, json);
+    const rolling = [];
+    for (const reserved of result.reserved) {
+      if (!reserved.rolling_unit_lineage?.run_id) continue;
+      rolling.push(await projectRollingLifecycle(cwd, reserved as never, env, "reservation", false));
+    }
+    print(stdout, rolling.length ? { ...result, rolling } : result, json);
     return result.blocked.length && result.reserved.length === 0 ? 1 : 0;
   }
 
@@ -186,7 +237,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       host,
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host), host, env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, "native-bind", false);
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host), host, env }) }, json);
     return 0;
   }
 
@@ -243,7 +295,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
     const id = values[0];
     if (!id || !flags.text) throw new Error(USAGE.trim());
     const ticket = await finishAndMaybeRelease(cwd, id, flags, { status: "completed", conclusion: stringFlag(flags, "text")!, env });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, flags.release ? "release" : "terminal-result", Boolean(ticket.slot_released_at));
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -266,7 +319,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       probeSequence: timeoutProbeSequence ? Number(timeoutProbeSequence) : null,
       env,
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, ticket.slot_released_at ? "release" : "terminal-result", Boolean(ticket.slot_released_at));
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, stringFlag(flags, "host") ? parseHostId(stringFlag(flags, "host")!, env) : undefined), host: stringFlag(flags, "host"), env }) }, json);
     return 0;
   }
 
@@ -279,7 +333,8 @@ export async function runDispatch(args: string[], { cwd, stdout, env = process.e
       env,
       ...(host ? { host } : {}),
     });
-    print(stdout, { ticket, snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
+    const rolling = await projectRollingLifecycle(cwd, ticket, env, "release", true);
+    print(stdout, { ticket, ...(rolling ? { rolling } : {}), snapshot: dispatchSnapshot(cwd, { capacity: capacity(cwd, env, flags.capacity, host ? parseHostId(host, env) : undefined), host, env }) }, json);
     return 0;
   }
 

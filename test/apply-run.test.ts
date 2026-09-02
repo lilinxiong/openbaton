@@ -10,7 +10,7 @@ import {
   readApplyRunPlanBody,
   statusApplyRun,
   type ApplyRunState,
-} from "../src/lib/apply-run.js";
+} from "../src/lib/apply/run.js";
 import { compiledApplyRunBodyPath, compiledApplyRunStatePath } from "../src/lib/paths.js";
 import type { ApplyExecutionPlan } from "../src/lib/apply-plan.js";
 

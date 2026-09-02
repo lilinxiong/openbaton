@@ -1064,7 +1064,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       &lt;/div&gt;
       &lt;div class=&quot;boundary-band&quot;&gt;
         &lt;span&gt;&lt;strong&gt;控制事实：&lt;/strong&gt;Baton 管“谁、何时、以什么约束运行”&lt;/span&gt;
-        &lt;span&gt;&lt;strong&gt;工作区事实：&lt;/strong&gt;文件仍在共享 worktree，隔离来自 scope 所有权与审计，不来自 fork_context&lt;/span&gt;
+        &lt;span&gt;&lt;strong&gt;工作区事实：&lt;/strong&gt;滚动写入单元默认运行在 Baton 管理的隔离 worktree；显式 shared 模式才复用调用方 worktree，scope 所有权与审计在两种模式下都生效&lt;/span&gt;
       &lt;/div&gt;
     &lt;/section&gt;
 

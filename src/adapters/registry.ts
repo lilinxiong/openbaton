@@ -21,12 +21,21 @@ function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
     host: { id: manifest.adapter.id, skillPath: manifest.runtime_skill.destination,
       defaultMaxConcurrent: maxConcurrent(),
       ...(manifest.quota.max_depth === undefined ? {} : { defaultMaxDepth: manifest.quota.max_depth }),
+      ...(manifest.native.exact_execution_root === undefined ? {} : { exactExecutionRoot: manifest.native.exact_execution_root }),
       maxConcurrent,
       isInvoking: (env = process.env) => Boolean(String(env[manifest.invocation.signal] || "").trim()),
       executionHandleKind: manifest.native.execution_handle_kind },
     resolveCommand: () => manifest.catalog.command.startsWith("/") ? manifest.catalog.command : `${directory}/${manifest.catalog.command}`,
     discoverModels: async (options = {}) => {
       const catalog = await adapter.discoverModels(options);
+      const catalogCapabilities = { ...(catalog.capabilities || {}) } as Record<string, unknown>;
+      // Exact-root support is a native adapter contract. A catalog subprocess
+      // may report live quotas, but it cannot grant or override this capability.
+      delete catalogCapabilities.exact_execution_root;
+      const capabilities = {
+        ...catalogCapabilities,
+        ...(manifest.native.exact_execution_root === undefined ? {} : { exact_execution_root: manifest.native.exact_execution_root }),
+      };
       return { cli: catalog.adapter_id, adapter_id: catalog.adapter_id, version: catalog.version, models: catalog.models.map((model) => ({
         id: model.id, model: model.model || model.id, display_name: model.display_name || model.id,
         description: model.description || "", hidden: model.hidden === true,
@@ -35,7 +44,7 @@ function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
         service_tiers: model.service_tiers || [], default_service_tier: model.default_service_tier ?? null,
         is_default: model.is_default === true, ...model,
       })) as any,
-        ...(catalog.capabilities ? { capabilities: catalog.capabilities } : {}) } as any;
+        ...(Object.keys(capabilities).length ? { capabilities } : {}) } as any;
     },
   };
 }

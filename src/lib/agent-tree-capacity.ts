@@ -112,5 +112,3 @@ export function resolveAgentTreeCapacity(input: AgentTreeCapacityInput = {}): Ef
 }
 
 /** Descriptive alias for callers that need to emphasize the effective value. */
-export const effectiveAgentTreeCapacity = resolveAgentTreeCapacity;
-export const resolveEffectiveAgentTreeCapacity = resolveAgentTreeCapacity;

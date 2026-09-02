@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildCommitReceipt, buildReadOnlyReceipt, buildWriteReceipt, readReceipt, ReceiptError, writeReceipt, validateCompiledApplyLineage, validateTicketReceiptLineage } from "../src/lib/receipt.js";
+import { buildCommitReceipt, buildReadOnlyReceipt, buildWriteReceipt, normalizeRollingUnitLineage, readReceipt, ReceiptError, writeReceipt, validateCompiledApplyLineage, validateTicketReceiptLineage } from "../src/lib/receipt.js";
 import { validateIndexControlBaselineMetadata } from "../src/lib/safety.js";
 import { receiptsDir } from "../src/lib/paths.js";
 import { withHome } from "./home.js";
@@ -11,6 +11,41 @@ import { withHome } from "./home.js";
 describe("Delegation Receipt", () => {
   const verificationLineage = { run_id: "run-1", plan_revision: "2", plan_fingerprint: "fp-1", unit_id: "unit-1", task_refs: ["1.1", "1.2"], mode: "verification-only" as const };
   const patchLineage = { ...verificationLineage, mode: "patch-only" as const };
+  const exactRoot = {
+    repository_id: "a".repeat(64), git_common_dir_identity: "b".repeat(64),
+    execution_root: "/tmp/baton/worktrees/run/unit/attempt", base_tree: "c".repeat(40),
+    worktree_record_id: "record-run-unit-attempt",
+  } as const;
+  const isolatedRollingLineage = {
+    schema_version: 1 as const, run_id: "rolling-isolated", unit_key: "unit-isolated", unit_version: 1,
+    unit_fingerprint: "d".repeat(64), task_keys: ["director:isolated"], mode: "patch-only" as const,
+    worktree_mode: "isolated-worktree" as const, ...exactRoot,
+  };
+
+  it("binds isolated Receipt identity atomically to ticket and rolling lineage", () => {
+    const base = buildReadOnlyReceipt({
+      ticketId: "spn-isolated", card: { id: "alpha/default", strengths: "", route_id: "alpha/default" },
+      host: "alpha", rollingUnitLineage: isolatedRollingLineage,
+    });
+    for (const [field, value] of Object.entries(exactRoot)) assert.equal((base as any)[field], value);
+    const baseline = {
+      repo_root: exactRoot.execution_root, head: "e".repeat(40), branch: "", branch_ref: "",
+      index_path: "/tmp/index", index_tree: exactRoot.base_tree,
+      index_control_checksum: "f".repeat(64), index_control_algorithm: "git-index-control-framed-sha256-v2", index_control_entry_count: 0,
+      staged_paths: [], refs: [], head_reflog_count: 0, head_reflog_checksum: "0".repeat(64), dirty_entries: [], dirty_checksums: {}, captured_at: "2026-09-01T00:00:00.000Z",
+    };
+    const receipt = buildWriteReceipt({ base, baseline, writeAllowlist: ["src/a.ts"], allowedOperations: ["write"] });
+    const ticket = {
+      id: "spn-isolated", model_id: "alpha/default", route_id: "alpha/default", service_tier: null,
+      host: "alpha", mode: "write" as const, read_only: false,
+      rolling_unit_lineage: isolatedRollingLineage, ...exactRoot,
+    };
+    assert.equal(validateTicketReceiptLineage(ticket, receipt), null);
+    assert.equal(validateTicketReceiptLineage({ ...ticket, execution_root: "/tmp/other" }, receipt), "ISOLATED_EXECUTION_IDENTITY_MISMATCH");
+    const partial = { ...isolatedRollingLineage } as any;
+    delete partial.base_tree;
+    assert.throws(() => normalizeRollingUnitLineage(partial), (error) => error instanceof ReceiptError && error.code === "ISOLATED_EXECUTION_IDENTITY_PARTIAL");
+  });
 
   it("builds a fail-closed immutable read-only authorization snapshot", () => {
     const receipt = buildReadOnlyReceipt({
@@ -160,5 +195,35 @@ describe("Delegation Receipt", () => {
     assert.equal(receipt.execution.mode, "write");
     assert.deepEqual(receipt.compiled_apply_lineage, patchLineage);
     assert.throws(() => buildWriteReceipt({ base: buildReadOnlyReceipt({ ticketId: "spn-v", card: { id: "k3", strengths: "" }, compiledApplyLineage: verificationLineage }), baseline, writeAllowlist: ["x"], allowedOperations: ["write"] }), (error) => error instanceof ReceiptError && error.code === "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
+  });
+
+  it("ignores null rolling-lineage aliases while preserving the base lineage", () => {
+    const rollingLineage = {
+      schema_version: 1 as const,
+      run_id: "rolling-run",
+      unit_key: "rolling-unit",
+      unit_version: 1,
+      unit_fingerprint: "a".repeat(64),
+      task_keys: ["director:task"],
+      mode: "patch-only" as const,
+    };
+    const base = buildReadOnlyReceipt({
+      ticketId: "spn-rolling-null-alias",
+      card: { id: "alpha/default", strengths: "", route_id: "alpha/default" },
+      rollingUnitLineage: rollingLineage,
+    });
+    const baseline = {
+      repo_root: "/repo", head: "a".repeat(40), branch: "main", branch_ref: "refs/heads/main",
+      index_path: "/repo/.git/index", index_tree: "b".repeat(40), index_control_checksum: "c".repeat(64), index_control_algorithm: "git-index-control-framed-sha256-v2", index_control_entry_count: 0,
+      staged_paths: [], refs: [], head_reflog_count: 0, head_reflog_checksum: "d".repeat(64), dirty_entries: [], dirty_checksums: {}, captured_at: "2026-08-21T00:00:00.000Z",
+    };
+    const receipt = buildWriteReceipt({
+      base,
+      baseline,
+      writeAllowlist: ["src/x.ts"],
+      allowedOperations: ["write"],
+      rolling_unit_lineage: null,
+    });
+    assert.deepEqual(receipt.rolling_unit_lineage, rollingLineage);
   });
 });

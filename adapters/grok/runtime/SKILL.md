@@ -48,10 +48,14 @@ candidate and every exclusion reason. Quota, rate-limit, and uncallability
 evidence are session-local Baton cache facts; session evidence never carries to
 a new Grok session, which must recheck its routes.
 
-For every reservation, pass its prompt unchanged to a fresh exact-model Grok
-native worker via a `spawn_subagent` call with `background=true`, `isolation=none`,
+Grok does not currently guarantee a native child cwd, so it advertises
+`exact_execution_root=false`. An `isolated-worktree` reservation must fail
+closed as adapter-incompatible before any `spawn_subagent` call; do not fall
+back to shared execution. Only an explicitly shared reservation may pass its
+prompt unchanged to a fresh exact-model Grok native worker via a
+`spawn_subagent` call with `background=true`, `isolation=none`,
 `subagent_type=general-purpose`, and `resume_from` unset (`fork_context=false`).
-Immediately bind the returned opaque `subagent_id`, wait on real activity with
+For that shared worker, immediately bind the returned opaque `subagent_id`, wait on real activity with
 `get_command_or_subagent_output` for real native liveness, record exactly one terminal result,
 release the ticket before refilling capacity, and keep terminal scopes owned until
 release. Return to the director only for
@@ -61,7 +65,81 @@ broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
 parent alone accepts gates and reconciles task checkboxes after all mapped units
 and gates pass; never complete a checkbox early.
 
-The compiled CLI operations are explicit and preserve manual compatibility:
+### Exact worker execution boundary
+
+For an isolated reservation, render and pass the exact canonical
+`execution_root`, the patch instructions unchanged, and the complete
+`permitted_validation` list. The execution root is the worker's only workspace
+boundary, not additional authorization: all paths and operations remain limited
+by the Receipt. Validation is not extra read or write authority. The worker must
+not read, write, traverse, resolve a path into, or run a command in the caller
+checkout or any sibling execution root, including through symlinks, nested
+repositories, or other repository indirection.
+
+The worker must not run Git or stage, commit, create or change branches, update
+refs, merge, or rebase. It must not edit OpenSpec artifacts, task sources, task
+ledgers, plans, Receipts, dispatch artifacts, or lifecycle records; create or
+manage worktrees; spawn descendants; replan, redesign, change dependencies, or
+expand or narrow scope; create or apply bundles; integrate results; or resolve
+conflicts. If the exact patch or validation instructions require any forbidden
+action, it returns structured `PLAN_INSUFFICIENT` instead of substituting work.
+
+An explicitly selected `shared-worktree` reservation remains a legacy/manual
+compatibility path. It has no generated exact-root claim and keeps its existing
+shared-workspace semantics, but every other Receipt, operation, Git, planning,
+descendant, bundle, and integration restriction above still applies. Never
+silently convert between shared and isolated execution.
+
+## Rolling v2 control loop
+
+For new multi-unit work, use the source-neutral rolling protocol. OpenSpec is
+an adapter, not a prerequisite. The accepted source descriptor owns stable
+task keys; OpenSpec adapters map Markdown numbers such as `1.1` to those keys
+and never use a transient Apply ordinal as reconciliation identity. A director
+source carries its stable task definitions in the descriptor selection.
+
+Start after the director has one small safe delta; do not wait for a complete
+large-change analysis. Append later deltas while existing tickets are queued,
+running, terminal, or accepted. An append may add independent work immediately
+but cannot replace an active or accepted unit version. Every delta is prepared
+against the current `append_sequence`; on a storage race, read status, preserve
+the unchanged semantic delta, rebase only the compare token, and retry.
+
+```text
+baton run start --host grok --source-file <source.json> [--plan-delta-file <delta.json>] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
+baton run <run> --reconcile [--task <task-key>] --json
+```
+
+New writing runs default to isolation, so Grok's declared
+`exact_execution_root=false` produces a pre-ticket local blocker. Do not retry
+that unit through `spawn_subagent` and do not infer shared mode. A user or
+director that intentionally needs Grok must create the run with explicit
+`--worktree-mode shared-worktree`; verification-only units remain rootless.
+Bundle, parent integration, submodule ordering, and cleanup remain parent-only
+operations and never belong to a Grok worker.
+
+Status is task-first and distinguishes unplanned, planned, active, blocked,
+terminal-unreleased, accepted, sealed, and reconciled work. Preserve the
+original `BATON_SESSION_ID` across reconnects. Status/reconciliation repairs
+missing ticket-derived facts idempotently; it must never create a duplicate
+ticket or native attempt. Terminal success alone is not acceptance: Baton
+records the terminal result, safety verdict, parent acceptance, and matching
+release as separate idempotent facts. Release keeps attempt ownership exact
+and triggers deterministic refill of the same run. Only accept an explicit
+typed gate after all of its dependencies are accepted. Only seal exact
+non-superseded coverage. Only reconcile sealed tasks; this is the sole
+source-writeback path.
+
+If a worker returns structured `PLAN_INSUFFICIENT`, keep the failure on the
+smallest unit version, append a director-authored successor delta, and continue
+unrelated safe frontier work. Never discard or silently migrate an active
+compiled-v1 run. Inspect v1 read-only or finish it with its original protocol.
+
+The older compiled CLI operations remain explicit compatibility surfaces:
 
 ```text
 baton apply <change> --host grok --plan-file <plan.json> [--dispatch] --json
@@ -71,7 +149,7 @@ baton apply <change> --host grok --run <run-id> --reconcile [--task <number>] --
 baton apply <change> --host grok --run <run-id> --plan-file <successor.json> [--dispatch] --json
 ```
 
-Use the run's current revision and fingerprint when appending a successor;
+Use a compiled run's current revision and fingerprint when appending a successor;
 stale source or changed contracts fail closed. `--status` is observational,
 `--accept-gate` records parent evidence, and only `--reconcile` writes the
 canonical OpenSpec ledger. Manual `baton apply` scope flags remain available
@@ -93,9 +171,10 @@ for legacy callers; compiled apply rejects those flags instead of guessing.
 
 The adapter's ACP `initialize` `modelState.availableModels` response is the
 only model authority. Use the exact picker-visible id and reasoning effort;
-hidden rows and aliases are not selectable. The selected model is passed to the
-native Grok child call with a fresh context (`resume_from` unset,
-`fork_context=false`).
+hidden rows and aliases are not selectable. The selected model is passed only
+to a shared native Grok child with a fresh context (`resume_from` unset,
+`fork_context=false`). Isolated execution remains unsupported until the native
+subagent API guarantees the requested cwd.
 
 The current Baton CLI uses an opaque generic execution handle:
 
@@ -105,15 +184,16 @@ baton dispatch probe TICKET --host grok --execution-handle subagent_id=GROK_SUBA
 baton dispatch complete TICKET --host grok --text "short conclusion" --release --json
 ```
 
-Reserve first (`baton dispatch next --host grok --json`), pass the reservation
-prompt unchanged to Grok `spawn_subagent` with `background=true`,
+Reserve only explicit shared work (`baton dispatch next --host grok --json`),
+pass the reservation prompt unchanged to Grok `spawn_subagent` with `background=true`,
 `isolation=none`, `subagent_type=general-purpose`, and `model` set to the exact
 selected route id. Immediately bind the returned `subagent_id` as the opaque
 `subagent_id=...` handle, wait on native activity with
 `get_command_or_subagent_output`, record exactly one terminal result, and
 release before refilling capacity. Cancel with `kill_command_or_subagent`.
 A capacity backpressure response defers the same reservation without changing
-its model. An unknown model must fail without inheriting the parent model.
+its model. An unknown model must fail without inheriting the parent model. An
+isolated reservation is incompatible and must never reach this call.
 
 The root Grok conversation creates one opaque `BATON_SESSION_ID` before its
 first control-plane call. Every descendant and every control-plane operation

@@ -5,7 +5,7 @@ import {
   parseApplyUnitScopes,
   scopesFromRecord,
   writePathsOverlap,
-} from "../src/lib/apply-scope.js";
+} from "../src/lib/apply/scope.js";
 
 describe("write scope hard gate", () => {
   it("treats exact and parent-child declarations as conflicts", () => {
@@ -21,6 +21,21 @@ describe("write scope hard gate", () => {
     );
   });
 
+  it("namespaces overlapping paths by exact repository and execution root", () => {
+    assert.doesNotThrow(() => assertDisjointWriteScopes([
+      { key: "one", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src/shared.ts"] },
+      { key: "two", repository_id: "repo", execution_root: "/isolated/two", write_paths: ["src/shared.ts"] },
+    ]));
+    assert.throws(() => assertDisjointWriteScopes([
+      { key: "one", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src"] },
+      { key: "two", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src/shared.ts"] },
+    ]), /WRITE_SCOPE_CONFLICT/);
+    assert.throws(() => assertDisjointWriteScopes([
+      { key: "isolated", repository_id: "repo", execution_root: "/isolated/one", write_paths: ["src/shared.ts"] },
+      { key: "legacy", write_paths: ["src/shared.ts"] },
+    ]), /WRITE_SCOPE_CONFLICT/);
+  });
+
   it("keeps operations per apply unit and preserves the default", () => {
     const scopes = parseApplyUnitScopes([
       "--unit", "1.1", "--write-path", "src/a.ts", "--write-ops", "write,delete",
@@ -31,5 +46,8 @@ describe("write scope hard gate", () => {
     assert.deepEqual(scopesFromRecord({
       "1.3": { mode: "write", write_paths: ["src/c.ts"], allowed_operations: ["chmod"] },
     }).get("1.3")?.allowed_operations, ["chmod"]);
+    assert.deepEqual(scopesFromRecord({
+      "1.4": { mode: "read-only", write_paths: ["src/ignored.ts"], allowed_operations: ["write"] },
+    }).get("1.4"), { mode: "read-only", write_paths: [] });
   });
 });

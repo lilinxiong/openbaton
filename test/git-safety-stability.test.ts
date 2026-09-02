@@ -5,8 +5,8 @@ import {
   deriveGitSafetyStabilityToken,
   type GitSafetyFacts,
   type GitSafetyStabilityToken,
-} from "../src/lib/git-safety-facts.ts";
-import { GitSafetyError } from "../src/lib/git-safety-process.ts";
+} from "../src/lib/git/safety-facts.ts";
+import { GitSafetyError } from "../src/lib/git/safety-process.ts";
 
 function facts(): GitSafetyFacts {
   return {

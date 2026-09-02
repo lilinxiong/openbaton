@@ -12,8 +12,8 @@ import {
   reportAgentProbe,
   reserveNext,
 } from "../src/lib/dispatch.js";
-import { appendApplyRun, createApplyRun, readApplyRun } from "../src/lib/apply-run.js";
-import { materializeCompiledApplyFrontier } from "../src/lib/compiled-apply.js";
+import { appendApplyRun, createApplyRun, readApplyRun } from "../src/lib/apply/run.js";
+import { materializeCompiledApplyFrontier } from "../src/lib/apply/compiled.js";
 import { spawnsDir } from "../src/lib/paths.js";
 import { buildReadOnlyReceipt, writeReceipt } from "../src/lib/receipt.js";
 import { buildSpawnTicket, nextSpawnId, readSpawn, writeSpawn, type SpawnTicket } from "../src/lib/spawn.js";

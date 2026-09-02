@@ -42,6 +42,7 @@ function printPlan(stdout: WritableLike, plan: UninstallPlan, json: boolean, app
   stdout.write(`Baton uninstall ${applied ? "applied" : "plan"}: ${plan.clean ? "clean" : "selected host"}\n`);
   for (const target of plan.targets) stdout.write(`  ${target.action.padEnd(14)} ${target.path} (${target.reason})\n`);
   if (plan.active_tickets.length) stdout.write(`  active tickets: ${plan.active_tickets.map((item) => item.ticket_id).join(", ")}\n`);
+  for (const record of plan.retained_runtime_records) stdout.write(`  retain         ${record.path} (${record.reason})\n`);
   for (const constraint of plan.constraints) stdout.write(`  constraint: ${constraint}\n`);
 }
 

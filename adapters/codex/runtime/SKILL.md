@@ -46,18 +46,115 @@ candidate and every exclusion reason. Quota, rate-limit, and uncallability
 evidence are session-local Baton cache facts; session evidence never carries to
 a new Codex session, which must recheck its routes.
 
-For every reservation, pass its prompt unchanged to a fresh exact-model Codex
-native worker (the native child, `fork_context=false`), immediately bind the returned opaque
-`task_name`, wait on real native liveness/activity, record exactly one terminal result,
-release the ticket before refilling capacity, and keep terminal scopes owned until
-release. Return to the director only for
+For an `isolated-worktree` reservation, pass its prompt unchanged on stdin to
+one fresh exact-model native worker through a `codex exec --json` child. Launch
+the child with the tool workdir set
+to the reservation's `execution_root` and with `-C` set to that same absolute
+root. Select the child with the reserved `ticket.route_id` via `--model`; when
+the ticket has a `reasoning_effort`, pass that separate value through Codex's
+`model_reasoning_effort` config. Never pass the composite model selection id as
+the model argument. Keep the process live, parse its early JSONL
+`thread.started` event, and bind the returned thread/task id together with the
+complete five-field exact-root acknowledgement before treating the worker as
+started. A missing id, exited process, root mismatch, or failed bind is a
+native launch failure. Never use `spawn_agent` for isolated execution.
+
+Only an explicitly shared reservation may use the native `spawn_agent` path
+with `fork_context=false`; its handle has no isolated-root acknowledgement.
+For either mode, wait on real native liveness/activity, record exactly one
+terminal result, release the ticket before refilling capacity, and keep
+terminal scopes owned until release. Return to the director only for
 source staleness, changed contracts, scope changes, safety-blocked partial
 mutation, or structured `PLAN_INSUFFICIENT`. A worker must not redesign or
 broaden scope, spawn children, touch Git or OpenSpec, or choose a model. The
 parent alone accepts gates and reconciles task checkboxes after all mapped units
 and gates pass; never complete a checkbox early.
 
-The compiled CLI operations are explicit and preserve manual compatibility:
+### Exact worker execution boundary
+
+For an isolated reservation, render and pass the exact canonical
+`execution_root`, the patch instructions unchanged, and the complete
+`permitted_validation` list. The execution root is the worker's only workspace
+boundary, not additional authorization: all paths and operations remain limited
+by the Receipt. Validation is not extra read or write authority. The worker must
+not read, write, traverse, resolve a path into, or run a command in the caller
+checkout or any sibling execution root, including through symlinks, nested
+repositories, or other repository indirection.
+
+The worker must not run Git or stage, commit, create or change branches, update
+refs, merge, or rebase. It must not edit OpenSpec artifacts, task sources, task
+ledgers, plans, Receipts, dispatch artifacts, or lifecycle records; create or
+manage worktrees; spawn descendants; replan, redesign, change dependencies, or
+expand or narrow scope; create or apply bundles; integrate results; or resolve
+conflicts. If the exact patch or validation instructions require any forbidden
+action, it returns structured `PLAN_INSUFFICIENT` instead of substituting work.
+
+An explicitly selected `shared-worktree` reservation remains a legacy/manual
+compatibility path. It has no generated exact-root claim and keeps its existing
+shared-workspace semantics, but every other Receipt, operation, Git, planning,
+descendant, bundle, and integration restriction above still applies. Never
+silently convert between shared and isolated execution.
+
+## Rolling v2 control loop
+
+For new multi-unit work, use the source-neutral rolling protocol. OpenSpec is
+an adapter, not a prerequisite. The accepted source descriptor owns stable
+task keys; OpenSpec adapters map Markdown numbers such as `1.1` to those keys
+and never use a transient Apply ordinal as reconciliation identity. A director
+source carries its stable task definitions in the descriptor selection.
+
+Start after the director has one small safe delta; do not wait for a complete
+large-change analysis. Append later deltas while existing tickets are queued,
+running, terminal, or accepted. An append may add independent work immediately
+but cannot replace an active or accepted unit version. Every delta is prepared
+against the current `append_sequence`; on a storage race, read status, preserve
+the unchanged semantic delta, rebase only the compare token, and retry.
+
+```text
+baton run start --host codex --source-file <source.json> [--plan-delta-file <delta.json>] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
+baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin|apply|resolve|accept ... --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
+```
+
+New writing units default to isolation. Baton itself prepares only the current
+capacity frontier after exact-root capability and repository setup gates pass;
+do not pre-create roots, substitute the caller checkout, or continue after a
+setup blocker. Verification units remain rootless. Shared mode is legal only
+when the accepted run explicitly selected the legacy/manual compatibility
+path.
+
+After release, the parent uses `--freeze-unit` to audit and freeze the terminal
+root, then owns the serialized integration queue. `apply` must not mutate the
+caller; conflicts require a separately audited `resolve`; only `accept` moves
+the frozen result into the caller and unlocks dependent bases. Run submodule
+units from their literal repository roots and represent the superproject
+gitlink as a later unit. Never clean an attempt while status reports retention
+or identity drift.
+
+Status is task-first and distinguishes unplanned, planned, active, blocked,
+terminal-unreleased, accepted, sealed, and reconciled work. Preserve the
+original `BATON_SESSION_ID` across reconnects. Status/reconciliation repairs
+missing ticket-derived facts idempotently; it must never create a duplicate
+ticket or native attempt. Terminal success alone is not acceptance: Baton
+records the terminal result, safety verdict, parent acceptance, and matching
+release as separate idempotent facts. Release keeps
+attempt ownership exact and triggers deterministic refill of the same run.
+Only accept an explicit typed gate after all of its dependencies are accepted.
+Only seal exact non-superseded coverage. Only reconcile sealed tasks; this is
+the sole source-writeback path.
+
+If a worker returns structured `PLAN_INSUFFICIENT`, keep the failure on the
+smallest unit version, append a director-authored successor delta, and continue
+unrelated safe frontier work. Never discard or silently migrate an active
+compiled-v1 run. Inspect v1 read-only or finish it with its original protocol.
+
+The older compiled CLI operations remain explicit compatibility surfaces:
 
 ```text
 baton apply <change> --host codex --plan-file <plan.json> [--dispatch] --json
@@ -67,7 +164,7 @@ baton apply <change> --host codex --run <run-id> --reconcile [--task <number>] -
 baton apply <change> --host codex --run <run-id> --plan-file <successor.json> [--dispatch] --json
 ```
 
-Use the run's current revision and fingerprint when appending a successor;
+Use a compiled run's current revision and fingerprint when appending a successor;
 stale source or changed contracts fail closed. `--status` is observational,
 `--accept-gate` records parent evidence, and only `--reconcile` writes the
 canonical OpenSpec ledger. Manual `baton apply` scope flags remain available
@@ -89,22 +186,33 @@ for legacy callers; compiled apply rejects those flags instead of guessing.
 
 The adapter's app-server `model/list` response is the only model authority.
 Use the exact picker-visible id, reasoning effort, service tier, and modality;
-hidden rows and aliases are not selectable. The selected model is passed to the
-native Codex child call with a fresh context (`fork_context=false`).
+hidden rows and aliases are not selectable. Pass the reserved `ticket.route_id`
+and `ticket.reasoning_effort` separately to a fresh native Codex child.
 
-The current Baton CLI uses an opaque generic execution handle:
+An isolated reservation uses this native launch shape (the invoking tool's
+workdir must independently equal `$EXECUTION_ROOT`):
 
 ```text
-baton dispatch bind TICKET --host codex --execution-handle task_name=CODEX_TASK_NAME --json
+codex exec --json -C "$EXECUTION_ROOT" --model "$ROUTE_ID" -c "model_reasoning_effort=\"$REASONING_EFFORT\"" -
+```
+
+Omit the `-c` option when `ticket.reasoning_effort` is null. Pass the prompt
+unchanged on stdin. While that exact-root process is still live, parse the
+early JSON thread/task id and bind it with the reservation identity:
+
+```text
+baton dispatch bind TICKET --host codex --execution-handle task_name=CODEX_THREAD_OR_TASK_ID --repository-id REPOSITORY_ID --git-common-dir-identity GIT_COMMON_DIR_IDENTITY --execution-root "$EXECUTION_ROOT" --base-tree BASE_TREE --worktree-record-id WORKTREE_RECORD_ID --json
 baton dispatch probe TICKET --host codex --execution-handle task_name=CODEX_TASK_NAME --state running --activity heartbeat --json
 baton dispatch complete TICKET --host codex --text "short conclusion" --release --json
 ```
 
-Reserve first (`baton dispatch next --host codex --json`), pass the reservation
-prompt unchanged to the native Codex child API, immediately bind its returned
-`task_name` as the opaque `task_name=...` handle, wait on native liveness/activity, record
-exactly one terminal result, and release before refilling capacity. A capacity
-backpressure response defers the same reservation without changing its model.
+Probe and release may omit the repeated five-field identity because the
+complete bound handle remains authoritative; if any identity field is
+supplied, all five must be supplied and identical. For explicit shared mode,
+reserve first, use `spawn_agent`, and bind its ordinary opaque `task_name`
+without exact-root flags. In both modes, record exactly one terminal result
+and release before refilling capacity. A capacity backpressure response defers
+the same reservation without changing its model.
 
 The root Codex conversation creates one opaque `BATON_SESSION_ID` before its
 first control-plane call. Every descendant and every control-plane operation

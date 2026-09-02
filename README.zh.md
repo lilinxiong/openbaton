@@ -333,6 +333,65 @@ staleness、changed contract、scope 变化、安全门阻断的部分修改和
 `PLAN_INSUFFICIENT` 都应返回 director 重新决策。旧式手工 `baton apply` 的
 显式 scope 与 `--read-only` 仍兼容；compiled 模式拒绝手工 scope flag。
 
+## Rolling v2：大 change 快速、来源中立地启动
+
+新的大 change 不需要等主 agent 把整份 change 全部分析完才启动第一个 worker。
+director 先接受一个有界、依赖已就绪的 `PlanDelta`，派发其中的安全 frontier，
+然后在前序 worker queued/running 时继续追加后续 delta。已经派发的 unit 仍然是
+完整且不可变的；保持开放的只是未来工作发现。
+
+OpenSpec 不是前提。`TaskSourceDescriptor` 可以选择 Baton 内置 director source，
+也可以选择已安装的 source adapter。OpenSpec adapter 用 Markdown 中稳定的任务号
+（例如 `1.1`）做 reconciliation identity；Apply JSON 的临时 ordinal 只保留作诊断，
+因此 Apply 输出重排不会改变任务身份。
+
+```text
+baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
+baton run <run> --append-plan <delta.json|-> [--dispatch] --json
+baton run <run> --status --json
+baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
+baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
+baton run <run> --reconcile [--task <task-key>] --json
+baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
+baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
+baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
+baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
+baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
+baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
+```
+
+新的 rolling run 默认只把写入 unit 设为 `isolated-worktree`；verification unit
+不需要 root。refill 会先检查 adapter 的
+`native.exact_execution_root=true`，解析唯一 owning repository，然后只为当前
+容量 frontier 创建并验证 detached root，因此大 change 的首批启动成本有界。
+任一能力或 setup gate 失败都会在 ticket 创建前停止，绝不静默回退 shared。
+`--worktree-mode shared-worktree` 仅保留为显式 legacy/manual 兼容选项。
+
+native worker 完成并 release 后，由 parent 冻结 `ChangeBundle v1`。bundle 记录
+不可变 base/result tree、精确 changed path/operation、binary/mode/rename/symlink/
+gitlink 事实、Receipt lineage，以及 Baton 自己创建的 internal commit。每个仓库的
+integration 串行执行：`begin` 接受精确 caller baseline，`apply` 只在隔离 Git
+object plumbing 中计算，`resolve` 另存 parent 冲突解，只有 `accept` 才把冻结结果
+应用到 caller。因此 caller checkout 长时间 clean 不代表 worker 没工作；status
+会分别报告 execution truth 与 integration truth。
+
+submodule 文件必须从 submodule repository root 执行、审计、打 bundle 和集成；
+后续 superproject unit 显式负责 gitlink 更新。cleanup 只有在所有 retention reason
+清空后才删除精确 eligible root；live handle、ready bundle、未解冲突、downstream
+base 与用户保留证据都会继续可见且不会被移除。
+
+status 以 task 为主视图，区分 unplanned、planned、active、
+terminal-unreleased、blocked、accepted、sealed 和 reconciled。terminal success、
+safety verdict、parent acceptance、release 是四类独立且幂等的事实。gate 分为
+`safety-precondition`、`integration-acceptance`、`evidence`，只阻断显式依赖。
+失败版本保留审计记录；只有 lineage 可替换时 director 才能追加不可变 successor。
+task 只有在精确覆盖所有非 superseded 版本并由 source adapter reconciliation 后
+才真正完成。
+
+Rolling 状态位于当前 workspace runtime 的 `runs/rolling-runs-v2/`。clean
+uninstall 会清点并保留这些 append-only facts 和 accepted documents。已有手工或
+compiled-v1 `baton apply` run 继续使用原协议，绝不会被静默迁移。
+
 ## 第一次会话
 
 所有会产生 ticket 或对容量敏感的 dispatch 命令都要求 `BATON_SESSION_ID`。
@@ -364,6 +423,12 @@ baton models status --host <adapter-id>
 baton match "<work description>" --host <adapter-id>
 baton spawn "<request>" --host <adapter-id> --classification <class>
 baton apply <change> --host <adapter-id>
+baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
+baton run <run-id> --status --json
+baton run <run-id> --freeze-unit <unit> --attempt attempt-1 --text "已审计结果" --json
+baton integration begin --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --expected-before-tree <tree> --json
+baton integration apply --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --json
+baton integration accept --run <run-id> --repository-id <sha256> --bundle-id <bundle-id> --conclusion "已接受" --json
 baton dispatch next --host <adapter-id> [--capacity <n>] --json
 baton dispatch status --host <adapter-id> [--capacity <n>] --json
 baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json

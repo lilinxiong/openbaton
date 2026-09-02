@@ -8,8 +8,17 @@ import { hostSkillDest } from "../src/lib/hosts.js";
 import {
   fileFingerprint,
   readInstallManifest,
-} from "../src/lib/install-manifest.js";
-import { applyUninstallPlan, buildUninstallPlan } from "../src/lib/uninstall.js";
+} from "../src/lib/install/manifest.js";
+import { applyUninstallPlan, buildUninstallPlan, UNINSTALL_STATE_INVALID } from "../src/lib/uninstall.js";
+import { createRollingExecutionRun } from "../src/lib/rolling-run.js";
+import {
+  batonDir,
+  bundleManifestPath,
+  integrationRecordPath,
+  rollingRunFactLogPath,
+  snapshotManifestPath,
+  worktreeAttemptDir,
+} from "../src/lib/paths.js";
 
 function isolatedEnv(): { home: string; cwd: string; env: NodeJS.ProcessEnv } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-install-manifest-home-"));
@@ -74,5 +83,117 @@ describe("install manifest ownership", () => {
     assert.equal(plan.targets.some((item) => item.path.endsWith("/.codex/skills/baton/agents/openai.yaml")), false);
     applyUninstallPlan(plan, { env });
     assert.equal(fs.readFileSync(dest, "utf8"), "user placed companion skill\n");
+  });
+
+  it("inventories and preserves auditable rolling runs during clean uninstall", async () => {
+    const { cwd, env } = isolatedEnv();
+    env.BATON_SESSION_ID = "clean-uninstall-rolling-audit";
+    await initProject(cwd, { env });
+    createRollingExecutionRun({
+      cwd,
+      env,
+      runId: "audit-run",
+      host: "codex",
+      source: {
+        schema_version: 1,
+        source_kind: "director",
+        adapter: "director",
+        selection: { tasks: [{ id: "audit-task", description: "retain audit state" }] },
+      },
+    });
+    const retainedPaths = [
+      worktreeAttemptDir(cwd, "audit-run", "unit-a", "attempt-a", env),
+      path.dirname(snapshotManifestPath(cwd, "audit-run", "snapshot-a", env)),
+      path.dirname(bundleManifestPath(cwd, "audit-run", "bundle-a", env)),
+      path.dirname(integrationRecordPath(cwd, "audit-run", "repository-a", "integration-a", env)),
+    ];
+    for (const directory of retainedPaths) fs.mkdirSync(directory, { recursive: true });
+
+    const plan = buildUninstallPlan({ cwd, env, clean: true, dry_run: false });
+    assert.equal(plan.retained_runtime_records.length, 1);
+    assert.match(plan.retained_runtime_records[0]!.path, /rolling-runs-v2\/audit-run$/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /worktrees=1/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /snapshots=1/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /bundles=1/);
+    assert.match(plan.retained_runtime_records[0]!.reason, /integrations=1/);
+    assert.ok(plan.constraints.includes(
+      "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
+    ));
+    const runtime = batonDir(cwd, env);
+    assert.equal(plan.targets.some((target) => target.path.endsWith(path.relative(env.HOME!, runtime))), false);
+
+    applyUninstallPlan(plan, { env });
+    assert.equal(fs.existsSync(rollingRunFactLogPath(cwd, "audit-run", env)), true);
+    for (const directory of retainedPaths) assert.equal(fs.existsSync(directory), true);
+  });
+
+  it("retains a rolling run whose final NDJSON fact was crash-truncated", async () => {
+    const { cwd, env } = isolatedEnv();
+    env.BATON_SESSION_ID = "clean-uninstall-partial-tail";
+    await initProject(cwd, { env });
+    createRollingExecutionRun({
+      cwd,
+      env,
+      runId: "partial-tail-run",
+      host: "codex",
+      source: {
+        schema_version: 1,
+        source_kind: "director",
+        adapter: "director",
+        selection: { tasks: [{ id: "audit-task", description: "retain valid prefix" }] },
+      },
+    });
+    fs.appendFileSync(rollingRunFactLogPath(cwd, "partial-tail-run", env), '{"schema_version":2');
+
+    const plan = buildUninstallPlan({ cwd, env, clean: true, dry_run: false });
+    assert.equal(plan.retained_runtime_records.length, 1);
+    assert.match(plan.retained_runtime_records[0]!.reason, /crash-truncated final fact preserved/);
+  });
+
+  it("retains an initialized rolling namespace before its first fact is written", async () => {
+    const { cwd, env } = isolatedEnv();
+    env.BATON_SESSION_ID = "clean-uninstall-empty-run";
+    await initProject(cwd, { env });
+    createRollingExecutionRun({
+      cwd,
+      env,
+      runId: "empty-run",
+      host: "codex",
+      source: {
+        schema_version: 1,
+        source_kind: "director",
+        adapter: "director",
+        selection: { tasks: [{ id: "empty-task", description: "retain empty run" }] },
+      },
+    });
+    fs.rmSync(rollingRunFactLogPath(cwd, "empty-run", env));
+
+    const plan = buildUninstallPlan({ cwd, env, clean: true, dry_run: false });
+    assert.equal(plan.retained_runtime_records.length, 1);
+    assert.match(plan.retained_runtime_records[0]!.path, /rolling-runs-v2\/empty-run$/);
+  });
+
+  it("rejects malformed non-final NDJSON facts during clean uninstall", async () => {
+    const { cwd, env } = isolatedEnv();
+    env.BATON_SESSION_ID = "clean-uninstall-malformed-middle";
+    await initProject(cwd, { env });
+    createRollingExecutionRun({
+      cwd,
+      env,
+      runId: "malformed-middle-run",
+      host: "codex",
+      source: {
+        schema_version: 1,
+        source_kind: "director",
+        adapter: "director",
+        selection: { tasks: [{ id: "audit-task", description: "reject malformed middle" }] },
+      },
+    });
+    fs.appendFileSync(rollingRunFactLogPath(cwd, "malformed-middle-run", env), 'not-json\n{"schema_version":2');
+
+    assert.throws(
+      () => buildUninstallPlan({ cwd, env, clean: true, dry_run: false }),
+      (error: unknown) => (error as { code?: string }).code === UNINSTALL_STATE_INVALID,
+    );
   });
 });

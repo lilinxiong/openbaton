@@ -8,6 +8,11 @@ import {
   skillPath,
   WORKSPACES_DIR,
   CURRENT_RUNTIME_NAMESPACE,
+  RUNS_DIR,
+  ROLLING_RUNS_DIR,
+  ROLLING_FACT_LOG_NAME,
+  ROLLING_ACCEPTED_DOCUMENTS_DIR,
+  ROLLING_CHECKPOINT_NAME,
 } from "./paths.js";
 import {
   installManifestPath,
@@ -15,9 +20,10 @@ import {
   manifestOwnsFile,
   readInstallManifest,
   type InstallManifest,
-} from "./install-manifest.js";
+} from "./install/manifest.js";
 import { hostIds, hostSkillDest, type HostId } from "./hosts.js";
-import { adapterInstallDir } from "./adapter-install.js";
+import { adapterInstallDir } from "./install/adapter-install.js";
+import { readJsonFile, sha256Hex } from "./json-utils.js";
 
 export const UNINSTALL_ACTIVE_TICKETS = "UNINSTALL_ACTIVE_TICKETS";
 export const UNINSTALL_STATE_INVALID = "UNINSTALL_STATE_INVALID";
@@ -41,6 +47,7 @@ export interface UninstallPlan {
   dry_run: boolean;
   targets: UninstallTarget[];
   active_tickets: Array<{ path: string; ticket_id: string; status: string; host: string }>;
+  retained_runtime_records: Array<{ path: string; kind: "rolling-run-v2"; reason: string }>;
   constraints: string[];
 }
 
@@ -70,7 +77,7 @@ function display(file: string, env?: NodeJS.ProcessEnv): string {
 }
 
 function fingerprint(file: string): string | null {
-  try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { return null; }
+  try { return sha256Hex(fs.readFileSync(file)); } catch { return null; }
 }
 
 function directoryFingerprint(directory: string): string | null {
@@ -87,7 +94,7 @@ function directoryFingerprint(directory: string): string | null {
       }
     };
     visit(directory, "");
-    return crypto.createHash("sha256").update(rows.join("\n")).digest("hex");
+    return sha256Hex(rows.join("\n"));
   } catch { return null; }
 }
 
@@ -147,7 +154,7 @@ function requireDirectory(file: string, label: string): void {
 
 function validateJsonState(file: string, label: string): unknown {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    return readJsonFile(file) as unknown;
   } catch {
     stateInvalid(`${label} is unreadable: ${file}`);
   }
@@ -239,6 +246,81 @@ function currentRuntimeDirectories(home: string): string[] {
     .filter((directory) => fs.existsSync(directory));
 }
 
+function validateNdjsonState(file: string, label: string): { partial_tail: boolean } {
+  let text: string;
+  try { text = fs.readFileSync(file, "utf8"); } catch { return stateInvalid(`${label} is unreadable: ${file}`); }
+  const terminated = text.endsWith("\n");
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (!lines.length || lines.some((line) => !line.trim())) stateInvalid(`${label} is malformed: ${file}`);
+  let partialTail = false;
+  for (const [index, line] of lines.entries()) {
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) stateInvalid(`${label} is malformed: ${file}`);
+    } catch (error) {
+      if ((error as { code?: string }).code === UNINSTALL_STATE_INVALID) throw error;
+      if (!terminated && index === lines.length - 1) {
+        partialTail = true;
+        continue;
+      }
+      stateInvalid(`${label} is malformed: ${file}`);
+    }
+  }
+  return { partial_tail: partialTail };
+}
+
+function directoryCount(directory: string, depth: number): number {
+  if (!fs.existsSync(directory)) return 0;
+  requireDirectory(directory, "rolling isolation namespace");
+  let count = 0;
+  const visit = (root: string, remaining: number): void => {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (remaining === 1) count += 1;
+      else visit(path.join(root, entry.name), remaining - 1);
+    }
+  };
+  visit(directory, depth);
+  return count;
+}
+
+function isolationInventory(run: string): string {
+  const worktrees = directoryCount(path.join(run, "worktrees"), 2);
+  const snapshots = directoryCount(path.join(run, "snapshots"), 1);
+  const bundles = directoryCount(path.join(run, "bundles"), 1);
+  const integrations = directoryCount(path.join(run, "integrations"), 2);
+  return `worktrees=${worktrees}, snapshots=${snapshots}, bundles=${bundles}, integrations=${integrations}`;
+}
+
+/** Inventory accepted rolling-run records before clean uninstall. These are
+ * append-only audit state, not disposable installation artifacts. A runtime
+ * namespace containing one is retained as a whole so uninstall cannot leave
+ * a half-deleted run beside its ticket and Receipt lineage. */
+function retainedRollingRuns(runtime: string, env: NodeJS.ProcessEnv | undefined): Array<{ path: string; kind: "rolling-run-v2"; reason: string }> {
+  const root = path.join(runtime, RUNS_DIR, ROLLING_RUNS_DIR);
+  if (!fs.existsSync(root)) return [];
+  requireDirectory(root, "rolling run state");
+  const records = [] as Array<{ path: string; kind: "rolling-run-v2"; reason: string }>;
+  for (const name of directoryEntries(root).sort()) {
+    const run = path.join(root, name);
+    requireDirectory(run, "rolling run entry");
+    const log = path.join(run, ROLLING_FACT_LOG_NAME);
+    const logState = fs.existsSync(log)
+      ? validateNdjsonState(log, "rolling run fact log")
+      : { partial_tail: false };
+    scanJsonStateDirectory(path.join(run, ROLLING_ACCEPTED_DOCUMENTS_DIR), "rolling accepted documents");
+    const checkpoint = path.join(run, ROLLING_CHECKPOINT_NAME);
+    if (fs.existsSync(checkpoint)) validateJsonState(checkpoint, "rolling checkpoint");
+    records.push({
+      path: display(run, env),
+      kind: "rolling-run-v2",
+      reason: `auditable rolling run and isolation evidence retained by clean uninstall (${isolationInventory(run)}${logState.partial_tail ? ", crash-truncated final fact preserved" : ""})`,
+    });
+  }
+  return records;
+}
+
 /** Build a complete, serializable plan without mutating any file. */
 export function buildUninstallPlan(options: BuildUninstallPlanOptions): UninstallPlan {
   const env = options.env || process.env;
@@ -251,6 +333,7 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
   const active = clean ? activeTickets(options.cwd, env, hosts, clean) : [];
   if (clean && active.length && !options.dry_run) throw coded(`${UNINSTALL_ACTIVE_TICKETS}: ${active.map((item) => item.ticket_id).join(", ")}`, UNINSTALL_ACTIVE_TICKETS);
   const targets: UninstallTarget[] = [];
+  const retained_runtime_records: UninstallPlan["retained_runtime_records"] = [];
   for (const host of clean ? hostIds(env) : hosts) {
     const mainSkill = hostSkillDest(host, { cwd: options.cwd, env });
     const installedSkills = manifest?.files
@@ -277,8 +360,13 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
     for (const file of [configPath(options.cwd, { env }), installManifestPath(env)]) {
       addTarget(targets, targetFile(file, { action: fs.existsSync(file) ? "remove" : "already-absent", path: display(file, env), reason: "clean removes Baton-owned global file" }));
     }
-    for (const directory of [path.join(home, "cache"), path.join(home, "state"), ...currentRuntimeDirectories(home)]) {
+    for (const directory of [path.join(home, "cache"), path.join(home, "state")]) {
       addTarget(targets, targetFile(directory, { action: fs.existsSync(directory) ? "remove" : "already-absent", path: display(directory, env), reason: "clean removes explicit Baton runtime directory" }));
+    }
+    for (const directory of currentRuntimeDirectories(home)) {
+      const retained = retainedRollingRuns(directory, env);
+      if (retained.length) retained_runtime_records.push(...retained);
+      else addTarget(targets, targetFile(directory, { action: "remove", path: display(directory, env), reason: "clean removes disposable Baton workspace runtime" }));
     }
   }
   targets.sort((left, right) => left.path.localeCompare(right.path));
@@ -288,11 +376,14 @@ export function buildUninstallPlan(options: BuildUninstallPlanOptions): Uninstal
     dry_run: options.dry_run === true,
     targets,
     active_tickets: active,
+    retained_runtime_records,
     constraints: [
       "preserve modified or ambiguous skills",
       "never remove package-manager executable",
       "never recurse outside explicit Baton/host integration paths",
       ...(clean && active.length ? ["blocked by active dispatch tickets; no mutation is permitted"] : []),
+      ...(retained_runtime_records.length ? ["preserve auditable rolling-run v2 records and their containing workspace runtime namespaces"] : []),
+      ...(retained_runtime_records.length ? ["preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence"] : []),
     ],
   };
 }

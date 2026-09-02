@@ -4,10 +4,35 @@ import path from "node:path";
 import { receiptsDir } from "./paths.js";
 import type { ModelCard, ModelSelectionApproval } from "../types.js";
 import { validateIndexControlBaselineMetadata, type CommitBaseline, type GitBaseline, type SafetyOperation } from "./safety.js";
+import {
+  extractExactExecutionRootIdentity,
+  sameExactExecutionRootIdentity,
+  type ExactExecutionRootIdentity,
+} from "../adapters/contract.js";
+import type { WorktreeExecutionMode } from "./rolling-plan.js";
+import { readJsonFile } from "./json-utils.js";
+import {
+  ReceiptError,
+  normalizeCompiledApplyLineage,
+  normalizeRollingUnitLineage
+} from "./receipt/lineage.js";
 
 export type ReceiptOperation = "read" | "commit" | SafetyOperation;
 export type ExecutionMode = "read-only" | "write" | "commit-only";
 export type CompiledApplyMode = "patch-only" | "verification-only";
+
+/** Immutable identity carried from a rolling unit version into its artifacts. */
+export interface RollingUnitLineage extends Partial<ExactExecutionRootIdentity> {
+  schema_version: 1;
+  run_id: string;
+  unit_key: string;
+  unit_version: number;
+  unit_fingerprint: string;
+  task_keys: readonly string[];
+  mode: CompiledApplyMode;
+  /** Omitted only for legacy rolling artifacts. */
+  worktree_mode?: WorktreeExecutionMode;
+}
 
 /** Immutable identity carried from a compiled apply unit into its artifacts. */
 export interface CompiledApplyLineage {
@@ -19,74 +44,8 @@ export interface CompiledApplyLineage {
   mode: CompiledApplyMode;
 }
 
-export type CompiledApplyLineageInput = {
-  run_id?: unknown;
-  plan_revision?: unknown;
-  plan_fingerprint?: unknown;
-  unit_id?: unknown;
-  task_refs?: unknown;
-  mode?: unknown;
-};
 
-function freezeLineage<T>(value: T): T {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const child of Object.values(value as Record<string, unknown>)) freezeLineage(child);
-    Object.freeze(value);
-  }
-  return value;
-}
-
-/** Purely normalize and validate the six-field compiled-apply identity. */
-export function normalizeCompiledApplyLineage(value: unknown): CompiledApplyLineage {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ReceiptError("compiled apply lineage must be an object", "COMPILED_LINEAGE_MALFORMED");
-  }
-  const input = value as CompiledApplyLineageInput;
-  const keys = Object.keys(input as object);
-  const allowed = ["run_id", "plan_revision", "plan_fingerprint", "unit_id", "task_refs", "mode"];
-  if (keys.some((key) => !allowed.includes(key))) {
-    throw new ReceiptError("compiled apply lineage contains an unknown field", "COMPILED_LINEAGE_UNKNOWN_FIELD");
-  }
-  const required = (name: string): string => {
-    const raw = input[name as keyof CompiledApplyLineageInput];
-    if (typeof raw !== "string" || !raw.trim()) {
-      throw new ReceiptError(`compiled apply lineage ${name} is required`, "COMPILED_LINEAGE_PARTIAL");
-    }
-    return raw.trim();
-  };
-  for (const field of ["run_id", "plan_revision", "plan_fingerprint", "unit_id", "task_refs", "mode"] as const) {
-    if (!(field in input)) throw new ReceiptError(`compiled apply lineage ${field} is required`, "COMPILED_LINEAGE_PARTIAL");
-  }
-  if (!Array.isArray(input.task_refs) || input.task_refs.length === 0
-    || input.task_refs.some((item) => typeof item !== "string" || !item.trim())) {
-    throw new ReceiptError("compiled apply lineage task_refs is invalid", "COMPILED_LINEAGE_PARTIAL");
-  }
-  const taskRefs = input.task_refs.map((item) => (item as string).trim());
-  if (new Set(taskRefs).size !== taskRefs.length) {
-    throw new ReceiptError("compiled apply lineage task_refs contains duplicates", "COMPILED_LINEAGE_DUPLICATE_TASK");
-  }
-  if (input.mode !== "patch-only" && input.mode !== "verification-only") {
-    throw new ReceiptError("compiled apply lineage mode is invalid", "COMPILED_LINEAGE_UNKNOWN_MODE");
-  }
-  return freezeLineage({
-    run_id: required("run_id"),
-    plan_revision: required("plan_revision"),
-    plan_fingerprint: required("plan_fingerprint"),
-    unit_id: required("unit_id"),
-    task_refs: taskRefs,
-    mode: input.mode,
-  });
-}
-
-export function validateCompiledApplyLineage(value: unknown): string | null {
-  try { normalizeCompiledApplyLineage(value); return null; } catch (error) {
-    return error instanceof ReceiptError ? error.code : "COMPILED_LINEAGE_MALFORMED";
-  }
-}
-
-export const assertValidCompiledApplyLineage = normalizeCompiledApplyLineage;
-
-export interface DelegationReceipt {
+export interface DelegationReceipt extends Partial<ExactExecutionRootIdentity> {
   schema_version: 4;
   /** Host profile that owns this receipt; local-only receipts may omit it. */
   host?: string;
@@ -125,170 +84,10 @@ export interface DelegationReceipt {
   selection: ModelSelectionApproval | null;
   /** Omitted on legacy/manual receipts; never synthesized while reading them. */
   compiled_apply_lineage?: CompiledApplyLineage;
+  /** Omitted on legacy/manual receipts; immutable identity for rolling units. */
+  rolling_unit_lineage?: RollingUnitLineage;
 }
 
-export class ReceiptError extends Error {
-  readonly code: string;
-  constructor(message: string, code: string) {
-    super(message);
-    this.name = "ReceiptError";
-    this.code = code;
-  }
-}
-
-export function buildReadOnlyReceipt({
-  ticketId,
-  card,
-  issuedAt = new Date(),
-  maxAttempts = 1,
-  selection = null,
-  host = selection?.host || null,
-  compiledApplyLineage,
-  compiled_apply_lineage,
-  compiledLineage,
-  compiled_lineage,
-}: {
-  ticketId: string;
-  card: ModelCard;
-  issuedAt?: Date | string | number;
-  maxAttempts?: number;
-  selection?: ModelSelectionApproval | null;
-  host?: string | null;
-  compiledApplyLineage?: unknown;
-  compiled_apply_lineage?: unknown;
-  compiledLineage?: unknown;
-  compiled_lineage?: unknown;
-}): DelegationReceipt {
-  const lineageInput = compiledApplyLineage ?? compiled_apply_lineage ?? compiledLineage ?? compiled_lineage;
-  const lineage = lineageInput === undefined || lineageInput === null
-    ? undefined
-    : normalizeCompiledApplyLineage(lineageInput);
-  const timestamp = (issuedAt instanceof Date ? issuedAt : new Date(issuedAt)).toISOString();
-  const attempts = Math.max(1, Math.floor(maxAttempts));
-  return {
-    schema_version: 4,
-    ...(host ? { host } : {}),
-    receipt_id: `rcpt-${ticketId}-a1`,
-    ticket_id: ticketId,
-    issued_at: timestamp,
-    route: {
-      card_id: card.id,
-      route_id: card.route_id || null,
-      reasoning_effort: card.reasoning_effort || null,
-      service_tier: selection?.service_tier || null,
-      provider: card.provider || null,
-    },
-    execution: { mode: "read-only", fork_context: false, max_depth: 1 },
-    scope: { write_allowlist: [], allowed_operations: ["read"], side_effects: [] },
-    retry: { max_attempts: attempts },
-    git_policy: {
-      worker_may_stage: false,
-      worker_may_commit: false,
-      worker_may_branch: false,
-      worker_may_rebase: false,
-      staging_owner: "parent",
-    },
-    baseline: null,
-    commit_baseline: null,
-    selection: selection ? structuredClone(selection) : null,
-    ...(lineage ? { compiled_apply_lineage: lineage } : {}),
-  };
-}
-
-export function buildWriteReceipt({
-  base,
-  baseline,
-  writeAllowlist,
-  allowedOperations,
-  compiledApplyLineage,
-  compiled_apply_lineage,
-  compiledLineage,
-  compiled_lineage,
-}: {
-  base: DelegationReceipt;
-  baseline: GitBaseline;
-  writeAllowlist: string[];
-  allowedOperations: SafetyOperation[];
-  compiledApplyLineage?: unknown;
-  compiled_apply_lineage?: unknown;
-  compiledLineage?: unknown;
-  compiled_lineage?: unknown;
-}): DelegationReceipt {
-  if (!writeAllowlist.length) throw new ReceiptError("write Receipt requires a non-empty allowlist", "WRITE_ALLOWLIST_REQUIRED");
-  if (!allowedOperations.length) throw new ReceiptError("write Receipt requires allowed operations", "WRITE_OPERATIONS_REQUIRED");
-  const baselineError = validateIndexControlBaselineMetadata(baseline);
-  if (baselineError) throw new ReceiptError("write baseline index-control metadata is invalid", baselineError);
-  const suppliedLineage = compiledApplyLineage ?? compiled_apply_lineage ?? compiledLineage ?? compiled_lineage;
-  const lineage = suppliedLineage === undefined
-    ? base.compiled_apply_lineage
-    : normalizeCompiledApplyLineage(suppliedLineage);
-  if (lineage && lineage.mode !== "patch-only") {
-    throw new ReceiptError("verification-only lineage cannot authorize writes", "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
-  }
-  return {
-    ...structuredClone(base),
-    execution: { ...base.execution, mode: "write" },
-    scope: {
-      write_allowlist: [...writeAllowlist],
-      allowed_operations: [...allowedOperations],
-      side_effects: ["filesystem-write"],
-    },
-    baseline,
-    commit_baseline: null,
-    ...(lineage ? { compiled_apply_lineage: lineage } : {}),
-  };
-}
-
-export function buildCommitReceipt({
-  base,
-  baseline,
-  compiledApplyLineage,
-  compiled_apply_lineage,
-  compiledLineage,
-  compiled_lineage,
-}: {
-  base: DelegationReceipt;
-  baseline: CommitBaseline;
-  compiledApplyLineage?: unknown;
-  compiled_apply_lineage?: unknown;
-  compiledLineage?: unknown;
-  compiled_lineage?: unknown;
-}): DelegationReceipt {
-  const baselineError = validateIndexControlBaselineMetadata({
-    index_control_algorithm: baseline.staged_index_control_algorithm,
-    index_control_checksum: baseline.staged_index_control_checksum,
-    index_control_entry_count: baseline.staged_index_control_entry_count,
-  }, "staged_index_control");
-  if (baselineError) throw new ReceiptError("commit baseline index-control metadata is invalid", baselineError);
-  if (!baseline.staged_paths.length) {
-    throw new ReceiptError("commit-only Receipt requires staged paths", "STAGED_DIFF_REQUIRED");
-  }
-  const suppliedLineage = compiledApplyLineage ?? compiled_apply_lineage ?? compiledLineage ?? compiled_lineage;
-  const lineage = suppliedLineage === undefined
-    ? base.compiled_apply_lineage
-    : normalizeCompiledApplyLineage(suppliedLineage);
-  if (lineage) {
-    throw new ReceiptError("compiled apply lineage cannot authorize commit-only execution", "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
-  }
-  return {
-    ...structuredClone(base),
-    execution: { ...base.execution, mode: "commit-only" },
-    scope: {
-      write_allowlist: [...baseline.staged_paths],
-      allowed_operations: ["commit"],
-      side_effects: ["git-commit"],
-    },
-    git_policy: {
-      worker_may_stage: false,
-      worker_may_commit: true,
-      worker_may_branch: false,
-      worker_may_rebase: false,
-      staging_owner: "parent",
-    },
-    baseline: null,
-    commit_baseline: structuredClone(baseline),
-  };
-}
 
 function receiptPath(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): string {
   return path.join(receiptsDir(cwd, env), `${receiptId}.json`);
@@ -321,6 +120,10 @@ function validateReceiptBaselines(receipt: DelegationReceipt): void {
     throw new ReceiptError("Receipt execution is invalid", "RECEIPT_SCHEMA_INVALID");
   }
   const lineage = receipt.compiled_apply_lineage;
+  const rollingLineage = receipt.rolling_unit_lineage;
+  if (lineage !== undefined && rollingLineage !== undefined) {
+    throw new ReceiptError("compiled and rolling lineages are mutually exclusive", "RECEIPT_LINEAGE_MUTUALLY_EXCLUSIVE");
+  }
   if (lineage !== undefined) {
     const normalized = normalizeCompiledApplyLineage(lineage);
     if (JSON.stringify(normalized) !== JSON.stringify(lineage)) {
@@ -332,6 +135,32 @@ function validateReceiptBaselines(receipt: DelegationReceipt): void {
     if (lineage.mode === "patch-only" && receipt.execution.mode !== "write") {
       throw new ReceiptError("patch-only lineage requires write execution", "COMPILED_LINEAGE_EXECUTION_MODE_MISMATCH");
     }
+  }
+  if (rollingLineage !== undefined) {
+    const normalized = normalizeRollingUnitLineage(rollingLineage);
+    if (JSON.stringify(normalized) !== JSON.stringify(rollingLineage)) {
+      throw new ReceiptError("Receipt rolling unit lineage is not normalized", "ROLLING_LINEAGE_MALFORMED");
+    }
+    if (rollingLineage.mode === "verification-only" && receipt.execution.mode !== "read-only") {
+      throw new ReceiptError("verification-only rolling lineage requires read-only execution", "ROLLING_LINEAGE_EXECUTION_MODE_MISMATCH");
+    }
+    if (rollingLineage.mode === "patch-only" && receipt.execution.mode !== "write") {
+      throw new ReceiptError("patch-only rolling lineage requires write execution", "ROLLING_LINEAGE_EXECUTION_MODE_MISMATCH");
+    }
+  }
+  let receiptExactRoot: ExactExecutionRootIdentity | undefined;
+  try {
+    receiptExactRoot = extractExactExecutionRootIdentity(receipt);
+  } catch (error) {
+    throw new ReceiptError("Receipt exact-root identity is partial or invalid",
+      error instanceof Error && error.message.includes("PARTIAL")
+        ? "ISOLATED_EXECUTION_IDENTITY_PARTIAL"
+        : "ISOLATED_EXECUTION_IDENTITY_INVALID");
+  }
+  const rollingExactRoot = rollingLineage ? extractExactExecutionRootIdentity(rollingLineage) : undefined;
+  if ((receiptExactRoot === undefined) !== (rollingExactRoot === undefined)
+    || (receiptExactRoot && !sameExactExecutionRootIdentity(receiptExactRoot, rollingExactRoot))) {
+    throw new ReceiptError("Receipt exact-root identity does not match rolling lineage", "ISOLATED_EXECUTION_IDENTITY_MISMATCH");
   }
   const baselineError = receipt.baseline
     ? validateIndexControlBaselineMetadata(receipt.baseline)
@@ -377,16 +206,38 @@ export function validateTicketReceiptLineage(
     mode: ExecutionMode;
     read_only: boolean;
     compiled_apply_lineage?: unknown;
-  },
+    rolling_unit_lineage?: unknown;
+  } & Partial<ExactExecutionRootIdentity>,
   receipt: DelegationReceipt,
 ): string | null {
   try {
+    if ((ticket.compiled_apply_lineage !== undefined && ticket.rolling_unit_lineage !== undefined)
+      || (receipt.compiled_apply_lineage !== undefined && receipt.rolling_unit_lineage !== undefined)) {
+      return "RECEIPT_LINEAGE_MUTUALLY_EXCLUSIVE";
+    }
     validateReceiptBaselines(receipt);
     if (ticket.id !== receipt.ticket_id) return "COMPILED_LINEAGE_TICKET_ID_MISMATCH";
     const ticketLineage = ticket.compiled_apply_lineage;
     const receiptLineage = receipt.compiled_apply_lineage;
     if ((ticketLineage === undefined) !== (receiptLineage === undefined)) return "COMPILED_LINEAGE_MISMATCH";
     if (ticketLineage !== undefined && JSON.stringify(normalizeCompiledApplyLineage(ticketLineage)) !== JSON.stringify(receiptLineage)) return "COMPILED_LINEAGE_MISMATCH";
+    const ticketRollingLineage = ticket.rolling_unit_lineage;
+    const receiptRollingLineage = receipt.rolling_unit_lineage;
+    if ((ticketRollingLineage === undefined) !== (receiptRollingLineage === undefined)) return "ROLLING_LINEAGE_MISMATCH";
+    if (ticketRollingLineage !== undefined && JSON.stringify(normalizeRollingUnitLineage(ticketRollingLineage)) !== JSON.stringify(receiptRollingLineage)) return "ROLLING_LINEAGE_MISMATCH";
+    let ticketExactRoot: ExactExecutionRootIdentity | undefined;
+    try {
+      ticketExactRoot = extractExactExecutionRootIdentity(ticket);
+    } catch (error) {
+      return error instanceof Error && error.message.includes("PARTIAL")
+        ? "ISOLATED_EXECUTION_IDENTITY_PARTIAL"
+        : "ISOLATED_EXECUTION_IDENTITY_INVALID";
+    }
+    const receiptExactRoot = extractExactExecutionRootIdentity(receipt);
+    if ((ticketExactRoot === undefined) !== (receiptExactRoot === undefined)
+      || (ticketExactRoot && !sameExactExecutionRootIdentity(ticketExactRoot, receiptExactRoot))) {
+      return "ISOLATED_EXECUTION_IDENTITY_MISMATCH";
+    }
     if ((ticket.host || ticket.target_host || null) !== (receipt.host || null)) return "COMPILED_LINEAGE_HOST_MISMATCH";
     if (ticket.model_id !== receipt.route.card_id || (ticket.route_id || null) !== (receipt.route.route_id || null)) return "COMPILED_LINEAGE_ROUTE_MODEL_MISMATCH";
     if ((ticket.service_tier || null) !== (receipt.route.service_tier || null)) return "COMPILED_LINEAGE_ROUTE_MODEL_MISMATCH";
@@ -403,8 +254,14 @@ export function normalizeReceipt(value: unknown): DelegationReceipt {
     throw new ReceiptError("Receipt schema is invalid", "RECEIPT_SCHEMA_INVALID");
   }
   const receipt = structuredClone(value) as DelegationReceipt;
+  if (receipt.compiled_apply_lineage !== undefined && receipt.rolling_unit_lineage !== undefined) {
+    throw new ReceiptError("compiled and rolling lineages are mutually exclusive", "RECEIPT_LINEAGE_MUTUALLY_EXCLUSIVE");
+  }
   if (receipt.compiled_apply_lineage !== undefined) {
     receipt.compiled_apply_lineage = normalizeCompiledApplyLineage(receipt.compiled_apply_lineage);
+  }
+  if (receipt.rolling_unit_lineage !== undefined) {
+    receipt.rolling_unit_lineage = normalizeRollingUnitLineage(receipt.rolling_unit_lineage);
   }
   validateReceiptBaselines(receipt);
   return receipt;
@@ -444,9 +301,12 @@ export function writeReceipt(cwd: string, receipt: DelegationReceipt, env?: Node
 export function readReceipt(cwd: string, receiptId: string, env?: NodeJS.ProcessEnv): DelegationReceipt {
   const file = receiptPath(cwd, receiptId, env);
   if (!fs.existsSync(file)) throw new ReceiptError(`receipt not found: ${receiptId}`, "RECEIPT_NOT_FOUND");
-  const receipt = normalizeReceipt(JSON.parse(fs.readFileSync(file, "utf8")));
+  const receipt = normalizeReceipt(readJsonFile(file));
   if (receipt.receipt_id !== receiptId) {
     throw new ReceiptError(`Receipt id does not match its path: ${receiptId}`, "RECEIPT_ID_MISMATCH");
   }
   return receipt;
 }
+
+export * from "./receipt/lineage.js";
+export * from "./receipt/builders.js";
