@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createApplyRun } from "../src/lib/apply-run.js";
-import { acceptApplyGate, acceptApplyUnit, deriveApplyTaskEligibility, reconcileApplyRun } from "../src/lib/apply-reconcile.js";
+import { createApplyRun } from "../src/lib/apply/run.js";
+import { acceptApplyGate, acceptApplyUnit, deriveApplyTaskEligibility, reconcileApplyRun } from "../src/lib/apply/reconcile.js";
 import { compiledApplyRunStatePath } from "../src/lib/paths.js";
 import type { ApplyExecutionPlan } from "../src/lib/apply-plan.js";
 

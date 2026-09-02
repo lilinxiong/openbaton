@@ -10,11 +10,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { sha256Hex } from "./json-utils.js";
-import { sha256Bytes } from "./openspec-apply.js";
+import { sha256Bytes } from "./openspec/apply.js";
 import {
   detectOpenSpecRoot,
   openspecCliAvailable
-} from "./openspec-cli.js";
+} from "./openspec/cli.js";
 
 export type OpenSpecTaskStatus = "pending" | "done" | "skipped";
 
@@ -390,5 +390,5 @@ export function readOpenSpecStatus(
   };
 }
 
-export * from "./openspec-cli.js";
-export { resolveOpenSpecApplyInstructions, readOpenSpecApplyInstructions } from "./openspec-apply.js";
+export * from "./openspec/cli.js";
+export { resolveOpenSpecApplyInstructions, readOpenSpecApplyInstructions } from "./openspec/apply.js";

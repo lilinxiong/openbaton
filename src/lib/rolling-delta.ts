@@ -31,7 +31,7 @@ import {
   makeIndex,
   sortDiagnostics,
   stableVersionId,
-} from "./rolling-delta-index.js";
+} from "./rolling/delta-index.js";
 import {
   addKnownDependencies,
   addStructuralDiagnostics,
@@ -43,7 +43,7 @@ import {
   checkTaskRefs,
   checkUnitContract,
   normalizeDelta,
-} from "./rolling-delta-checks.js";
+} from "./rolling/delta-checks.js";
 
 export { ROLLING_DELTA_GATE_TYPES, ROLLING_DELTA_OPERATIONS };
 

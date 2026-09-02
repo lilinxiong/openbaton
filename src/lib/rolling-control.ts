@@ -19,7 +19,7 @@ import { dispatchSnapshot } from "./dispatch.js";
 import { createDirectorTaskSourceAdapter, type DirectorTaskDefinition } from "./director-task-source.js";
 import { extractExactExecutionRootIdentity, sameExactExecutionRootIdentity } from "../adapters/contract.js";
 import { availabilityForRoute } from "./model-availability.js";
-import { createOpenSpecTaskSourceAdapter } from "./openspec-task-source.js";
+import { createOpenSpecTaskSourceAdapter } from "./openspec/task-source.js";
 import {
   fingerprintGateVersion,
   fingerprintPlanDelta,
@@ -50,38 +50,38 @@ import {
   normalizeRollingExecutionFact,
   type RollingAcceptanceProjection,
   type RollingExecutionFact,
-} from "./rolling-acceptance.js";
+} from "./rolling/acceptance.js";
 import { deriveRollingLifecycle, type RollingTaskLifecycle } from "./rolling-lifecycle.js";
-import { refillRollingCapacity, type RollingRefillResult } from "./rolling-dispatch.js";
-import { selectRollingFrontier } from "./rolling-dispatch-selection.js";
-import { collectRollingUnitVersions } from "./rolling-dispatch-state.js";
+import { refillRollingCapacity, type RollingRefillResult } from "./rolling/dispatch.js";
+import { selectRollingFrontier } from "./rolling/dispatch-selection.js";
+import { collectRollingUnitVersions } from "./rolling/dispatch-state.js";
 import { worktreeExecutionRootPath } from "./paths.js";
 import { readReceipt } from "./receipt.js";
-import { createWorktreeChangeBundle, type WorktreeChangeBundleResult } from "./worktree-bundle.js";
+import { createWorktreeChangeBundle, type WorktreeChangeBundleResult } from "./worktree/bundle.js";
 import { readPersistedWorktreeRecord, type ChangeBundleOperation, type WorktreeRecord } from "./worktree-execution.js";
-import { setupDetachedWorktree } from "./worktree-setup.js";
-import { resolveWorktreeTopology } from "./worktree-topology.js";
+import { setupDetachedWorktree } from "./worktree/setup.js";
+import { resolveWorktreeTopology } from "./worktree/topology.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./routes.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapterRegistry, type TaskSourceDiagnostic } from "./task-source.js";
 import { sha256Hex } from "./json-utils.js";
-import { synchronizeRollingTicketFacts } from "./rolling-control-tickets.js";
+import { synchronizeRollingTicketFacts } from "./rolling/control-tickets.js";
 import {
   statusRollingControl,
   taskRefs
-} from "./rolling-control-status.js";
+} from "./rolling/control-status.js";
 import {
   discoverRollingTaskManifest,
   manifestDelta,
   manifestDiff,
   mergeManifest,
   rollingTaskSourceRegistry
-} from "./rolling-control-manifest.js";
+} from "./rolling/control-manifest.js";
 import {
   persistedRollingWorktreeRecords,
   prepareRollingFrontierWorktrees,
   routeAvailability
-} from "./rolling-control-worktrees.js";
+} from "./rolling/control-worktrees.js";
 
 export const ROLLING_CONTROL_SCHEMA_VERSION = 1 as const;
 export const ROLLING_EXECUTION_DOCUMENT_KIND = "execution" as const;
@@ -491,6 +491,6 @@ export async function reconcileRollingTasks(input: ReconcileRollingTasksInput): 
 
 /** Human output remains task-first; JSON callers receive the complete report. */
 
-export { rollingTaskSourceRegistry, discoverRollingTaskManifest } from "./rolling-control-manifest.js";
-export { synchronizeRollingTicketFacts } from "./rolling-control-tickets.js";
-export { statusRollingControl, formatRollingControlStatus } from "./rolling-control-status.js";
+export { rollingTaskSourceRegistry, discoverRollingTaskManifest } from "./rolling/control-manifest.js";
+export { synchronizeRollingTicketFacts } from "./rolling/control-tickets.js";
+export { statusRollingControl, formatRollingControlStatus } from "./rolling/control-status.js";

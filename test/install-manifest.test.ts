@@ -8,7 +8,7 @@ import { hostSkillDest } from "../src/lib/hosts.js";
 import {
   fileFingerprint,
   readInstallManifest,
-} from "../src/lib/install-manifest.js";
+} from "../src/lib/install/manifest.js";
 import { applyUninstallPlan, buildUninstallPlan, UNINSTALL_STATE_INVALID } from "../src/lib/uninstall.js";
 import { createRollingExecutionRun } from "../src/lib/rolling-run.js";
 import {

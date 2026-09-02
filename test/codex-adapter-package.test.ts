@@ -13,14 +13,14 @@ import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
   installBundledAdaptersAndRecord,
-} from "../src/lib/adapter-install.js";
+} from "../src/lib/install/adapter-install.js";
 import {
   buildInstallManifest,
   installManifestPath,
   readInstallManifest,
   writeInstallManifest,
   directoryFingerprint,
-} from "../src/lib/install-manifest.js";
+} from "../src/lib/install/manifest.js";
 import { buildUninstallPlan } from "../src/lib/uninstall.js";
 import { configPath, skillPath } from "../src/lib/paths.js";
 import { parseToml } from "../src/lib/toml.js";

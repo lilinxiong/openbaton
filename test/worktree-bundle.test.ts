@@ -12,9 +12,9 @@ import {
   transitionPersistedWorktreeRecord,
   type WorktreeRecord,
 } from "../src/lib/worktree-execution.js";
-import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
-import { createWorktreeChangeBundle } from "../src/lib/worktree-bundle.js";
-import type { WorktreeAuditReceipt } from "../src/lib/worktree-audit.js";
+import { setupDetachedWorktree } from "../src/lib/worktree/setup.js";
+import { createWorktreeChangeBundle } from "../src/lib/worktree/bundle.js";
+import type { WorktreeAuditReceipt } from "../src/lib/worktree/audit.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();

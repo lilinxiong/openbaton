@@ -2,13 +2,13 @@ import {
   deriveTaskLifecycle,
   stateFor,
   taskLifecycle
-} from "./rolling-lifecycle-derive.js";
+} from "./rolling/lifecycle-derive.js";
 import {
   coverageByTask,
   lineageStates,
   refsForCoverage,
   supersededVersionsFromContext
-} from "./rolling-lifecycle-lineage.js";
+} from "./rolling/lifecycle-lineage.js";
 import {
   contextDeltas,
   contextManifest,
@@ -18,7 +18,7 @@ import {
   exactSet,
   issue,
   sortedUnique
-} from "./rolling-lifecycle-context.js";
+} from "./rolling/lifecycle-context.js";
 /**
  * Pure task lifecycle and seal evaluation for rolling execution.
  *
@@ -251,4 +251,4 @@ export function taskReadyToSeal(taskKey: string, context: RollingLifecycleContex
 }
 
 
-export * from "./rolling-lifecycle-derive.js";
+export * from "./rolling/lifecycle-derive.js";

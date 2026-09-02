@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { markRouteExhausted } from "../src/lib/model-availability.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { selectRollingFrontier } from "../src/lib/rolling-dispatch-selection.js";
+import { selectRollingFrontier } from "../src/lib/rolling/dispatch-selection.js";
 import { fingerprintUnitVersion, type PlanDelta, type UnitVersion } from "../src/lib/rolling-plan.js";
 import type { ModelCard } from "../src/types.js";
 import type { SpawnTicket } from "../src/lib/spawn.js";

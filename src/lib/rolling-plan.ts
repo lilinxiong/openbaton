@@ -24,9 +24,9 @@ import {
   TASK_SEAL_SCHEMA_VERSION,
   TASK_SOURCE_DESCRIPTOR_SCHEMA_VERSION,
   UNIT_VERSION_SCHEMA_VERSION,
-} from "./rolling-plan-validate.js";
+} from "./rolling/plan-validate.js";
 
-export * from "./rolling-plan-validate.js";
+export * from "./rolling/plan-validate.js";
 
 /** Short aliases used by callers that treat the protocol as one wire schema. */
 
@@ -312,7 +312,7 @@ export function fingerprintRetryAttempt(value: RetryAttempt | unknown): string {
 export function fingerprintPlanDelta(value: PlanDelta | unknown): string { return sha(value); }
 
 export const fingerprintPlan = fingerprintPlanDelta;
-export { RollingProtocolValidationError as RollingPlanValidationError } from "./rolling-plan-validate.js";
+export { RollingProtocolValidationError as RollingPlanValidationError } from "./rolling/plan-validate.js";
 
 /** Derive a stable Baton key without inspecting the adapter-owned reference. */
 export function deriveTaskKey(sourceKind: RollingSourceKind, sourceRef: unknown): string {

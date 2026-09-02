@@ -155,6 +155,6 @@ export interface SpawnTicket extends UnknownRecord, Partial<ExactExecutionRootId
 }
 
 
-export * from "./spawn-normalize.js";
-export * from "./spawn-store.js";
-export * from "./spawn-build.js";
+export * from "./spawn/normalize.js";
+export * from "./spawn/store.js";
+export * from "./spawn/build.js";

@@ -13,17 +13,17 @@ import path from "node:path";
 import {
   captureStableSafetyFacts,
   type StableGitSafetyFactsOptions,
-} from "./git-safety-facts.js";
+} from "./git/safety-facts.js";
 import {
   GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
   type GitIndexControlFingerprint,
-} from "./git-index-control.js";
+} from "./git/index-control.js";
 import { parseTasks } from "./openspec.js";
 import { canonicalizeJson, sha256Hex } from "./json-utils.js";
 
-export { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
+export { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git/index-control.js";
 import { isRecord } from "./validate-utils.js";
-import { captureCompiledApplySourceFacts } from "./apply-source-capture.js";
+import { captureCompiledApplySourceFacts } from "./apply/source-capture.js";
 
 export const APPLY_SOURCE_SCHEMA_VERSION = 1 as const;
 export const APPLY_PLAN_STALE = "APPLY_PLAN_STALE" as const;
@@ -397,4 +397,4 @@ export async function acceptCompiledApplySource<T>(
 }
 
 
-export { captureCompiledApplySourceFacts } from "./apply-source-capture.js";
+export { captureCompiledApplySourceFacts } from "./apply/source-capture.js";

@@ -15,7 +15,7 @@ import {
   ReceiptError,
   normalizeCompiledApplyLineage,
   normalizeRollingUnitLineage
-} from "./receipt-lineage.js";
+} from "./receipt/lineage.js";
 
 export type ReceiptOperation = "read" | "commit" | SafetyOperation;
 export type ExecutionMode = "read-only" | "write" | "commit-only";
@@ -308,5 +308,5 @@ export function readReceipt(cwd: string, receiptId: string, env?: NodeJS.Process
   return receipt;
 }
 
-export * from "./receipt-lineage.js";
-export * from "./receipt-builders.js";
+export * from "./receipt/lineage.js";
+export * from "./receipt/builders.js";

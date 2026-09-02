@@ -17,8 +17,8 @@ import {
   streamGitSafetyFact,
   type GitTreeChangeFact,
   type StableGitSafetyFacts,
-} from "./git-safety-facts.js";
-import { collectGitScalar, GitSafetyError, runGitProcess, type GitProcessOptions } from "./git-safety-process.js";
+} from "./git/safety-facts.js";
+import { collectGitScalar, GitSafetyError, runGitProcess, type GitProcessOptions } from "./git/safety-process.js";
 import { withOwnedLock, withOwnedLockAsync } from "./owned-lock.js";
 import {
   integrationDestinationLockPath,
@@ -139,8 +139,8 @@ export interface AcceptWorktreeIntegrationResult extends ApplyWorktreeIntegratio
 }
 
 
-export { listIntegrationQueue, enqueueWorktreeIntegration } from "./worktree-integration-queue.js";
-export { beginWorktreeIntegration } from "./worktree-integration-begin.js";
-export { applyWorktreeIntegration } from "./worktree-integration-apply.js";
-export { resolveWorktreeIntegration } from "./worktree-integration-resolve.js";
-export { acceptWorktreeIntegration } from "./worktree-integration-accept.js";
+export { listIntegrationQueue, enqueueWorktreeIntegration } from "./worktree/integration-queue.js";
+export { beginWorktreeIntegration } from "./worktree/integration-begin.js";
+export { applyWorktreeIntegration } from "./worktree/integration-apply.js";
+export { resolveWorktreeIntegration } from "./worktree/integration-resolve.js";
+export { acceptWorktreeIntegration } from "./worktree/integration-accept.js";

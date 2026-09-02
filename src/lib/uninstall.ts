@@ -20,9 +20,9 @@ import {
   manifestOwnsFile,
   readInstallManifest,
   type InstallManifest,
-} from "./install-manifest.js";
+} from "./install/manifest.js";
 import { hostIds, hostSkillDest, type HostId } from "./hosts.js";
-import { adapterInstallDir } from "./adapter-install.js";
+import { adapterInstallDir } from "./install/adapter-install.js";
 import { readJsonFile, sha256Hex } from "./json-utils.js";
 
 export const UNINSTALL_ACTIVE_TICKETS = "UNINSTALL_ACTIVE_TICKETS";

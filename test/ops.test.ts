@@ -12,10 +12,10 @@ import { getCliAdapter } from "../src/adapters/registry.js";
 import {
   isCommitOnlyClassification,
   normalizeAgentTaskClassification,
-} from "../src/lib/ops-task.js";
-import { listOpsRouteChoices } from "../src/lib/ops-routes.js";
-import { resolveOpsDispatch } from "../src/lib/ops-dispatch.js";
-import { configuredRouteForClassification, normalizeOpsConfig } from "../src/lib/ops-config.js";
+} from "../src/lib/ops/task.js";
+import { listOpsRouteChoices } from "../src/lib/ops/routes.js";
+import { resolveOpsDispatch } from "../src/lib/ops/dispatch.js";
+import { configuredRouteForClassification, normalizeOpsConfig } from "../src/lib/ops/config.js";
 import { readReceipt } from "../src/lib/receipt.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
 import { spawnsDir } from "../src/lib/paths.js";

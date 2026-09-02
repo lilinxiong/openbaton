@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, it } from "bun:test";
-import { collectGitScalar, GitSafetyError, runGitProcess } from "../src/lib/git-safety-process.ts";
+import { collectGitScalar, GitSafetyError, runGitProcess } from "../src/lib/git/safety-process.ts";
 
 function fakeSpawn(options: { stdout?: string; stderr?: string; code?: number | null; signal?: NodeJS.Signals | null; throwOnSpawn?: boolean; asyncError?: string }) {
   return (() => {

@@ -11,9 +11,9 @@ import {
   fingerprintGitIndexControlRecords,
   GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM,
   type GitIndexControlRecord,
-} from "../src/lib/git-index-control.ts";
+} from "../src/lib/git/index-control.ts";
 import crypto from "node:crypto";
-import { GitSafetyError } from "../src/lib/git-safety-process.ts";
+import { GitSafetyError } from "../src/lib/git/safety-process.ts";
 
 const ascii = (value: string): Buffer => Buffer.from(value, "ascii");
 

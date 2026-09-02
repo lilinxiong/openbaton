@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readOpenSpecStatus } from "../src/lib/openspec.js";
-import { OpenSpecTaskSourceAdapter } from "../src/lib/openspec-task-source.js";
+import { OpenSpecTaskSourceAdapter } from "../src/lib/openspec/task-source.js";
 import { DirectorTaskSourceAdapter } from "../src/lib/director-task-source.js";
 import { TaskSourceAdapterRegistry } from "../src/lib/task-source.js";
 import { validateTaskManifestEntry, type TaskManifestEntry, type TaskSourceDescriptor } from "../src/lib/rolling-plan.js";

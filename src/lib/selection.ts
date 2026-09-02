@@ -226,7 +226,7 @@ export interface TaskComplexityEstimate {
 }
 
 
-export * from "./selection-requirements.js";
-export * from "./selection-candidates.js";
-export * from "./selection-unit.js";
-export * from "./selection-proposals.js";
+export * from "./selection/requirements.js";
+export * from "./selection/candidates.js";
+export * from "./selection/unit.js";
+export * from "./selection/proposals.js";

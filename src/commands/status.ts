@@ -9,9 +9,9 @@ import {
 import {
   listSpawns,
   sessionUid
-} from "../lib/spawn-store.js";
+} from "../lib/spawn/store.js";
 import { readRouteSnapshot } from "../lib/routes.js";
-import { listSelectionProposals } from "../lib/selection-proposals.js";
+import { listSelectionProposals } from "../lib/selection/proposals.js";
 import { availabilityForRoute } from "../lib/model-availability.js";
 import { readOpenSpecStatus } from "../lib/openspec.js";
 import { SelectionProposal } from "../lib/selection.js";

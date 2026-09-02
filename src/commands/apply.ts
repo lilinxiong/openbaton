@@ -8,18 +8,18 @@ import {
   resolvedCards,
   runtimeHost
 } from "../cli.js";
-import { detectOpenSpecRoot } from "../lib/openspec-cli.js";
+import { detectOpenSpecRoot } from "../lib/openspec/cli.js";
 import {
   parseApplyUnitScopes,
   scopeRecord
-} from "../lib/apply-scope.js";
+} from "../lib/apply/scope.js";
 import {
   formatTaskPrompt,
   resolveApplyChange
 } from "../lib/apply.js";
 import { loadTasksFromChangeDir } from "../lib/openspec.js";
 import { applyTaskId } from "../lib/task-id.js";
-import { buildSelectionUnit } from "../lib/selection-unit.js";
+import { buildSelectionUnit } from "../lib/selection/unit.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { withActivationLockAsync } from "../lib/activation.js";
 import {
@@ -40,7 +40,7 @@ import {
 import {
   createSelectionProposal,
   selectionSourceFingerprint
-} from "../lib/selection-proposals.js";
+} from "../lib/selection/proposals.js";
 import {
   firstPositionalArg,
   flagOn,

@@ -40,7 +40,7 @@ import {
   parseSnapshotManifest,
   parseWorktreeRecord,
   withFingerprint
-} from "./worktree-execution-validation.js";
+} from "./worktree/execution-validation.js";
 import {
   CLEANUP_STATE_SCHEMA_VERSION,
   ChangeBundleManifest,
@@ -52,7 +52,7 @@ import {
   WorktreeRecord,
   WorktreeSetupState,
   WorktreeTransitionInput
-} from "./worktree-execution-types.js";
+} from "./worktree/execution-types.js";
 
 type AnyRecord = Record<string, unknown>;
 
@@ -429,5 +429,5 @@ export function readPersistedIntegrationRecord(
 export { resolveWorktreeExecutionMode };
 export type { WorktreeExecutionMode };
 
-export * from "./worktree-execution-types.js";
-export * from "./worktree-execution-validation.js";
+export * from "./worktree/execution-types.js";
+export * from "./worktree/execution-validation.js";

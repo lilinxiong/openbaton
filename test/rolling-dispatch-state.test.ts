@@ -4,7 +4,7 @@ import {
   collectRollingUnitVersions,
   indexRepresentedRollingTickets,
   rollingUnitRef,
-} from "../src/lib/rolling-dispatch-state.js";
+} from "../src/lib/rolling/dispatch-state.js";
 import { fingerprintUnitVersion, type PlanDelta, type UnitVersion } from "../src/lib/rolling-plan.js";
 import type { SpawnTicket } from "../src/lib/spawn.js";
 

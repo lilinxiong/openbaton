@@ -23,12 +23,12 @@ import {
   canonicalLabel,
   clone,
   slashPath
-} from "./rolling-inputs-normalize.js";
+} from "./rolling/inputs-normalize.js";
 import {
   captureLocal,
   componentFingerprint,
   localFingerprint
-} from "./rolling-inputs-capture.js";
+} from "./rolling/inputs-capture.js";
 
 export const ROLLING_INPUTS_SCHEMA_VERSION = 1 as const;
 

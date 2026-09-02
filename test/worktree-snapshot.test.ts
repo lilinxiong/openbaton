@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { worktreeExecutionRootPath } from "../src/lib/paths.js";
-import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
+import { setupDetachedWorktree } from "../src/lib/worktree/setup.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();

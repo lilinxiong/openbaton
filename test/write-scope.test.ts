@@ -5,7 +5,7 @@ import {
   parseApplyUnitScopes,
   scopesFromRecord,
   writePathsOverlap,
-} from "../src/lib/apply-scope.js";
+} from "../src/lib/apply/scope.js";
 
 describe("write scope hard gate", () => {
   it("treats exact and parent-child declarations as conflicts", () => {

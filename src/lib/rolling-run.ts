@@ -46,12 +46,12 @@ import {
 } from "./paths.js";
 import { withOwnedLock } from "./owned-lock.js";
 import { sessionUidFromEnv, validateSessionScope } from "./session-scope.js";
-import { readApplyRun, statusApplyRun, type ApplyRunState, type ApplyRunStatusReport } from "./apply-run.js";
+import { readApplyRun, statusApplyRun, type ApplyRunState, type ApplyRunStatusReport } from "./apply/run.js";
 import { readJsonFile, sha256Hex, writeBytesAtomic } from "./json-utils.js";
 import {
   appendInput,
   appendLocked
-} from "./rolling-run-append.js";
+} from "./rolling/run-append.js";
 import {
   RollingRunError,
   atomicJson,
@@ -69,7 +69,7 @@ import {
   sourceOf,
   writeCheckpoint,
   writeFacts
-} from "./rolling-run-store.js";
+} from "./rolling/run-store.js";
 
 export const ROLLING_RUN_SCHEMA_VERSION = 2 as const;
 export const ROLLING_FACT_SCHEMA_VERSION = 2 as const;
@@ -291,4 +291,4 @@ export function normalizeLegacyCompiledRunStatus(cwd: string, runId: string, opt
 }
 export const normalizeCompiledRunV1Status = normalizeLegacyCompiledRunStatus;
 
-export { RollingRunError, RollingStorageRaceError } from "./rolling-run-store.js";
+export { RollingRunError, RollingStorageRaceError } from "./rolling/run-store.js";

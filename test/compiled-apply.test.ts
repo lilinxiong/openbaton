@@ -3,11 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "bun:test";
-import { ingestInitialApplyExecutionPlan, ingestSuccessorApplyExecutionPlan, materializeCompiledApplyFrontier } from "../src/lib/compiled-apply.js";
+import { ingestInitialApplyExecutionPlan, ingestSuccessorApplyExecutionPlan, materializeCompiledApplyFrontier } from "../src/lib/apply/compiled.js";
 import { buildSelectionUnit } from "../src/lib/selection.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { compiledApplyRunStatePath } from "../src/lib/paths.js";
-import { readApplyRunPlanBody } from "../src/lib/apply-run.js";
+import { readApplyRunPlanBody } from "../src/lib/apply/run.js";
 import { sessionUidFromEnv } from "../src/lib/session-scope.js";
 import type { CompiledApplySourceFacts } from "../src/lib/apply-source.js";
 

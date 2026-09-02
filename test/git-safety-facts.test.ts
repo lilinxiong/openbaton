@@ -2,8 +2,8 @@ import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { describe, it } from "bun:test";
-import { collectGitSafetyFacts, streamGitSafetyFact } from "../src/lib/git-safety-facts.ts";
-import { consumeNulRecords, consumeRefRecords } from "../src/lib/git-record-consumers.ts";
+import { collectGitSafetyFacts, streamGitSafetyFact } from "../src/lib/git/safety-facts.ts";
+import { consumeNulRecords, consumeRefRecords } from "../src/lib/git/record-consumers.ts";
 
 function fakeSpawn(chunks: AsyncIterable<Buffer> | Iterable<Buffer>, state: { killed: boolean; produced: number; closed?: boolean; exitCode?: number }) {
   return (() => {

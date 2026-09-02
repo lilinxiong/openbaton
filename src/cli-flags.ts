@@ -4,8 +4,8 @@
  * node:util parseArgs cannot express this grammar without changing accepted
  * syntax, so the parser stays hand-rolled but lives in its own module.
  */
-import { normalizeAgentTaskClassification } from "./lib/ops-task.js";
-import { DEFAULT_WRITE_OPERATIONS, WRITE_OPERATIONS, type ApplyUnitScope } from "./lib/apply-scope.js";
+import { normalizeAgentTaskClassification } from "./lib/ops/task.js";
+import { DEFAULT_WRITE_OPERATIONS, WRITE_OPERATIONS, type ApplyUnitScope } from "./lib/apply/scope.js";
 import { type SafetyOperation } from "./lib/safety.js";
 
 export type FlagValue = string | boolean;

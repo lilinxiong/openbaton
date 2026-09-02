@@ -1,4 +1,4 @@
-import { defaultCompiledApplyHandler } from "../lib/compiled-apply-cli.js";
+import { defaultCompiledApplyHandler } from "../lib/apply/compiled-cli.js";
 import {
   CodedError,
   WritableLike

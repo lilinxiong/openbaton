@@ -3,12 +3,12 @@ import {
   ApplyUnitScope,
   DEFAULT_WRITE_OPERATIONS,
   scopeRecord
-} from "../lib/apply-scope.js";
+} from "../lib/apply/scope.js";
 import {
   nextSpawnIds,
   sessionUid
-} from "../lib/spawn-store.js";
-import { buildSelectionUnit } from "../lib/selection-unit.js";
+} from "../lib/spawn/store.js";
+import { buildSelectionUnit } from "../lib/selection/unit.js";
 import { cardsForAutomaticSelection } from "../lib/route-health.js";
 import { withActivationLockAsync } from "../lib/activation.js";
 import { reserveNext } from "../lib/dispatch.js";
@@ -27,7 +27,7 @@ import {
 import {
   createSelectionProposal,
   selectionSourceFingerprint
-} from "../lib/selection-proposals.js";
+} from "../lib/selection/proposals.js";
 import {
   assertWriteScopesAvailable,
   materializeStandalonePlanAsync
@@ -35,12 +35,12 @@ import {
 import {
   StandalonePlan,
   planStandaloneSpawn
-} from "../lib/spawn-build.js";
+} from "../lib/spawn/build.js";
 import {
   OpsResolution,
   authorizeCommitOpsPlanAsync,
   resolveOpsUnitDispatch
-} from "../lib/ops-dispatch.js";
+} from "../lib/ops/dispatch.js";
 import {
   FlagMap,
   flagOn,

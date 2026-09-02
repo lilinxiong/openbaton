@@ -23,7 +23,7 @@ import {
 import { getCliAdapter } from "../adapters/index.js";
 import type { UnknownRecord } from "../types.js";
 import { dispatchLockPath, spawnsDir, workspaceId, WORKTREE_RECORD_NAME } from "./paths.js";
-import { resolveOwningRepository, resolveWorktreeTopology } from "./worktree-topology.js";
+import { resolveOwningRepository, resolveWorktreeTopology } from "./worktree/topology.js";
 import {
   parseWorktreeRecord,
   transitionPersistedWorktreeRecord,
@@ -52,7 +52,7 @@ import {
   BATON_DISPATCH_RESERVATION_SCHEMA,
   withDispatchReservationEnvelope,
   type DispatchReservationIdentity,
-} from "./dispatch-reservation.js";
+} from "./dispatch/reservation.js";
 import { withActivationLockAsync, type ActivationLockOptions } from "./activation.js";
 import {
   availabilityForRoute,
@@ -69,18 +69,18 @@ import {
   readApplyRunPlanBody,
   type ApplyRunState,
   type ApplyRunTicketFact,
-} from "./apply-run.js";
-import { acceptApplyUnit, type ApplyAcceptanceResult } from "./apply-reconcile.js";
+} from "./apply/run.js";
+import { acceptApplyUnit, type ApplyAcceptanceResult } from "./apply/reconcile.js";
 import type { ApplyExecutionPlan, ApplyPlanUnit } from "./apply-plan.js";
-import { withLock } from "./dispatch-lock.js";
-import { requireHost } from "./dispatch-core.js";
+import { withLock } from "./dispatch/lock.js";
+import { requireHost } from "./dispatch/core.js";
 import {
   activeTicketsInDispatchScope,
   ticketMatchesHost,
   ticketsInDispatchScope
-} from "./dispatch-reserve.js";
-import { dispatchCompatibilityBlockers } from "./dispatch-compat.js";
-import { LIVE_AGENT_PROBE_STATES } from "./dispatch-signals.js";
+} from "./dispatch/reserve.js";
+import { dispatchCompatibilityBlockers } from "./dispatch/compat.js";
+import { LIVE_AGENT_PROBE_STATES } from "./dispatch/signals.js";
 import {
   DEFAULT_AGENT_PROBE_INTERVAL_MS,
   DispatchError,
@@ -93,7 +93,7 @@ import {
   resolvedCapacity,
   ticketTargetHost,
   transition
-} from "./dispatch-core.js";
+} from "./dispatch/core.js";
 
 export interface DispatchSpec extends Partial<ExactExecutionRootIdentity> {
   ticket_id: string;
@@ -346,9 +346,9 @@ export function dispatchWorkspaceCapacitySnapshots(
   });
 }
 
-export { TERMINAL_TICKET_STATUSES, DEFAULT_AGENT_PROBE_INTERVAL_MS, DispatchError } from "./dispatch-core.js";
-export { dispatchCompatibilityBlockers, type CompatibilityBlocker } from "./dispatch-compat.js";
-export { withDispatchLock, withDispatchLockAsync, type DispatchLockOptions } from "./dispatch-lock.js";
-export { reserveNext } from "./dispatch-reserve.js";
-export { bindAgent, deferDispatch, reportAgentProbe, reportAgentProgress } from "./dispatch-signals.js";
-export { finishAgent, releaseAgent } from "./dispatch-finish.js";
+export { TERMINAL_TICKET_STATUSES, DEFAULT_AGENT_PROBE_INTERVAL_MS, DispatchError } from "./dispatch/core.js";
+export { dispatchCompatibilityBlockers, type CompatibilityBlocker } from "./dispatch/compat.js";
+export { withDispatchLock, withDispatchLockAsync, type DispatchLockOptions } from "./dispatch/lock.js";
+export { reserveNext } from "./dispatch/reserve.js";
+export { bindAgent, deferDispatch, reportAgentProbe, reportAgentProgress } from "./dispatch/signals.js";
+export { finishAgent, releaseAgent } from "./dispatch/finish.js";

@@ -38,7 +38,7 @@ import {
   text,
   unitState,
   versionId
-} from "./rolling-scheduler-facts.js";
+} from "./rolling/scheduler-facts.js";
 
 export type RollingSchedulerState =
   | "undispatched" | "planned" | "ready" | "reserved" | "running"

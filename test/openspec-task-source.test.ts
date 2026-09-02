@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { acquireOwnedLock } from "../src/lib/owned-lock.js";
 import { OpenSpecError, resolveOpenSpecApplyInstructions } from "../src/lib/openspec.js";
-import { OpenSpecTaskSourceAdapter } from "../src/lib/openspec-task-source.js";
+import { OpenSpecTaskSourceAdapter } from "../src/lib/openspec/task-source.js";
 import type { TaskSourceDescriptor } from "../src/lib/rolling-plan.js";
 
 function fixture(outputTasks = [{ id: "77", description: "1.1 First", done: false }, { id: "78", description: "1.2 Second", done: false }]) {

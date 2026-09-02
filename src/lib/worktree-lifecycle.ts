@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { collectGitScalar, GitSafetyError, runGitProcess, type GitProcessOptions } from "./git-safety-process.js";
+import { collectGitScalar, GitSafetyError, runGitProcess, type GitProcessOptions } from "./git/safety-process.js";
 import {
   bundleManifestPath,
   integrationRecordPath,
@@ -30,14 +30,14 @@ import {
   type RetentionReason,
   type WorktreeRecord,
 } from "./worktree-execution.js";
-import { resolveOwningRepository } from "./worktree-topology.js";
+import { resolveOwningRepository } from "./worktree/topology.js";
 import { sha256Hex } from "./json-utils.js";
-import { deriveWorktreeRetentionReasons } from "./worktree-lifecycle-cleanup.js";
+import { deriveWorktreeRetentionReasons } from "./worktree/lifecycle-cleanup.js";
 import {
   listPersistedWorktreeRecords,
   readBundle,
   readIntegration
-} from "./worktree-lifecycle-records.js";
+} from "./worktree/lifecycle-records.js";
 import {
   MAX_CHANGED_PATHS,
   boundedOutput,
@@ -48,7 +48,7 @@ import {
   ticketFor,
   timestamp,
   within
-} from "./worktree-lifecycle-common.js";
+} from "./worktree/lifecycle-common.js";
 
 export type WorktreeLifecycleErrorCode =
   | "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH"
@@ -465,5 +465,5 @@ export async function recoverWorktreeRun(input: {
 
 /** Persist cleanup eligibility only after all conservative reasons are discharged. */
 
-export { deriveWorktreeRetentionReasons, markWorktreeCleanupEligible, cleanupWorktreeAttempt } from "./worktree-lifecycle-cleanup.js";
-export { listPersistedWorktreeRecords } from "./worktree-lifecycle-records.js";
+export { deriveWorktreeRetentionReasons, markWorktreeCleanupEligible, cleanupWorktreeAttempt } from "./worktree/lifecycle-cleanup.js";
+export { listPersistedWorktreeRecords } from "./worktree/lifecycle-records.js";

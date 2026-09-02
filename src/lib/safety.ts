@@ -2,15 +2,15 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fingerprintGitIndexControlRecords, GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git-index-control.js";
+import { fingerprintGitIndexControlRecords, GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "./git/index-control.js";
 import {
   captureStableSafetyFacts,
   type GitSafetyFacts,
   type StableGitSafetyFacts,
   type StableGitSafetyFactsOptions,
-} from "./git-safety-facts.js";
-import { isRuntimeTurnDiffRef } from "./git-record-consumers.js";
-import { collectGitScalar, type GitProcessOptions } from "./git-safety-process.js";
+} from "./git/safety-facts.js";
+import { isRuntimeTurnDiffRef } from "./git/record-consumers.js";
+import { collectGitScalar, type GitProcessOptions } from "./git/safety-process.js";
 import { sha256Hex } from "./json-utils.js";
 
 export type SafetyOperation = "write" | "create" | "delete" | "rename" | "chmod";
@@ -130,5 +130,5 @@ export type IndexControlBaselineErrorCode =
   | "INDEX_CONTROL_BASELINE_INVALID";
 
 
-export * from "./safety-baseline.js";
-export * from "./safety-audit.js";
+export * from "./safety/baseline.js";
+export * from "./safety/audit.js";

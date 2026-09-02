@@ -26,9 +26,9 @@ import { detectInvokingHost, parseHostId, resolveRuntimeHost } from "./lib/hosts
 import { listSpawns, nextSpawnIds, planStandaloneSpawn, sessionUid, type StandalonePlan } from "./lib/spawn.js";
 import { formatTaskPrompt, resolveApplyChange } from "./lib/apply.js";
 import { applyTaskId } from "./lib/task-id.js";
-import { parseApplyUnitScopes, scopeRecord, DEFAULT_WRITE_OPERATIONS, WRITE_OPERATIONS, type ApplyUnitScope } from "./lib/apply-scope.js";
-import { authorizeCommitOpsPlanAsync, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops-dispatch.js";
-import { normalizeAgentTaskClassification } from "./lib/ops-task.js";
+import { parseApplyUnitScopes, scopeRecord, DEFAULT_WRITE_OPERATIONS, WRITE_OPERATIONS, type ApplyUnitScope } from "./lib/apply/scope.js";
+import { authorizeCommitOpsPlanAsync, resolveOpsDispatch, resolveOpsUnitDispatch, type OpsResolution } from "./lib/ops/dispatch.js";
+import { normalizeAgentTaskClassification } from "./lib/ops/task.js";
 import { detectOpenSpecRoot, loadTasksFromChangeDir, readOpenSpecStatus } from "./lib/openspec.js";
 import { type SafetyOperation } from "./lib/safety.js";
 import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "./lib/ticket-materialization.js";
@@ -48,7 +48,7 @@ import type { CliAdapterProvider, CliId } from "./adapters/contract.js";
 import { createTerminalPrompt, isInteractiveIo, type SelectPrompt } from "./lib/prompt.js";
 import type { ModelCard } from "./types.js";
 import type { CodedError, WritableLike } from "./types.js";
-import { defaultCompiledApplyHandler } from "./lib/compiled-apply-cli.js";
+import { defaultCompiledApplyHandler } from "./lib/apply/compiled-cli.js";
 import { runRollingRun, type RollingRunHandler } from "./commands/run.js";
 import {
   firstPositionalArg,

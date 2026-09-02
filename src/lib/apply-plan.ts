@@ -8,7 +8,7 @@ import path from "node:path";
 import type { SafetyOperation } from "./safety.js";
 import { canonicalizeJson, sha256Hex } from "./json-utils.js";
 import { wildcardStaticPrefix } from "./wildcard.js";
-import { record } from "./apply-plan-scope.js";
+import { record } from "./apply/plan-scope.js";
 
 export const APPLY_EXECUTION_PLAN_SCHEMA_VERSION = 1 as const;
 export const APPLY_PLAN_OPERATIONS: readonly SafetyOperation[] = ["write", "create", "delete", "rename", "chmod"];
@@ -233,6 +233,6 @@ export const applyPlanFingerprint = fingerprintApplyExecutionPlan;
 
 
 
-export * from "./apply-plan-scope.js";
-export * from "./apply-plan-frontier.js";
-export * from "./apply-plan-validate.js";
+export * from "./apply/plan-scope.js";
+export * from "./apply/plan-frontier.js";
+export * from "./apply/plan-validate.js";

@@ -29,8 +29,8 @@ import {
   markWorktreeCleanupEligible,
   recoverWorktreeRun,
 } from "../src/lib/worktree-lifecycle.js";
-import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
-import { resolveOwningRepository } from "../src/lib/worktree-topology.js";
+import { setupDetachedWorktree } from "../src/lib/worktree/setup.js";
+import { resolveOwningRepository } from "../src/lib/worktree/topology.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
