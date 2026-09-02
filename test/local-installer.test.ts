@@ -129,8 +129,8 @@ if [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build" ]; then
   [ "\${FAKE_FAIL:-}" = "build" ] && exit 24
   cp "$FAKE_CLI_TEMPLATE" "$FAKE_CHECKOUT/dist/bin/baton.js"
   chmod +x "$FAKE_CHECKOUT/dist/bin/baton.js"
-  mkdir -p "$FAKE_CHECKOUT/dist/src/lib"
-  for module in worktree-setup worktree-audit worktree-bundle worktree-integration worktree-lifecycle; do
+  mkdir -p "$FAKE_CHECKOUT/dist/src/lib/worktree"
+  for module in worktree/setup worktree/audit worktree/bundle worktree-integration worktree-lifecycle; do
     touch "$FAKE_CHECKOUT/dist/src/lib/$module.js"
   done
   exit 0
