@@ -73,7 +73,14 @@ if (args[0] === "uninstall") {
     console.log(JSON.stringify({ ...plan, dry_run: false, applied: false, targets: [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", host: "codex", reason: "ownership changed after preflight" }] }));
     process.exit(0);
   }
-  fs.rmSync(path.join(home, ".baton"), { recursive: true, force: true });
+  const batonHome = path.join(home, ".baton");
+  if (mode === "retained" && fs.existsSync(batonHome)) {
+    for (const entry of fs.readdirSync(batonHome)) {
+      if (entry !== "workspaces") fs.rmSync(path.join(batonHome, entry), { recursive: true, force: true });
+    }
+  } else {
+    fs.rmSync(batonHome, { recursive: true, force: true });
+  }
   fs.rmSync(path.join(home, ".codex", "skills", "baton"), { recursive: true, force: true });
   fs.rmSync(path.join(home, ".grok", "skills", "baton"), { recursive: true, force: true });
   console.log(JSON.stringify({ ...plan, dry_run: false, applied: true }));
@@ -350,6 +357,9 @@ describe("isolated local Baton installer", () => {
     const f = fixture();
     setupPriorInstall(f);
     f.env.FAKE_PLAN_MODE = "retained";
+    const factLog = path.join(f.home, ".baton", "workspaces", "example", "v2", "runs", "rolling-runs-v2", "run-1", "facts.ndjson");
+    fs.mkdirSync(path.dirname(factLog), { recursive: true });
+    fs.writeFileSync(factLog, '{"kind":"accepted"}\n');
 
     const result = runInstaller(f, ["--skip-install", "--skip-tests"]);
     assert.equal(result.status, 0, result.stderr);
@@ -357,6 +367,7 @@ describe("isolated local Baton installer", () => {
     const lines = logLines(f);
     assert.equal(lines.some((line) => line.includes("cli uninstall --clean --dry-run --json")), true);
     assert.equal(lines.some((line) => line.includes("cli uninstall --clean --yes --json")), true);
+    assert.equal(fs.readFileSync(factLog, "utf8"), '{"kind":"accepted"}\n');
   });
 
   it("installs a partial footprint even without a visible command or package registration", () => {

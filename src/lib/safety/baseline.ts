@@ -150,15 +150,17 @@ export function stagedTree(repoRoot: string): string {
 export function indexControlChecksum(repoRoot: string): string {
   const output = execFileSync("git", ["ls-files", "--debug", "-z"], { cwd: repoRoot }) as Buffer;
   const entries: Array<{ pathname: Buffer; maskedFlags: number }> = [];
+  const text = output.toString("latin1");
+  const flagsPattern = /(?:^|\n)[^\n]*\bflags:[ \t]*([0-9A-Fa-f]+)[ \t]*(?:\n|$)/g;
   let cursor = 0;
   while (cursor < output.length) {
     const nul = output.indexOf(0, cursor);
     if (nul < 0) break;
-    const file = output.slice(cursor, nul);
-    const tail = output.slice(nul + 1);
+    const file = output.subarray(cursor, nul);
     // `--debug -z` NUL-terminates the pathname, then appends the debug block;
     // the next pathname starts immediately after the flags line.
-    const match = tail.toString("ascii").match(/(?:^|\n)[^\n]*\bflags:[ \t]*([0-9A-Fa-f]+)[ \t]*(?:\n|$)/);
+    flagsPattern.lastIndex = nul + 1;
+    const match = flagsPattern.exec(text);
     if (!match) throw new Error(`git ls-files --debug omitted flags for ${file}`);
     // The fsmonitor-valid bit is a volatile cache hint, not a worker-visible
     // index mutation. Keep semantic controls (assume-unchanged,
@@ -166,7 +168,7 @@ export function indexControlChecksum(repoRoot: string): string {
     // fingerprint while masking only CE_FSMONITOR_VALID (0x80000000).
     const flags = Number.parseInt(match[1], 16) >>> 0;
     entries.push({ pathname: file, maskedFlags: flags & 0x7fffffff });
-    cursor = nul + 1 + match.index + match[0].length;
+    cursor = match.index + match[0].length;
   }
   return fingerprintGitIndexControlRecords(entries).checksum;
 }

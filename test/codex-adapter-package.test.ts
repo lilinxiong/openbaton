@@ -12,6 +12,7 @@ import { loadConfig } from "../src/lib/config.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
+  installBundledAdapters,
   installBundledAdaptersAndRecord,
 } from "../src/lib/install/adapter-install.js";
 import {
@@ -60,6 +61,19 @@ lines.on("line", (line) => {
 }
 
 describe("external Codex adapter package", () => {
+  it("validates every source package before mutating the install root", () => {
+    const { root: sourceRoot } = { root: fs.mkdtempSync(path.join(os.tmpdir(), "baton-adapter-preflight-")) };
+    const valid = path.join(sourceRoot, "alpha");
+    fs.mkdirSync(valid);
+    fs.writeFileSync(path.join(valid, "adapter.json"), "{}\n");
+    const { env } = isolatedEnv();
+    assert.throws(() => installBundledAdapters(env, [
+      { id: "alpha", source: valid },
+      { id: "beta", source: path.join(sourceRoot, "missing") },
+    ]), /ADAPTER_PACKAGE_INVALID/);
+    assert.equal(fs.existsSync(adapterInstallDir("alpha", env)), false);
+  });
+
   it("discovers from the installed home without BATON_ADAPTER_PATHS", () => {
     const { env } = isolatedEnv();
     fs.mkdirSync(path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });

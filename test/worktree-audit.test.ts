@@ -117,6 +117,16 @@ describe("terminal isolated-worktree audit", () => {
     assert.ok(audit.violations.some((item) => item.code === "E_RECEIPT_LINEAGE_MISMATCH"));
   });
 
+  it("rejects the exact parent-directory allowlist entry", async () => {
+    const f = await fixture("parent-allowlist");
+    const audit = await auditTerminalWorktree({
+      record: f.record,
+      receipt: { ...f.receipt, write_allowlist: [".."] },
+    });
+    assert.equal(audit.accepted, false);
+    assert.ok(audit.violations.some((item) => item.code === "E_RECEIPT_LINEAGE_MISMATCH"));
+  });
+
   it("rejects false-success no-op, scope, operation, symlink, and staged-control violations with bounded evidence", async () => {
     const noop = await fixture("noop");
     const empty = await auditTerminalWorktree({ record: noop.record, receipt: noop.receipt });

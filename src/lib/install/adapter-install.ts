@@ -100,14 +100,17 @@ export function installBundledAdapters(
   env: NodeJS.ProcessEnv = process.env,
   packages: readonly BundledAdapterPackage[] = bundledAdapterPackages(),
 ): AdapterInstallResult {
-  const prior = readInstallManifest(env);
-  const result: AdapterInstallResult = { installed: [], updated: [], kept: [], conflicts: [], ownership: [] };
-  for (const adapter of packages) {
+  const validated = packages.map((adapter) => {
     const source = path.resolve(adapter.source);
-    const destination = adapterInstallDir(adapter.id, env);
-    const shown = display(destination, env);
     const sourceFingerprint = directoryFingerprint(source);
     if (!sourceFingerprint) throw new Error(`ADAPTER_PACKAGE_INVALID: unreadable package ${source}`);
+    return { adapter, source, sourceFingerprint };
+  });
+  const prior = readInstallManifest(env);
+  const result: AdapterInstallResult = { installed: [], updated: [], kept: [], conflicts: [], ownership: [] };
+  for (const { adapter, source, sourceFingerprint } of validated) {
+    const destination = adapterInstallDir(adapter.id, env);
+    const shown = display(destination, env);
     if (!fs.existsSync(destination)) {
       copyPackage(source, destination);
       result.installed.push(`installed adapter ${adapter.id} at ${shown}`);

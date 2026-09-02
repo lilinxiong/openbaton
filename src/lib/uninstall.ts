@@ -306,8 +306,9 @@ function retainedRollingRuns(runtime: string, env: NodeJS.ProcessEnv | undefined
     const run = path.join(root, name);
     requireDirectory(run, "rolling run entry");
     const log = path.join(run, ROLLING_FACT_LOG_NAME);
-    if (!fs.existsSync(log)) stateInvalid(`rolling run fact log is missing: ${log}`);
-    const logState = validateNdjsonState(log, "rolling run fact log");
+    const logState = fs.existsSync(log)
+      ? validateNdjsonState(log, "rolling run fact log")
+      : { partial_tail: false };
     scanJsonStateDirectory(path.join(run, ROLLING_ACCEPTED_DOCUMENTS_DIR), "rolling accepted documents");
     const checkpoint = path.join(run, ROLLING_CHECKPOINT_NAME);
     if (fs.existsSync(checkpoint)) validateJsonState(checkpoint, "rolling checkpoint");

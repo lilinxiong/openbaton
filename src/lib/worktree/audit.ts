@@ -84,7 +84,7 @@ function boundedLimit(value: number | undefined): number {
 function safeRelative(value: string): boolean {
   return Boolean(value) && !value.includes("\\") && !/[\u0000-\u001f\u007f]/u.test(value)
     && !path.posix.isAbsolute(value) && path.posix.normalize(value) === value
-    && value !== "." && !value.startsWith("../") && !value.split("/").includes(".git");
+    && value !== "." && value !== ".." && !value.startsWith("../") && !value.split("/").includes(".git");
 }
 
 function validAllowlistEntry(value: unknown): value is string {
@@ -92,7 +92,7 @@ function validAllowlistEntry(value: unknown): value is string {
   const normalized = value.replace(/\*+/gu, "placeholder");
   return Boolean(value) && !value.includes("\\")
     && !/[\u0000-\u001f\u007f]/u.test(value) && !path.posix.isAbsolute(value)
-    && path.posix.normalize(normalized) === normalized && normalized !== "."
+    && path.posix.normalize(normalized) === normalized && normalized !== "." && normalized !== ".."
     && !normalized.startsWith("../") && !normalized.split("/").includes(".git");
 }
 
@@ -286,4 +286,3 @@ export async function auditTerminalWorktree(input: TerminalWorktreeAuditInput): 
     non_text_facts: nonTextFacts,
   }, violations);
 }
-

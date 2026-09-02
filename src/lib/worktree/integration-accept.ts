@@ -66,19 +66,19 @@ export async function applyAcceptedTree(
 ): Promise<void> {
   if (beforeTree === afterTree) return;
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "baton-integration-accept-"));
-  const patchFile = path.join(temporary, "accepted.patch");
-  const descriptor = fs.openSync(patchFile, "wx", 0o600);
   try {
-    await runGitProcess({
-      cwd: root,
-      args: ["diff-tree", "--no-commit-id", "-r", "-p", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "-M", "-C", beforeTree, afterTree],
-      spawn,
-      onStdout(chunk) { fs.writeSync(descriptor, chunk); },
-    });
-  } finally {
-    fs.closeSync(descriptor);
-  }
-  try {
+    const patchFile = path.join(temporary, "accepted.patch");
+    const descriptor = fs.openSync(patchFile, "wx", 0o600);
+    try {
+      await runGitProcess({
+        cwd: root,
+        args: ["diff-tree", "--no-commit-id", "-r", "-p", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "-M", "-C", beforeTree, afterTree],
+        spawn,
+        onStdout(chunk) { fs.writeSync(descriptor, chunk); },
+      });
+    } finally {
+      fs.closeSync(descriptor);
+    }
     await runGitProcess({ cwd: root, args: ["apply", "--check", "--whitespace=nowarn", patchFile], spawn });
     await runGitProcess({ cwd: root, args: ["apply", "--whitespace=nowarn", patchFile], spawn });
   } finally {
