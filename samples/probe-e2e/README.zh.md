@@ -33,8 +33,10 @@ Prompt 1 通过 Baton 创建两个互不依赖的文件：
 独立请求保存在 `STANDALONE_REQUEST.txt`。
 
 Bootstrap 会为 Codex 使用 `$baton`，为 Grok 使用 `/baton`。Prompt 2 先调用
-对应 host 的 Baton skill，再调用 `$openspec-apply-change probe-e2e`，并行分派
-OpenSpec 任务 `1.1` 和 `1.2`，再执行集成任务 `2.1`。
-OpenSpec 请求保存在 `OPENSPEC_REQUEST.txt`。bootstrap 会把同一套
-绝对工作区路径、host、模型和 session 身份注入两份请求。
-fixture 启动时没有已生成的源码文件；这些文件由 worker 创建。
+对应 host 的 Baton skill，再调用 `$openspec-apply-change probe-e2e`。这条
+双 skill 路径会编译计划，并把 OpenSpec 任务 `1.1`、`1.2`（并行）以及集成
+任务 `2.1` 落成 `compiled-apply` ticket。校验器读取这些 ticket，以及
+`runs/compiled-apply-runs/` 下的 compiled apply run；不再要求旧的
+`source: "openspec"` ticket。OpenSpec 请求保存在 `OPENSPEC_REQUEST.txt`。
+bootstrap 会把同一套绝对工作区路径、host、模型和 session 身份注入两份
+请求。fixture 启动时没有已生成的源码文件；这些文件由 worker 创建。

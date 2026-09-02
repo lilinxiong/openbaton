@@ -672,11 +672,11 @@ def verify_installation(
     if missing_hosts:
         raise RuntimeError("verification failed: missing manifest-owned host skills: " + ", ".join(missing_hosts))
     required_runtime_modules = (
-        "worktree-setup.js",
-        "worktree-audit.js",
-        "worktree-bundle.js",
-        "worktree-integration.js",
-        "worktree-lifecycle.js",
+        Path("worktree") / "setup.js",
+        Path("worktree") / "audit.js",
+        Path("worktree") / "bundle.js",
+        Path("worktree-integration.js"),
+        Path("worktree-lifecycle.js"),
     )
     missing_runtime_modules = [
         str(repo_root / "dist" / "src" / "lib" / name)

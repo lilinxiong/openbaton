@@ -35,8 +35,12 @@ Prompt 1 creates two independent files through Baton:
 The standalone request is kept in `STANDALONE_REQUEST.txt`.
 
 Bootstrap uses `$baton` for Codex and `/baton` for Grok. Prompt 2 invokes the
-host-specific Baton skill followed by `$openspec-apply-change probe-e2e`, then dispatches
-OpenSpec tasks `1.1` and `1.2` in parallel, followed by integration task `2.1`.
-The OpenSpec request is kept in `OPENSPEC_REQUEST.txt`. Bootstrap injects the
-same absolute workspace, host, model, and session identity into both requests.
-The fixture starts without generated source files; workers create them.
+host-specific Baton skill followed by `$openspec-apply-change probe-e2e`. That
+dual-skill path compiles a plan and persists `compiled-apply` tickets for
+OpenSpec tasks `1.1` and `1.2` in parallel, then integration task `2.1`. The
+verifier reads those tickets plus the compiled apply run under
+`runs/compiled-apply-runs/`; it does not require legacy `source: "openspec"`
+tickets. The OpenSpec request is kept in `OPENSPEC_REQUEST.txt`. Bootstrap
+injects the same absolute workspace, host, model, and session identity into
+both requests. The fixture starts without generated source files; workers
+create them.

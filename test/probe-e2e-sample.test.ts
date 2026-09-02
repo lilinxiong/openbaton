@@ -56,6 +56,28 @@ describe("probe-e2e verifier", () => {
     assert.match(`${rejected.stderr}${rejected.stdout}`, /checkbox completed before/i);
   });
 
+  it("accepts live compiled-apply tickets without a synthetic scenario dump", () => {
+    const fixture = makeFixture();
+    fs.rmSync(path.join(fixture.runtime, "compiled-apply-scenario.json"));
+    const result = runVerifier(fixture);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.compiled_apply?.run_id, "compiled-probe-run");
+    assert.equal(payload.compiled_apply?.revision, "1");
+    assert.equal(payload.compiled_apply?.reconciled, true);
+    assert.deepEqual(payload.tickets.filter((ticket: { source: string }) => ticket.source === "compiled-apply").map((ticket: { task: string }) => ticket.task).sort(), ["1.1", "1.2", "2.1"]);
+  });
+
+  it("still accepts legacy source=openspec probe tickets", () => {
+    const fixture = makeFixture({ probeSource: "openspec" });
+    const result = runVerifier(fixture);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.deepEqual(payload.tickets.filter((ticket: { task: string | null }) => ticket.task).map((ticket: { task: string }) => ticket.task).sort(), ["1.1", "1.2", "2.1"]);
+  });
+
   it("renders the host-specific Baton invocation syntax", () => {
     const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "baton-probe-bootstrap-bin-"));
     write(fakeBin, "openspec", "#!/bin/sh\nexit 0\n", 0o755);
@@ -75,7 +97,8 @@ describe("probe-e2e verifier", () => {
   });
 });
 
-function makeFixture() {
+function makeFixture(options: { probeSource?: "compiled-apply" | "openspec" } = {}) {
+  const probeSource = options.probeSource || "compiled-apply";
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-probe-home-"));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "baton-probe-workspace-"));
   const host = "codex";
@@ -132,12 +155,21 @@ function makeFixture() {
   const tickets = [
     ticket("standalone-1", "standalone", null, "09:00", "09:02", "standalone-1", now, model, host),
     ticket("standalone-2", "standalone", null, "09:00", "09:03", "standalone-2", now, model, host),
-    ticket("probe-1", "openspec", { change: "probe-e2e", number: "1.1", tasks_path: path.join(openspec, "tasks.md") }, "09:00", "09:10", "probe-1", now, model, host),
-    ticket("probe-2", "openspec", { change: "probe-e2e", number: "1.2", tasks_path: path.join(openspec, "tasks.md") }, "09:01", "09:09", "probe-2", now, model, host),
-    ticket("probe-3", "openspec", { change: "probe-e2e", number: "2.1", tasks_path: path.join(openspec, "tasks.md") }, "09:11", "09:12", "probe-3", now, model, host),
+    probeSource === "compiled-apply"
+      ? ticket("probe-1", "compiled-apply", null, "09:00", "09:10", "probe-1", now, model, host, ["1.1"])
+      : ticket("probe-1", "openspec", { change: "probe-e2e", number: "1.1", tasks_path: path.join(openspec, "tasks.md") }, "09:00", "09:10", "probe-1", now, model, host),
+    probeSource === "compiled-apply"
+      ? ticket("probe-2", "compiled-apply", null, "09:01", "09:09", "probe-2", now, model, host, ["1.2"])
+      : ticket("probe-2", "openspec", { change: "probe-e2e", number: "1.2", tasks_path: path.join(openspec, "tasks.md") }, "09:01", "09:09", "probe-2", now, model, host),
+    probeSource === "compiled-apply"
+      ? ticket("probe-3", "compiled-apply", null, "09:11", "09:12", "probe-3", now, model, host, ["2.1"])
+      : ticket("probe-3", "openspec", { change: "probe-e2e", number: "2.1", tasks_path: path.join(openspec, "tasks.md") }, "09:11", "09:12", "probe-3", now, model, host),
   ];
   for (const item of tickets) write(runtime, `spawns/${item.id}.json`, JSON.stringify(item, null, 2));
   write(runtime, "compiled-apply-scenario.json", JSON.stringify(compiledApplyScenario(workspace, openspec, model), null, 2));
+  if (probeSource === "compiled-apply") {
+    write(runtime, "runs/compiled-apply-runs/compiled-probe-run/state-v1.json", JSON.stringify(compiledApplyRunState(tickets, host), null, 2));
+  }
 
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "baton-probe-bin-"));
   write(fakeBin, "openspec", "#!/bin/sh\nexit 0\n", 0o755);
@@ -246,15 +278,52 @@ function compiledApplyScenario(workspace: string, openspec: string, model: strin
   };
 }
 
-function ticket(id, source, openspec, start, finish, handleValue, now, model, host) {
+function compiledApplyRunState(tickets, host) {
+  const probe = tickets.filter((ticket) => ticket.source === "compiled-apply");
+  const byTask = Object.fromEntries(probe.map((ticket) => [ticket.work_unit.task_refs[0], ticket.id]));
+  return {
+    schema_version: 1,
+    run_id: "compiled-probe-run",
+    change: CHANGE,
+    host,
+    session_uid: "fixture-session",
+    current_revision: "1",
+    current_fingerprint: "fixture-fingerprint",
+    reconciled: true,
+    linked_ticket_ids: probe.map((ticket) => ticket.id),
+    unit_state: {
+      "unit-format": { status: "accepted", ticket_ids: [byTask["1.1"]], superseded: false },
+      "unit-validate": { status: "accepted", ticket_ids: [byTask["1.2"]], superseded: false },
+      "unit-index": { status: "accepted", ticket_ids: [byTask["2.1"]], superseded: false },
+    },
+    gate_state: { "g-parent": { status: "accepted", ticket_ids: [], superseded: false } },
+    task_state: {
+      "1.1": { status: "reconciled", ticket_ids: [byTask["1.1"]], superseded: false },
+      "1.2": { status: "reconciled", ticket_ids: [byTask["1.2"]], superseded: false },
+      "2.1": { status: "reconciled", ticket_ids: [byTask["2.1"]], superseded: false },
+    },
+    selected_tasks: ["1.1", "1.2", "2.1"],
+  };
+}
+
+function ticket(id, source, openspec, start, finish, handleValue, now, model, host, taskRefs = null) {
   const startAt = `2026-08-27T${start}:00.000Z`;
   const finishAt = `2026-08-27T${finish}:00.000Z`;
   const reservation = `reservation-${id}`;
   const handle = { kind: "task_name", value: handleValue, source: "native-return" };
+  const workUnit = taskRefs
+    ? {
+      schema_version: 2, kind: "concrete", objective: id, deliverable: id, done_when: id,
+      mode: "patch-only", unit_id: `unit-${id}`, task_refs: taskRefs,
+    }
+    : { schema_version: 1, kind: "concrete", objective: id, deliverable: id, done_when: id };
   return {
     schema_version: 8, id, session_uid: "fixture-session", session_ordinal: ordinalOf(id),
     description: id, prompt: id,
-    work_unit: { schema_version: 1, kind: "concrete", objective: id, deliverable: id, done_when: id },
+    work_unit: workUnit,
+    compiled_apply_lineage: taskRefs
+      ? { run_id: "compiled-probe-run", plan_revision: "1", unit_id: `unit-${id}`, task_refs: taskRefs, mode: "patch-only" }
+      : undefined,
     coordination: { mode: "terminal-only", progress_interval_ms: null }, progress: null,
     liveness: { sequence: 2, execution_handle: handle, state: "running", activity: "heartbeat", observed_at: finishAt },
     model_id: model, route_id: model, reasoning_effort: null, service_tier: null, fork_context: false,
