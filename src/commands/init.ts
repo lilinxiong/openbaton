@@ -4,8 +4,8 @@ import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } fro
 import { installHostSkills, type HostId } from "../lib/hosts.js";
 import { parseCliId, type CliId } from "../adapters/registry.js";
 import { loadConfig, saveConfig } from "../lib/config.js";
-import { buildInstallManifest, writeInstallManifest } from "../lib/install-manifest.js";
-import { installBundledAdapters } from "../lib/adapter-install.js";
+import { buildInstallManifest, writeInstallManifest } from "../lib/install/manifest.js";
+import { installBundledAdapters } from "../lib/install/adapter-install.js";
 
 export interface InitProjectOptions {
   force?: boolean;

@@ -5,7 +5,7 @@ import { requireCardId } from "../lib/cards.js";
 import { nextSpawnIds, planStandaloneSpawn, type SpawnTicket, type StandalonePlan } from "../lib/spawn.js";
 import { applyChange } from "../lib/apply.js";
 import { applyTaskId } from "../lib/task-id.js";
-import { DEFAULT_WRITE_OPERATIONS, scopesFromRecord, type ApplyUnitScope } from "../lib/apply-scope.js";
+import { DEFAULT_WRITE_OPERATIONS, scopesFromRecord, type ApplyUnitScope } from "../lib/apply/scope.js";
 import { type SafetyOperation } from "../lib/safety.js";
 import { assertWriteScopesAvailable, materializeStandalonePlanAsync } from "../lib/ticket-materialization.js";
 import { loadTasksFromChangeDir } from "../lib/openspec.js";

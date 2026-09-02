@@ -11,11 +11,11 @@ import {
   type SafetyOperation,
 } from "./safety.js";
 import { listSpawns, writeSpawn, type SpawnTicket, type StandalonePlan } from "./spawn.js";
-import { applyCommitBaselineToPlan } from "./ops-dispatch.js";
-import { assertDisjointWriteScopes, writeScopesOverlap, type WriteScopeDeclaration } from "./apply-scope.js";
-import { APPLY_RUN_STATE_TEMP_FILE_PREFIX } from "./apply-run.js";
+import { applyCommitBaselineToPlan } from "./ops/dispatch.js";
+import { assertDisjointWriteScopes, writeScopesOverlap, type WriteScopeDeclaration } from "./apply/scope.js";
+import { APPLY_RUN_STATE_TEMP_FILE_PREFIX } from "./apply/run.js";
 import { extractExactExecutionRootIdentity } from "../adapters/contract.js";
-import { resolveWorktreeTopology } from "./worktree-topology.js";
+import { resolveWorktreeTopology } from "./worktree/topology.js";
 
 /** Dependencies are injectable so Git/stream/race failures can be tested
  * without weakening the production stable-observation boundary. */
@@ -292,6 +292,3 @@ export async function materializeStandalonePlansBatchAsync(
   }
 }
 
-export const materializeBatchAsync = materializeStandalonePlansBatchAsync;
-export const materializeCompiledApplyBatchAsync = materializeStandalonePlansBatchAsync;
-export const materializePlansBatchAsync = materializeStandalonePlansBatchAsync;

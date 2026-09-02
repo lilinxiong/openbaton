@@ -13,7 +13,7 @@ import {
   rebuildRollingRunCheckpoint,
   RollingRunError,
 } from "../src/lib/rolling-run.js";
-import { createApplyRun } from "../src/lib/apply-run.js";
+import { createApplyRun } from "../src/lib/apply/run.js";
 import { rollingRunAcceptedDocumentPath, rollingRunCheckpointPath, rollingRunDeltaDocumentPath, rollingRunFactLogPath } from "../src/lib/paths.js";
 import type { PlanDelta, TaskSourceDescriptor } from "../src/lib/rolling-plan.js";
 

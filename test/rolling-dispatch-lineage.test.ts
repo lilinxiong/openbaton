@@ -24,7 +24,7 @@ import { buildSpawnTicket, nextSpawnId, writeSpawn, type SpawnTicket } from "../
 import { configureCli } from "./configure.js";
 import { fakeEnv, withHome } from "./home.js";
 import type { ModelSelectionApproval } from "../src/types.js";
-import { buildRollingStandalonePlans } from "../src/lib/rolling-dispatch.js";
+import { buildRollingStandalonePlans } from "../src/lib/rolling/dispatch.js";
 import type { PlanDelta, UnitVersion } from "../src/lib/rolling-plan.js";
 
 const HOST = "alpha";

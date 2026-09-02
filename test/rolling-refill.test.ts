@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
-import { buildRollingStandalonePlans, refillRollingCapacity, type RollingRefillInput } from "../src/lib/rolling-dispatch.js";
+import { buildRollingStandalonePlans, refillRollingCapacity, type RollingRefillInput } from "../src/lib/rolling/dispatch.js";
 import { fingerprintUnitVersion, type PlanDelta, type UnitVersion } from "../src/lib/rolling-plan.js";
 import { receiptsDir, rollingRunsDir, spawnsDir } from "../src/lib/paths.js";
 import { sessionUidFromEnv, type SpawnTicket } from "../src/lib/spawn.js";

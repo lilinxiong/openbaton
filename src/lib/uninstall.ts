@@ -20,9 +20,10 @@ import {
   manifestOwnsFile,
   readInstallManifest,
   type InstallManifest,
-} from "./install-manifest.js";
+} from "./install/manifest.js";
 import { hostIds, hostSkillDest, type HostId } from "./hosts.js";
-import { adapterInstallDir } from "./adapter-install.js";
+import { adapterInstallDir } from "./install/adapter-install.js";
+import { readJsonFile, sha256Hex } from "./json-utils.js";
 
 export const UNINSTALL_ACTIVE_TICKETS = "UNINSTALL_ACTIVE_TICKETS";
 export const UNINSTALL_STATE_INVALID = "UNINSTALL_STATE_INVALID";
@@ -76,7 +77,7 @@ function display(file: string, env?: NodeJS.ProcessEnv): string {
 }
 
 function fingerprint(file: string): string | null {
-  try { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); } catch { return null; }
+  try { return sha256Hex(fs.readFileSync(file)); } catch { return null; }
 }
 
 function directoryFingerprint(directory: string): string | null {
@@ -93,7 +94,7 @@ function directoryFingerprint(directory: string): string | null {
       }
     };
     visit(directory, "");
-    return crypto.createHash("sha256").update(rows.join("\n")).digest("hex");
+    return sha256Hex(rows.join("\n"));
   } catch { return null; }
 }
 
@@ -153,7 +154,7 @@ function requireDirectory(file: string, label: string): void {
 
 function validateJsonState(file: string, label: string): unknown {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    return readJsonFile(file) as unknown;
   } catch {
     stateInvalid(`${label} is unreadable: ${file}`);
   }
@@ -305,8 +306,9 @@ function retainedRollingRuns(runtime: string, env: NodeJS.ProcessEnv | undefined
     const run = path.join(root, name);
     requireDirectory(run, "rolling run entry");
     const log = path.join(run, ROLLING_FACT_LOG_NAME);
-    if (!fs.existsSync(log)) stateInvalid(`rolling run fact log is missing: ${log}`);
-    const logState = validateNdjsonState(log, "rolling run fact log");
+    const logState = fs.existsSync(log)
+      ? validateNdjsonState(log, "rolling run fact log")
+      : { partial_tail: false };
     scanJsonStateDirectory(path.join(run, ROLLING_ACCEPTED_DOCUMENTS_DIR), "rolling accepted documents");
     const checkpoint = path.join(run, ROLLING_CHECKPOINT_NAME);
     if (fs.existsSync(checkpoint)) validateJsonState(checkpoint, "rolling checkpoint");

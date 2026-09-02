@@ -6,7 +6,7 @@ import {
   parseDispatchReservationEnvelope,
   parseDispatchReservationIdentity,
   withDispatchReservationEnvelope,
-} from "../src/lib/dispatch-reservation.js";
+} from "../src/lib/dispatch/reservation.js";
 
 const identity = {
   schema: BATON_DISPATCH_RESERVATION_SCHEMA,

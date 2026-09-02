@@ -95,7 +95,10 @@ baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
 baton run <run> --seal-task <task-key> --seal-file <seal.json> --json
 baton run <run> --reconcile [--task <task-key>] --json
 baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] --json
-baton integration begin|apply|resolve|accept ... --json
+baton integration begin ... --json
+baton integration apply ... --json
+baton integration resolve ... --json
+baton integration accept ... --json
 baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
 ```
 

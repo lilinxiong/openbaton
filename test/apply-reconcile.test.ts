@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createApplyRun } from "../src/lib/apply-run.js";
-import { acceptApplyGate, acceptApplyUnit, deriveApplyTaskEligibility, reconcileApplyRun } from "../src/lib/apply-reconcile.js";
+import { createApplyRun } from "../src/lib/apply/run.js";
+import { acceptApplyGate, acceptApplyUnit, deriveApplyTaskEligibility, reconcileApplyRun } from "../src/lib/apply/reconcile.js";
 import { compiledApplyRunStatePath } from "../src/lib/paths.js";
 import type { ApplyExecutionPlan } from "../src/lib/apply-plan.js";
 
@@ -114,6 +114,17 @@ describe("compiled apply parent acceptance", () => {
     const result = acceptApplyUnit({ cwd: f.cwd, env: f.env, runId: "run", unitId: "u1", ticketId: ticket.id, receiptId: receipt.receipt_id, ticket, receipt });
     assert.equal(result.accepted, false);
     assert.equal(result.code, "SAFETY_NOT_ACCEPTED");
+  });
+
+  it("does not let caller terminal status override a persisted non-completed ticket", () => {
+    const f = fixture();
+    const runState = JSON.parse(fs.readFileSync(compiledApplyRunStatePath(f.cwd, "run", f.env), "utf8"));
+    const lineage = { run_id: "run", plan_revision: "1", plan_fingerprint: runState.current_fingerprint, unit_id: "u1", task_refs: ["1.1"], mode: "patch-only" as const };
+    const ticket = { id: "ticket-running", status: "running", receipt_id: "receipt-running", model_id: "model", compiled_apply_lineage: lineage, safety_verdict: { accepted: true, violations: [] }, conclusion: "not terminal" } as any;
+    const receipt = { ticket_id: ticket.id, receipt_id: ticket.receipt_id, compiled_apply_lineage: lineage } as any;
+    const result = acceptApplyUnit({ cwd: f.cwd, env: f.env, runId: "run", unitId: "u1", ticketId: ticket.id, receiptId: receipt.receipt_id, ticket, receipt, terminalStatus: "completed" });
+    assert.equal(result.accepted, false);
+    assert.equal(result.code, "UNIT_TERMINAL_REQUIRED");
   });
 
   it("rejects a relative write scope that resolves to a custom task ledger", () => {

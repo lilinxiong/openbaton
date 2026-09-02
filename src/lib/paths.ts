@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { sha256Hex } from "./json-utils.js";
 
 export const BATON_DIR = ".baton";
 export const CONFIG_NAME = "config.toml";
@@ -141,7 +142,7 @@ export function canonicalWorkspaceRoot(cwd: string): string {
 }
 
 export function workspaceId(cwd: string): string {
-  return crypto.createHash("sha256").update(canonicalWorkspaceRoot(cwd)).digest("hex");
+  return sha256Hex(canonicalWorkspaceRoot(cwd));
 }
 
 /** User-global runtime namespace for one canonical workspace. */
@@ -206,7 +207,6 @@ export function rollingRunFactLogPath(cwd: string, runId: string, env?: NodeJS.P
 }
 
 /** Alias used by callers that treat the append log as the run's facts path. */
-export const rollingRunFactsPath = rollingRunFactLogPath;
 
 /** Optional sharded fact path; the fact id is still a single safe segment. */
 export function rollingRunFactPath(cwd: string, runId: string, factId: string, env?: NodeJS.ProcessEnv): string {
@@ -362,16 +362,9 @@ export function integrationRecordPath(
 }
 
 // Compact aliases for callers that already operate inside a rolling run.
-export const rollingWorktreesDir = rollingRunWorktreesDir;
-export const rollingSnapshotsDir = rollingRunSnapshotsDir;
-export const rollingBundlesDir = rollingRunBundlesDir;
-export const rollingIntegrationsDir = rollingRunIntegrationsDir;
 
 // Keep the vocabulary close to the existing compiled-apply helpers for callers
 // that use "dir" or "document" rather than "root" or "accepted document".
-export const rollingRunDir = rollingRunRoot;
-export const rollingRunRootPath = rollingRunRoot;
-export const rollingRunDocumentPath = rollingRunAcceptedDocumentPath;
 
 export function selectionsDir(cwd: string, env?: NodeJS.ProcessEnv): string {
   return path.join(batonDir(cwd, env), SELECTIONS_DIR);

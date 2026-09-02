@@ -8,7 +8,7 @@ import { run } from "../src/cli.js";
 import { worktreeExecutionRootPath } from "../src/lib/paths.js";
 import { appendRollingFact, appendRollingPlanDelta, createRollingExecutionRun, readRollingExecutionRun } from "../src/lib/rolling-run.js";
 import { fingerprintUnitVersion, type GateVersion, type PlanDelta, type UnitVersion } from "../src/lib/rolling-plan.js";
-import { deriveRollingAcceptance, normalizeRollingExecutionFact } from "../src/lib/rolling-acceptance.js";
+import { deriveRollingAcceptance, normalizeRollingExecutionFact } from "../src/lib/rolling/acceptance.js";
 import { ROLLING_EXECUTION_DOCUMENT_KIND, statusRollingControl } from "../src/lib/rolling-control.js";
 import {
   CHANGE_BUNDLE_MANIFEST_SCHEMA_VERSION,
@@ -28,7 +28,7 @@ import {
   listIntegrationQueue,
   resolveWorktreeIntegration,
 } from "../src/lib/worktree-integration.js";
-import { resolveOwningRepository } from "../src/lib/worktree-topology.js";
+import { resolveOwningRepository } from "../src/lib/worktree/topology.js";
 
 function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
   return execFileSync("git", args, { cwd, env: { ...process.env, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();

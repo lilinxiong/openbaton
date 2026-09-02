@@ -19,7 +19,7 @@ import { dispatchSnapshot } from "./dispatch.js";
 import { createDirectorTaskSourceAdapter, type DirectorTaskDefinition } from "./director-task-source.js";
 import { extractExactExecutionRootIdentity, sameExactExecutionRootIdentity } from "../adapters/contract.js";
 import { availabilityForRoute } from "./model-availability.js";
-import { createOpenSpecTaskSourceAdapter } from "./openspec-task-source.js";
+import { createOpenSpecTaskSourceAdapter } from "./openspec/task-source.js";
 import {
   fingerprintGateVersion,
   fingerprintPlanDelta,
@@ -50,20 +50,38 @@ import {
   normalizeRollingExecutionFact,
   type RollingAcceptanceProjection,
   type RollingExecutionFact,
-} from "./rolling-acceptance.js";
+} from "./rolling/acceptance.js";
 import { deriveRollingLifecycle, type RollingTaskLifecycle } from "./rolling-lifecycle.js";
-import { refillRollingCapacity, type RollingRefillResult } from "./rolling-dispatch.js";
-import { selectRollingFrontier } from "./rolling-dispatch-selection.js";
-import { collectRollingUnitVersions } from "./rolling-dispatch-state.js";
+import { refillRollingCapacity, type RollingRefillResult } from "./rolling/dispatch.js";
+import { selectRollingFrontier } from "./rolling/dispatch-selection.js";
+import { collectRollingUnitVersions } from "./rolling/dispatch-state.js";
 import { worktreeExecutionRootPath } from "./paths.js";
 import { readReceipt } from "./receipt.js";
-import { createWorktreeChangeBundle, type WorktreeChangeBundleResult } from "./worktree-bundle.js";
+import { createWorktreeChangeBundle, type WorktreeChangeBundleResult } from "./worktree/bundle.js";
 import { readPersistedWorktreeRecord, type ChangeBundleOperation, type WorktreeRecord } from "./worktree-execution.js";
-import { setupDetachedWorktree } from "./worktree-setup.js";
-import { resolveWorktreeTopology } from "./worktree-topology.js";
+import { setupDetachedWorktree } from "./worktree/setup.js";
+import { resolveWorktreeTopology } from "./worktree/topology.js";
 import { buildRouteCandidates, readRouteSnapshot } from "./routes.js";
 import { listSpawns, type SpawnTicket } from "./spawn.js";
 import { createTaskSourceAdapterRegistry, type TaskSourceAdapterRegistry, type TaskSourceDiagnostic } from "./task-source.js";
+import { sha256Hex } from "./json-utils.js";
+import { synchronizeRollingTicketFacts } from "./rolling/control-tickets.js";
+import {
+  statusRollingControl,
+  taskRefs
+} from "./rolling/control-status.js";
+import {
+  discoverRollingTaskManifest,
+  manifestDelta,
+  manifestDiff,
+  mergeManifest,
+  rollingTaskSourceRegistry
+} from "./rolling/control-manifest.js";
+import {
+  persistedRollingWorktreeRecords,
+  prepareRollingFrontierWorktrees,
+  routeAvailability
+} from "./rolling/control-worktrees.js";
 
 export const ROLLING_CONTROL_SCHEMA_VERSION = 1 as const;
 export const ROLLING_EXECUTION_DOCUMENT_KIND = "execution" as const;
@@ -189,20 +207,20 @@ export interface RollingControlStatus {
   recovery: { appended_execution_facts: number; repaired_worktree_record_ids: string[]; source_diagnostics: readonly TaskSourceDiagnostic[] };
 }
 
-function record(value: unknown): value is Record<string, unknown> {
+export function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function stamp(value: RollingControlContext["now"]): string {
+export function stamp(value: RollingControlContext["now"]): string {
   const milliseconds = value instanceof Date ? value.getTime() : typeof value === "number" ? value : Date.parse(value || "");
   return new Date(Number.isFinite(milliseconds) ? milliseconds : Date.now()).toISOString();
 }
 
-function hash(value: unknown): string {
-  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export function hash(value: unknown): string {
+  return sha256Hex(JSON.stringify(value));
 }
 
-function sourceFromRun(run: RollingExecutionRun): TaskSourceDescriptor {
+export function sourceFromRun(run: RollingExecutionRun): TaskSourceDescriptor {
   const sourceFact = run.facts.find((fact) => fact.kind === "source");
   if (!sourceFact || !record(sourceFact.payload)) throw new RollingControlError("rolling run source fact is missing", "ROLLING_STATE_CORRUPT");
   const source = structuredClone(sourceFact.payload) as Record<string, unknown>;
@@ -210,97 +228,18 @@ function sourceFromRun(run: RollingExecutionRun): TaskSourceDescriptor {
   return source as unknown as TaskSourceDescriptor;
 }
 
-function directorTasks(source: TaskSourceDescriptor): readonly DirectorTaskDefinition[] {
+export function directorTasks(source: TaskSourceDescriptor): readonly DirectorTaskDefinition[] {
   if (!record(source.selection)) return [];
   const raw = source.selection.tasks;
   return Array.isArray(raw) ? raw as DirectorTaskDefinition[] : [];
 }
 
 /** Recreate only the adapter selected by the accepted source descriptor. */
-export function rollingTaskSourceRegistry(cwd: string, source: TaskSourceDescriptor): TaskSourceAdapterRegistry {
-  if (source.source_kind === "openspec") {
-    return createTaskSourceAdapterRegistry([createOpenSpecTaskSourceAdapter({ cwd })]);
-  }
-  if (source.source_kind === "director") {
-    return createTaskSourceAdapterRegistry([
-      createDirectorTaskSourceAdapter(directorTasks(source), { adapter: source.adapter }),
-    ]);
-  }
-  throw new RollingControlError(`unsupported rolling source kind ${source.source_kind}`, "ROLLING_SOURCE_UNSUPPORTED");
-}
-
-export async function discoverRollingTaskManifest(
-  cwd: string,
-  source: TaskSourceDescriptor,
-  registry: TaskSourceAdapterRegistry = rollingTaskSourceRegistry(cwd, source),
-): Promise<{ entries: TaskManifestEntry[]; diagnostics: readonly TaskSourceDiagnostic[]; complete: boolean }> {
-  const entries: TaskManifestEntry[] = [];
-  const diagnostics: TaskSourceDiagnostic[] = [];
-  let cursor: string | null = null;
-  const seenCursors = new Set<string>();
-  do {
-    const result = await registry.discover(source, { cursor, limit: registry.max_page_size });
-    diagnostics.push(...result.diagnostics);
-    if (!result.ok) return { entries, diagnostics, complete: false };
-    entries.push(...result.value.entries);
-    const next = result.value.next_cursor ?? null;
-    if (next !== null) {
-      if (seenCursors.has(next)) throw new RollingControlError("task source repeated a discovery cursor", "ROLLING_DISCOVERY_CURSOR_CYCLE", diagnostics);
-      seenCursors.add(next);
-    }
-    cursor = next;
-  } while (cursor !== null);
-  return { entries, diagnostics, complete: true };
-}
-
-function manifestDiff(
-  accepted: readonly TaskManifestEntry[],
-  discovered: readonly TaskManifestEntry[],
-): { additions: TaskManifestEntry[]; refreshes: TaskManifestEntry[] } {
-  const current = new Map(accepted.map((entry) => [entry.task_key, entry]));
-  const additions: TaskManifestEntry[] = [];
-  const refreshes: TaskManifestEntry[] = [];
-  for (const entry of discovered) {
-    const prior = current.get(entry.task_key);
-    if (!prior) additions.push(entry);
-    else if (fingerprintTaskManifestEntry(prior) !== fingerprintTaskManifestEntry(entry)) refreshes.push(entry);
-  }
-  return { additions, refreshes };
-}
-
-function mergeManifest(delta: PlanDelta, additions: readonly TaskManifestEntry[], refreshes: readonly TaskManifestEntry[]): PlanDelta {
-  const copy = structuredClone(delta) as PlanDelta;
-  const local = new Set([...(copy.manifest_additions || []), ...(copy.manifest_refreshes || [])].map((entry) => entry.task_key));
-  const nextAdditions = [...(copy.manifest_additions || []), ...additions.filter((entry) => !local.has(entry.task_key))];
-  const nextRefreshes = [...(copy.manifest_refreshes || []), ...refreshes.filter((entry) => !local.has(entry.task_key))];
-  if (nextAdditions.length) copy.manifest_additions = nextAdditions;
-  else delete copy.manifest_additions;
-  if (nextRefreshes.length) copy.manifest_refreshes = nextRefreshes;
-  else delete copy.manifest_refreshes;
-  delete copy.fingerprint;
-  copy.fingerprint = fingerprintPlanDelta(copy);
-  return copy;
-}
-
-function manifestDelta(entries: readonly TaskManifestEntry[], sequence: number): PlanDelta {
-  const value: PlanDelta = {
-    schema_version: 1,
-    delta_id: `manifest-${hash(entries.map((entry) => [entry.task_key, fingerprintTaskManifestEntry(entry)])).slice(0, 24)}`,
-    prepared_from_append_sequence: sequence,
-    manifest_additions: [...entries],
-    unit_versions: [],
-    gate_versions: [],
-    task_coverage: [],
-  };
-  value.fingerprint = fingerprintPlanDelta(value);
-  return value;
-}
-
-function allUnits(run: RollingExecutionRun): UnitVersion[] {
+export function allUnits(run: RollingExecutionRun): UnitVersion[] {
   return [...collectRollingUnitVersions(run.accepted_deltas).values()];
 }
 
-function allGates(run: RollingExecutionRun): GateVersion[] {
+export function allGates(run: RollingExecutionRun): GateVersion[] {
   const gates = new Map<string, GateVersion>();
   for (const delta of run.accepted_deltas) {
     for (const gate of delta.gate_versions || []) gates.set(`${gate.gate_key}@${gate.version}`, gate);
@@ -308,274 +247,13 @@ function allGates(run: RollingExecutionRun): GateVersion[] {
   return [...gates.values()];
 }
 
-function executionFacts(run: RollingExecutionRun): RollingExecutionFact[] {
+export function executionFacts(run: RollingExecutionRun): RollingExecutionFact[] {
   const out: RollingExecutionFact[] = [];
   for (const fact of run.facts) {
     if (fact.kind !== ROLLING_EXECUTION_DOCUMENT_KIND) continue;
     out.push(normalizeRollingExecutionFact(fact.payload));
   }
   return out;
-}
-
-function ticketsForRun(cwd: string, runId: string, env?: NodeJS.ProcessEnv): SpawnTicket[] {
-  return listSpawns(cwd, env)
-    .filter((ticket) => ticket.rolling_unit_lineage?.run_id === runId)
-    .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")) || left.id.localeCompare(right.id));
-}
-
-function ticketAttemptOrdinals(tickets: readonly SpawnTicket[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  const result = new Map<string, number>();
-  for (const ticket of tickets) {
-    const lineage = ticket.rolling_unit_lineage;
-    if (!lineage) continue;
-    const ref = `${lineage.unit_key}@${lineage.unit_version}`;
-    const next = (counts.get(ref) || 0) + 1;
-    counts.set(ref, next);
-    result.set(ticket.id, next);
-  }
-  return result;
-}
-
-function executionBase(ticket: SpawnTicket, attempt: number, recordedAt: string): Record<string, unknown> {
-  const lineage = ticket.rolling_unit_lineage!;
-  const unitRef = `${lineage.unit_key}@${lineage.unit_version}`;
-  return {
-    schema_version: 1,
-    unit_key: lineage.unit_key,
-    unit_version: lineage.unit_version,
-    unit_fingerprint: lineage.unit_fingerprint,
-    owner_type: "attempt",
-    owner_key: `${unitRef}:attempt-${attempt}`,
-    attempt,
-    recorded_at: recordedAt,
-  };
-}
-
-function unitBase(ticket: SpawnTicket, recordedAt: string): Record<string, unknown> {
-  const lineage = ticket.rolling_unit_lineage!;
-  return {
-    schema_version: 1,
-    unit_key: lineage.unit_key,
-    unit_version: lineage.unit_version,
-    unit_fingerprint: lineage.unit_fingerprint,
-    owner_type: "unit_version",
-    owner_key: `${lineage.unit_key}@${lineage.unit_version}`,
-    recorded_at: recordedAt,
-  };
-}
-
-type ProjectedExecution = { idempotency_key: string; fact: RollingExecutionFact };
-
-function projectedTicketFacts(ticket: SpawnTicket, attempt: number): ProjectedExecution[] {
-  const out: ProjectedExecution[] = [];
-  const created = String(ticket.created_at || new Date(0).toISOString());
-  const updated = String(ticket.updated_at || created);
-  const started = String(ticket.started_at || updated);
-  const finished = String(ticket.finished_at || updated);
-  const released = String(ticket.slot_released_at || finished);
-  const base = executionBase(ticket, attempt, created);
-  const add = (suffix: string, value: Record<string, unknown>) => {
-    out.push({
-      idempotency_key: `ticket:${ticket.id}:${suffix}`,
-      fact: normalizeRollingExecutionFact(value),
-    });
-  };
-  add("native:queued", { ...base, kind: "native-attempt", state: "queued" });
-  if (["dispatching", "running", "completed", "errored", "timed_out", "closed"].includes(ticket.status)) {
-    const reservationId = String(ticket.reservation_id || `recovered-${ticket.id}`);
-    add("reservation:reserved", { ...executionBase(ticket, attempt, String(ticket.dispatch_requested_at || updated)), kind: "reservation", reservation_id: reservationId, state: "reserved" });
-    add("native:reserved", { ...executionBase(ticket, attempt, String(ticket.dispatch_requested_at || updated)), kind: "native-attempt", state: "reserved" });
-  }
-  if (["running", "completed", "errored", "timed_out", "closed"].includes(ticket.status) && ticket.execution_handle) {
-    add("native:running", { ...executionBase(ticket, attempt, started), kind: "native-attempt", state: "running" });
-  }
-  if (["completed", "errored", "timed_out", "closed"].includes(ticket.status)) {
-    const success = ticket.status === "completed";
-    const terminalStatus = success ? "completed" : ticket.status === "timed_out" ? "timed-out" : ticket.status === "closed" ? "cancelled" : "errored";
-    add("terminal", {
-      ...executionBase(ticket, attempt, finished),
-      kind: "terminal-result",
-      status: terminalStatus,
-      result: success ? ticket.conclusion || "completed" : ticket.error || ticket.conclusion || terminalStatus,
-      result_id: `ticket:${ticket.id}`,
-    });
-    add("native:terminal", { ...executionBase(ticket, attempt, finished), kind: "native-attempt", state: success ? "completed" : ticket.status === "closed" ? "cancelled" : "failed" });
-    if (record(ticket.safety_verdict)) {
-      add("safety", {
-        ...unitBase(ticket, finished),
-        kind: "safety-verdict",
-        accepted: ticket.safety_verdict.accepted === true,
-        violations: Array.isArray(ticket.safety_verdict.violations) ? ticket.safety_verdict.violations : [],
-      });
-    } else if (ticket.mode === "read-only") {
-      add("safety", { ...unitBase(ticket, finished), kind: "safety-verdict", accepted: success, violations: [] });
-    }
-    if (success && !ticket.plan_insufficient_evidence && (ticket.mode === "read-only" || ticket.safety_verdict?.accepted === true)) {
-      add("parent-acceptance", { ...unitBase(ticket, finished), kind: "parent-acceptance", accepted: true, evidence: String(ticket.conclusion || `accepted ticket ${ticket.id}`) });
-    }
-    if (record(ticket.plan_insufficient_evidence)) {
-      add("plan-insufficient", {
-        ...unitBase(ticket, finished),
-        kind: "plan-insufficient",
-        file: String(ticket.plan_insufficient_evidence.file || "unknown"),
-        symbol: String(ticket.plan_insufficient_evidence.symbol || "unknown"),
-        missing_decision: String(ticket.plan_insufficient_evidence.missing_decision || "successor plan required"),
-      });
-    }
-  }
-  if (ticket.successor_from_ticket_id) {
-    add("retry", { ...executionBase(ticket, attempt, created), kind: "retry", retry_kind: "route", retry_of: `${ticket.rolling_unit_lineage!.unit_key}@${ticket.rolling_unit_lineage!.unit_version}`, reason: String(ticket.successor_reason || "route retry") });
-  }
-  if (ticket.slot_released_at) {
-    add("release", { ...executionBase(ticket, attempt, released), kind: "release", released: true, released_at: released });
-  }
-  return out;
-}
-
-/**
- * Persist every ticket-observable rolling fact that is not yet in the log.
- * Identical calls are no-ops; a crash after either store is repaired by the
- * next status, append, refill, gate, seal, or reconcile operation.
- */
-export function synchronizeRollingTicketFacts(context: RollingControlContext & { run_id: string }): { run: RollingExecutionRun; appended: number; tickets: SpawnTicket[] } {
-  let run = readRollingExecutionRun(context.cwd, context.run_id, { env: context.env });
-  const tickets = ticketsForRun(context.cwd, context.run_id, context.env);
-  const attempts = ticketAttemptOrdinals(tickets);
-  let appended = 0;
-  for (const ticket of tickets) {
-    for (const projected of projectedTicketFacts(ticket, attempts.get(ticket.id) || 1)) {
-      const before = run.append_sequence;
-      run = appendRollingFact({
-        cwd: context.cwd,
-        env: context.env,
-        runId: context.run_id,
-        kind: ROLLING_EXECUTION_DOCUMENT_KIND,
-        idempotency_key: projected.idempotency_key,
-        fact_id: `execution:${projected.fact.fact_id}`,
-        document_id: `execution-${projected.fact.fact_id}`,
-        payload: projected.fact,
-        document: projected.fact,
-        now: context.now,
-      });
-      if (run.append_sequence !== before) appended += 1;
-    }
-  }
-  return { run, appended, tickets };
-}
-
-function routeAvailability(cwd: string, host: string, cards: readonly { route_id?: string }[], env?: NodeJS.ProcessEnv): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const routeId of [...new Set(cards.map((card) => card.route_id).filter((value): value is string => Boolean(value)))]) {
-    result[routeId] = availabilityForRoute(cwd, { host, routeId }, undefined, env);
-  }
-  return result;
-}
-
-function persistedRollingWorktreeRecords(
-  cwd: string,
-  run: RollingExecutionRun,
-  env?: NodeJS.ProcessEnv,
-): Record<string, WorktreeRecord> {
-  const records: Record<string, WorktreeRecord> = {};
-  const units = collectRollingUnitVersions(run.accepted_deltas);
-  const attempts = run.accepted_deltas.flatMap((delta) => delta.retry_attempts || []);
-  for (const [ref, unit] of units) {
-    if (unit.worktree_mode !== "isolated-worktree") continue;
-    const attempt = Math.max(1, ...attempts
-      .filter((item) => item.unit_key === unit.unit_key && item.unit_version === unit.version)
-      .map((item) => item.attempt));
-    try {
-      records[ref] = readPersistedWorktreeRecord(cwd, run.identity.run_id, unit.unit_key, `attempt-${attempt}`, env);
-    } catch {
-      // Keep the identity absent. The exact-root blueprint boundary emits the
-      // stable fail-closed diagnostic and never accepts caller self-attestation.
-    }
-  }
-  return records;
-}
-
-function worktreeAttempt(run: RollingExecutionRun, unit: UnitVersion): number {
-  return Math.max(1, ...run.accepted_deltas.flatMap((delta) => delta.retry_attempts || [])
-    .filter((item) => item.unit_key === unit.unit_key && item.unit_version === unit.version)
-    .map((item) => item.attempt));
-}
-
-function schedulingExecutionRoots(records: Readonly<Record<string, WorktreeRecord>>): Record<string, { repository_id: string; execution_root: string; base_tree: string }> {
-  return Object.fromEntries(Object.entries(records).map(([ref, record]) => [ref, {
-    repository_id: record.repository_id,
-    execution_root: record.execution_root,
-    base_tree: record.base_tree,
-  }]));
-}
-
-async function prepareRollingFrontierWorktrees(
-  context: RollingControlContext & { run_id: string },
-  run: RollingExecutionRun,
-  refillInput: Parameters<typeof refillRollingCapacity>[0],
-): Promise<void> {
-  const records = persistedRollingWorktreeRecords(context.cwd, run, context.env);
-  const selection = selectRollingFrontier({
-    ...refillInput,
-    execution_roots_by_unit: schedulingExecutionRoots(records),
-  });
-  const units = collectRollingUnitVersions(run.accepted_deltas);
-  const targets = selection.frontier
-    .map((ref) => ({ ref, unit: units.get(ref) }))
-    .filter((entry): entry is { ref: string; unit: UnitVersion } => entry.unit?.execution_mode === "patch-only" && entry.unit.worktree_mode === "isolated-worktree");
-  if (!targets.length) return;
-
-  const adapter = getCliAdapter(run.identity.host, context.env || process.env);
-  if (adapter.host.exactExecutionRoot !== true) {
-    throw new RollingControlError(
-      `adapter ${run.identity.host} cannot guarantee exact execution-root dispatch`,
-      "ADAPTER_EXACT_ROOT_UNSUPPORTED",
-    );
-  }
-
-  // Prepare only the selected capacity frontier. A large change therefore
-  // reaches its first useful mutation without creating every future root.
-  const callerRoot = fs.realpathSync(context.cwd);
-  for (const { ref, unit } of targets) {
-    if (records[ref]) continue;
-    const topology = resolveWorktreeTopology(callerRoot, unit.write_paths || []);
-    if (topology.requires_repository_decomposition || topology.repositories.length !== 1) {
-      throw new RollingControlError(
-        `isolated unit ${ref} must be decomposed into one repository-local unit before setup`,
-        "REPOSITORY_LOCAL_PARTS_REQUIRED",
-      );
-    }
-    const repository = topology.repositories[0]!;
-    if (fs.realpathSync(repository.repository_root) !== callerRoot) {
-      throw new RollingControlError(
-        `isolated unit ${ref} is owned by ${repository.repository_root}; run it from that repository root`,
-        "WORKTREE_REPOSITORY_ROOT_MISMATCH",
-      );
-    }
-    const attemptId = `attempt-${worktreeAttempt(run, unit)}`;
-    try {
-      await setupDetachedWorktree({
-        repository_root: repository.repository_root,
-        repository_id: repository.repository_id,
-        git_common_dir: repository.git_common_dir,
-        git_common_dir_identity: repository.git_common_dir_identity,
-        execution_root: worktreeExecutionRootPath(callerRoot, run.identity.run_id, unit.unit_key, attemptId, context.env),
-        run_id: run.identity.run_id,
-        unit_key: unit.unit_key,
-        unit_version: unit.version,
-        attempt_id: attemptId,
-        ...(selection.inherited_base_trees[ref] ? { base: selection.inherited_base_trees[ref] } : {}),
-        env: context.env,
-        created_at: context.now,
-      });
-    } catch (cause) {
-      const coded = cause as { code?: unknown; message?: unknown };
-      throw new RollingControlError(
-        typeof coded.message === "string" ? coded.message : `isolated worktree setup failed for ${ref}`,
-        typeof coded.code === "string" ? coded.code : "WORKTREE_SETUP_FAILED",
-      );
-    }
-  }
 }
 
 export async function refillRollingRun(context: RollingControlContext & { run_id: string; event_reason?: string }): Promise<RollingRefillResult> {
@@ -616,145 +294,6 @@ export async function refillRollingRun(context: RollingControlContext & { run_id
   // up before returning so a caller can immediately reconnect by run id.
   if (result.materialized.length) synchronizeRollingTicketFacts(context);
   return result;
-}
-
-function taskRefs(run: RollingExecutionRun, taskKey: string): { units: string[]; gates: string[] } {
-  const units = new Set<string>();
-  const gates = new Set<string>();
-  const supersededUnits = new Set<string>();
-  const supersededGates = new Set<string>();
-  for (const delta of run.accepted_deltas) {
-    for (const supersession of delta.supersessions || []) {
-      if (supersession.owner === "unit_version") supersededUnits.add(supersession.previous);
-      if (supersession.owner === "gate_version") supersededGates.add(supersession.previous);
-    }
-    for (const coverage of delta.task_coverage || []) {
-      if (coverage.task_key !== taskKey) continue;
-      for (const ref of coverage.unit_versions || []) units.add(ref);
-      for (const ref of coverage.gate_versions || []) gates.add(ref);
-    }
-  }
-  return {
-    units: [...units].filter((ref) => !supersededUnits.has(ref)).sort(),
-    gates: [...gates].filter((ref) => !supersededGates.has(ref)).sort(),
-  };
-}
-
-function reconciliationFacts(run: RollingExecutionRun): RollingFact[] {
-  return run.facts.filter((fact) => fact.kind === ROLLING_RECONCILIATION_DOCUMENT_KIND);
-}
-
-function lifecycleWithAcceptance(run: RollingExecutionRun, acceptance: RollingAcceptanceProjection) {
-  return deriveRollingLifecycle({
-    manifest_entries: run.manifest_entries,
-    accepted_deltas: run.accepted_deltas,
-    seals: run.seals,
-    unit_states: acceptance.units,
-    gate_states: acceptance.gates,
-    facts: reconciliationFacts(run),
-  });
-}
-
-function taskControlState(lifecycle: RollingTaskLifecycle, refs: { units: string[]; gates: string[] }, acceptance: RollingAcceptanceProjection): RollingTaskControlState {
-  if (lifecycle.reconciled) return "reconciled";
-  if (lifecycle.sealed) return "sealed";
-  const unitStates = refs.units.map((ref) => acceptance.units[ref]?.state || "queued");
-  const gateStates = refs.gates.map((ref) => acceptance.gates[ref]?.state || "pending");
-  if (unitStates.includes("terminal-unreleased")) return "terminal-unreleased";
-  if (unitStates.some((state) => state === "running" || state === "reserved")) return "active";
-  if (unitStates.includes("failed") || gateStates.includes("failed") || lifecycle.state === "blocked") return "blocked";
-  if (refs.units.length + refs.gates.length === 0) return "unplanned";
-  if (refs.units.every((ref) => acceptance.units[ref]?.accepted) && refs.gates.every((ref) => acceptance.gates[ref]?.accepted)) return "accepted";
-  return "planned";
-}
-
-function nextAction(state: RollingTaskControlState, runId: string, taskKey: string): string | null {
-  if (state === "unplanned") return `baton run ${runId} --append-plan <delta.json> --dispatch`;
-  if (state === "planned") return `baton run ${runId} --status`;
-  if (state === "active") return "await native completion";
-  if (state === "terminal-unreleased") return "baton dispatch release <ticket> --host <host>";
-  if (state === "blocked") return `baton run ${runId} --append-plan <successor-delta.json> --dispatch`;
-  if (state === "accepted") return `baton run ${runId} --seal-task ${taskKey} --seal-file <seal.json>`;
-  if (state === "sealed") return `baton run ${runId} --reconcile --task ${taskKey}`;
-  return null;
-}
-
-export async function statusRollingControl(context: RollingControlContext & { run_id: string }): Promise<RollingControlStatus> {
-  const recovered = synchronizeRollingTicketFacts(context);
-  const run = recovered.run;
-  const worktreeRecovery = await recoverWorktreeRun({ cwd: context.cwd, env: context.env, run_id: context.run_id, tickets: recovered.tickets, at: context.now });
-  const source = sourceFromRun(run);
-  const sourceDiagnostics = await rollingTaskSourceRegistry(context.cwd, source).diagnostics(source);
-  const acceptance = deriveRollingAcceptance({ units: allUnits(run), gates: allGates(run), facts: executionFacts(run) });
-  const lifecycle = lifecycleWithAcceptance(run, acceptance);
-  const ticketByTask = new Map<string, Set<string>>();
-  for (const ticket of recovered.tickets) {
-    for (const taskKey of ticket.rolling_unit_lineage?.task_keys || []) {
-      const ids = ticketByTask.get(taskKey) || new Set<string>();
-      ids.add(ticket.id);
-      ticketByTask.set(taskKey, ids);
-    }
-  }
-  const tasks = run.manifest_entries.map((entry) => {
-    const localLifecycle = lifecycle.task_lifecycle[entry.task_key];
-    const refs = taskRefs(run, entry.task_key);
-    if (!localLifecycle) throw new RollingControlError(`rolling lifecycle omitted manifest task ${entry.task_key}`, "ROLLING_STATE_CORRUPT");
-    const state = taskControlState(localLifecycle, refs, acceptance);
-    const blockers = [
-      ...localLifecycle.blockers,
-      ...refs.units.flatMap((ref) => acceptance.units[ref]?.blockers || []),
-      ...refs.gates.flatMap((ref) => acceptance.gates[ref]?.blockers || []),
-    ].map((item) => ({ code: item.code, message: item.message, ...(item.refs?.length ? { refs: [...item.refs] } : {}) }));
-    return {
-      task_key: entry.task_key,
-      display_id: entry.display_id,
-      title: entry.title,
-      state,
-      source_state: entry.source_state,
-      unit_versions: refs.units,
-      gate_versions: refs.gates,
-      unit_states: Object.fromEntries(refs.units.map((ref) => [ref, acceptance.units[ref]?.state || "queued"])),
-      gate_states: Object.fromEntries(refs.gates.map((ref) => [ref, acceptance.gates[ref]?.state || "pending"])),
-      ticket_ids: [...(ticketByTask.get(entry.task_key) || [])].sort(),
-      blockers,
-      next_legal_action: nextAction(state, context.run_id, entry.task_key),
-    } satisfies RollingTaskControlStatus;
-  });
-  const task_status = Object.fromEntries(tasks.map((task) => [task.task_key, task]));
-  const state = tasks.length > 0 && tasks.every((task) => task.state === "reconciled")
-    ? "reconciled"
-    : tasks.length > 0 && tasks.every((task) => task.state === "sealed" || task.state === "reconciled")
-      ? "sealed"
-      : tasks.some((task) => task.state === "blocked" || task.state === "terminal-unreleased")
-        ? "blocked"
-        : "open";
-  const firstAction = tasks.map((task) => task.next_legal_action).find((value): value is string => Boolean(value)) || null;
-  return {
-    schema_version: ROLLING_CONTROL_SCHEMA_VERSION,
-    code: "ROLLING_RUN_STATUS",
-    run_id: context.run_id,
-    host: run.identity.host,
-    session_uid: run.identity.session_uid,
-    adapter: run.identity.adapter,
-    source_kind: run.identity.source_kind,
-    append_sequence: run.append_sequence,
-    state,
-    next_legal_action: firstAction,
-    tasks,
-    task_status,
-    acceptance,
-    tickets: recovered.tickets.map((ticket) => ({
-      ticket_id: ticket.id,
-      unit_ref: `${ticket.rolling_unit_lineage!.unit_key}@${ticket.rolling_unit_lineage!.unit_version}`,
-      status: ticket.status,
-      released: Boolean(ticket.slot_released_at),
-      execution_root: ticket.rolling_unit_lineage!.execution_root || null,
-      progress: ticket.progress,
-      liveness: ticket.liveness,
-    })),
-    isolation: worktreeRecovery.status,
-    recovery: { appended_execution_facts: recovered.appended, repaired_worktree_record_ids: worktreeRecovery.repaired_record_ids, source_diagnostics: sourceDiagnostics.diagnostics },
-  };
 }
 
 async function mutationResult(context: RollingControlContext & { run_id: string }, code: string, dispatch: RollingRefillResult | null): Promise<RollingControlMutationResult> {
@@ -951,32 +490,7 @@ export async function reconcileRollingTasks(input: ReconcileRollingTasksInput): 
 }
 
 /** Human output remains task-first; JSON callers receive the complete report. */
-export function formatRollingControlStatus(status: RollingControlStatus): string {
-  const lines = [
-    `rolling run ${status.run_id}  ${status.state}`,
-    `  host ${status.host}  append ${status.append_sequence}  session ${status.session_uid}`,
-  ];
-  const tickets = new Map(status.tickets.map((ticket) => [ticket.ticket_id, ticket]));
-  for (const task of status.tasks) {
-    lines.push(`  ${task.display_id}  ${task.state}  ${task.title}`);
-    if (task.ticket_ids.length) lines.push(`    tickets ${task.ticket_ids.join(", ")}`);
-    for (const ticketId of task.ticket_ids) {
-      const progress = tickets.get(ticketId)?.progress;
-      if (progress) lines.push(`    progress ${progress.phase}: ${progress.summary}`);
-    }
-    if (task.next_legal_action) lines.push(`    next ${task.next_legal_action}`);
-    for (const blocker of task.blockers.slice(0, 3)) lines.push(`    blocked ${blocker.code}: ${blocker.message}`);
-  }
-  for (const isolation of status.isolation.units) {
-    lines.push(`  isolation ${isolation.unit_ref}/${isolation.attempt_id}  ${isolation.lifecycle_state}  ${isolation.native_liveness}`);
-    lines.push(`    root ${isolation.execution_root}  base ${isolation.base_tree}`);
-    if (isolation.diff.total_changed_paths) lines.push(`    diff ${isolation.diff.total_changed_paths} paths +${isolation.diff.additions} -${isolation.diff.deletions}${isolation.diff.truncated ? " (bounded)" : ""}: ${isolation.diff.changed_paths.join(", ")}`);
-    if (isolation.bundle) lines.push(`    bundle ${isolation.bundle.bundle_id}  ${isolation.bundle.state}`);
-    if (isolation.integration) lines.push(`    integration ${isolation.integration.integration_id}  ${isolation.integration.state}  queue ${isolation.integration.queue_position}`);
-    if (isolation.retention_reasons.length) lines.push(`    retained ${isolation.retention_reasons.join(", ")}`);
-    lines.push(`    cleanup ${isolation.cleanup.status}`);
-  }
-  for (const diagnostic of status.isolation.orphan_diagnostics.slice(0, 5)) lines.push(`  isolation warning ${diagnostic.code}: ${diagnostic.message}${diagnostic.path ? ` (${diagnostic.path})` : ""}`);
-  if (status.next_legal_action) lines.push(`  next ${status.next_legal_action}`);
-  return `${lines.join("\n")}\n`;
-}
+
+export { rollingTaskSourceRegistry, discoverRollingTaskManifest } from "./rolling/control-manifest.js";
+export { synchronizeRollingTicketFacts } from "./rolling/control-tickets.js";
+export { statusRollingControl, formatRollingControlStatus } from "./rolling/control-status.js";

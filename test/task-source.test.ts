@@ -48,9 +48,13 @@ describe("source-neutral task adapter registry", () => {
   it("validates descriptors while preserving opaque selection and references", async () => {
     const calls: string[] = [];
     const opaque = { nested: [{ value: 1 }], token: "not-for-baton" };
-    const registry = new TaskSourceAdapterRegistry([adapter("alpha", calls)]);
+    let received: TaskSourceDescriptor | undefined;
+    const registry = new TaskSourceAdapterRegistry([adapter("alpha", calls, {
+      discover: async (request) => { received = request.source; calls.push(`discover:${request.limit}:${request.cursor ?? ""}`); return page(); },
+    })]);
     const discovered = await registry.discover({ ...source, selection: opaque });
     assert.equal(discovered.status, "available");
+    assert.deepEqual(received?.selection, opaque);
     assert.deepEqual(calls, ["discover:100:"]);
   });
 

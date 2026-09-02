@@ -89,6 +89,14 @@ describe("rolling PlanDelta semantic validation", () => {
     assert.deepEqual(result.value?.unit_versions[0]?.allowed_operations, ["write", "create"]);
   });
 
+  it("rejects case variants of the Git metadata directory", () => {
+    const result = validatePlanDeltaAgainstFacts(delta({
+      unit_versions: [unit({ write_paths: [".GIT/config"] })],
+    }), facts());
+    assert.equal(result.valid, false);
+    assert.ok(result.diagnostics.some((item) => item.code === "FORBIDDEN_PATH"));
+  });
+
   it("accepts dependencies declared by fixed facts or the same delta", () => {
     const result = validatePlanDeltaAgainstFacts(delta({
       unit_versions: [

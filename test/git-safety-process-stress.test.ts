@@ -1,8 +1,8 @@
 import { strict as assert } from "node:assert";
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import { describe, it } from "bun:test";
-import { GitSafetyError, runGitProcess } from "../src/lib/git-safety-process.ts";
-import { createGitIndexControlParser } from "../src/lib/git-index-control.ts";
+import { GitSafetyError, runGitProcess } from "../src/lib/git/safety-process.ts";
+import { createGitIndexControlParser } from "../src/lib/git/index-control.ts";
 
 type SpawnAdapter = NonNullable<Parameters<typeof runGitProcess>[0]["spawn"]>;
 

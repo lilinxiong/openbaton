@@ -19,7 +19,7 @@ import {
   captureCommitBaselineAsync,
   pathAllowed,
 } from "../src/lib/safety.js";
-import { collectGitSafetyFacts, deriveGitSafetyStabilityToken, type GitSafetyFacts } from "../src/lib/git-safety-facts.js";
+import { collectGitSafetyFacts, deriveGitSafetyStabilityToken, type GitSafetyFacts } from "../src/lib/git/safety-facts.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });

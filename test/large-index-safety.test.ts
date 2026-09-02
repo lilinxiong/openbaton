@@ -7,8 +7,8 @@ import { describe, it } from "bun:test";
 import { run } from "../src/cli.js";
 import { configureCli } from "./configure.js";
 import { fakeEnv, withHome, testTicketId } from "./home.js";
-import { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "../src/lib/git-index-control.js";
-import { runGitProcess } from "../src/lib/git-safety-process.js";
+import { GIT_INDEX_CONTROL_FINGERPRINT_ALGORITHM } from "../src/lib/git/index-control.js";
+import { runGitProcess } from "../src/lib/git/safety-process.js";
 import { publishRouteSnapshot } from "../src/lib/routes.js";
 import { receiptsDir, spawnsDir } from "../src/lib/paths.js";
 

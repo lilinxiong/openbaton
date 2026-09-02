@@ -12,8 +12,8 @@ import {
   consumeUntrackedExists,
   createLineRecordConsumer,
   createNulRecordConsumer,
-} from "../src/lib/git-record-consumers.ts";
-import { GitSafetyError } from "../src/lib/git-safety-process.ts";
+} from "../src/lib/git/record-consumers.ts";
+import { GitSafetyError } from "../src/lib/git/safety-process.ts";
 import { parsePorcelainV1Z } from "../src/lib/safety.ts";
 
 const bytes = (value: string) => Buffer.from(value, "utf8");

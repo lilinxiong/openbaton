@@ -9,7 +9,7 @@ import {
   normalizeRollingExecutionFact,
   reduceRollingUnitVersion,
   type RollingExecutionFact,
-} from "../src/lib/rolling-acceptance.js";
+} from "../src/lib/rolling/acceptance.js";
 import { fingerprintGateVersion, fingerprintUnitVersion, type GateVersion, type UnitVersion } from "../src/lib/rolling-plan.js";
 
 const stamp = "2026-01-01T00:00:00.000Z";

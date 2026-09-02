@@ -4,7 +4,7 @@ import {
   deriveRollingAcceptance,
   normalizeRollingExecutionFact,
   type RollingExecutionFact,
-} from "../src/lib/rolling-acceptance.js";
+} from "../src/lib/rolling/acceptance.js";
 import { deriveRollingSafeFrontier, type RollingRouteFact } from "../src/lib/rolling-scheduler.js";
 import { fingerprintUnitVersion, type PlanDelta, type UnitVersion } from "../src/lib/rolling-plan.js";
 

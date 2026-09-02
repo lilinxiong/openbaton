@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { worktreeExecutionRootPath } from "../src/lib/paths.js";
 import { transitionPersistedWorktreeRecord, type WorktreeRecord } from "../src/lib/worktree-execution.js";
-import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
-import { auditTerminalWorktree, type WorktreeAuditReceipt } from "../src/lib/worktree-audit.js";
+import { setupDetachedWorktree } from "../src/lib/worktree/setup.js";
+import { auditTerminalWorktree, type WorktreeAuditReceipt } from "../src/lib/worktree/audit.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -112,6 +112,16 @@ describe("terminal isolated-worktree audit", () => {
     const audit = await auditTerminalWorktree({
       record: f.record,
       receipt: { ...f.receipt, write_allowlist: [42 as any] },
+    });
+    assert.equal(audit.accepted, false);
+    assert.ok(audit.violations.some((item) => item.code === "E_RECEIPT_LINEAGE_MISMATCH"));
+  });
+
+  it("rejects the exact parent-directory allowlist entry", async () => {
+    const f = await fixture("parent-allowlist");
+    const audit = await auditTerminalWorktree({
+      record: f.record,
+      receipt: { ...f.receipt, write_allowlist: [".."] },
     });
     assert.equal(audit.accepted, false);
     assert.ok(audit.violations.some((item) => item.code === "E_RECEIPT_LINEAGE_MISMATCH"));

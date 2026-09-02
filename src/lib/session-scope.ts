@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { sha256Hex } from "./json-utils.js";
 
 /**
  * Opaque identity of a root agent tree. The raw BATON_SESSION_ID is never
@@ -69,7 +70,7 @@ function isSessionUid(value: unknown): value is SessionUid {
 
 /** Derive the persisted, opaque tree identity from the current environment. */
 export function sessionUidFromEnv(env?: NodeJS.ProcessEnv): SessionUid {
-  return crypto.createHash("sha256").update(rawSessionId(env)).digest("hex");
+  return sha256Hex(rawSessionId(env));
 }
 
 /** Construct an immutable scope from a valid persisted session UID. */

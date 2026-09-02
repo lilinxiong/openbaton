@@ -115,12 +115,12 @@ function normalizeDefinition(input: DirectorTaskDefinition): DirectorTaskDefinit
   if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata))) {
     throw error("INVALID_METADATA", `director task ${id} metadata must be an object`);
   }
-  return clone({
+  return structuredClone({
     id,
     description,
     title,
-    ...(Object.prototype.hasOwnProperty.call(input, "source_ref") ? { source_ref: clone(input.source_ref) } : {}),
-    ...(input.metadata === undefined ? {} : { metadata: clone(input.metadata) }),
+    ...(Object.prototype.hasOwnProperty.call(input, "source_ref") ? { source_ref: structuredClone(input.source_ref) } : {}),
+    ...(input.metadata === undefined ? {} : { metadata: structuredClone(input.metadata) }),
   });
 }
 
@@ -196,14 +196,14 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
 
   replaceTasks(tasks: readonly DirectorTaskDefinition[]): this { return this.setTasks(tasks); }
 
-  taskDefinitions(): readonly DirectorTaskDefinition[] { return this.definitions.map((item) => clone(item.definition)); }
+  taskDefinitions(): readonly DirectorTaskDefinition[] { return this.definitions.map((item) => structuredClone(item.definition)); }
 
   completedTaskKeys(): readonly string[] { return [...this.completed.keys()].sort(); }
 
   isComplete(taskKey: string): boolean { return this.completed.has(taskKey); }
 
   sourceDescriptor(selection?: unknown): TaskSourceDescriptor {
-    return { schema_version: 1, source_kind: "director", adapter: this.id, ...(selection === undefined ? {} : { selection: clone(selection) }) };
+    return { schema_version: 1, source_kind: "director", adapter: this.id, ...(selection === undefined ? {} : { selection: structuredClone(selection) }) };
   }
 
   private appendDefinitions(tasks: readonly DirectorTaskDefinition[]): void {
@@ -249,13 +249,13 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
       schema_version: 1,
       task_key: taskKey,
       source_kind: "director",
-      source_ref: clone(definition.source_ref === undefined ? definition.id : definition.source_ref),
+      source_ref: structuredClone(definition.source_ref === undefined ? definition.id : definition.source_ref),
       display_id: definition.id,
       title: definition.title || definition.description,
       source_fingerprint: stored.fingerprint,
       source_state: complete ? "complete" : "pending",
       discovery_sequence: sequence,
-      ...(definition.metadata === undefined ? {} : { metadata: clone(definition.metadata) }),
+      ...(definition.metadata === undefined ? {} : { metadata: structuredClone(definition.metadata) }),
     };
     return { ...value, fingerprint: fingerprintTaskManifestEntry(value) };
   }
@@ -271,7 +271,7 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
     const hasMore = end < this.definitions.length;
     const page: TaskManifestPage = {
       schema_version: 1,
-      source: clone(request.source),
+      source: structuredClone(request.source),
       entries,
       cursor: request.cursor ?? null,
       next_cursor: hasMore ? String(end) : null,
@@ -310,7 +310,7 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
     if (this.reconcileCallback) {
       try {
         const raw = await this.reconcileCallback({
-          source: clone(request.source),
+          source: structuredClone(request.source),
           task_key: request.task_key,
           task_id: stored.definition.id,
           description: stored.definition.description,
@@ -334,6 +334,7 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
           if (value.source_state === "unavailable") return localUnavailable<TaskSourceReconciliation>(localDiagnostic("RECONCILIATION_UNAVAILABLE", `director reconciliation callback did not complete task ${stored.definition.id}`));
           return { ok: true, status: "available", value, diagnostics: [] };
         }
+        return this.fail("reconcile", localDiagnostic("RECONCILIATION_UNAVAILABLE", `director reconciliation callback returned an unsupported result for task ${stored.definition.id}`, [stored.definition.id]));
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         return this.fail("reconcile", localDiagnostic("RECONCILIATION_UNAVAILABLE", `director reconciliation callback failed: ${message}`));
@@ -346,7 +347,7 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
   diagnostics(_request: TaskSourceDiagnosticsRequest): readonly TaskSourceDiagnostic[] { return this.localDiagnostics.slice(); }
 
   private localReconciliation(request: TaskSourceReconcileRequest, entry: TaskManifestEntry, conclusion: string): TaskSourceAvailableResult<TaskSourceReconciliation> {
-    return { ok: true, status: "available", value: { task_key: request.task_key, source_fingerprint: entry.source_fingerprint, source_state: "complete", source_ref: clone(entry.source_ref), conclusion }, diagnostics: [] };
+    return { ok: true, status: "available", value: { task_key: request.task_key, source_fingerprint: entry.source_fingerprint, source_state: "complete", source_ref: structuredClone(entry.source_ref), conclusion }, diagnostics: [] };
   }
 
   private parseCursor(cursor: string): number | undefined {
@@ -381,9 +382,6 @@ export function createDirectorTaskSourceAdapter(
   return new DirectorTaskSourceAdapter(tasksOrOptions as readonly DirectorTaskDefinition[] & DirectorTaskSourceOptions, options);
 }
 
-export const createDirectorTaskSource = createDirectorTaskSourceAdapter;
-export const DirectorAdapter = DirectorTaskSourceAdapter;
-export const DirectorTaskSource = DirectorTaskSourceAdapter;
 
 // Keep this import visible to declaration emit consumers that use the adapter
 // as a concrete implementation of the shared contract.

@@ -24,8 +24,8 @@ import {
   type WorktreeRecord,
 } from "../src/lib/worktree-execution.js";
 import { acceptWorktreeIntegration, applyWorktreeIntegration, beginWorktreeIntegration } from "../src/lib/worktree-integration.js";
-import { setupDetachedWorktree } from "../src/lib/worktree-setup.js";
-import { resolveOwningRepository } from "../src/lib/worktree-topology.js";
+import { setupDetachedWorktree } from "../src/lib/worktree/setup.js";
+import { resolveOwningRepository } from "../src/lib/worktree/topology.js";
 import { configureCli } from "./configure.js";
 import { fakeEnv } from "./home.js";
 
