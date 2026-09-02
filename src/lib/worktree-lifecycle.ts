@@ -32,6 +32,23 @@ import {
 } from "./worktree-execution.js";
 import { resolveOwningRepository } from "./worktree-topology.js";
 import { sha256Hex } from "./json-utils.js";
+import { deriveWorktreeRetentionReasons } from "./worktree-lifecycle-cleanup.js";
+import {
+  listPersistedWorktreeRecords,
+  readBundle,
+  readIntegration
+} from "./worktree-lifecycle-records.js";
+import {
+  MAX_CHANGED_PATHS,
+  boundedOutput,
+  canonicalPotentialPath,
+  nativeLiveness,
+  registeredWorktreeRoots,
+  rootState,
+  ticketFor,
+  timestamp,
+  within
+} from "./worktree-lifecycle-common.js";
 
 export type WorktreeLifecycleErrorCode =
   | "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH"
@@ -134,147 +151,9 @@ export interface WorktreeCleanupResult {
 }
 
 const EMPTY_DIFF: WorktreeDiffSummary = { changed_paths: [], total_changed_paths: 0, additions: 0, deletions: 0, binary_files: 0, truncated: false };
-const MAX_SUMMARY_BYTES = 256 * 1024;
-const MAX_CHANGED_PATHS = 100;
-
-function timestamp(value?: string | number | Date): string {
-  const result = value === undefined ? new Date() : new Date(value);
-  if (!Number.isFinite(result.getTime())) throw new WorktreeLifecycleError("lifecycle timestamp is invalid", "WORKTREE_CLEANUP_NOT_READY");
-  return result.toISOString();
-}
-
-function sha(value: string): string { return sha256Hex(value); }
-function within(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-function missing(error: unknown): boolean { return error instanceof WorktreeExecutionError && error.code === "WORKTREE_RECORD_MISSING"; }
-
-async function boundedOutput(cwd: string, args: string[], spawn?: GitProcessOptions["spawn"]): Promise<{ bytes: Buffer; truncated: boolean }> {
-  let bytes = Buffer.alloc(0);
-  let truncated = false;
-  await runGitProcess({
-    cwd,
-    args,
-    spawn,
-    onStdout(chunk) {
-      if (bytes.length >= MAX_SUMMARY_BYTES) { truncated = true; return; }
-      const remaining = MAX_SUMMARY_BYTES - bytes.length;
-      bytes = Buffer.concat([bytes, chunk.subarray(0, remaining)]);
-      if (chunk.length > remaining) truncated = true;
-    },
-  });
-  return { bytes, truncated };
-}
-
-function canonicalPotentialPath(value: string): string {
-  const absolute = path.resolve(value);
-  let existing = absolute;
-  while (!fs.existsSync(existing)) {
-    const parent = path.dirname(existing);
-    if (parent === existing) return absolute;
-    existing = parent;
-  }
-  return path.resolve(fs.realpathSync(existing), path.relative(existing, absolute));
-}
-
-async function registeredWorktreeRoots(repositoryRoot: string, spawn?: GitProcessOptions["spawn"]): Promise<Set<string>> {
-  const output = await boundedOutput(repositoryRoot, ["worktree", "list", "--porcelain", "-z"], spawn);
-  if (output.truncated) throw new WorktreeLifecycleError("Git worktree registry exceeds the bounded recovery payload", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
-  const result = new Set<string>();
-  for (const field of output.bytes.toString("utf8").split("\0")) {
-    if (!field.startsWith("worktree ")) continue;
-    const raw = field.slice("worktree ".length);
-    result.add(canonicalPotentialPath(raw));
-  }
-  return result;
-}
-
-function rootState(executionRoot: string): WorktreeIsolationStatus["root_state"] {
-  if (!fs.existsSync(executionRoot)) return "absent";
-  const stat = fs.lstatSync(executionRoot);
-  if (stat.isSymbolicLink()) return "symlink";
-  return stat.isDirectory() ? "directory" : "other";
-}
-
-function ticketFor(record: WorktreeRecord, tickets: readonly WorktreeStatusTicket[]): WorktreeStatusTicket | undefined {
-  return tickets.find((ticket) => ticket.rolling_unit_lineage?.run_id === record.run_id
-    && ticket.rolling_unit_lineage?.unit_key === record.unit_key
-    && ticket.rolling_unit_lineage?.unit_version === record.unit_version);
-}
-
-function nativeLiveness(record: WorktreeRecord, tickets: readonly WorktreeStatusTicket[]): WorktreeIsolationStatus["native_liveness"] {
-  const ticket = ticketFor(record, tickets);
-  if (ticket && ["completed", "errored", "timed_out", "closed"].includes(ticket.status)) return "terminal";
-  const probed = ticket?.liveness?.state;
-  if (probed === "running" || probed === "pending_init") return "running";
-  if (probed === "shutdown" || probed === "interrupted" || probed === "not_found") return "missing";
-  if (record.lifecycle_state === "worker_active") return record.native_handle ? "unknown" : "missing";
-  if (record.lifecycle_state === "terminal_awaiting_audit") return "terminal";
-  return "none";
-}
 
 /** Recompute conservative reasons from durable lifecycle and release facts. */
-export function deriveWorktreeRetentionReasons(
-  record: WorktreeRecord,
-  options: {
-    terminal_ticket_released?: boolean;
-    release_downstream_base?: boolean;
-    discard_rejected_evidence?: boolean;
-    release_user_retention?: boolean;
-  } = {},
-): RetentionReason[] {
-  const reasons = new Set<RetentionReason>();
-  if (record.retention_reasons.includes("user_requested") && !options.release_user_retention) reasons.add("user_requested");
-  if (record.lifecycle_state === "worker_active") reasons.add("live_native_handle");
-  if (record.lifecycle_state === "terminal_awaiting_audit") {
-    reasons.add("pending_audit");
-    if (!options.terminal_ticket_released) reasons.add("terminal_unreleased_ticket");
-  }
-  if (record.lifecycle_state === "rejected" && !options.discard_rejected_evidence) reasons.add("rejected_result_evidence");
-  if (record.lifecycle_state === "bundle_ready") reasons.add("ready_bundle");
-  if (record.lifecycle_state === "integrating") reasons.add("active_integration");
-  if (record.lifecycle_state === "awaiting_parent_resolution") reasons.add("unresolved_conflict");
-  if ((record.lifecycle_state === "integrated" || record.lifecycle_state === "accepted") && !options.release_downstream_base) reasons.add("downstream_base_dependency");
-  return [...reasons].sort();
-}
 
-function readBundle(cwd: string, record: WorktreeRecord, env?: NodeJS.ProcessEnv): ChangeBundleManifest | null {
-  if (!record.bundle_id) return null;
-  try { return readPersistedChangeBundleManifest(cwd, record.run_id, record.bundle_id, env); }
-  catch (error) { if (missing(error)) return null; throw error; }
-}
-
-function readIntegration(cwd: string, record: WorktreeRecord, env?: NodeJS.ProcessEnv): IntegrationRecord | null {
-  if (!record.integration_id) return null;
-  try { return readPersistedIntegrationRecord(cwd, record.run_id, record.repository_id, record.integration_id, env); }
-  catch (error) { if (missing(error)) return null; throw error; }
-}
-
-function listPersistedWorktreeRecords(cwd: string, runId: string, env?: NodeJS.ProcessEnv): { records: WorktreeRecord[]; diagnostics: WorktreeLifecycleDiagnostic[] } {
-  const directory = rollingRunWorktreesDir(cwd, runId, env);
-  const records: WorktreeRecord[] = [];
-  const diagnostics: WorktreeLifecycleDiagnostic[] = [];
-  if (!fs.existsSync(directory)) return { records, diagnostics };
-  for (const unitEntry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (!unitEntry.isDirectory()) continue;
-    const unitDir = path.join(directory, unitEntry.name);
-    for (const attemptEntry of fs.readdirSync(unitDir, { withFileTypes: true })) {
-      if (!attemptEntry.isDirectory()) continue;
-      const recordFile = worktreeRecordPath(cwd, runId, unitEntry.name, attemptEntry.name, env);
-      if (!fs.existsSync(recordFile)) {
-        const executionRoot = worktreeExecutionRootPath(cwd, runId, unitEntry.name, attemptEntry.name, env);
-        if (fs.existsSync(executionRoot)) diagnostics.push({ code: "ORPHAN_EXECUTION_ROOT", message: "execution root has no durable WorktreeRecord", path: executionRoot });
-        continue;
-      }
-      try { records.push(readPersistedWorktreeRecord(cwd, runId, unitEntry.name, attemptEntry.name, env)); }
-      catch (error) { diagnostics.push({ code: "WORKTREE_RECORD_UNREADABLE", message: error instanceof Error ? error.message : String(error), path: recordFile }); }
-    }
-  }
-  return { records: records.sort((left, right) => left.unit_key.localeCompare(right.unit_key) || left.attempt_id.localeCompare(right.attempt_id)), diagnostics };
-}
-
-export { listPersistedWorktreeRecords };
 
 async function currentDiff(record: WorktreeRecord, spawn?: GitProcessOptions["spawn"]): Promise<WorktreeDiffSummary> {
   if (rootState(record.execution_root) !== "directory") return { ...EMPTY_DIFF };
@@ -583,114 +462,8 @@ export async function recoverWorktreeRun(input: {
   return { run_id: input.run_id, repaired_record_ids: [...new Set(repaired)].sort(), status };
 }
 
-async function assertAcceptedTreeReachable(cwd: string, record: WorktreeRecord, integration: IntegrationRecord | null, spawn?: GitProcessOptions["spawn"]): Promise<void> {
-  if (!integration || integration.state !== "accepted" || !integration.after_tree) throw new WorktreeLifecycleError("accepted integration evidence is required before releasing the downstream base", "WORKTREE_CLEANUP_NOT_READY");
-  try { await collectGitScalar({ cwd: record.repository_root, args: ["cat-file", "-e", `${integration.after_tree}^{tree}`], spawn }); }
-  catch (error) { throw new WorktreeLifecycleError("accepted result tree is not reachable", "WORKTREE_CLEANUP_NOT_READY", { cause: error instanceof Error ? error.message : String(error) }); }
-}
 
 /** Persist cleanup eligibility only after all conservative reasons are discharged. */
-export async function markWorktreeCleanupEligible(input: WorktreeCleanupEligibilityInput): Promise<WorktreeRecord> {
-  const root = fs.realpathSync(input.cwd);
-  let record = readPersistedWorktreeRecord(root, input.run_id, input.unit_key, input.attempt_id, input.env);
-  if (record.lifecycle_state === "cleanup_eligible" || record.lifecycle_state === "cleaned") return record;
-  if (record.lifecycle_state === "cleanup_failed") {
-    return transitionPersistedWorktreeRecord(root, input.run_id, input.unit_key, input.attempt_id, { idempotency_key: `cleanup-retry:${record.cleanup.attempts + 1}`, phase: "cleanup", to_state: "cleanup_eligible", retention_reasons: [], cleanup: { schema_version: CLEANUP_STATE_SCHEMA_VERSION, status: "eligible", attempts: record.cleanup.attempts, updated_at: timestamp(input.at) }, recorded_at: timestamp(input.at) }, input.env);
-  }
-  if (record.lifecycle_state === "accepted" && input.release_downstream_base) await assertAcceptedTreeReachable(root, record, readIntegration(root, record, input.env), input.spawn);
-  const reasons = deriveWorktreeRetentionReasons(record, input);
-  if (reasons.length) throw new WorktreeLifecycleError("worktree still has retention reasons", "WORKTREE_CLEANUP_RETAINED", { retention_reasons: reasons });
-  if (record.lifecycle_state !== "accepted" && record.lifecycle_state !== "rejected") throw new WorktreeLifecycleError(`worktree ${record.lifecycle_state} is not cleanup eligible`, "WORKTREE_CLEANUP_NOT_READY");
-  record = transitionPersistedWorktreeRecord(root, input.run_id, input.unit_key, input.attempt_id, {
-    idempotency_key: "cleanup-eligible",
-    phase: "cleanup",
-    to_state: "cleanup_eligible",
-    retention_reasons: [],
-    cleanup: { schema_version: CLEANUP_STATE_SCHEMA_VERSION, status: "eligible", attempts: record.cleanup.attempts, updated_at: timestamp(input.at) },
-    recorded_at: timestamp(input.at),
-  }, input.env);
-  return record;
-}
 
-function assertExactCleanupIdentity(cwd: string, record: WorktreeRecord, env?: NodeJS.ProcessEnv): void {
-  const expected = path.resolve(worktreeExecutionRootPath(cwd, record.run_id, record.unit_key, record.attempt_id, env));
-  if (path.resolve(record.execution_root) !== expected || !within(rollingRunWorktreesDir(cwd, record.run_id, env), expected)) throw new WorktreeLifecycleError("cleanup target is outside the exact recorded Baton namespace", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH", { expected, recorded: record.execution_root });
-  const marker = worktreeRecordPath(cwd, record.run_id, record.unit_key, record.attempt_id, env);
-  if (!fs.existsSync(marker) || (fs.existsSync(expected) && fs.lstatSync(expected).isSymbolicLink())) throw new WorktreeLifecycleError("cleanup target ownership marker is missing or rewritten", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH", { marker, expected });
-  const common = fs.realpathSync(record.git_common_dir);
-  if (sha(common) !== record.git_common_dir_identity) throw new WorktreeLifecycleError("cleanup common-dir identity differs from the WorktreeRecord", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
-  if (fs.existsSync(expected)) {
-    try {
-      const owner = resolveOwningRepository(expected, ".").repository;
-      if (owner.repository_id !== record.repository_id || owner.git_common_dir_identity !== record.git_common_dir_identity) throw new WorktreeLifecycleError("cleanup root repository identity differs from the WorktreeRecord", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
-    } catch (error) {
-      if (error instanceof WorktreeLifecycleError) throw error;
-      throw new WorktreeLifecycleError("cleanup root no longer resolves to the recorded repository", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH", { cause: error instanceof Error ? error.message : String(error) });
-    }
-  }
-}
-
-async function deleteInternalBundleRef(record: WorktreeRecord, bundle: ChangeBundleManifest | null, spawn?: GitProcessOptions["spawn"]): Promise<string | null> {
-  if (!bundle || typeof bundle.transport.internal_ref !== "string" || typeof bundle.transport.internal_commit !== "string") return null;
-  const expectedRef = `refs/baton/change-bundles/${bundle.bundle_id}`;
-  if (bundle.transport.internal_ref !== expectedRef) throw new WorktreeLifecycleError("bundle internal ref is outside the exact Baton namespace", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
-  let current: string | null;
-  try { current = await collectGitScalar({ cwd: record.repository_root, args: ["rev-parse", "--verify", expectedRef], spawn }); }
-  catch (error) { if (error instanceof GitSafetyError && (error.exitCode === 1 || error.exitCode === 128)) current = null; else throw error; }
-  if (current === null) return null;
-  if (current !== bundle.transport.internal_commit) throw new WorktreeLifecycleError("bundle internal ref moved to an unexpected object", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH", { ref: expectedRef, current, expected: bundle.transport.internal_commit });
-  await runGitProcess({ cwd: record.repository_root, args: ["update-ref", "-d", expectedRef, current], spawn });
-  return expectedRef;
-}
-
-function deleteUnusedSnapshots(cwd: string, record: WorktreeRecord, env?: NodeJS.ProcessEnv): string[] {
-  const directory = rollingRunSnapshotsDir(cwd, record.run_id, env);
-  if (!fs.existsSync(directory)) return [];
-  const otherBases = new Set(listPersistedWorktreeRecords(cwd, record.run_id, env).records.filter((item) => item.record_id !== record.record_id && item.lifecycle_state !== "cleaned").map((item) => item.base_tree));
-  if (otherBases.has(record.base_tree)) return [];
-  const removed: string[] = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const file = snapshotManifestPath(cwd, record.run_id, entry.name, env);
-    if (!fs.existsSync(file)) continue;
-    const snapshot = parseSnapshotManifest(fs.readFileSync(file, "utf8"));
-    if (snapshot.repository_id !== record.repository_id || snapshot.git_common_dir_identity !== record.git_common_dir_identity || snapshot.snapshot_tree !== record.base_tree) continue;
-    fs.unlinkSync(file);
-    try { fs.rmdirSync(path.dirname(file)); } catch { /* retain unexpected sibling evidence */ }
-    removed.push(snapshot.snapshot_id);
-  }
-  return removed.sort();
-}
-
-/** Remove only an eligible, exact, identity-verified worktree and its disposable reachability ref. */
-export async function cleanupWorktreeAttempt(input: WorktreeCleanupInput): Promise<WorktreeCleanupResult> {
-  const root = fs.realpathSync(input.cwd);
-  let record = await markWorktreeCleanupEligible(input);
-  if (record.lifecycle_state === "cleaned") return { record, replayed: true, removed_worktree: false, removed_internal_ref: null, removed_snapshot_ids: [] };
-  const attempt = record.cleanup.status === "cleaning" ? record.cleanup.attempts : record.cleanup.attempts + 1;
-  if (record.cleanup.status !== "cleaning") record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: `cleanup-start:${attempt}`, phase: "cleanup", to_state: "cleanup_eligible", cleanup: { schema_version: CLEANUP_STATE_SCHEMA_VERSION, status: "cleaning", attempts: attempt, updated_at: timestamp(input.at) }, recorded_at: timestamp(input.at) }, input.env);
-  let removedWorktree = false; let removedInternalRef: string | null = null; let removedSnapshots: string[] = [];
-  try {
-    assertExactCleanupIdentity(root, record, input.env);
-    const registry = await registeredWorktreeRoots(record.repository_root, input.spawn);
-    const state = rootState(record.execution_root);
-    const canonical = canonicalPotentialPath(record.execution_root);
-    if (state === "directory" && !registry.has(canonical)) throw new WorktreeLifecycleError("cleanup root exists without an exact Git registration", "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
-    if (state !== "absent" && state !== "directory") throw new WorktreeLifecycleError(`cleanup root has unsupported state ${state}`, "WORKTREE_LIFECYCLE_IDENTITY_MISMATCH");
-    if (registry.has(canonical)) {
-      if (state === "absent") await runGitProcess({ cwd: record.repository_root, args: ["worktree", "prune"], spawn: input.spawn });
-      else await runGitProcess({ cwd: record.repository_root, args: ["worktree", "remove", "--force", record.execution_root], spawn: input.spawn });
-      removedWorktree = true;
-    }
-    removedInternalRef = await deleteInternalBundleRef(record, readBundle(root, record, input.env), input.spawn);
-    removedSnapshots = deleteUnusedSnapshots(root, record, input.env);
-    record = transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: `cleanup-complete:${attempt}`, phase: "cleanup", to_state: "cleaned", cleanup: { schema_version: CLEANUP_STATE_SCHEMA_VERSION, status: "cleaned", attempts: attempt, updated_at: timestamp(input.at) }, recorded_at: timestamp(input.at) }, input.env);
-    return { record, replayed: !removedWorktree && !removedInternalRef && removedSnapshots.length === 0, removed_worktree: removedWorktree, removed_internal_ref: removedInternalRef, removed_snapshot_ids: removedSnapshots };
-  } catch (error) {
-    try {
-      transitionPersistedWorktreeRecord(root, record.run_id, record.unit_key, record.attempt_id, { idempotency_key: `cleanup-failed:${attempt}`, phase: "cleanup", to_state: "cleanup_failed", cleanup: { schema_version: CLEANUP_STATE_SCHEMA_VERSION, status: "failed", attempts: attempt, last_error: error instanceof Error ? error.message : String(error), updated_at: timestamp(input.at) }, recorded_at: timestamp(input.at) }, input.env);
-    } catch { /* retain the primary cleanup failure */ }
-    if (error instanceof WorktreeLifecycleError) throw error;
-    throw new WorktreeLifecycleError(error instanceof Error ? error.message : String(error), "WORKTREE_CLEANUP_FAILED");
-  }
-}
+export { deriveWorktreeRetentionReasons, markWorktreeCleanupEligible, cleanupWorktreeAttempt } from "./worktree-lifecycle-cleanup.js";
+export { listPersistedWorktreeRecords } from "./worktree-lifecycle-records.js";
