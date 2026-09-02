@@ -79,7 +79,7 @@ function verify({ host, model, workspace }) {
   const standalone = records.filter((ticket) => ticket.source === "standalone");
   const probe = records.filter((ticket) => isProbeTicket(ticket));
   assert(standalone.length === 2, `expected exactly 2 standalone tickets, got ${standalone.length}`);
-  assert(probe.length === 3, `expected exactly 3 ${CHANGE} OpenSpec tickets, got ${probe.length}`);
+  assert(probe.length === 3, `expected exactly 3 ${CHANGE} apply tickets, got ${probe.length}`);
   assert(standalone.length + probe.length === 5, "standalone and probe tickets must be the complete five-ticket evidence set");
 
   const tickets = [...standalone, ...probe];
@@ -88,7 +88,7 @@ function verify({ host, model, workspace }) {
   verifyTaskNumbers(probe);
   verifyDependencyOrdering(probe);
   verifyWorkspace(workspace);
-  const compiledApply = verifyCompiledApplyScenario(runtime, workspace);
+  const compiledApply = verifyCompiledApplyScenario(runtime, workspace) || verifyCompiledApplyRun(runtime, probe);
 
   return {
     ok: true,
@@ -102,7 +102,7 @@ function verify({ host, model, workspace }) {
       .map((ticket) => ({
         id: ticket.id,
         source: ticket.source,
-        task: ticket.openspec?.number || null,
+        task: probeTaskNumber(ticket) || null,
         route_id: ticket.route_id,
         model: ticket.model_id,
         execution_handle: ticket.execution_handle,
@@ -232,13 +232,13 @@ function verifyNoLeaks(records) {
 }
 
 function verifyTaskNumbers(probe) {
-  const numbers = probe.map((ticket) => String(ticket.openspec?.number || ""));
-  assert(numbers.length === PROBE_TASKS.length && new Set(numbers).size === numbers.length, "probe task numbers must be unique");
+  const numbers = probe.map((ticket) => probeTaskNumber(ticket));
+  assert(numbers.length === PROBE_TASKS.length && numbers.every(Boolean) && new Set(numbers).size === numbers.length, "probe task numbers must be unique");
   assert(PROBE_TASKS.every((number) => numbers.includes(number)), `probe tasks must be exactly ${PROBE_TASKS.join(", ")}`);
 }
 
 function verifyDependencyOrdering(probe) {
-  const byTask = new Map(probe.map((ticket) => [String(ticket.openspec.number), ticket]));
+  const byTask = new Map(probe.map((ticket) => [probeTaskNumber(ticket), ticket]));
   const firstWave = [byTask.get("1.1"), byTask.get("1.2")];
   const integration = byTask.get("2.1");
   assert(firstWave.every(Boolean) && integration, "probe dependency tasks are incomplete");
@@ -253,9 +253,9 @@ function verifyDependencyOrdering(probe) {
 }
 
 /**
- * A compiled scenario is optional for older/manual probe runs.  When the
- * current dual-skill flow persists one, validate the complete director
- * contract in one place without changing the legacy five-ticket evidence.
+ * Optional extra director-contract dump. The live dual-skill path does not
+ * write this file; it persists compiled-apply tickets plus a run under
+ * `runs/compiled-apply-runs/`.
  */
 function verifyCompiledApplyScenario(runtime, workspace) {
   const file = path.join(runtime, "compiled-apply-scenario.json");
@@ -397,10 +397,63 @@ function verifyWorkspace(workspace) {
 }
 
 function isProbeTicket(ticket) {
+  if (ticket?.source === "compiled-apply") {
+    return probeTaskRefs(ticket).some((number) => PROBE_TASKS.includes(number));
+  }
   if (ticket?.source !== "openspec") return false;
   const change = String(ticket.openspec?.change || ticket.openspec?.change_id || "");
   const changeDir = String(ticket.openspec?.change_dir || ticket.openspec?.tasks_path || "");
   return change === CHANGE || /(?:^|\/)changes\/probe-e2e(?:\/|$)/.test(changeDir.replaceAll("\\", "/"));
+}
+
+function probeTaskRefs(ticket) {
+  const lineage = Array.isArray(ticket?.compiled_apply_lineage?.task_refs)
+    ? ticket.compiled_apply_lineage.task_refs
+    : [];
+  const workUnit = Array.isArray(ticket?.work_unit?.task_refs) ? ticket.work_unit.task_refs : [];
+  return [...lineage, ...workUnit].map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function probeTaskNumber(ticket) {
+  const fromOpenSpec = ticket?.openspec?.number;
+  if (fromOpenSpec != null && String(fromOpenSpec).trim()) return String(fromOpenSpec).trim();
+  const refs = [...new Set(probeTaskRefs(ticket).filter((number) => PROBE_TASKS.includes(number)))];
+  return refs.length === 1 ? refs[0] : "";
+}
+
+function verifyCompiledApplyRun(runtime, probe) {
+  const compiled = probe.filter((ticket) => ticket.source === "compiled-apply");
+  if (!compiled.length) return null;
+  const root = path.join(runtime, "runs", "compiled-apply-runs");
+  assert(fs.existsSync(root), `missing compiled apply run store: ${root}`);
+  const runs = fs.readdirSync(root)
+    .map((name) => {
+      const file = path.join(root, name, "state-v1.json");
+      return fs.existsSync(file) ? readJson(file) : null;
+    })
+    .filter((run) => run && run.change === CHANGE);
+  assert(runs.length === 1, `expected exactly one ${CHANGE} compiled apply run, got ${runs.length}`);
+  const run = runs[0];
+  assert(run.reconciled === true, "compiled apply run must be reconciled");
+  assert(run.current_revision && run.current_fingerprint, "compiled apply run needs a persisted revision");
+  const linked = new Set(Array.isArray(run.linked_ticket_ids) ? run.linked_ticket_ids.map(String) : []);
+  for (const ticket of compiled) {
+    assert(linked.has(ticket.id), `compiled apply run is missing ticket ${ticket.id}`);
+  }
+  const tasks = run.task_state && typeof run.task_state === "object" ? run.task_state : {};
+  for (const number of PROBE_TASKS) {
+    assert(tasks[number]?.status === "reconciled", `compiled apply task ${number} must be reconciled`);
+  }
+  const units = run.unit_state && typeof run.unit_state === "object" ? run.unit_state : {};
+  const accepted = Object.values(units).filter((unit) => unit?.status === "accepted" || unit?.status === "reconciled");
+  assert(accepted.length >= compiled.length, "compiled apply units must be accepted");
+  return {
+    run_id: run.run_id || null,
+    revision: run.current_revision,
+    reconciled: true,
+    task_ids: [...PROBE_TASKS],
+    active_ticket_count: 0,
+  };
 }
 
 function validHandle(value) {
