@@ -232,7 +232,12 @@ export async function reserveNext(cwd: string, { capacity, limit = Number.MAX_SA
           transition(ticket, "queued", "errored", { at, event: "dispatch_blocked", detail: { error_code: probeRejected.code } });
           ticket.error = { code: probeRejected.code, message: probeRejected.message };
           ticket.finished_at = at;
-          await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions);
+          const successorId = await createQuotaSuccessor(cwd, ticket, at, env, safetyOptions, compiledContext);
+          if (compiledContext) {
+            ticket.compiled_acceptance = successorId
+              ? { accepted: false, code: "SUCCESSOR_CREATED", evidence: `successor ${successorId}` }
+              : acceptCompiledTerminal(cwd, ticket, compiledContext, at, ticket.error.message, env);
+          }
           writeSpawn(cwd, ticket, env);
           continue;
         }

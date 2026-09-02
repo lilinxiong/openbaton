@@ -237,6 +237,15 @@ describe("dispatch session continuity", () => {
     ticket.started_at = ticket.created_at;
     ticket.execution_handle = { kind: "alpha-task", value: "quota-handle", source: "native-return" };
     ticket.routing_requirements = { required_reasoning_effort: "high", estimated_context_tokens: null };
+    Object.assign(ticket, {
+      successor_exclusion_matrix: [{ codes: ["OLD"], reasons: ["old attempt"] }],
+      successor_safety_verdict: { accepted: false },
+      replan_required: true,
+      replan_reason: "OLD_REPLAN",
+      semantic_replan_reason: "OLD_SEMANTIC_REPLAN",
+      plan_insufficient_evidence: { file: "old.ts", symbol: "old", missing_decision: "old" },
+      plan_insufficient_host_error: { code: "OLD_HOST_ERROR" },
+    });
     ticket.history.push({ event: "agent_bound", at: ticket.created_at });
     writeReceipt(cwd, receipt, env);
     writeSpawn(cwd, ticket, env);
@@ -266,6 +275,10 @@ describe("dispatch session continuity", () => {
     assert.equal(successor.route_id, successorRoute);
     assert.equal(successor.reasoning_effort, "high");
     assert.equal(successor.status, "queued");
+    for (const field of [
+      "successor_exclusion_matrix", "successor_safety_verdict", "replan_required", "replan_reason",
+      "semantic_replan_reason", "plan_insufficient_evidence", "plan_insufficient_host_error",
+    ]) assert.equal(successor[field], undefined, field);
   }));
 
   it("keeps ordinals independent and contiguous for interleaved sessions", () => withHome((home) => {

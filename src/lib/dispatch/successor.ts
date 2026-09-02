@@ -539,6 +539,13 @@ export async function createQuotaSuccessor(cwd: string, ticket: SpawnTicket, at:
     ? structuredClone(ticket.quota_diagnostic)
     : undefined;
   successor.safety_verdict = undefined;
+  delete (successor as unknown as UnknownRecord).successor_exclusion_matrix;
+  delete (successor as unknown as UnknownRecord).successor_safety_verdict;
+  successor.replan_required = undefined;
+  successor.replan_reason = undefined;
+  successor.semantic_replan_reason = undefined;
+  successor.plan_insufficient_evidence = undefined;
+  successor.plan_insufficient_host_error = undefined;
   successor.routing_requirements = ticket.routing_requirements ? structuredClone(ticket.routing_requirements) : undefined;
   successor.receipt_id = `rcpt-${successorId}-a1`;
   successor.created_at = at;
