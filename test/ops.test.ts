@@ -14,7 +14,7 @@ import {
   normalizeAgentTaskClassification,
 } from "../src/lib/ops/task.js";
 import { listOpsRouteChoices } from "../src/lib/ops/routes.js";
-import { resolveOpsDispatch } from "../src/lib/ops/dispatch.js";
+import { hasStagedDiff, resolveOpsDispatch } from "../src/lib/ops/dispatch.js";
 import { configuredRouteForClassification, normalizeOpsConfig } from "../src/lib/ops/config.js";
 import { readReceipt } from "../src/lib/receipt.js";
 import { publishRouteSnapshot, readRouteSnapshot } from "../src/lib/routes.js";
@@ -75,6 +75,16 @@ function cards(cwd: string, host: FixtureHost): ModelCard[] {
 }
 
 describe("configured mechanical operations", () => {
+  it("distinguishes a staged diff from Git and workspace failures", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-staged-diff-"));
+    initializeGitFixture(cwd);
+    assert.equal(hasStagedDiff(cwd), false);
+    fs.writeFileSync(path.join(cwd, "staged.txt"), "staged\n");
+    execFileSync("git", ["add", "staged.txt"], { cwd });
+    assert.equal(hasStagedDiff(cwd), true);
+    assert.throws(() => hasStagedDiff(fs.mkdtempSync(path.join(os.tmpdir(), "baton-ops-not-git-"))));
+  });
+
   it("keeps only route labels and resolves them from structured class", () => {
     const config = normalizeOpsConfig({
       runner: { route: "" },

@@ -196,7 +196,7 @@ async function ingest(input: CompiledApplyIngestionOptions, successor: boolean):
     return source;
   };
   const verifySource = (source: CompiledApplySourceFacts): void => {
-    if (source.repo_root !== plan.source_snapshot.repo_root) throw new CompiledApplyError("source repository does not match plan", "APPLY_PLAN_STALE");
+    if (source.repo_root !== path.resolve(input.cwd, plan.source_snapshot.repo_root)) throw new CompiledApplyError("source repository does not match plan", "APPLY_PLAN_STALE");
     if (plan.source_snapshot.revision && source.repository.head !== plan.source_snapshot.revision) throw new CompiledApplyError("source revision does not match plan", "APPLY_PLAN_STALE");
     if (plan.source_snapshot.fingerprint && source.fingerprint !== plan.source_snapshot.fingerprint) {
       throw new CompiledApplyError("source fingerprint does not match plan", "APPLY_PLAN_STALE");

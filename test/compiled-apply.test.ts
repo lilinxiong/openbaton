@@ -48,6 +48,12 @@ describe("compiled apply orchestration", () => {
     assert.equal(readApplyRunPlanBody(f.cwd, "run-1", "1", f.env).source_snapshot.fingerprint, snapshot.fingerprint);
   });
 
+  it("resolves a relative source repository against the invocation cwd", async () => {
+    const f = setup(); const snapshot = source(f.cwd); const p = plan(".");
+    const accepted = await ingestInitialApplyExecutionPlan({ cwd: f.cwd, env: f.env, host: "codex", change: "demo", runId: "run-1", plan: p, captureSource: () => structuredClone(snapshot) });
+    assert.equal(accepted.run.current_revision, "1");
+  });
+
   it("rejects an explicit source fingerprint mismatch before run persistence", async () => {
     const f = setup(); const snapshot = source(f.cwd); const p = { ...plan(f.cwd), source_snapshot: { ...plan(f.cwd).source_snapshot, fingerprint: "0".repeat(64) } };
     await assert.rejects(ingestInitialApplyExecutionPlan({ cwd: f.cwd, env: f.env, host: "codex", change: "demo", runId: "run-1", plan: p, captureSource: () => structuredClone(snapshot) }), (error: unknown) => (error as { code?: string }).code === "APPLY_PLAN_STALE");

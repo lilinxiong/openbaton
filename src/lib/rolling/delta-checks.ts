@@ -45,8 +45,9 @@ export function normalizeScopePath(raw: string): string | null {
 }
 
 export function scopeIsForbidden(value: string): boolean {
-  const first = value.split("/")[0];
-  return first === ".git" || value === ".git" || value.startsWith(".git/");
+  const lowered = value.toLowerCase();
+  const first = lowered.split("/")[0];
+  return first === ".git" || lowered === ".git" || lowered.startsWith(".git/");
 }
 
 export function normalizeWritePath(raw: unknown, operations: readonly SafetyOperation[]): { value?: string; error?: string } {

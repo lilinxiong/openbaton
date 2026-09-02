@@ -46,5 +46,8 @@ describe("write scope hard gate", () => {
     assert.deepEqual(scopesFromRecord({
       "1.3": { mode: "write", write_paths: ["src/c.ts"], allowed_operations: ["chmod"] },
     }).get("1.3")?.allowed_operations, ["chmod"]);
+    assert.deepEqual(scopesFromRecord({
+      "1.4": { mode: "read-only", write_paths: ["src/ignored.ts"], allowed_operations: ["write"] },
+    }).get("1.4"), { mode: "read-only", write_paths: [] });
   });
 });

@@ -54,14 +54,16 @@ function classificationRequiredForHost(host: HostId | undefined): boolean {
 }
 
 export function hasStagedDiff(cwd: string): boolean {
+  const root = canonicalWorkspaceRoot(cwd);
   try {
     execFileSync("git", ["diff", "--cached", "--quiet"], {
-      cwd: canonicalWorkspaceRoot(cwd),
+      cwd: root,
       stdio: "ignore",
     });
     return false;
   } catch (error) {
-    return (error as { status?: number }).status === 1;
+    if ((error as { status?: number }).status === 1) return true;
+    throw error;
   }
 }
 

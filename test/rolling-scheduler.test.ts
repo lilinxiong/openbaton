@@ -4,6 +4,7 @@ import {
   deriveRollingSafeFrontier,
   type RollingRouteFact,
 } from "../src/lib/rolling-scheduler.js";
+import { identity } from "../src/lib/rolling/scheduler-facts.js";
 import type { GateVersion, PlanDelta, UnitVersion } from "../src/lib/rolling-plan.js";
 
 const hash = "a".repeat(64);
@@ -41,6 +42,11 @@ function route(id: string, extra: Partial<RollingRouteFact> = {}): RollingRouteF
 }
 
 describe("rolling scheduler", () => {
+  it("normalizes prefixed version references without duplicating their kind", () => {
+    assert.deepEqual(identity("unit:build@2"), { kind: "unit", key: "build", version: 2, id: "build@2" });
+    assert.deepEqual(identity("gate:accept@3"), { kind: "gate", key: "accept", version: 3, id: "accept@3" });
+  });
+
   it("derives a dependency-safe known frontier without reading untouched manifest entries", () => {
     const reads = { manifest: 0, semantic: 0 };
     const untouched = new Proxy(Array.from({ length: 10_000 }, (_, index) => ({ task_key: `untouched-${index}` })), {

@@ -65,7 +65,8 @@ export function identity(value: unknown, fallback?: Kind, fallbackKey?: string):
     const raw = parsed?.[1] || value;
     const kind = fallback || (value.startsWith("unit:") ? "unit" : value.startsWith("gate:") ? "gate" : undefined);
     if (!kind || !text(raw)) return null;
-    return { kind, key: raw.replace(/^(?:unit|gate):/, ""), ...(parsed ? { version: Number(parsed[2]) } : {}), id: parsed ? `${raw}@${parsed[2]}` : raw.replace(/^(?:unit|gate):/, "") };
+    const key = raw.replace(/^(?:unit|gate):/, "");
+    return { kind, key, ...(parsed ? { version: Number(parsed[2]) } : {}), id: parsed ? `${key}@${parsed[2]}` : key };
   }
   if (!record(value)) return null;
   const payload = record(value.payload) ? value.payload : value;

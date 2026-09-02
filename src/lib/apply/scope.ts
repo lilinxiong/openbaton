@@ -136,14 +136,16 @@ export function scopesFromRecord(value: unknown): ApplyUnitScopeMap {
     const paths = Array.isArray(body.write_paths)
       ? body.write_paths.map((item) => String(item || "").trim()).filter(Boolean)
       : [];
-    const mode = body.mode === "write" || paths.length ? "write" : "read-only";
+    const mode: ApplyUnitMode = body.mode === "read-only"
+      ? "read-only"
+      : body.mode === "write" || paths.length ? "write" : "read-only";
     const operations = parseWriteOperationsValue(body.allowed_operations ?? body.write_operations);
     if (mode === "write" && !paths.length) {
       throw new Error(`TASK_SCOPE_REQUIRED: --unit ${key} write scope needs --write-path`);
     }
     scopes.set(key, {
-      mode: mode === "write" ? "write" : "read-only",
-      write_paths: paths,
+      mode,
+      write_paths: mode === "write" ? paths : [],
       ...(mode === "write" ? { allowed_operations: operations || [...DEFAULT_WRITE_OPERATIONS] } : {}),
     });
   }

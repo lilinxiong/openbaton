@@ -119,7 +119,8 @@ function verificationOnlyReadOnly(ticket: Partial<SpawnTicket>, receipt: Delegat
     && receipt.scope.allowed_operations[0] === "read";
 }
 function terminalSuccess(ticket: Partial<SpawnTicket> | undefined, input: ApplyUnitAcceptanceInput): boolean {
-  return (ticket?.status === "completed" || input.terminalStatus === "completed") && !String(ticket?.error?.code || "").trim();
+  const status = ticket?.status ?? input.terminalStatus;
+  return status === "completed" && !String(ticket?.error?.code || "").trim();
 }
 function ownsTaskLedger(cwd: string, value: string, ledger: string): boolean {
   const normalizedLedger = path.resolve(cwd, ledger).replaceAll("\\", "/").toLowerCase();

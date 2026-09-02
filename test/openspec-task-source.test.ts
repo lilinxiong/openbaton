@@ -126,4 +126,20 @@ describe("OpenSpec stable task source", () => {
     assert.equal(replay.status, "available");
     assert.equal(fs.readFileSync(f.tasksPath, "utf8"), bytes);
   });
+
+  it("rejects distinct key forms that resolve to the same Markdown task", () => {
+    const f = fixture();
+    const adapter = new OpenSpecTaskSourceAdapter({ runner: f.runner, cli: "/fake/openspec" });
+    const page = adapter.discover({ source: f.source, limit: 10 });
+    assert.equal(page.status, "available");
+    if (page.status !== "available") return;
+    const first = page.value.entries[0]!;
+    assert.throws(() => adapter.reconcile_batch({
+      source: f.source,
+      items: [
+        { task_key: first.task_key, conclusion: "first", expected_source_fingerprint: first.source_fingerprint, expected_source_state: first.source_state },
+        { task_key: "1.1", conclusion: "duplicate", expected_source_fingerprint: first.source_fingerprint, expected_source_state: first.source_state },
+      ],
+    }), (error: unknown) => error instanceof OpenSpecError && error.code === "TASK_ID_AMBIGUOUS");
+  });
 });

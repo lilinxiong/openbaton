@@ -60,6 +60,20 @@ describe("director task source adapter", () => {
     assert.deepEqual(calls, ["callback"]);
   });
 
+  it("rejects an unsupported callback acknowledgement", async () => {
+    const adapter = new DirectorTaskSourceAdapter([task("unsupported")], {
+      reconcile: (async () => true) as any,
+    });
+    const source = adapter.sourceDescriptor();
+    const page = await adapter.discover({ source, limit: 1 });
+    assert.equal(page.status, "available");
+    if (page.status !== "available") return;
+    const item = page.value.entries[0]!;
+    const result = await adapter.reconcile({ source, task_key: item.task_key, conclusion: "done", expected_source_fingerprint: item.source_fingerprint });
+    assert.equal(result.status, "unavailable");
+    if (result.status === "unavailable") assert.equal(result.diagnostics[0]?.code, "RECONCILIATION_UNAVAILABLE");
+  });
+
   it("reports duplicate ids, malformed cursors, and changed definitions locally", async () => {
     assert.throws(() => new DirectorTaskSourceAdapter([task("same"), task("same")]), /duplicated/);
     const adapter = new DirectorTaskSourceAdapter([task("one")]);

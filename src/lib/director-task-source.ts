@@ -334,6 +334,7 @@ export class DirectorTaskSourceAdapter implements TaskSourceAdapter {
           if (value.source_state === "unavailable") return localUnavailable<TaskSourceReconciliation>(localDiagnostic("RECONCILIATION_UNAVAILABLE", `director reconciliation callback did not complete task ${stored.definition.id}`));
           return { ok: true, status: "available", value, diagnostics: [] };
         }
+        return this.fail("reconcile", localDiagnostic("RECONCILIATION_UNAVAILABLE", `director reconciliation callback returned an unsupported result for task ${stored.definition.id}`, [stored.definition.id]));
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         return this.fail("reconcile", localDiagnostic("RECONCILIATION_UNAVAILABLE", `director reconciliation callback failed: ${message}`));

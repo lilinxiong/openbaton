@@ -5,7 +5,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { OpenSpecCommandResult } from "../openspec.js";
+import type { OpenSpecCommandResult } from "../openspec.js";
 
 export function openspecCliAvailable(env: NodeJS.ProcessEnv = process.env): string | null {
   const pathEnv = env.PATH || env.Path || "";

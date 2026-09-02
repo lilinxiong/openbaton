@@ -301,7 +301,8 @@ export class OpenSpecTaskSourceAdapter implements TaskSourceAdapter {
         number: numberFromKey(item.task_key, selected.change, request.source.source_ref),
         conclusion: cleanConclusion(item.conclusion),
       }));
-      if (new Set(targets.map((item) => item.task_key)).size !== targets.length) {
+      if (new Set(targets.map((item) => item.task_key)).size !== targets.length
+        || new Set(targets.map((item) => item.number)).size !== targets.length) {
         throw new OpenSpecError("OpenSpec batch reconciliation contains duplicate task keys", "TASK_ID_AMBIGUOUS");
       }
       const expected = new Set(targets.map((item) => item.expected_source_fingerprint));
@@ -365,4 +366,3 @@ export class OpenSpecTaskSourceAdapter implements TaskSourceAdapter {
 export function createOpenSpecTaskSourceAdapter(options: OpenSpecTaskSourceAdapterOptions | string = {}): OpenSpecTaskSourceAdapter {
   return new OpenSpecTaskSourceAdapter(options);
 }
-
