@@ -7,6 +7,7 @@ import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
 import { initProject } from "../src/commands/init.js";
 import { runHost } from "../src/commands/host.js";
+import { runUninstall } from "../src/commands/uninstall.js";
 import { detectInvokingHosts, hostSkillDest } from "../src/lib/hosts.js";
 import {
   adapterInstallDir,
@@ -25,6 +26,38 @@ import { parseToml } from "../src/lib/toml.js";
 
 const repoRoot = process.cwd();
 const packageSource = path.join(repoRoot, "adapters", "codex");
+
+it("tracks supporting host files and removes them on clean uninstall", async () => {
+  const { home, cwd, env } = isolatedEnv();
+  try {
+    await initProject(cwd, { env });
+    const support = path.join(path.dirname(hostSkillDest("codex", { cwd, env })), "agents/openai.yaml");
+    assert.equal(fs.existsSync(support), true);
+    assert.ok(readInstallManifest(env)?.files.some((entry) => entry.path === support));
+    assert.equal(await runUninstall(["--clean"], { cwd, env, stdout: { write() {} } }), 0);
+    assert.equal(fs.existsSync(support), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+it("repeated init does not claim user edits to supporting host files", async () => {
+  const { home, cwd, env } = isolatedEnv();
+  try {
+    await initProject(cwd, { env });
+    const support = path.join(path.dirname(hostSkillDest("codex", { cwd, env })), "agents/openai.yaml");
+    const original = readInstallManifest(env)?.files.find((entry) => entry.path === support)?.fingerprint;
+    fs.appendFileSync(support, "\n# user edit\n");
+    await initProject(cwd, { env });
+    assert.equal(readInstallManifest(env)?.files.find((entry) => entry.path === support)?.fingerprint, original);
+    assert.equal(await runUninstall(["--clean"], { cwd, env, stdout: { write() {} } }), 1);
+    assert.match(fs.readFileSync(support, "utf8"), /user edit/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 function isolatedEnv(): { home: string; cwd: string; env: NodeJS.ProcessEnv } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-codex-package-home-"));

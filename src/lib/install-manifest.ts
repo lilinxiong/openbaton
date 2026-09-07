@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { batonHomeDir, skillPath } from "./paths.js";
-import { hostSkillDest, hostIds, type HostId } from "./hosts.js";
+import { hostSkillFiles, hostIds, type HostId } from "./hosts.js";
 
 export const INSTALL_MANIFEST_SCHEMA = 1 as const;
 export const INSTALL_MANIFEST_NAME = "install-manifest.json";
@@ -105,10 +105,12 @@ export function buildInstallManifest(
   selectedHosts?: readonly HostId[],
   env?: NodeJS.ProcessEnv,
   adapterPackages?: readonly AdapterOwnership[],
+  skippedHostFiles: readonly string[] = [],
 ): InstallManifest {
   const hosts = [...new Set(selectedHosts || hostIds(env))].filter((host): host is HostId => validHost(host));
   const prior = readInstallManifest(env);
   const selected = new Set(hosts);
+  const skipped = new Set(skippedHostFiles.map(normalizedPath));
   const files: InstallManifestFile[] = (prior?.files || []).filter((entry) =>
     entry.kind === "adapter-package" || (entry.host !== null && !selected.has(entry.host))
   );
@@ -118,10 +120,16 @@ export function buildInstallManifest(
     files.push({ path: normalizedPath(shared), kind: "shared-runtime-skill", host: null, fingerprint: sharedFingerprint });
   }
   for (const host of hosts) {
-    const file = hostSkillDest(host, { cwd, env });
-    const fingerprint = digestFile(file);
-    if (fingerprint) {
-      files.push({ path: normalizedPath(file), kind: "host-skill", host, fingerprint });
+    for (const file of hostSkillFiles(host, { cwd, env })) {
+      if (skipped.has(normalizedPath(file))) {
+        const owned = prior?.files.find((entry) => entry.path === normalizedPath(file));
+        if (owned) files.push(owned);
+        continue;
+      }
+      const fingerprint = digestFile(file);
+      if (fingerprint) {
+        files.push({ path: normalizedPath(file), kind: "host-skill", host, fingerprint });
+      }
     }
   }
   for (const adapter of adapterPackages || []) {

@@ -98,7 +98,7 @@ export async function initProject(
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
   writeInstallManifest(
-    buildInstallManifest(cwd, hosts.tools, env, adapters.ownership),
+    buildInstallManifest(cwd, hosts.tools, env, adapters.ownership, hosts.skippedFiles),
     env,
   );
 
