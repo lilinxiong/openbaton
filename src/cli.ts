@@ -208,6 +208,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         scope: brief.scope,
         mode: brief.mode,
         spawned: false,
+        work_mode: selected.work_mode,
+        ...(selected.context_tokens === undefined ? {} : { context_tokens: selected.context_tokens, context_capacity: selected.context_capacity }),
+        ...(selected.disclosures.length ? { disclosures: selected.disclosures } : {}),
       };
       output(stdout, payload, Boolean(flags.json), [JSON.stringify(payload, null, 2)]);
       return 0;

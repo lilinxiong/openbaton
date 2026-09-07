@@ -147,4 +147,43 @@ describe("native Baton CLI", () => {
     assert.equal(payload.results.at(-1).native_handle, "task-2");
     assert.deepEqual(Object.keys(payload.results[0]).sort(), ["cwd", "host", "model", "native_handle", "result", "status", "timestamp"]);
   });
+  it("rejects unavailable or hidden explicit models and retired commands without creating runtime state", async () => {
+    const context = setup();
+    for (const args of [
+      ["--model", "hidden"],
+      ["--model", "foreign"],
+      ["--model", "small", "--unavailable-model", "small"],
+      ["--model", "small", "--service-tier", "fast"],
+    ]) {
+      assert.equal((await invoke(["match", "--host", "alpha", ...args], context)).code, 1);
+    }
+    assert.equal((await invoke(["dispatch", "next", "--host", "alpha"], context)).code, 2);
+    assert.deepEqual(fs.readdirSync(path.join(context.home, ".baton")), ["config.toml"]);
+  });
+
+  it("discloses unknown context and catalog-default effort without inferring requirements", async () => {
+    const context = setup();
+    const provider = context.provider;
+    context.provider = (host) => ({ discoverModels: async () => {
+      const catalog = await provider(host).discoverModels();
+      catalog.models = [model("small", { reasoning_efforts: [{ id: "medium", description: "" }] })];
+      return catalog;
+    } });
+    const result = await invoke(["match", "--host", "alpha", "--context-tokens", "1000000", "--json"], context);
+    assert.equal(result.code, 0, result.stderr);
+    const selected = JSON.parse(result.stdout);
+    assert.equal(selected.context_capacity, "unknown");
+    assert.equal(selected.reasoning_effort, "medium");
+    assert.ok(selected.disclosures.some((text) => text.includes("catalog default")));
+    assert.ok(selected.disclosures.some((text) => text.includes("capacity unknown")));
+    const brief = path.join(context.cwd, "brief.json");
+    fs.writeFileSync(brief, JSON.stringify({ goal: "Check facts", acceptance: ["Report findings"] }));
+    const spawned = await invoke(["spawn", "--brief", brief, "--host", "alpha", "--context-tokens", "1000000", "--json"], context);
+    assert.equal(spawned.code, 0, spawned.stderr);
+    const payload = JSON.parse(spawned.stdout);
+    assert.equal(payload.context_capacity, "unknown");
+    assert.deepEqual(payload.disclosures, selected.disclosures);
+
+  });
+
 });
