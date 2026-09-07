@@ -4,8 +4,28 @@ import type {
 } from "./contract.js";
 import { discoverAdapters, type DiscoveredAdapter } from "./sdk.js";
 
-function discovered(env: NodeJS.ProcessEnv = process.env): DiscoveredAdapter[] {
-  return discoverAdapters(env);
+export interface CliAdapterRegistrySnapshot {
+  readonly discovered: readonly DiscoveredAdapter[];
+  readonly adapters: readonly CliAdapter[];
+}
+
+/**
+ * A command-scoped view of installed adapters. It deliberately has no global
+ * cache: callers may reuse one snapshot while preserving current environment
+ * and filesystem state between commands.
+ */
+export function createCliAdapterRegistrySnapshot(
+  env: NodeJS.ProcessEnv = process.env,
+): CliAdapterRegistrySnapshot {
+  const discovered = discoverAdapters(env);
+  return { discovered, adapters: discovered.map(toCliAdapter) };
+}
+
+function snapshotFor(
+  env: NodeJS.ProcessEnv,
+  snapshot?: CliAdapterRegistrySnapshot,
+): CliAdapterRegistrySnapshot {
+  return snapshot || createCliAdapterRegistrySnapshot(env);
 }
 
 /** The only source of truth for supported CLI adapters in this release. */
@@ -33,33 +53,44 @@ function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
 }
 
 /** Public list, derived from the registry. */
-export function listCliAdapters(env: NodeJS.ProcessEnv = process.env): readonly CliAdapter[] {
-  return discovered(env).map(toCliAdapter);
+export function listCliAdapters(
+  env: NodeJS.ProcessEnv = process.env,
+  snapshot?: CliAdapterRegistrySnapshot,
+): readonly CliAdapter[] {
+  return snapshotFor(env, snapshot).adapters;
 }
 
-export function cliIds(env: NodeJS.ProcessEnv = process.env): readonly CliId[] {
-  return listCliAdapters(env).map((adapter) => adapter.id);
+export function cliIds(env: NodeJS.ProcessEnv = process.env, snapshot?: CliAdapterRegistrySnapshot): readonly CliId[] {
+  return listCliAdapters(env, snapshot).map((adapter) => adapter.id);
 }
 
-export function isCliId(value: string, env: NodeJS.ProcessEnv = process.env): value is CliId {
-  return listCliAdapters(env).some((adapter) => adapter.id === value);
+export function isCliId(value: string, env: NodeJS.ProcessEnv = process.env, snapshot?: CliAdapterRegistrySnapshot): value is CliId {
+  return listCliAdapters(env, snapshot).some((adapter) => adapter.id === value);
 }
 
-export function parseCliId(value: string, env: NodeJS.ProcessEnv = process.env): CliId {
+export function parseCliId(value: string, env: NodeJS.ProcessEnv = process.env, snapshot?: CliAdapterRegistrySnapshot): CliId {
   const cli = String(value || "").trim().toLowerCase();
-  if (isCliId(cli, env)) return cli;
-  throw new Error(`invalid CLI: ${value || "<empty>"} (expected ${listCliAdapters(env).map((a) => a.id).join("|") || "none"})`);
+  if (isCliId(cli, env, snapshot)) return cli;
+  throw new Error(`invalid CLI: ${value || "<empty>"} (expected ${listCliAdapters(env, snapshot).map((a) => a.id).join("|") || "none"})`);
 }
 
-export function getCliAdapter(value: CliId | string, env: NodeJS.ProcessEnv = process.env): CliAdapter {
+export function getCliAdapter(
+  value: CliId | string,
+  env: NodeJS.ProcessEnv = process.env,
+  snapshot?: CliAdapterRegistrySnapshot,
+): CliAdapter {
   const cli = String(value || "").trim().toLowerCase();
-  const adapter = listCliAdapters(env).find((candidate) => candidate.id === cli);
+  const adapter = listCliAdapters(env, snapshot).find((candidate) => candidate.id === cli);
   if (adapter) return adapter;
-  throw new Error(`invalid CLI: ${value || "<empty>"} (expected ${listCliAdapters(env).map((a) => a.id).join("|") || "none"})`);
+  throw new Error(`invalid CLI: ${value || "<empty>"} (expected ${listCliAdapters(env, snapshot).map((a) => a.id).join("|") || "none"})`);
 }
 
-export function runtimeSkillSource(value: CliId | string, env: NodeJS.ProcessEnv = process.env): string {
-  const found = discovered(env).find((candidate) => candidate.manifest.adapter.id === String(value).trim().toLowerCase());
+export function runtimeSkillSource(
+  value: CliId | string,
+  env: NodeJS.ProcessEnv = process.env,
+  snapshot?: CliAdapterRegistrySnapshot,
+): string {
+  const found = snapshotFor(env, snapshot).discovered.find((candidate) => candidate.manifest.adapter.id === String(value).trim().toLowerCase());
   if (!found) throw new Error(`invalid CLI: ${value || "<empty>"}`);
   return `${found.directory}/${found.manifest.runtime_skill.source}`;
 }

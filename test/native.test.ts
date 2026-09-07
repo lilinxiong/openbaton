@@ -168,6 +168,106 @@ describe("native Baton CLI", () => {
     assert.equal(fs.existsSync(path.join(context.home, ".baton", "spawns")), false);
   });
 
+  it("prepares batch handoffs with one catalog selection and preserves single-brief payloads", async () => {
+    const context = setup();
+    const first = { goal: "Implement selection", acceptance: ["Focused tests pass"], scope: ["src/lib/native.ts"], mode: "write" };
+    const second = { goal: "Review result", acceptance: ["Return findings"] };
+    const singleFile = path.join(context.cwd, "single.json");
+    const batchFile = path.join(context.cwd, "batch.json");
+    fs.writeFileSync(singleFile, JSON.stringify(first));
+    fs.writeFileSync(batchFile, JSON.stringify([first, second]));
+    let discoveries = 0;
+    const provider = context.provider;
+    context.provider = (host) => ({ discoverModels: async (options) => {
+      discoveries += 1;
+      return provider(host).discoverModels(options);
+    } });
+
+    const single = await invoke(["spawn", "--brief", singleFile, "--host", "alpha", "--json"], context);
+    assert.equal(single.code, 0, single.stderr);
+    const singlePayload = JSON.parse(single.stdout);
+    assert.equal("brief_diagnostics" in singlePayload, false);
+
+    discoveries = 0;
+    const batch = await invoke(["spawn", "--briefs", batchFile, "--host", "alpha", "--json"], context);
+    assert.equal(batch.code, 0, batch.stderr);
+    const batchPayload = JSON.parse(batch.stdout);
+    assert.deepEqual(Object.keys(batchPayload), ["handoffs"]);
+    assert.equal(batchPayload.handoffs.length, 2);
+    assert.deepEqual(batchPayload.handoffs[0], singlePayload);
+    assert.match(batchPayload.handoffs[1].prompt, /Review result/);
+    assert.equal(discoveries, 1);
+
+    const overBudget = await invoke(["spawn", "--brief", singleFile, "--brief-budget-chars", "1", "--host", "alpha", "--json"], context);
+    assert.equal(overBudget.code, 0, overBudget.stderr);
+    assert.equal(JSON.parse(overBudget.stdout).brief_diagnostics.over_budget, true);
+  });
+
+  it("rejects empty and malformed batches before catalog discovery", async () => {
+    const context = setup();
+    let discoveries = 0;
+    const provider = context.provider;
+    context.provider = (host) => ({ discoverModels: async (options) => {
+      discoveries += 1;
+      return provider(host).discoverModels(options);
+    } });
+    for (const [name, contents, expected] of [
+      ["empty", "[]", /non-empty JSON array/],
+      ["object", "{}", /non-empty JSON array/],
+      ["invalid", JSON.stringify([{ goal: "", acceptance: [] }]), /WORKER_BRIEF_INVALID/],
+      ["too-many", JSON.stringify(Array.from({ length: 129 }, () => ({ goal: "Check", acceptance: ["Report"] }))), /at most 128/],
+    ] as const) {
+      const file = path.join(context.cwd, `${name}.json`);
+      fs.writeFileSync(file, contents);
+      const result = await invoke(["spawn", "--briefs", file, "--host", "alpha"], context);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, expected);
+    }
+    const singleFile = path.join(context.cwd, "single.json");
+    const batchFile = path.join(context.cwd, "valid-batch.json");
+    fs.writeFileSync(singleFile, JSON.stringify({ goal: "Check", acceptance: ["Report"] }));
+    fs.writeFileSync(batchFile, JSON.stringify([{ goal: "Check", acceptance: ["Report"] }]));
+    const exclusive = await invoke(["spawn", "--brief", singleFile, "--briefs", batchFile, "--host", "alpha"], context);
+    assert.equal(exclusive.code, 1);
+    assert.match(exclusive.stderr, /mutually exclusive/);
+    const invalidBudget = await invoke(["spawn", "--brief", singleFile, "--brief-budget-chars", "0", "--host", "alpha"], context);
+    assert.equal(invalidBudget.code, 1);
+    assert.match(invalidBudget.stderr, /brief-budget-chars must be a positive integer/);
+    assert.equal(discoveries, 0);
+  });
+
+  it("reads each installed manifest once for a batch using the default provider", async () => {
+    const context = setup();
+    saveConfig(context.cwd, { cli: { alpha: { enabled: true, execution_models: ["alpha-model"] } } }, { env: context.env });
+    const batchFile = path.join(context.cwd, "default-provider-batch.json");
+    fs.writeFileSync(batchFile, JSON.stringify([
+      { goal: "Check catalog", acceptance: ["Report"] },
+      { goal: "Check catalog again", acceptance: ["Report"] },
+    ]));
+    const output: string[] = [];
+    const errors: string[] = [];
+    const mutableFs = fs as typeof fs & { readFileSync: (...args: any[]) => any };
+    const originalReadFileSync = mutableFs.readFileSync;
+    let manifestReads = 0;
+    mutableFs.readFileSync = (...args: any[]) => {
+      if (String(args[0]).endsWith("adapter.json")) manifestReads += 1;
+      return originalReadFileSync(...args);
+    };
+    try {
+      const code = await run(["spawn", "--briefs", batchFile, "--host", "alpha", "--json"], {
+        cwd: context.cwd,
+        env: context.env,
+        stdout: { write: (text) => output.push(text) },
+        stderr: { write: (text) => errors.push(text) },
+      });
+      assert.equal(code, 0, errors.join(""));
+      assert.equal(JSON.parse(output.join("")).handoffs.length, 2);
+      assert.equal(manifestReads, 2);
+    } finally {
+      mutableFs.readFileSync = originalReadFileSync;
+    }
+  });
+
   it("records append-only terminal results and status returns the latest 20 for cwd and host", async () => {
     const context = setup();
     for (let index = 0; index < 22; index += 1) {

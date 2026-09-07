@@ -157,7 +157,16 @@ function manifestDirectories(env: NodeJS.ProcessEnv): string[] {
 }
 
 export function discoverAdapterManifests(env: NodeJS.ProcessEnv = process.env): AdapterManifest[] {
-  const found: AdapterManifest[] = []; const ids = new Set<string>();
+  return discoverAdapters(env).map((adapter) => adapter.manifest);
+}
+
+/**
+ * Scan adapter directories once and retain the validated manifest with its
+ * directory. Consumers that need both must use this result instead of
+ * rediscovering the directory from a manifest.
+ */
+export function discoverAdapters(env: NodeJS.ProcessEnv = process.env): DiscoveredAdapter[] {
+  const found: Array<{ manifest: AdapterManifest; directory: string }> = []; const ids = new Set<string>();
   for (const directory of manifestDirectories(env).sort()) {
     const file = path.join(directory, "adapter.json");
     if (!fs.existsSync(file)) throw new Error(`ADAPTER_MANIFEST_INVALID: missing ${file}`);
@@ -165,15 +174,9 @@ export function discoverAdapterManifests(env: NodeJS.ProcessEnv = process.env): 
     try { parsed = JSON.parse(fs.readFileSync(file, "utf8")); } catch (error) { throw new Error(`ADAPTER_MANIFEST_INVALID: ${file}: ${error instanceof Error ? error.message : String(error)}`); }
     const manifest = validateAdapterManifest(parsed, directory);
     if (ids.has(manifest.adapter.id)) throw new Error(`ADAPTER_DUPLICATE: ${manifest.adapter.id}`);
-    ids.add(manifest.adapter.id); found.push(manifest);
+    ids.add(manifest.adapter.id); found.push({ manifest, directory });
   }
-  return found;
-}
-
-export function discoverAdapters(env: NodeJS.ProcessEnv = process.env): DiscoveredAdapter[] {
-  const directories = manifestDirectories(env);
-  return discoverAdapterManifests(env).map((manifest) => {
-    const directory = directories.find((d) => { try { const parsed = JSON.parse(fs.readFileSync(path.join(d, "adapter.json"), "utf8")); return validateAdapterManifest(parsed, d).adapter.id === manifest.adapter.id; } catch { return false; } })!;
+  return found.map(({ manifest, directory }) => {
     return { manifest, directory, discoverModels: (options = {}) => runCatalog(manifest, directory, options) };
   });
 }

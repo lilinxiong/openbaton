@@ -17,6 +17,13 @@ export interface WorkerBrief {
   handoff?: WorkerBriefHandoff;
 }
 
+export interface BriefInspection {
+  prompt_chars: number;
+  budget_chars: number;
+  over_budget: boolean;
+  largest_fields: Array<{ field: string; chars: number }>;
+}
+
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_LIST_ITEMS = 128;
 
@@ -101,12 +108,56 @@ function section(title: string, items: string[]): string[] {
   return items.length ? [`${title}:`, ...items.map((item) => `- ${item}`), ""] : [];
 }
 
+function codePoints(value: string): number {
+  let count = 0;
+  for (const _ of value) count += 1;
+  return count;
+}
+
+function fieldContributions(brief: WorkerBrief): Array<{ field: string; chars: number }> {
+  const fields = [
+    ["goal", brief.goal],
+    ["decisions", brief.decisions.join("\n")],
+    ["scope", brief.scope.join("\n")],
+    ["acceptance", brief.acceptance.join("\n")],
+    ["context", brief.context.join("\n")],
+    ["constraints", brief.constraints.join("\n")],
+    ["mode", brief.mode],
+    ...(brief.handoff
+      ? [
+          ["handoff.existingChanges", brief.handoff.existingChanges || ""],
+          ["handoff.checks", brief.handoff.checks || ""],
+          ["handoff.unresolvedIssues", brief.handoff.unresolvedIssues || ""],
+        ]
+      : []),
+  ] as Array<[string, string]>;
+  return fields
+    .map(([field, value]) => ({ field, chars: codePoints(value) }))
+    .sort((left, right) => right.chars - left.chars || left.field.localeCompare(right.field));
+}
+
+/**
+ * Reports prompt size and the source fields that contribute to it. This is
+ * advisory only: a brief above budget remains valid and is never truncated.
+ */
+export function inspectBrief(brief: WorkerBrief, budgetChars = 12_000): BriefInspection {
+  if (!Number.isSafeInteger(budgetChars) || budgetChars < 1) {
+    throw new Error("BRIEF_BUDGET_INVALID: must be a positive safe integer");
+  }
+  const promptChars = codePoints(formatBrief(brief));
+  return {
+    prompt_chars: promptChars,
+    budget_chars: budgetChars,
+    over_budget: promptChars > budgetChars,
+    largest_fields: fieldContributions(brief),
+  };
+}
+
 export function formatBrief(brief: WorkerBrief): string {
   const lines = [
     "[Baton worker brief]",
-    "This brief is the complete task context. Do not assume access to or rely on the full parent conversation.",
-    "Execute the decisions already made below. Return any decision outside this brief's boundary to the root agent.",
-    "Do not commit or push.",
+    "Use this brief, not parent history. Follow settled decisions; escalate out-of-scope decisions. No commit or push.",
+    "Result: status completed|blocked|failed; conclusion; changed locations; check evidence; blockers; detailed logs: file refs.",
     "",
     `Goal: ${brief.goal}`,
     `Mode: ${brief.mode}`,

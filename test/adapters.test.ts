@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { discoverAdapterManifests, validateAdapterManifest } from "../src/adapters/sdk.js";
-import { getCliAdapter, listCliAdapters } from "../src/adapters/registry.js";
+import { createCliAdapterRegistrySnapshot, getCliAdapter, listCliAdapters } from "../src/adapters/registry.js";
 import { fixtureAdapterEnv, FIXTURE_ALPHA, FIXTURE_BETA } from "./home.js";
 
 describe("manifest adapter registry", () => {
@@ -36,5 +36,24 @@ describe("manifest adapter registry", () => {
     assert.equal(alpha.models[0].id, "alpha-model");
     assert.equal(beta.adapter_id, "beta");
     assert.equal(beta.models[0].service_tiers[0].id, "standard");
+  });
+  it("builds one reusable registry snapshot without rescanning manifests", () => {
+    const env = fixtureAdapterEnv();
+    const mutableFs = fs as typeof fs & { readFileSync: (...args: any[]) => any };
+    const originalReadFileSync = mutableFs.readFileSync;
+    let manifestReads = 0;
+    mutableFs.readFileSync = (...args: any[]) => {
+      if (String(args[0]).endsWith("adapter.json")) manifestReads += 1;
+      return originalReadFileSync(...args);
+    };
+    try {
+      const snapshot = createCliAdapterRegistrySnapshot(env);
+      assert.deepEqual(snapshot.adapters.map((adapter) => adapter.id), ["alpha", "beta"]);
+      assert.strictEqual(getCliAdapter("alpha", env, snapshot), snapshot.adapters[0]);
+      assert.strictEqual(listCliAdapters(env, snapshot), snapshot.adapters);
+      assert.equal(manifestReads, 2);
+    } finally {
+      mutableFs.readFileSync = originalReadFileSync;
+    }
   });
 });

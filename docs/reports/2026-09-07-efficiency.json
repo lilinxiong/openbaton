@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "generated_at": "2026-09-07T06:15:18.197Z",
+    "runtime": {
+      "bun": "1.4.0",
+      "node": "v26.8.1",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "sources": {
+      "baseline": {
+        "identifier": "a7d02d1c0f47f58cdd6beaeedfe12e3e230f71f1",
+        "equivalent_github_revision": "e35bf73d7c021ec9561108636d943b5e727f7292"
+      },
+      "candidate": {
+        "identifier": "2b9842aa8c76aa15d1805f180b37960b298e976a",
+        "equivalent_github_revision": "7eb651d2d30d9165fbb1bdf63c456856556b4639"
+      }
+    },
+    "runtime_skill_code_points": {
+      "baseline": {
+        "SKILL.md": 3038,
+        "adapters/codex/runtime/SKILL.md": 2919,
+        "adapters/grok/runtime/SKILL.md": 3043
+      },
+      "candidate": {
+        "SKILL.md": 2822,
+        "adapters/codex/runtime/SKILL.md": 2780,
+        "adapters/grok/runtime/SKILL.md": 2827
+      }
+    },
+    "repeats": 9,
+    "warmups": 2,
+    "brief_budget_chars": 12000,
+    "token_estimate": null,
+    "harness": {
+      "revision": "2b9842aa8c76aa15d1805f180b37960b298e976a",
+      "equivalent_github_revision": "7eb651d2d30d9165fbb1bdf63c456856556b4639",
+      "path": "scripts/measure_efficiency.mjs",
+      "sha256": "d7a01d286fb3b4e12b24f57562171371c919d85c67e277bd750da79731ed1d43"
+    },
+    "reproduction_command": "bun scripts/measure_efficiency.mjs --baseline BASELINE_DIR --candidate CANDIDATE_DIR --baseline-id e35bf73d7c021ec9561108636d943b5e727f7292 --candidate-id 7eb651d2d30d9165fbb1bdf63c456856556b4639 --warmups 2 --repeats 9 --brief-budget-chars 12000"
+  },
+  "scenarios": [
+    {
+      "handoff_count": 1,
+      "baseline": {
+        "median_elapsed_ms": 93.33424999999988,
+        "manifest_read_count": 6,
+        "catalog_invocation_count": 1,
+        "output_character_count": 784,
+        "prompt_character_count": 528
+      },
+      "candidate": {
+        "median_elapsed_ms": 93.90025000000003,
+        "manifest_read_count": 1,
+        "catalog_invocation_count": 1,
+        "output_character_count": 751,
+        "prompt_character_count": 526
+      },
+      "parity": {
+        "selection_and_acceptance": "passed",
+        "prompt_text_equality": "not_required"
+      },
+      "differences": {
+        "median_elapsed_ms": {
+          "baseline": 93.33424999999988,
+          "candidate": 93.90025000000003,
+          "delta": 0.5660000000001446,
+          "percent_change": 0.6064226154923249
+        },
+        "manifest_read_count": {
+          "baseline": 6,
+          "candidate": 1,
+          "delta": -5,
+          "percent_change": -83.33333333333334
+        },
+        "catalog_invocation_count": {
+          "baseline": 1,
+          "candidate": 1,
+          "delta": 0,
+          "percent_change": 0
+        },
+        "output_character_count": {
+          "baseline": 784,
+          "candidate": 751,
+          "delta": -33,
+          "percent_change": -4.209183673469387
+        },
+        "prompt_character_count": {
+          "baseline": 528,
+          "candidate": 526,
+          "delta": -2,
+          "percent_change": -0.3787878787878788
+        }
+      }
+    },
+    {
+      "handoff_count": 4,
+      "baseline": {
+        "median_elapsed_ms": 377.301414999999,
+        "manifest_read_count": 24,
+        "catalog_invocation_count": 4,
+        "output_character_count": 3116,
+        "prompt_character_count": 2098
+      },
+      "candidate": {
+        "median_elapsed_ms": 94.75404199999957,
+        "manifest_read_count": 1,
+        "catalog_invocation_count": 1,
+        "output_character_count": 2939,
+        "prompt_character_count": 2090
+      },
+      "parity": {
+        "selection_and_acceptance": "passed",
+        "prompt_text_equality": "not_required"
+      },
+      "differences": {
+        "median_elapsed_ms": {
+          "baseline": 377.301414999999,
+          "candidate": 94.75404199999957,
+          "delta": -282.5473729999994,
+          "percent_change": -74.88638042876148
+        },
+        "manifest_read_count": {
+          "baseline": 24,
+          "candidate": 1,
+          "delta": -23,
+          "percent_change": -95.83333333333334
+        },
+        "catalog_invocation_count": {
+          "baseline": 4,
+          "candidate": 1,
+          "delta": -3,
+          "percent_change": -75
+        },
+        "output_character_count": {
+          "baseline": 3116,
+          "candidate": 2939,
+          "delta": -177,
+          "percent_change": -5.680359435173299
+        },
+        "prompt_character_count": {
+          "baseline": 2098,
+          "candidate": 2090,
+          "delta": -8,
+          "percent_change": -0.3813155386081983
+        }
+      }
+    }
+  ]
+}
