@@ -61,6 +61,22 @@ try {
     assert.equal(fs.existsSync(path.join(home, ".baton", name)), false);
   }
 
+  // Prepare independent tasks with a single catalog lookup. Still no execution.
+  const briefs = path.join(work, "briefs.json");
+  fs.writeFileSync(briefs, JSON.stringify([
+    { goal: "Check the guide", scope: ["docs"], acceptance: ["List stale examples"] },
+    { goal: "Check the samples", scope: ["samples"], acceptance: ["List stale flags"] },
+  ]));
+  const batch = run(["spawn", "--briefs", briefs, "--work-mode", "implementation", "--json"], true);
+  assert.equal(batch.handoffs.length, 2);
+  for (const handoff of batch.handoffs) {
+    assert.equal(handoff.spawned, false);
+    assert.equal(handoff.fork_context, false);
+    assert.equal(handoff.model_id, prepared.model_id);
+    assert.equal(Object.hasOwn(handoff, "brief_diagnostics"), false);
+  }
+  assert.deepEqual(batch.handoffs.map((handoff) => handoff.scope), [["docs"], ["samples"]]);
+
   // Simulated host result. This example does not execute a native worker.
   run(["record", "--host", "sample-adapter", "--handle", "simulated-handle",
     "--model", "sample-model", "--status", "completed", "--text", "Simulated host result"]);

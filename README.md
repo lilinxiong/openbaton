@@ -11,7 +11,7 @@ Requires Node.js 22.5+.
 
 Bundled hosts include Codex (`--cli codex`) and Grok (`--cli grok`). The
 installed host skill is explicit-invocation only: `$baton` in Codex, `/baton`
-in Grok.
+in Grok. Explicit invocation requests delegation; small tasks use one worker, while independent tasks can be prepared together with `spawn --briefs briefs.json`.
 
 ```bash
 npm install -g @zhouliuya/openbaton

@@ -1,53 +1,51 @@
 ---
 name: baton
-description: "Use Baton to prepare bounded work for the current host native subagents."
+description: "Prepare current-host native subagents after an explicit user request."
 ---
 
-# Baton runtime for Codex
+# Baton for Codex
 
-This skill is explicit-invocation only. Apply these rules only after the user
-explicitly mentioned `$baton`. Do not load or follow this skill from ordinary
-conversation, implementation requests, or implied intent.
+Apply only after an explicit request to use Baton, including `$baton`; never
+activate from ordinary conversation, implementation requests, or implication.
 
-The root agent owns decomposition, shared contracts, integration and commits.
-It may implement work itself. Delegate only when the independent work justifies
-the handoff; never fill slots for their own sake.
+Root makes only needed decomposition, shared contracts, integration and commits.
+After manual activation, delegate by default; do not do worker tasks first.
+Use one worker for a small bounded task. Group work sharing context in one
+worker; parallelize independent, disjoint scopes. Do not fill slots just to use capacity.
 
-Use only the current host's native subagents. Model discovery is read-only;
-Baton never launches another CLI to perform a task. If the host cannot execute
-the selected model or parameters, report that limitation instead of substituting.
+Use current-host native subagents only. Discovery is read-only; Baton never uses
+another CLI for task execution. If host cannot execute parameters, report; do not substitute.
 
-Choose a work mode by the decisions still left to make:
-- execution: follow settled steps or narrowly check facts.
-- implementation: complete a bounded design.
-- investigation: resolve an uncertain cause or design.
+Choose mode from remaining decisions: execution (settled steps/facts),
+implementation (bounded design), investigation (uncertain cause/design).
 
-Choose a model from the selected mode's configured candidate pool, in list
-order; do not fall back across modes. An explicit model must belong to that
-pool. The root chooses effort for the current task independently of work mode.
-Pass `--effort <level>` when making that choice; no mode implies an effort.
-When effort is omitted, Baton omits `reasoning_effort` and leaves the host
-default unchanged; it does not substitute a catalog default.
-Do not infer large context requirements from words like migration or monorepo.
-Do not invent quota facts; pass known unavailable models when relevant.
+Select models from the selected mode's candidate pool in list order: no
+cross-mode fallback, and explicit models belong there. Root chooses effort
+independently; pass `--effort <level>` only when chosen, else keep host—not
+catalog—default. Do not infer context from migration/monorepo or invent quotas;
+pass known unavailable models when relevant.
 
-Write one JSON brief with goal, decisions, scope, acceptance, context,
-constraints and mode (read-only or write). Scope can name modules or directories.
-Inspect dependencies, keep concurrent write scopes disjoint, and coordinate any
-overlap with the root. Scope is a prompt contract, not a filesystem sandbox.
-Use handoff fields for existingChanges, checks and unresolvedIssues when
-continuing or upgrading a worker. Do not resend the complete conversation.
+Brief JSON has goal, decisions, scope, acceptance, context, constraints and mode
+(read-only/write). Scope is files/modules/dirs, a prompt contract, never a sandbox.
+Inspect dependencies; writes are disjoint or root coordinates overlap. Handoff:
+existingChanges, checks, unresolvedIssues. Use precise file/symbol refs and
+settled conclusions, not full source/history; logs are file refs, and repeat
+checks only after changes, failure or integration. `--brief-budget-chars N` is
+advisory: warn only above N, never truncate/reject.
 
-Run `baton spawn --host <host> --brief <file> --work-mode <mode> --json`.
-This returns native execution parameters; it does not start an agent.
-Pass the returned prompt and supported model/effort to the host's native child
-API with a fresh context. Native handles, activity and completion are the
-runtime authority. Do not add tickets, receipts, queues or a second state machine.
+`baton spawn --host <host> --brief <file> --work-mode <mode> --json` prepares
+native parameters, never starts agents. For matching briefs sharing selection
+flags, use `baton spawn --briefs FILE --host HOST --work-mode MODE --json`;
+`FILE` is a nonempty JSON array of brief objects. Start independent workers in
+parallel through the native host API, with returned prompt and supported model/effort
+in fresh context. Native handles/activity/completion are authority; no tickets,
+receipts, queues or another state machine.
 
-When a worker finishes, review its result and optionally append a short record
-with `baton record --host <host> --handle <handle> --model <model> --status
-completed --text <result>`. `baton status` shows recorded outcomes, not live state.
+On finish review concise status, conclusion, changed locations, check evidence
+and blockers; optionally record: `baton record --host <host> --handle <handle>
+--model <model> --status completed --text <result>`. `baton status` is recorded,
+never live state.
 
-The root preserves user changes, checks the integrated result, and performs
-any authorized commits. Report static review, build, tests and real native
-execution separately. Never claim the prompt contract enforces write isolation.
+Root preserves user changes, checks integration and makes authorized commits.
+Report static review, build, tests and native execution separately; never claim
+prompt contracts enforce write isolation.

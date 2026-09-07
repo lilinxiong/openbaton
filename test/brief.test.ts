@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatBrief, parseBrief } from "../src/lib/brief.js";
+import { formatBrief, inspectBrief, parseBrief } from "../src/lib/brief.js";
 
 describe("worker briefs", () => {
   it("parses and formats complete bounded worker context", () => {
@@ -16,11 +16,39 @@ describe("worker briefs", () => {
     });
     assert.equal(brief.mode, "write");
     const prompt = formatBrief(brief);
-    assert.match(prompt, /complete task context/);
-    assert.match(prompt, /Execute the decisions already made/);
-    assert.match(prompt, /Return any decision outside this brief's boundary to the root agent/);
-    assert.match(prompt, /Do not commit or push/);
+    assert.match(prompt, /Use this brief, not parent history/);
+    assert.match(prompt, /Follow settled decisions/);
+    assert.match(prompt, /escalate out-of-scope decisions/);
+    assert.match(prompt, /No commit or push/);
+    assert.match(prompt, /status completed\|blocked\|failed/);
+    assert.match(prompt, /changed locations/);
+    assert.match(prompt, /check evidence/);
+    assert.match(prompt, /detailed logs: file refs/);
     assert.match(prompt, /Existing changes: No changes/);
+  });
+
+  it("inspects code-point prompt size and ranks field contributions without enforcing a budget", () => {
+    const brief = parseBrief({
+      goal: "Plan 😀",
+      decisions: ["Keep it short", "Use code points"],
+      scope: ["src"],
+      acceptance: ["Report the result"],
+    });
+    const promptChars = [...formatBrief(brief)].length;
+    const inspection = inspectBrief(brief, promptChars);
+    assert.equal(inspection.prompt_chars, Array.from(formatBrief(brief)).length);
+    assert.equal(inspection.budget_chars, promptChars);
+    assert.equal(inspection.over_budget, false);
+    assert.equal(inspection.largest_fields[0].field, "decisions");
+    assert.equal(inspection.largest_fields.find((item) => item.field === "goal")?.chars, 6);
+    assert.deepEqual(
+      inspection.largest_fields.map((item) => item.chars),
+      [...inspection.largest_fields.map((item) => item.chars)].sort((left, right) => right - left),
+    );
+    assert.equal(inspectBrief(brief, promptChars - 1).over_budget, true);
+    for (const budget of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => inspectBrief(brief, budget), /BRIEF_BUDGET_INVALID/);
+    }
   });
 
   it("defaults omitted optional fields to a read-only brief", () => {

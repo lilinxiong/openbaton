@@ -1,6 +1,6 @@
 # Baton 2.0 指南
 
-主 agent 决定是否派工、明确公共契约、审查结果，并执行已授权的提交。Baton 负责准备模型参数和简短任务说明；工作只交给当前宿主的原生 subagents。
+用户显式调用 Baton 即表示要求派工。主 agent 明确公共契约、组织子任务、审查结果，并执行已授权的提交。Baton 负责准备模型参数和简短任务说明；工作只交给当前宿主的原生 subagents。
 
 ## 工作方式与模型
 
@@ -10,7 +10,7 @@
 | implementation | 在明确契约内补齐局部实现 |
 | investigation | 查明原因或解决设计问题 |
 
-主 agent 根据当前任务独立选择 effort，工作方式不预设 effort 偏好。通过 `--effort LEVEL` 指定受支持的强度；省略时 Baton 不输出 `reasoning_effort`，保持宿主默认行为，也不代填目录中的默认值。步骤明确的多文件迁移也可以使用 execution。主 agent 可以自己实现，不需要为了填满并发槽位而派工。
+主 agent 根据当前任务独立选择 effort，工作方式不预设 effort 偏好。通过 `--effort LEVEL` 指定受支持的强度；省略时 Baton 不输出 `reasoning_effort`，保持宿主默认行为，也不代填目录中的默认值。步骤明确的多文件迁移也可以使用 execution。小任务交给一个 worker，共享上下文的工作合并，独立范围的工作并行。主 agent 完成必要的边界检查后交接，避免先完整执行 worker 的任务；宿主无法派工或缺少必要信息时报告阻塞。
 
 先通过 `baton models --host codex` 查看真实模型 id，再配置：
 
@@ -51,6 +51,22 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 `goal` 和非空 `acceptance` 必填；`mode` 默认 `read-only`，写入模式必须有 scope。其他字段可选。scope 可以是相对模块、目录或文件，属于任务约束，**不是文件系统沙箱**。主 agent 负责避免并发写入冲突并核对最终 diff。
 
 命令返回真实模型 id、显式指定且受支持的 effort（省略时不输出）、格式化 prompt、scope、`fork_context:false` 和 `spawned:false`。主 agent 将参数传给宿主原生子 agent API，使用新的上下文。此时 Baton 还没有启动 worker；原生句柄和完成状态始终由宿主管理。
+
+## 批量准备与上下文预算
+
+多个任务使用相同宿主和选模参数时，把 1–128 份 brief 保存为 JSON 数组：
+
+```text
+baton spawn --host codex --briefs briefs.json --work-mode implementation --json
+```
+
+返回 `{ "handoffs": [...] }`。先校验全部 brief，再用一次目录发现和一次选模服务整批任务；每份 handoff 保留各自目标、范围和验收标准。`--brief` 与 `--briefs` 互斥。批量准备不会启动 worker 或决定并发，主 agent 按宿主实际容量调用原生 API。
+
+`--brief-budget-chars N` 设置建议的 prompt 总量预算，默认 12000 个 Unicode 码点。只有超预算时才返回 `brief_diagnostics`，指出总体积和最大的内容字段。不会截断内容，也不会把字符数转换成 token。它与调用者通过 `--context-tokens` 指定的模型容量要求互相独立。
+
+上下文优先传已确认决策、精确文件或符号入口和验收标准；接续任务只传已有修改、已做检查和剩余问题。生成的 brief 要求简短汇报状态、结论、修改位置、验证证据和阻塞，完整日志留在引用文件中。变更、失败或集成需要时再重做检查，避免重复验证未变化的工作。
+
+按整次任务的主 agent、worker、重试和集成总成本评估效率。用实际验收结果校准各模型池顺序；信息不足时补充上下文，能力不足时再由主 agent 升级并传增量 handoff。参见[效果测量](efficiency-measurement.md)。
 
 ## 记录结果
 

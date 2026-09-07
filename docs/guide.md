@@ -1,6 +1,6 @@
 # Baton 2.0 guide
 
-The root agent decides what to delegate, establishes shared contracts, reviews results and makes authorized commits. Baton prepares model parameters and a compact brief. Only the current host's native subagents execute work.
+An explicit user invocation of Baton requests delegation. The root establishes shared contracts, groups work, reviews results and makes authorized commits. Baton prepares model parameters and a compact brief. Only the current host's native subagents execute work.
 
 ## Choose the work and model
 
@@ -10,7 +10,7 @@ The root agent decides what to delegate, establishes shared contracts, reviews r
 | implementation | Complete a bounded design |
 | investigation | Resolve an uncertain cause or design |
 
-The root chooses effort for the current task independently of work mode. No mode implies an effort preference. Pass `--effort LEVEL` to request a supported level; if omitted, Baton emits no `reasoning_effort`, leaves the host default unchanged, and does not substitute a catalog default. A multi-file migration with settled steps can use execution mode. The root can keep a task local; filling all slots is not a goal.
+The root chooses effort for the current task independently of work mode. No mode implies an effort preference. Pass `--effort LEVEL` to request a supported level; if omitted, Baton emits no `reasoning_effort`, leaves the host default unchanged, and does not substitute a catalog default. A multi-file migration with settled steps can use execution mode. Delegate a small task to one worker; group work sharing context and parallelize independent scopes. The root does the boundary checks needed for handoff, without first completing the worker task. If native delegation is unavailable or required information is missing, report the blocker.
 
 Run `baton models --host codex` to inspect actual model ids, then configure the selected ids:
 
@@ -51,6 +51,22 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 `goal` and nonempty `acceptance` are required. `mode` defaults to `read-only`; write mode requires scope. Decisions, context, constraints and handoff are optional. Scope names relative modules, directories or files. It is a prompt contract, **not a filesystem sandbox**. The root coordinates overlapping writes and checks the integrated diff.
 
 Spawn returns an exact catalog model id, explicitly requested supported effort (when supplied), the formatted prompt, scope and `fork_context:false`, with `spawned:false`. Pass the supported parameters and prompt to the host's native child API using a fresh context. Baton has not started a worker. Native handles and native completion remain authoritative.
+
+## Prepare a batch and control context
+
+For several briefs sharing the same host and selection flags, save a JSON array of 1–128 brief objects and run:
+
+```text
+baton spawn --host codex --briefs briefs.json --work-mode implementation --json
+```
+
+The result is `{ "handoffs": [...] }`. All briefs are validated before discovery; one catalog query and one selection serve the batch. Each handoff retains its own goal, scope and acceptance. `--brief` and `--briefs` are mutually exclusive. Batch preparation does not start workers or decide concurrency; the root dispatches through the native host within its available capacity.
+
+`--brief-budget-chars N` sets an advisory prompt budget (default 12000 Unicode code points). Only an over-budget handoff includes `brief_diagnostics`, with prompt size and largest content fields. No content is truncated and no token count is inferred. This is separate from `--context-tokens`, which is a caller-supplied model capacity constraint.
+
+Give workers settled decisions, precise file/symbol references and acceptance criteria. Send only changes, completed checks and remaining issues when continuing work. The generated brief asks for a concise status/conclusion, changed locations, check evidence and blockers; keep full logs in referenced files. Recheck when changes, failures or integration warrant it rather than repeating unchanged work.
+
+Measure whole-task cost, including root, workers, retries and integration. Use observed acceptance results to tune each configured model pool; missing information calls for clarification, whereas demonstrated capability limits may justify escalation with an incremental handoff. See [efficiency measurement](efficiency-measurement.md) for the offline comparison and native-task observation format.
 
 ## Record an outcome
 
