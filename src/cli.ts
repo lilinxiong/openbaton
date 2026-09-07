@@ -17,6 +17,7 @@ import {
   type NativeResultStatus,
   type WorkMode,
 } from "./lib/native.js";
+import { summarizeObservations } from "./lib/observation.js";
 import { mergeSelection, parseSpawnRequest, type SpawnRequest } from "./lib/spawn-request.js";
 import type { SelectPrompt } from "./lib/prompt.js";
 import type { WritableLike } from "./types.js";
@@ -52,6 +53,7 @@ Usage:
   baton record --host HOST --handle H --model ID
                --status completed|blocked|failed --text TEXT [--json]
   baton status [--host HOST] [--limit N | --handle H] [--full] [--json]
+  baton observe --file FILE [--file FILE ...] [--json]
   baton help | --help | -h
   baton version | --version | -v
 `;
@@ -251,6 +253,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const handoffs = briefs.map(({ brief }, index) => handoffPayload(brief, selected[index], prepared[index]));
       const payload = one(flags, "briefs") ? { handoffs } : handoffs[0];
       stdout.write(`${JSON.stringify(payload, null, flags.json ? undefined : 2)}\n`);
+      return 0;
+    }
+    if (command === "observe") {
+      const flags = parseArgs(args, ["file"], ["json"]);
+      required(flags, "file");
+      const report = summarizeObservations(many(flags, "file").map((file) => JSON.parse(fs.readFileSync(path.resolve(cwd, file), "utf8"))));
+      output(stdout, report, Boolean(flags.json), report.groups.map((group) =>
+        `${group.candidate_identifier} / ${group.workload_id || "unspecified workload"}: accepted ${group.accepted_runs}/${group.run_count}; median ${group.median_elapsed_ms ?? "unknown"} ms (${group.elapsed_samples} samples); tokens ${group.total_tokens ?? "unknown"}`));
       return 0;
     }
     if (command === "record") {
