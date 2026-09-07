@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "kind": "baton-task-observation",
+  "observed_at": "2026-09-07T05:43:20.590944+00:00",
+  "source": {
+    "candidate_identifier": "working-tree-sha256:6e229c295309e9e9707b033f89b2dd4b804e7ccbf58fa2331196580287f87416",
+    "usage_provider": "native-host",
+    "usage_available": false
+  },
+  "run": {
+    "accepted": true,
+    "elapsed_ms": null,
+    "retries": 0,
+    "upgrades": 0,
+    "total_tokens": null,
+    "cached_input_tokens": null,
+    "uncached_input_tokens": null
+  },
+  "tasks": [
+    {
+      "task_id": "/root",
+      "role": "root",
+      "parent_task_id": null,
+      "host": "codex",
+      "model": null,
+      "reasoning_effort": null,
+      "accepted": true,
+      "retries": 0,
+      "upgrades": 0,
+      "elapsed_ms": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "uncached_input_tokens": null
+    },
+    {
+      "task_id": "/root/brief",
+      "role": "worker",
+      "parent_task_id": "/root",
+      "host": "codex",
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "high",
+      "accepted": true,
+      "retries": 0,
+      "upgrades": 0,
+      "review_followup_turns": 2,
+      "elapsed_ms": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "uncached_input_tokens": null
+    },
+    {
+      "task_id": "/root/batch",
+      "role": "worker",
+      "parent_task_id": "/root",
+      "host": "codex",
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "high",
+      "accepted": true,
+      "retries": 0,
+      "upgrades": 0,
+      "review_followup_turns": 0,
+      "elapsed_ms": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "uncached_input_tokens": null
+    },
+    {
+      "task_id": "/root/measure",
+      "role": "worker",
+      "parent_task_id": "/root",
+      "host": "codex",
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "high",
+      "accepted": true,
+      "retries": 0,
+      "upgrades": 0,
+      "review_followup_turns": 0,
+      "elapsed_ms": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "uncached_input_tokens": null
+    }
+  ],
+  "notes": [
+    "This is the implementation task, not an A/B comparison of the same real task.",
+    "Initial handoffs were prepared with pre-change Baton using configured implementation pool; native workers were actually started with the returned model and effort and fresh context.",
+    "Review follow-ups reused the existing worker; they are not failed execution retries or model upgrades.",
+    "Accepted means implementation acceptance checks, not user publication approval.",
+    "Host did not expose complete root+worker+follow-up usage; null is unknown, not zero."
+  ]
+}

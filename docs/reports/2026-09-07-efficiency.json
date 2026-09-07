@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "generated_at": "2026-09-07T05:42:11.307Z",
+    "runtime": {
+      "bun": "1.4.0",
+      "node": "v26.8.1",
+      "platform": "darwin",
+      "arch": "arm64"
+    },
+    "sources": {
+      "baseline": {
+        "path": "/var/folders/z7/13qhf86s1tz2d71zf9s3lw1r0000gp/T/baton-efficiency-baseline-1vl6kvzq",
+        "identifier": "a7d02d1c0f47f58cdd6beaeedfe12e3e230f71f1",
+        "equivalent_github_revision": "e35bf73d7c021ec9561108636d943b5e727f7292"
+      },
+      "candidate": {
+        "path": "/Users/lilinxiong/develop/workspace/openbaton",
+        "identifier": "working-tree-sha256:6e229c295309e9e9707b033f89b2dd4b804e7ccbf58fa2331196580287f87416"
+      }
+    },
+    "runtime_skill_code_points": {
+      "baseline": {
+        "SKILL.md": 3038,
+        "adapters/codex/runtime/SKILL.md": 2919,
+        "adapters/grok/runtime/SKILL.md": 3043
+      },
+      "candidate": {
+        "SKILL.md": 2825,
+        "adapters/codex/runtime/SKILL.md": 2783,
+        "adapters/grok/runtime/SKILL.md": 2830
+      }
+    },
+    "repeats": 9,
+    "warmups": 2,
+    "brief_budget_chars": 12000,
+    "reproducible_command": "'bun' 'scripts/measure_efficiency.mjs' '--baseline' '/var/folders/z7/13qhf86s1tz2d71zf9s3lw1r0000gp/T/baton-efficiency-baseline-1vl6kvzq' '--candidate' '/Users/lilinxiong/develop/workspace/openbaton' '--repeats' '9' '--warmups' '2' '--brief-budget-chars' '12000' '--baseline-id' 'a7d02d1c0f47f58cdd6beaeedfe12e3e230f71f1' '--candidate-id' 'working-tree-sha256:6e229c295309e9e9707b033f89b2dd4b804e7ccbf58fa2331196580287f87416'",
+    "token_estimate": null
+  },
+  "scenarios": [
+    {
+      "handoff_count": 1,
+      "baseline": {
+        "median_elapsed_ms": 85.7427090000001,
+        "manifest_read_count": 6,
+        "catalog_invocation_count": 1,
+        "output_character_count": 784,
+        "prompt_character_count": 528
+      },
+      "candidate": {
+        "median_elapsed_ms": 66.47925000000009,
+        "manifest_read_count": 1,
+        "catalog_invocation_count": 1,
+        "output_character_count": 751,
+        "prompt_character_count": 526
+      },
+      "parity": {
+        "selection_and_acceptance": "passed",
+        "prompt_text_equality": "not_required"
+      },
+      "differences": {
+        "median_elapsed_ms": {
+          "baseline": 85.7427090000001,
+          "candidate": 66.47925000000009,
+          "delta": -19.26345900000001,
+          "percent_change": -22.466585467925896
+        },
+        "manifest_read_count": {
+          "baseline": 6,
+          "candidate": 1,
+          "delta": -5,
+          "percent_change": -83.33333333333334
+        },
+        "catalog_invocation_count": {
+          "baseline": 1,
+          "candidate": 1,
+          "delta": 0,
+          "percent_change": 0
+        },
+        "output_character_count": {
+          "baseline": 784,
+          "candidate": 751,
+          "delta": -33,
+          "percent_change": -4.209183673469387
+        },
+        "prompt_character_count": {
+          "baseline": 528,
+          "candidate": 526,
+          "delta": -2,
+          "percent_change": -0.3787878787878788
+        }
+      }
+    },
+    {
+      "handoff_count": 4,
+      "baseline": {
+        "median_elapsed_ms": 344.5355410000002,
+        "manifest_read_count": 24,
+        "catalog_invocation_count": 4,
+        "output_character_count": 3116,
+        "prompt_character_count": 2098
+      },
+      "candidate": {
+        "median_elapsed_ms": 67.10304200000019,
+        "manifest_read_count": 1,
+        "catalog_invocation_count": 1,
+        "output_character_count": 2939,
+        "prompt_character_count": 2090
+      },
+      "parity": {
+        "selection_and_acceptance": "passed",
+        "prompt_text_equality": "not_required"
+      },
+      "differences": {
+        "median_elapsed_ms": {
+          "baseline": 344.5355410000002,
+          "candidate": 67.10304200000019,
+          "delta": -277.432499,
+          "percent_change": -80.52362267032413
+        },
+        "manifest_read_count": {
+          "baseline": 24,
+          "candidate": 1,
+          "delta": -23,
+          "percent_change": -95.83333333333334
+        },
+        "catalog_invocation_count": {
+          "baseline": 4,
+          "candidate": 1,
+          "delta": -3,
+          "percent_change": -75
+        },
+        "output_character_count": {
+          "baseline": 3116,
+          "candidate": 2939,
+          "delta": -177,
+          "percent_change": -5.680359435173299
+        },
+        "prompt_character_count": {
+          "baseline": 2098,
+          "candidate": 2090,
+          "delta": -8,
+          "percent_change": -0.3813155386081983
+        }
+      }
+    }
+  ]
+}

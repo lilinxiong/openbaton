@@ -33,7 +33,8 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run check && bun test --timeout 30000 test/*.test.ts",
     "baton": "bun bin/baton.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "measure:efficiency": "bun scripts/measure_efficiency.mjs"
   },
   "files": [
     "adapters",
