@@ -87,7 +87,7 @@ needed mode with `--execution-model`, `--implementation-model`, or
 `--investigation-model`. Each list is an independent ordered candidate pool;
 there is no shared model pool or cross-mode fallback. The root chooses effort
 per task; omitting it leaves the host default unchanged.
-Use exact live catalog IDs from `baton models --cli <adapter-id> --json`.
+Use exact live catalog IDs from `baton models --host <adapter-id> --json`.
 An empty profile is valid after init but cannot select a worker model.
 Profile choices remain user-owned and are never synthesized by the installer.
 
