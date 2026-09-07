@@ -1,6 +1,6 @@
 {
   "name": "@zhouliuya/openbaton",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Prepare bounded work and model choices for the current CLI native subagents.",
   "type": "module",
   "bin": {
