@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { CliAdapterProvider, CliId, CliModel } from "../adapters/contract.js";
-import { getCliAdapter } from "../adapters/registry.js";
+import {
+  createCliAdapterRegistrySnapshot,
+  getCliAdapter,
+  type CliAdapterRegistrySnapshot,
+} from "../adapters/registry.js";
 import { cliProfileForHost, loadConfig } from "./config.js";
-import { detectInvokingHosts, parseHostId } from "./hosts.js";
 import { batonHomeDir } from "./paths.js";
 
 export type WorkMode = "execution" | "implementation" | "investigation";
@@ -43,14 +46,34 @@ export interface NativeResultRecord {
   timestamp: string;
 }
 
+function nativeSnapshot(
+  env: NodeJS.ProcessEnv,
+  snapshot?: CliAdapterRegistrySnapshot,
+): CliAdapterRegistrySnapshot {
+  return snapshot || createCliAdapterRegistrySnapshot(env);
+}
+
+function parseNativeHost(
+  value: string,
+  snapshot: CliAdapterRegistrySnapshot,
+): CliId {
+  const host = String(value || "").trim().toLowerCase();
+  if (snapshot.adapters.some((adapter) => adapter.host.id === host)) return host;
+  throw new Error(`invalid host: ${value || "<empty>"} (expected ${snapshot.adapters.map((adapter) => adapter.id).join("|") || "none"})`);
+}
+
 export function resolveNativeHost(
   explicitHost: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  snapshot?: CliAdapterRegistrySnapshot,
 ): CliId {
-  const explicit = explicitHost ? parseHostId(explicitHost, env) : null;
+  const registry = nativeSnapshot(env, snapshot);
+  const explicit = explicitHost ? parseNativeHost(explicitHost, registry) : null;
   const declared = String(env.BATON_HOST || "").trim();
-  const batonHost = declared ? parseHostId(declared, env) : null;
-  const signals = detectInvokingHosts(env);
+  const batonHost = declared ? parseNativeHost(declared, registry) : null;
+  const signals = registry.adapters
+    .filter((adapter) => adapter.host.isInvoking?.(env))
+    .map((adapter) => adapter.host.id);
   const observed = [...new Set([...(batonHost ? [batonHost] : []), ...signals])];
   if (observed.length > 1) {
     throw new Error(`HOST_MISMATCH: invocation signals disagree (${observed.join(", ")})`);
@@ -94,7 +117,8 @@ function supportedTiers(model: CliModel): string[] {
 
 export async function selectNativeModel(options: NativeSelectionOptions): Promise<NativeSelection> {
   const env = options.env || process.env;
-  const host = resolveNativeHost(options.host, env);
+  const snapshot = createCliAdapterRegistrySnapshot(env);
+  const host = resolveNativeHost(options.host, env, snapshot);
   const mode = options.workMode || "execution";
   if (!(["execution", "implementation", "investigation"] as string[]).includes(mode)) {
     throw new Error(`INVALID_WORK_MODE: ${mode}`);
@@ -107,7 +131,7 @@ export async function selectNativeModel(options: NativeSelectionOptions): Promis
   const priority = [...new Set(modePriority(profile, mode))];
   if (!priority.length) throw new Error(`NO_MODE_MODELS: ${host} has no ${mode} models configured`);
 
-  const provider = options.adapterProvider || ((id: CliId) => getCliAdapter(id, env));
+  const provider = options.adapterProvider || ((id: CliId) => getCliAdapter(id, env, snapshot));
   const catalog = await provider(host).discoverModels({ cwd: options.cwd, env });
   if ((catalog.cli && catalog.cli !== host) || (catalog.adapter_id && catalog.adapter_id !== host)) {
     throw new Error(`CATALOG_HOST_MISMATCH: requested ${host}, received ${catalog.cli || catalog.adapter_id}`);
