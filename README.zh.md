@@ -19,6 +19,9 @@ baton spawn --brief brief.json --host <host> --work-mode implementation --json
 
 每种工作方式使用独立且有序的模型候选池，不会跨组回退。主 agent 根据当前任务通过 `--effort` 指定推理强度；省略时保持宿主默认行为，不按工作方式预设强度。
 
+`spawn --briefs` 接受 1–128 个普通 brief 或 `{ "brief", "selection" }`
+envelope：一批任务共享同一次宿主/目录查询，同时可设置任务级工作方式、模型条件和不可用模型。`status --limit N`、`--full`、`--handle HANDLE` 查看已记录的结果；`observe --file FILE --json` 汇总宿主报告的任务观察。完整约定见指南。
+
 详见 [docs/guide.zh.md](docs/guide.zh.md) 与 [入门 walkthrough](samples/getting-started/)。
 
 ~~~bash

@@ -54,13 +54,39 @@ Spawn returns an exact catalog model id, explicitly requested supported effort (
 
 ## Prepare a batch and control context
 
-For several briefs sharing the same host and selection flags, save a JSON array of 1–128 brief objects and run:
+For several tasks on the same host, save a JSON array of 1–128 inputs and run:
 
 ```text
 baton spawn --host codex --briefs briefs.json --work-mode implementation --json
 ```
 
-The result is `{ "handoffs": [...] }`. All briefs are validated before discovery; one catalog query and one selection serve the batch. Each handoff retains its own goal, scope and acceptance. `--brief` and `--briefs` are mutually exclusive. Batch preparation does not start workers or decide concurrency; the root dispatches through the native host within its available capacity.
+The result is `{ "handoffs": [...] }`. All inputs are validated before one catalog discovery, then Baton selects each task independently. Each handoff retains its own goal, scope and acceptance. `--brief` and `--briefs` are mutually exclusive. Batch preparation does not start workers or decide concurrency; the root dispatches through the native host within its available capacity.
+
+Each item may be a plain brief, which inherits the command selection flags, or an
+envelope with a task-specific `brief` and `selection`:
+
+```json
+{
+  "brief": { "goal": "Check a bounded issue", "acceptance": ["Report the cause"] },
+  "selection": {
+    "work_mode": "investigation",
+    "model": "MODEL",
+    "effort": "high",
+    "service_tier": "priority",
+    "context_tokens": 32000,
+    "unavailable_models": ["MODEL-UNAVAILABLE"]
+  }
+}
+```
+
+`work_mode` is `execution`, `implementation`, or `investigation`. `model`,
+`effort`, `service_tier`, and `context_tokens` may be `null` to clear the
+corresponding optional command selector for that task. `unavailable_models` is
+always a list and is unioned with command-level unavailable models, so a task
+cannot re-enable a model already known to be unavailable. Per-task selection
+does not change the shared host or catalog lookup. Baton validates the whole
+batch before the one discovery pass and emits all handoffs together; an error
+produces no partial batch output.
 
 `--brief-budget-chars N` sets an advisory prompt budget (default 12000 Unicode code points). Only an over-budget handoff includes `brief_diagnostics`, with prompt size and largest content fields. No content is truncated and no token count is inferred. This is separate from `--context-tokens`, which is a caller-supplied model capacity constraint.
 
@@ -76,6 +102,35 @@ baton status --host codex --json
 ```
 
 Records are optional append-only history in `~/.baton/results.jsonl`. Status returns the latest twenty records matching host and working directory; it does not show live state. Use `blocked` or `failed` when appropriate, and put existing work into the next brief's handoff when escalating a task.
+
+Use `baton status --limit N` to choose a positive number of recent records, or
+`baton status --full` for full text instead of the default 240-code-point result
+preview. `baton status --handle HANDLE` returns the latest full record for that
+native handle and cannot be combined with `--limit`.
+
+## Observe reported task usage
+
+Use repeated files to summarize offline host observations without estimating
+tokens:
+
+```text
+baton observe --file run-a.json --file run-b.json --json
+```
+
+Set `source.workload_id` for comparable workloads and `run.id` for a unique
+run. A complete observation requires a nonempty stable `run.id`; reuse it when
+exporting another snapshot of the same execution. The host or caller supplies
+the truthful task inventory and identity—Baton does not infer or deduplicate
+them from task content. Baton reports usage only when `run.tasks_complete=true`,
+`source.usage_available=true`, and every native task reported that metric.
+Missing data remains unknown. Record cumulative usage once for each native task,
+including its follow-ups; retries and upgrades that start new native tasks get
+their own task records. Token costs include failed runs, so failures cannot look
+like savings. Incomplete legacy records without `run.id` remain readable, but
+their timestamp identity cannot deduplicate re-exports for run-count or elapsed
+statistics; use stable ids for all new records. See
+[efficiency measurement](efficiency-measurement.md) for the full observation
+schema and comparison limits.
 
 ## Installation and breaking changes
 
