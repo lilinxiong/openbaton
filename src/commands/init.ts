@@ -72,12 +72,11 @@ export async function initProject(
   const cfg = loadConfig(cwd, { env });
   if (selectedCli) {
     // Initializing a named host creates exactly that selected profile. Keep
-    // any previously selected labels/limits, but never synthesize profiles
-    // for the other registered CLIs or fill limits from host defaults.
+    // any previously selected model pools, but never synthesize profiles
+    // for the other registered CLIs from host defaults.
     const existing = cfg.cli[selectedCli];
     cfg.cli[selectedCli] = {
       enabled: true,
-      coding_models: existing?.coding_models ? [...existing.coding_models] : [],
       ...(existing?.execution_models?.length
         ? { execution_models: [...existing.execution_models] }
         : {}),
@@ -89,7 +88,7 @@ export async function initProject(
         : {}),
     };
   }
-  // An ordinary init must not silently rewrite the Coding model profile.
+  // An ordinary init must not silently rewrite the model pools.
   // A selected host is an explicit config operation and may persist the
   // normalized profile; a fresh/forced config is also necessarily new.
   if (!configExisted || selectedCli) saveConfig(cwd, cfg, { env });

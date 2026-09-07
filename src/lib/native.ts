@@ -43,12 +43,6 @@ export interface NativeResultRecord {
   timestamp: string;
 }
 
-const MODE_EFFORT: Record<WorkMode, string> = {
-  execution: "low",
-  implementation: "medium",
-  investigation: "high",
-};
-
 export function resolveNativeHost(
   explicitHost: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -87,7 +81,7 @@ function modePriority(profile: ReturnType<typeof cliProfileForHost>, mode: WorkM
     : mode === "implementation"
       ? profile.implementation_models
       : profile.investigation_models;
-  return configured?.length ? configured : profile.coding_models;
+  return configured || [];
 }
 
 function supportedEfforts(model: CliModel): string[] {
@@ -110,7 +104,8 @@ export async function selectNativeModel(options: NativeSelectionOptions): Promis
   }
   const profile = cliProfileForHost(loadConfig(options.cwd, { env }), host);
   if (!profile.enabled) throw new Error(`HOST_PROFILE_DISABLED: ${host}`);
-  if (!profile.coding_models.length) throw new Error(`NO_CODING_MODELS: ${host}`);
+  const priority = [...new Set(modePriority(profile, mode))];
+  if (!priority.length) throw new Error(`NO_MODE_MODELS: ${host} has no ${mode} models configured`);
 
   const provider = options.adapterProvider || ((id: CliId) => getCliAdapter(id, env));
   const catalog = await provider(host).discoverModels({ cwd: options.cwd, env });
@@ -118,9 +113,8 @@ export async function selectNativeModel(options: NativeSelectionOptions): Promis
     throw new Error(`CATALOG_HOST_MISMATCH: requested ${host}, received ${catalog.cli || catalog.adapter_id}`);
   }
   const visible = new Map(catalog.models.filter((item) => !item.hidden).map((item) => [item.id, item]));
-  const allowed = new Set(profile.coding_models);
+  const allowed = new Set(priority);
   const unavailable = new Set(options.unavailableModels || []);
-  const priority = [...new Set([...modePriority(profile, mode), ...profile.coding_models])];
 
   if (options.model) {
     if (!allowed.has(options.model)) throw new Error(`MODEL_NOT_ALLOWED: ${options.model}`);
@@ -154,14 +148,7 @@ export async function selectNativeModel(options: NativeSelectionOptions): Promis
     if (!efforts.includes(options.effort)) throw new Error(`EFFORT_UNSUPPORTED: ${model.id} does not support ${options.effort}`);
     effort = options.effort;
   } else {
-    const preferred = MODE_EFFORT[mode];
-    if (efforts.includes(preferred)) effort = preferred;
-    else if (model.default_reasoning_effort && efforts.includes(model.default_reasoning_effort)) {
-      effort = model.default_reasoning_effort;
-      disclosures.push(`mode effort ${preferred} unsupported; using catalog default ${effort}`);
-    } else {
-      disclosures.push(`mode effort ${preferred} unsupported; catalog has no supported default`);
-    }
+    disclosures.push("effort not specified by caller; host default applies");
   }
 
   const tiers = supportedTiers(model);

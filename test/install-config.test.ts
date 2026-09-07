@@ -39,7 +39,22 @@ const catalog = {
 };
 
 describe("installation config", () => {
-  it("writes schema 3 profiles and drops legacy policy fields", async () => {
+  it("drops the retired total pool and rejects its CLI flag", async () => {
+    const { cwd, env } = isolated();
+    await initProject(cwd, { env });
+    fs.writeFileSync(configPath(cwd, { env }), 'schema_version = 3\n[cli.alpha]\nenabled = true\ncoding_models = ["one"]\nexecution_models = ["two"]\n');
+    updateProject(cwd, { env });
+    assert.deepEqual(loadConfig(cwd, { env }), {
+      schema_version: 4,
+      cli: { alpha: { enabled: true, execution_models: ["two"] } },
+    });
+    assert.doesNotMatch(fs.readFileSync(configPath(cwd, { env }), "utf8"), /coding_models/);
+    await assert.rejects(runConfig(["--cli", "alpha", "--coding-model", "one"], {
+      cwd, env, stdout: { write() {} },
+    }), /unknown option: --coding-model/);
+  });
+
+  it("writes schema 4 profiles and drops legacy policy fields", async () => {
     const { cwd, env } = isolated();
     await initProject(cwd, { env, cli: "alpha" });
     const output: string[] = [];
@@ -47,7 +62,7 @@ describe("installation config", () => {
       [
         "--cli",
         "alpha",
-        "--coding-model",
+        "--implementation-model",
         "one",
         "--execution-model",
         "two",
@@ -63,11 +78,11 @@ describe("installation config", () => {
     );
     const config = loadConfig(cwd, { env });
     assert.deepEqual(config, {
-      schema_version: 3,
+      schema_version: 4,
       cli: {
         alpha: {
           enabled: true,
-          coding_models: ["one", "two"],
+          implementation_models: ["one"],
           execution_models: ["two"],
         },
       },
@@ -75,15 +90,22 @@ describe("installation config", () => {
     const text = fs.readFileSync(configPath(cwd, { env }), "utf8");
     assert.doesNotMatch(
       text,
-      /runner|longctx|max_concurrent|max_depth|director/,
+      /coding_models|runner|longctx|max_concurrent|max_depth|director/,
     );
     assert.equal(JSON.parse(output.join("")).execution_models[0], "two");
+    await runConfig(["--cli", "alpha", "--execution-model", "none"], {
+      cwd, env, stdout: { write() {} },
+      adapterProvider: () => ({ discoverModels: async () => catalog }),
+    });
+    assert.deepEqual(loadConfig(cwd, { env }).cli.alpha, {
+      enabled: true, implementation_models: ["one"],
+    });
   });
 
   it("update keeps selected profiles", async () => {
     const { cwd, env } = isolated();
     await initProject(cwd, { env, cli: "alpha" });
-    await runConfig(["--cli", "alpha", "--coding-model", "one", "--enable"], {
+    await runConfig(["--cli", "alpha", "--implementation-model", "one", "--enable"], {
       cwd,
       env,
       stdout: { write: () => undefined },
@@ -92,7 +114,7 @@ describe("installation config", () => {
     updateProject(cwd, { env });
     assert.deepEqual(loadConfig(cwd, { env }).cli.alpha, {
       enabled: true,
-      coding_models: ["one"],
+      implementation_models: ["one"],
     });
   });
 

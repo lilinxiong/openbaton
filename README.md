@@ -16,11 +16,15 @@ in Grok.
 ```bash
 npm install -g @zhouliuya/openbaton
 baton init --cli <host>
-baton config --cli <host> --coding-model <model-id> --enable
+baton config --cli <host> --implementation-model <model-id> --enable
 baton models --host <host>
 baton match --host <host> --work-mode implementation
-baton spawn --brief brief.json --host <host> --json
+baton spawn --brief brief.json --host <host> --work-mode implementation --json
 ```
+
+Each work mode has its own ordered model pool. Selection never falls back
+to another mode. The root chooses reasoning effort per task with `--effort`;
+omitting it leaves the host default unchanged.
 
 See [docs/guide.md](docs/guide.md) for the adapter contract and
 [samples/getting-started/](samples/getting-started/) for an isolated fake

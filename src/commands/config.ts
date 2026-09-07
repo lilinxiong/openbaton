@@ -30,7 +30,6 @@ export interface ConfigCommandOptions {
   clis?: CliId[];
 }
 const modelFlags = [
-  "coding-model",
   "execution-model",
   "implementation-model",
   "investigation-model",
@@ -153,7 +152,6 @@ async function configure(
       ),
     });
   };
-  const coding = await selected("coding-model", current.coding_models);
   const execution = await selected(
     "execution-model",
     current.execution_models || [],
@@ -180,11 +178,8 @@ async function configure(
             initial: current.enabled,
           })
         : current.enabled;
-  for (const model of [...execution, ...implementation, ...investigation])
-    if (!coding.includes(model)) coding.push(model);
   return {
     enabled,
-    coding_models: coding,
     ...(execution.length ? { execution_models: execution } : {}),
     ...(implementation.length ? { implementation_models: implementation } : {}),
     ...(investigation.length ? { investigation_models: investigation } : {}),
@@ -255,7 +250,7 @@ export async function runConfig(
     stdout.write(`wrote ${file}\n`);
     for (const { cli, profile } of profiles)
       stdout.write(
-        `  ${cli}: ${profile.enabled ? "enabled" : "disabled"}; coding=${profile.coding_models.join(" > ") || "(none)"}\n`,
+        `  ${cli}: ${profile.enabled ? "enabled" : "disabled"}; execution=${profile.execution_models?.join(" > ") || "(none)"}; implementation=${profile.implementation_models?.join(" > ") || "(none)"}; investigation=${profile.investigation_models?.join(" > ") || "(none)"}\n`,
       );
   }
   return 0;

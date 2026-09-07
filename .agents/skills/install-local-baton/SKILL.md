@@ -79,11 +79,14 @@ It must not open the host picker or create model choices. Users configure a
 host explicitly afterward:
 
 ```bash
-baton config --cli <adapter-id> --coding-model <model-id> --enable
+baton config --cli <adapter-id> --implementation-model <model-id> --enable
 ```
 
-This writes only `[cli.<adapter-id>]`. Optionally select mode-specific models
-with `--execution-model`, `--implementation-model`, and `--investigation-model`.
+This writes only `[cli.<adapter-id>]` using config schema 4. Configure each
+needed mode with `--execution-model`, `--implementation-model`, or
+`--investigation-model`. Each list is an independent ordered candidate pool;
+there is no shared model pool or cross-mode fallback. The root chooses effort
+per task; omitting it leaves the host default unchanged.
 Use exact live catalog IDs from `baton models --cli <adapter-id> --json`.
 An empty profile is valid after init but cannot select a worker model.
 Profile choices remain user-owned and are never synthesized by the installer.
