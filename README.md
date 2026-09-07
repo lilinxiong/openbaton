@@ -2,7 +2,7 @@
 
 **English** | [中文](README.zh.md)
 
-Baton 2.0 is a host-native CLI for discovering models, selecting an exact
+Baton 2.0.1 is a host-native CLI for discovering models, selecting an exact
 native route, and producing a structured handoff. It does not run managed
 tickets or dispatch another CLI. `spawn` returns `spawned: false`; the host
 decides whether and how to execute the handoff.
