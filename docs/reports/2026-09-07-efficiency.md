@@ -1,6 +1,6 @@
 # Baton 效果测量结果 — 2026-09-07
 
-本次改动已降低 handoff 准备阶段的重复查询和文本体积。四份任务的串行准备改为一次批量准备后，目录查询由 4 次降至 1 次，耗时中位数由 344.54 ms 降至 67.10 ms，减少约 277 ms。**这不是整次模型任务加速或 token 节省率。真实总 token 数据未获宿主提供，仍为未知。**
+本次改动已降低 handoff 准备阶段的重复查询和文本体积。四份任务的串行准备改为一次批量准备后，目录查询由 4 次降至 1 次，耗时中位数由 377.30 ms 降至 94.75 ms，减少约 283 ms。**这不是整次模型任务加速或 token 节省率。真实总 token 数据未获宿主提供，仍为未知。**
 
 ## 交付范围
 
@@ -15,23 +15,23 @@
 
 - 分支：`feature/live/baton-delegation-efficiency`。
 - 修改前：`a7d02d1c0f47f58cdd6beaeedfe12e3e230f71f1`，由 Git archive 导出。
-- 修改后：`working-tree-sha256:6e229c295309e9e9707b033f89b2dd4b804e7ccbf58fa2331196580287f87416`。
+- 修改后：`2b9842aa8c76aa15d1805f180b37960b298e976a`，由 Git archive 导出；测量脚本同此提交。
 - 环境：macOS arm64，Bun 1.4.0、Node v26.8.1；两个版本使用同一套运行时。
 - 每组预热 2 轮，测量 9 轮，报告中位数；最终测量未与本次测试或构建并行。
 - 双方使用同一份本地 Alpha fixture adapter、相同 brief 和选模参数，临时 HOME 隔离，无真实模型调用。
 - 基线每份任务分别串行调用 `spawn --brief`；候选一次 `spawn --briefs`。单任务组也走候选的批量接口，是一项控制组。
-- 保留 host/model/effort/tier、scope/mode、原生执行标志，以及目标、验收和约束文本的一致性；两组均通过。此处验收文本保留检查不代表真实任务完成验收。
+- 保留 host/model/effort/tier、scope/mode、原生执行标志，以及目标、验收和约束文本的一致性；每一轮预热和测量均通过。此处验收文本保留检查不代表真实任务完成验收。
 
 ## 实测结果
 
 | handoff 数 | 指标 | 修改前 | 修改后 | 变化 |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | 准备耗时中位数（ms） | 85.74 | 66.48 | -22.47% |
+| 1 | 准备耗时中位数（ms） | 93.33 | 93.90 | +0.61% |
 | 1 | manifest 读取次数 | 6 | 1 | -83.33% |
 | 1 | 目录查询次数 | 1 | 1 | +0.00% |
 | 1 | CLI 输出字符数 | 784 | 751 | -4.21% |
 | 1 | worker prompt 字符数 | 528 | 526 | -0.38% |
-| 4 | 准备耗时中位数（ms） | 344.54 | 67.10 | -80.52% |
+| 4 | 准备耗时中位数（ms） | 377.30 | 94.75 | -74.89% |
 | 4 | manifest 读取次数 | 24 | 1 | -95.83% |
 | 4 | 目录查询次数 | 4 | 1 | -75.00% |
 | 4 | CLI 输出字符数 | 3116 | 2939 | -5.68% |
@@ -43,21 +43,21 @@
 
 | 指引文件 | 修改前字符数 | 修改后字符数 | 变化 |
 | --- | ---: | ---: | ---: |
-| `SKILL.md` | 3038 | 2825 | -7.01% |
-| `adapters/codex/runtime/SKILL.md` | 2919 | 2783 | -4.66% |
-| `adapters/grok/runtime/SKILL.md` | 3043 | 2830 | -7.00% |
+| `SKILL.md` | 3038 | 2822 | -7.11% |
+| `adapters/codex/runtime/SKILL.md` | 2919 | 2780 | -4.76% |
+| `adapters/grok/runtime/SKILL.md` | 3043 | 2827 | -7.10% |
 
 三个指引分别展示，不假定会同时加载，也不加总成一次任务的消耗。新增行为规则后仍通过措辞精简控制体积；实际 tokenizer 和缓存效果未测量。
 
 ## 本次真实派工记录
 
-这次实施通过修改前的 Baton `spawn` 生成参数，实际启动了三个 Codex 原生 worker，均为 `gpt-5.6-terra` / `high`，使用新上下文：brief 与 skill、批量 handoff 与 registry、效果测量工具。代码已集成并通过检查。
+首次功能实施通过修改前的 Baton `spawn` 生成参数，实际启动了三个 Codex 原生 worker，均为 `gpt-5.6-terra` / `high`，使用新上下文：brief 与 skill、批量 handoff 与 registry、效果测量工具。代码已集成并通过检查。
 
 brief worker 收到两次审查后的接续修改，复用原生 worker；没有切换模型。该事实不能转化为“返工率降低”：没有相同真实任务在旧版和新版上的对照。主 agent、worker 以及接续回合的输入、输出、缓存与总 token 均未由宿主完整提供，因此记录为 `null`，不是零。原始记录见 [task observation](2026-09-07-task-observation.json)。
 
 ## 验证与结论边界
 
-- `npm test`：64 项通过，0 失败，覆盖批量参数互斥、上限、无效输入预检、单次目录调用、结果一致性、字符预算、隔离安装和测量工具的反例。
+- `npm test`：67 项通过，0 失败，覆盖批量参数互斥、上限、无效输入预检、单次目录调用、结果一致性、字符预算、隔离安装和测量工具的反例（早期轮次异常、PATH 缺失或冲突、含单引号的路径）。
 - `npm run build`：通过；最终 `git diff --check`：通过。
 - 新版 handoff 路径在隔离 fixture 下验证；本次原生 worker 的启动证明实际采用了 Baton 派工，但不是新版与旧版完整任务的性能 A/B。
 - 时间对照采用串行旧路径。没有比较旧版多个 CLI 并发启动，也没有测量网络目录、真实模型推理、队列和集成耗时。
@@ -65,8 +65,13 @@ brief worker 收到两次审查后的接续修改，复用原生 worker；没有
 
 ## 重跑与追溯
 
-原始数值、源标识和完整命令见 [原始 JSON](2026-09-07-efficiency.json)，使用方法和观测字段见 [测量说明](../efficiency-measurement.md)。临时 baseline 若已清理，可重新导出上述 Git revision 到另一目录并替换 `--baseline`。GitHub 上对应的公开基线为 `e35bf73d7c021ec9561108636d943b5e727f7292`；已核对两个基线的 Git tree 完全一致，GitHub 克隆可用该 revision 重建相同源码基线。
+原始数值与可替换目录的重跑命令见 [发布版 JSON](2026-09-07-efficiency.json)，使用方法见 [测量说明](../efficiency-measurement.md)。报告已移除本机绝对路径。固定源码提交如下，两个仓库各对应提交的 Git tree 已核对一致：
 
-候选源码摘要的算法：将 `src/**/*.ts`、`bin/**/*.ts`、`adapters/**/*` 文件，以及 `SKILL.md`、`package.json` 的相对路径排序，逐项对「路径 UTF-8 + NUL + 文件字节 + NUL」计算 SHA-256。该标识区分未提交工作区与同一 Git HEAD；交付报告本身不包含在运行时源码摘要中。
+| 用途 | GitLab revision | GitHub revision |
+| --- | --- | --- |
+| 修改前 | `a7d02d1c0f47f58cdd6beaeedfe12e3e230f71f1` | `e35bf73d7c021ec9561108636d943b5e727f7292` |
+| 修改后及测量脚本 | `2b9842aa8c76aa15d1805f180b37960b298e976a` | `7eb651d2d30d9165fbb1bdf63c456856556b4639` |
 
-测量脚本 SHA-256：`26f068bc00835258dc6d15dc00a22c39f3a968b7bd639f590bbe1a32906b808a`。
+在相应仓库用 `git archive REVISION` 将修改前后源码导出到两个目录，运行修改后提交中的测量脚本，将 JSON 中 `BASELINE_DIR`、`CANDIDATE_DIR` 替换为导出位置。发布命令默认使用 GitHub revisions；GitLab 克隆使用本表对应 revisions。使用 Bun 1.4.0，耗时仍受机器环境影响。
+
+测量脚本 SHA-256：`d7a01d286fb3b4e12b24f57562171371c919d85c67e277bd750da79731ed1d43`。真实派工观测保留首次实施的数据，不把本轮修复计为新的并行 worker 实测。

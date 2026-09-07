@@ -5,7 +5,9 @@
   "source": {
     "candidate_identifier": "working-tree-sha256:6e229c295309e9e9707b033f89b2dd4b804e7ccbf58fa2331196580287f87416",
     "usage_provider": "native-host",
-    "usage_available": false
+    "usage_available": false,
+    "implementation_revision": "2b6efe6c390def69f9e11c57177faee98b8e6b62",
+    "equivalent_github_revision": "443cfe1081957b0fee06740cadc9355c4c14f132"
   },
   "run": {
     "accepted": true,
@@ -94,6 +96,7 @@
     "Initial handoffs were prepared with pre-change Baton using configured implementation pool; native workers were actually started with the returned model and effort and fresh context.",
     "Review follow-ups reused the existing worker; they are not failed execution retries or model upgrades.",
     "Accepted means implementation acceptance checks, not user publication approval.",
-    "Host did not expose complete root+worker+follow-up usage; null is unknown, not zero."
+    "Host did not expose complete root+worker+follow-up usage; null is unknown, not zero.",
+    "Implementation revisions locate the committed original task output; the historical working-tree fingerprint is retained. This observation excludes the later review-fix task."
   ]
 }
