@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { formatBrief, inspectBrief, parseBrief } from "../src/lib/brief.js";
+import { formatBrief, inspectBrief, parseBrief, prepareBrief } from "../src/lib/brief.js";
 
 describe("worker briefs", () => {
   it("parses and formats complete bounded worker context", () => {
@@ -46,6 +46,10 @@ describe("worker briefs", () => {
       [...inspection.largest_fields.map((item) => item.chars)].sort((left, right) => right - left),
     );
     assert.equal(inspectBrief(brief, promptChars - 1).over_budget, true);
+    assert.deepEqual(prepareBrief(brief, promptChars), { prompt: formatBrief(brief) });
+    assert.deepEqual(prepareBrief(brief, promptChars - 1), {
+      prompt: formatBrief(brief), diagnostics: inspectBrief(brief, promptChars - 1),
+    });
     for (const budget of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
       assert.throws(() => inspectBrief(brief, budget), /BRIEF_BUDGET_INVALID/);
     }

@@ -31,15 +31,19 @@ Inspect dependencies; writes are disjoint or root coordinates overlap. Handoff:
 existingChanges, checks, unresolvedIssues. Use precise file/symbol refs and
 settled conclusions, not full source/history; logs are file refs, and repeat
 checks only after changes, failure or integration. `--brief-budget-chars N` is
-advisory: warn only above N, never truncate/reject.
+advisory: warn only above N, never truncate/reject. For ordinary feedback on the
+same task, reuse its existing native worker and send only the delta; start fresh
+when scope, model, or context changes. Reuse settled evidence with source/version refs.
 
 `baton spawn --host <host> --brief <file> --work-mode <mode> --json` prepares
-native parameters, never starts agents. For matching briefs sharing selection
-flags, use `baton spawn --briefs FILE --host HOST --work-mode MODE --json`;
-`FILE` is a JSON array of 1–128 brief objects. Start independent workers in
-parallel through the native host API, with returned prompt and supported model/effort
-in fresh context. Native handles/activity/completion are authority; no tickets,
-receipts, queues or another state machine.
+native parameters, never starts agents. When host and selection are configured,
+call `baton spawn` directly; use `baton models` or `baton match` only for setup or selection
+diagnosis. For a batch, use `baton spawn --briefs FILE --host HOST --work-mode MODE
+--json`; `FILE` is a JSON array of 1–128 plain briefs or `{brief,selection}`
+envelopes. One catalog discovery selects each task independently. Start independent
+workers in parallel through the native host API with returned parameters in fresh
+context. Native handles/activity/completion are authority; no tickets, receipts,
+queues, scheduler, automatic routing, or another state machine.
 
 On finish review concise status, conclusion, changed locations, check evidence
 and blockers; optionally record: `baton record --host <host> --handle <handle>

@@ -12,16 +12,19 @@ import { batonHomeDir } from "./paths.js";
 export type WorkMode = "execution" | "implementation" | "investigation";
 export type NativeResultStatus = "completed" | "blocked" | "failed";
 
-export interface NativeSelectionOptions {
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  host?: string | null;
+export interface NativeModelRequirements {
   workMode?: WorkMode;
   model?: string | null;
   effort?: string | null;
   contextTokens?: number;
   unavailableModels?: string[];
   serviceTier?: string | null;
+}
+
+export interface NativeSelectionOptions extends NativeModelRequirements {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  host?: string | null;
   adapterProvider?: CliAdapterProvider;
 }
 
@@ -116,20 +119,33 @@ function supportedTiers(model: CliModel): string[] {
 }
 
 export async function selectNativeModel(options: NativeSelectionOptions): Promise<NativeSelection> {
+  return (await selectNativeModels(options, [options]))[0];
+}
+
+/** One command-scoped discovery; every request keeps its own selection constraints. */
+export async function selectNativeModels(
+  options: NativeSelectionOptions,
+  requests: readonly NativeModelRequirements[],
+): Promise<NativeSelection[]> {
+  if (!requests.length) return [];
   const env = options.env || process.env;
   const snapshot = createCliAdapterRegistrySnapshot(env);
   const host = resolveNativeHost(options.host, env, snapshot);
-  const mode = options.workMode || "execution";
-  if (!(["execution", "implementation", "investigation"] as string[]).includes(mode)) {
-    throw new Error(`INVALID_WORK_MODE: ${mode}`);
-  }
-  if (options.contextTokens !== undefined && (!Number.isSafeInteger(options.contextTokens) || options.contextTokens < 1)) {
-    throw new Error("INVALID_CONTEXT_TOKENS: expected a positive integer");
-  }
   const profile = cliProfileForHost(loadConfig(options.cwd, { env }), host);
   if (!profile.enabled) throw new Error(`HOST_PROFILE_DISABLED: ${host}`);
-  const priority = [...new Set(modePriority(profile, mode))];
-  if (!priority.length) throw new Error(`NO_MODE_MODELS: ${host} has no ${mode} models configured`);
+  const priorities = requests.map((request) => {
+    const mode = request.workMode || "execution";
+    if (!(["execution", "implementation", "investigation"] as string[]).includes(mode)) {
+      throw new Error(`INVALID_WORK_MODE: ${mode}`);
+    }
+    if (request.contextTokens !== undefined && (!Number.isSafeInteger(request.contextTokens) || request.contextTokens < 1)) {
+      throw new Error("INVALID_CONTEXT_TOKENS: expected a positive integer");
+    }
+    const priority = [...new Set(modePriority(profile, mode))];
+    if (!priority.length) throw new Error(`NO_MODE_MODELS: ${host} has no ${mode} models configured`);
+    if (request.model && !priority.includes(request.model)) throw new Error(`MODEL_NOT_ALLOWED: ${request.model}`);
+    return priority;
+  });
 
   const provider = options.adapterProvider || ((id: CliId) => getCliAdapter(id, env, snapshot));
   const catalog = await provider(host).discoverModels({ cwd: options.cwd, env });
@@ -137,6 +153,16 @@ export async function selectNativeModel(options: NativeSelectionOptions): Promis
     throw new Error(`CATALOG_HOST_MISMATCH: requested ${host}, received ${catalog.cli || catalog.adapter_id}`);
   }
   const visible = new Map(catalog.models.filter((item) => !item.hidden).map((item) => [item.id, item]));
+  return requests.map((request, index) => selectFromCatalog(host, visible, priorities[index], request));
+}
+
+function selectFromCatalog(
+  host: CliId,
+  visible: ReadonlyMap<string, CliModel>,
+  priority: string[],
+  options: NativeModelRequirements,
+): NativeSelection {
+  const mode = options.workMode || "execution";
   const allowed = new Set(priority);
   const unavailable = new Set(options.unavailableModels || []);
 
@@ -220,22 +246,71 @@ export function appendNativeResult(
   return record;
 }
 
+/** Read backwards using bytes so UTF-8 code points may safely span chunks. */
+function* reverseLines(file: string): Generator<string> {
+  const fd = fs.openSync(file, "r");
+  try {
+    let position = fs.fstatSync(fd).size;
+    let pending = Buffer.alloc(0);
+    while (position > 0) {
+      const length = Math.min(position, 64 * 1024);
+      position -= length;
+      const chunk = Buffer.allocUnsafe(length);
+      let read = 0;
+      while (read < length) {
+        const count = fs.readSync(fd, chunk, read, length - read, position + read);
+        if (!count) throw new Error("RESULT_HISTORY_CHANGED: file shortened during read");
+        read += count;
+      }
+      const bytes = Buffer.concat([chunk, pending]);
+      let end = bytes.length;
+      for (let index = bytes.length - 1; index >= 0; index -= 1) {
+        if (bytes[index] !== 10) continue;
+        if (index + 1 < end) yield bytes.toString("utf8", index + 1, end);
+        end = index;
+      }
+      pending = Buffer.from(bytes.subarray(0, end));
+    }
+    if (pending.length) yield pending.toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export function recentNativeResults(
   cwd: string,
   host: CliId,
   env: NodeJS.ProcessEnv = process.env,
   limit = 20,
+  nativeHandle?: string,
 ): NativeResultRecord[] {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("INVALID_RESULT_LIMIT: expected a positive integer");
   const file = resultsPath(env);
   if (!fs.existsSync(file)) return [];
   const resolvedCwd = path.resolve(cwd);
   const records: NativeResultRecord[] = [];
-  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-    if (!line.trim()) continue;
+  for (const line of reverseLines(file)) {
     try {
       const item = JSON.parse(line) as NativeResultRecord;
-      if (item.cwd === resolvedCwd && item.host === host) records.push(item);
+      if (!item || item.cwd !== resolvedCwd || item.host !== host) continue;
+      if (typeof item.result !== "string" || typeof item.native_handle !== "string"
+        || typeof item.model !== "string" || typeof item.timestamp !== "string"
+        || !["completed", "blocked", "failed"].includes(item.status)) continue;
+      if (nativeHandle !== undefined && item.native_handle !== nativeHandle) continue;
+      records.push(item);
+      if (records.length === limit) break;
     } catch { /* Ignore a partial or foreign line; append-only history remains readable. */ }
   }
-  return records.slice(-limit).reverse();
+  return records;
+}
+
+export function summarizeNativeResult(record: NativeResultRecord): NativeResultRecord & { result_truncated?: true } {
+  let end = 0;
+  let chars = 0;
+  for (const char of record.result) {
+    if (chars === 240) return { ...record, result: record.result.slice(0, end), result_truncated: true };
+    end += char.length;
+    chars += 1;
+  }
+  return record;
 }

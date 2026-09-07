@@ -7,6 +7,7 @@ import { run } from "../src/cli.js";
 import type { CliAdapterProvider, CliModel, CliModelCatalog } from "../src/adapters/contract.js";
 import { saveConfig } from "../src/lib/config.js";
 import { fixtureAdapterEnv } from "./home.js";
+import { recentNativeResults, resultsPath } from "../src/lib/native.js";
 
 function model(id: string, options: Partial<CliModel & Record<string, unknown>> = {}): CliModel {
   return {
@@ -72,6 +73,107 @@ async function invoke(argv: string[], context: ReturnType<typeof setup>) {
 }
 
 describe("native Baton CLI", () => {
+  it("selects mixed tasks from one discovery and respects overrides, defaults and exclusions", async () => {
+    const context = setup();
+    const file = path.join(context.cwd, "mixed.json");
+    const brief = { goal: "Check", acceptance: ["Report"] };
+    fs.writeFileSync(file, JSON.stringify([
+      { brief, selection: { model: null, effort: null, service_tier: null, context_tokens: null, work_mode: "execution" } },
+      { brief, selection: { work_mode: "implementation" } },
+      brief,
+    ]));
+    let discoveries = 0;
+    const provider = context.provider;
+    context.provider = (host) => ({ discoverModels: async (options) => {
+      discoveries += 1;
+      return provider(host).discoverModels(options);
+    } });
+    const result = await invoke(["spawn", "--briefs", file, "--host", "alpha", "--model", "large", "--effort", "high", "--context-tokens", "200", "--service-tier", "priority", "--json"], context);
+    assert.equal(result.code, 0, result.stderr);
+    const { handoffs } = JSON.parse(result.stdout);
+    assert.equal(discoveries, 1);
+    assert.deepEqual(handoffs.map((item) => item.model_id), ["small", "large", "large"]);
+    assert.deepEqual(handoffs.map((item) => item.work_mode), ["execution", "implementation", "execution"]);
+    for (const key of ["reasoning_effort", "service_tier", "context_tokens"]) assert.equal(key in handoffs[0], false);
+    assert.equal(handoffs[1].reasoning_effort, "high");
+    assert.equal(handoffs[1].context_tokens, 200);
+
+    fs.writeFileSync(file, JSON.stringify([
+      { brief, selection: { work_mode: "execution" } },
+      { brief, selection: { work_mode: "implementation" } },
+    ]));
+    const perMode = await invoke(["spawn", "--briefs", file, "--host", "alpha", "--json"], context);
+    assert.equal(perMode.code, 0, perMode.stderr);
+    assert.deepEqual(JSON.parse(perMode.stdout).handoffs.map((item) => item.model_id), ["small", "large"]);
+
+    fs.writeFileSync(file, JSON.stringify([{ brief, selection: { model: "small", unavailable_models: [] } }]));
+    const excluded = await invoke(["spawn", "--briefs", file, "--host", "alpha", "--unavailable-model", "small", "--json"], context);
+    assert.equal(excluded.code, 1);
+    assert.match(excluded.stderr, /MODEL_UNAVAILABLE/);
+    assert.equal(excluded.stdout, "");
+
+    discoveries = 0;
+    fs.writeFileSync(file, JSON.stringify([brief, { brief, selection: { model: "small", effort: "high" } }]));
+    const lateFailure = await invoke(["spawn", "--briefs", file, "--host", "alpha", "--json"], context);
+    assert.equal(lateFailure.code, 1);
+    assert.match(lateFailure.stderr, /EFFORT_UNSUPPORTED/);
+    assert.equal(lateFailure.stdout, "");
+    assert.equal(discoveries, 1);
+
+    discoveries = 0;
+    fs.writeFileSync(file, JSON.stringify([{ brief, selection: { work_mode: "investigation" } }]));
+    assert.equal((await invoke(["spawn", "--briefs", file, "--host", "alpha"], context)).code, 1);
+    assert.equal(discoveries, 0);
+    for (const selection of [{ host: "beta" }, { effort: "" }, { context_tokens: 0 }, { work_mode: "other" }, { unavailable_models: [3] }, null]) {
+      fs.writeFileSync(file, JSON.stringify([brief, { brief, selection }]));
+      const invalid = await invoke(["spawn", "--briefs", file, "--host", "alpha"], context);
+      assert.equal(invalid.code, 1);
+      assert.match(invalid.stderr, /WORKER_SELECTION_INVALID/);
+      assert.equal(invalid.stdout, "");
+    }
+    assert.equal(discoveries, 0);
+    fs.rmSync(context.home, { recursive: true, force: true });
+  });
+
+  it("bounds status output and reads full UTF-8 records across reverse chunk boundaries", async () => {
+    const context = setup();
+    try {
+      const record = { cwd: context.cwd, host: "alpha", model: "small", native_handle: "old", status: "completed", timestamp: "2026-09-07T00:00:00Z", result: "中文😀".repeat(4000) };
+      const history = Array.from({ length: 100 }, (_, index) => JSON.stringify({ ...record, native_handle: `task-${index}` }));
+      history.splice(history.length - 1, 0, "{broken");
+      history.push(JSON.stringify({ ...record, host: "beta" }), "null", "{partial");
+      fs.writeFileSync(resultsPath(context.env), history.join("\n"));
+      const latest = recentNativeResults(context.cwd, "alpha", context.env, 2);
+      assert.deepEqual(latest.map((item) => item.native_handle), ["task-99", "task-98"]);
+      assert.equal(latest[0].result, record.result);
+      const short = await invoke(["status", "--host", "alpha", "--limit", "1", "--json"], context);
+      const item = JSON.parse(short.stdout).results[0];
+      assert.equal(Array.from(item.result).length, 240);
+      assert.equal(item.result_truncated, true);
+      const full = await invoke(["status", "--host", "alpha", "--handle", "task-0", "--json"], context);
+      assert.equal(JSON.parse(full.stdout).results[0].result, record.result);
+      fs.appendFileSync(resultsPath(context.env), `\n${JSON.stringify({ ...record, native_handle: "task-0", result: "latest task-0" })}\n`);
+      const latestHandle = await invoke(["status", "--host", "alpha", "--handle", "task-0", "--json"], context);
+      assert.equal(JSON.parse(latestHandle.stdout).results[0].result, "latest task-0");
+      const explicitFull = await invoke(["status", "--host", "alpha", "--limit", "1", "--full", "--json"], context);
+      assert.equal(JSON.parse(explicitFull.stdout).results[0].result, "latest task-0");
+      const missing = await invoke(["status", "--host", "alpha", "--handle", "missing", "--json"], context);
+      assert.deepEqual(JSON.parse(missing.stdout).results, []);
+      for (const args of [["--limit", "0"], ["--limit", "1.5"], ["--handle", "task-0", "--limit", "2"]]) {
+        assert.equal((await invoke(["status", "--host", "alpha", ...args], context)).code, 1);
+      }
+      // Tail queries must not parse/read the entire multi-megabyte history.
+      const original = fs.readSync;
+      let bytesRead = 0;
+      fs.readSync = ((...args: Parameters<typeof fs.readSync>) => {
+        const count = original(...args); bytesRead += count; return count;
+      }) as typeof fs.readSync;
+      try { assert.equal(recentNativeResults(context.cwd, "alpha", context.env, 1).length, 1); }
+      finally { fs.readSync = original; }
+      assert.ok(bytesRead < fs.statSync(resultsPath(context.env)).size / 10);
+    } finally { fs.rmSync(context.home, { recursive: true, force: true }); }
+  });
+
   it("never falls back to another mode pool or accepts an explicit foreign-pool model", async () => {
     const context = setup();
     saveConfig(context.cwd, { cli: { alpha: {

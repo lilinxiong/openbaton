@@ -26,6 +26,12 @@ Each work mode has its own ordered model pool. Selection never falls back
 to another mode. The root chooses reasoning effort per task with `--effort`;
 omitting it leaves the host default unchanged.
 
+`spawn --briefs` accepts 1–128 plain briefs or `{ "brief", "selection" }`
+envelopes, so a batch can retain one host/catalog lookup while setting task-level
+mode, model constraints, and unavailable models. `status --limit N`, `--full`,
+and `--handle HANDLE` inspect recorded results; `observe --file FILE --json`
+summarizes host-reported task observations. The full contracts are in the guide.
+
 See [docs/guide.md](docs/guide.md) for the adapter contract and
 [samples/getting-started/](samples/getting-started/) for an isolated fake
 adapter walkthrough. From a checkout:

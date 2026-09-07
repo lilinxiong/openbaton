@@ -54,13 +54,33 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 
 ## 批量准备与上下文预算
 
-多个任务使用相同宿主和选模参数时，把 1–128 份 brief 保存为 JSON 数组：
+多个任务使用同一宿主时，把 1–128 个输入保存为 JSON 数组：
 
 ```text
 baton spawn --host codex --briefs briefs.json --work-mode implementation --json
 ```
 
-返回 `{ "handoffs": [...] }`。先校验全部 brief，再用一次目录发现和一次选模服务整批任务；每份 handoff 保留各自目标、范围和验收标准。`--brief` 与 `--briefs` 互斥。批量准备不会启动 worker 或决定并发，主 agent 按宿主实际容量调用原生 API。
+返回 `{ "handoffs": [...] }`。先校验全部输入，再做一次目录发现，随后为每个任务独立选模；每份 handoff 保留各自目标、范围和验收标准。`--brief` 与 `--briefs` 互斥。批量准备不会启动 worker 或决定并发，主 agent 按宿主实际容量调用原生 API。
+
+数组中每项可以是继承命令选模参数的普通 brief，也可以是包含任务级 `brief` 和
+`selection` 的 envelope：
+
+```json
+{
+  "brief": { "goal": "核对一个有限问题", "acceptance": ["报告原因"] },
+  "selection": {
+    "work_mode": "investigation",
+    "model": "MODEL",
+    "effort": "high",
+    "service_tier": "priority",
+    "context_tokens": 32000,
+    "unavailable_models": ["MODEL-UNAVAILABLE"]
+  }
+}
+```
+
+`work_mode` 可为 `execution`、`implementation` 或 `investigation`。
+`model`、`effort`、`service_tier` 和 `context_tokens` 可以设为 `null`，清除该任务对应的可选命令选择条件。`unavailable_models` 始终是列表，并与命令级不可用模型取并集，因此任务不能重新启用已知不可用的模型。任务级选择不改变共享宿主或目录查询。Baton 会先校验整批内容，再做一次发现，并且只会一起输出全部 handoff；出错时不会输出部分批次。
 
 `--brief-budget-chars N` 设置建议的 prompt 总量预算，默认 12000 个 Unicode 码点。只有超预算时才返回 `brief_diagnostics`，指出总体积和最大的内容字段。不会截断内容，也不会把字符数转换成 token。它与调用者通过 `--context-tokens` 指定的模型容量要求互相独立。
 
@@ -76,6 +96,18 @@ baton status --host codex --json
 ```
 
 结果记录可选，追加到 `~/.baton/results.jsonl`。status 仅返回当前宿主和工作目录最近二十条记录，不表示实时运行状态。必要时使用 `blocked`、`failed`；升级模型时把已有修改、检查和缺口写进下一份 handoff。
+
+`baton status --limit N` 可指定返回的最近记录数（正整数），`baton status --full` 可返回完整结果文本；默认仅预览 240 个 Unicode 码点。`baton status --handle HANDLE` 返回该原生句柄最新的一条完整记录，且不能与 `--limit` 同用。
+
+## 观察宿主报告的任务用量
+
+可重复传入文件，在不估算 token 的前提下汇总宿主离线观察：
+
+```text
+baton observe --file run-a.json --file run-b.json --json
+```
+
+用 `source.workload_id` 标识可比工作负载，用 `run.id` 标识唯一运行。完整观察必须有非空且稳定的 `run.id`；重导出同一次执行的快照时沿用该 id。宿主或调用方负责如实提供任务清单和身份，Baton 不会根据任务内容推断或去重。只有 `run.tasks_complete=true`、`source.usage_available=true`，且每个原生任务都报告了对应指标时，Baton 才会汇总该用量；缺失值仍是未知，不当作零。每个原生任务（包括其 follow-up）只记录一次累计用量；重试或升级若新建原生任务，就需要自己的任务记录。token 成本包含失败运行，失败不能被算成节省。旧的不完整无 `run.id` 记录仍可读取，但仅有时间戳的身份无法为运行次数或耗时统计去重重导出；所有新记录都应使用稳定 id。完整观察格式和比较限制见[效果测量](efficiency-measurement.md)。
 
 ## 安装与不兼容变更
 

@@ -82,6 +82,30 @@ exposes task usage, store an independent observation JSON record alongside the
 benchmark result. Unknown fields stay `null`; do not infer them from prompt
 characters, elapsed time, or model name.
 
+Summarize one or more records with repeated `--file`; JSON output keeps the
+per-run results as well as workload groups:
+
+```text
+baton observe --file observation-a.json --file observation-b.json --json
+```
+
+Use `source.workload_id` to group equivalent workloads and `run.id` to make an
+observation unique. A complete observation requires a nonempty stable `run.id`:
+reuse it when exporting another snapshot of the same execution. The host or
+caller must supply a truthful native-task inventory and stable identities; Baton
+does not infer them or deduplicate records by task content. Set
+`run.tasks_complete: true` only after every native task for the run is present,
+and `source.usage_available: true` only when the host reported usage. A usage
+aggregate is known only when both flags are true and every task has reported the
+corresponding metric; a missing value remains unknown rather than zero.
+
+Legacy incomplete records without `run.id` remain readable, but their timestamp
+identity cannot deduplicate re-exports for run-count or elapsed statistics. Use
+a stable `run.id` for every new record.
+
+The following numeric record is a synthetic illustration of the format, not a
+measured usage report:
+
 ```json
 {
   "schema_version": 1,
@@ -89,17 +113,22 @@ characters, elapsed time, or model name.
   "observed_at": "2026-09-07T12:00:00.000Z",
   "source": {
     "candidate_identifier": "commit-or-supplied-id",
+    "workload_id": "api-migration-v1",
     "usage_provider": "native-host",
-    "usage_available": false
+    "usage_available": true
   },
   "run": {
+    "id": "native-run-2026-09-07-1",
     "accepted": true,
-    "elapsed_ms": null,
+    "tasks_complete": true,
+    "elapsed_ms": 1200,
     "retries": 0,
     "upgrades": 0,
-    "total_tokens": null,
-    "cached_input_tokens": null,
-    "uncached_input_tokens": null
+    "input_tokens": 100,
+    "output_tokens": 40,
+    "total_tokens": 140,
+    "cached_input_tokens": 30,
+    "uncached_input_tokens": 70
   },
   "tasks": [
     {
@@ -110,14 +139,14 @@ characters, elapsed time, or model name.
       "model": null,
       "reasoning_effort": null,
       "accepted": true,
-      "elapsed_ms": null,
+      "elapsed_ms": 400,
       "retries": 0,
       "upgrades": 0,
-      "input_tokens": null,
-      "output_tokens": null,
-      "total_tokens": null,
-      "cached_input_tokens": null,
-      "uncached_input_tokens": null
+      "input_tokens": 40,
+      "output_tokens": 20,
+      "total_tokens": 60,
+      "cached_input_tokens": 10,
+      "uncached_input_tokens": 30
     },
     {
       "task_id": "worker-1",
@@ -127,28 +156,33 @@ characters, elapsed time, or model name.
       "model": "gpt-5.6-terra",
       "reasoning_effort": "high",
       "accepted": true,
-      "elapsed_ms": null,
+      "elapsed_ms": 800,
       "retries": 0,
       "upgrades": 0,
-      "input_tokens": null,
-      "output_tokens": null,
-      "total_tokens": null,
-      "cached_input_tokens": null,
-      "uncached_input_tokens": null
+      "input_tokens": 60,
+      "output_tokens": 20,
+      "total_tokens": 80,
+      "cached_input_tokens": 20,
+      "uncached_input_tokens": 40
     }
   ]
 }
 ```
 
-Add one task object for each worker, retry, or upgrade that the host reports;
-three `gpt-5.6-terra`/`high` workers therefore produce root plus three worker
-objects. `run.total_tokens` is the sum of reported root, worker, retry and
-upgrade totals only when every required total is known; otherwise it is `null`.
-Cached and uncached fields are recorded independently when the host supplies
-them. `accepted`, retry/upgrades counts and elapsed time remain useful even if
-the provider does not expose usage.
+Add one task object for every native root, worker, retry, or upgrade that the
+host reports; three `gpt-5.6-terra`/`high` workers therefore produce root plus
+three worker objects. Record each task's cumulative usage once, including any
+ordinary follow-up on that same native task. A retry or upgrade that creates a
+new native task needs its own unique id and task object. `run` metrics may be
+supplied as a cross-check, but Baton derives a metric from task records only
+when every task reported it; otherwise the aggregate is `null`. Cached and
+uncached fields are recorded independently when the host supplies them.
+
+Groups include every run's tokens, including failed runs, and divide by accepted
+runs only for `tokens_per_accepted_run`; failures must not make a candidate look
+cheaper. `accepted`, retry/upgrades counts and elapsed time remain useful even
+when usage is unavailable. Do not claim an end-to-end speedup from the offline
+serial-preparation comparison.
 
 `accepted` means the recorded task acceptance checks passed, not that the user
-has approved publication. Count failed re-executions as retries; ordinary
-review follow-ups on an existing worker can be recorded separately. Do not
-claim an end-to-end speedup from the offline serial-preparation comparison.
+has approved publication. Count failed re-executions as retries.
