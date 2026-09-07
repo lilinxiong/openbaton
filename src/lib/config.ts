@@ -2,41 +2,23 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { CodedError, UnknownRecord } from "../types.js";
-import { parseToml, stringifyToml } from "./toml.js";
-import { configPath } from "./paths.js";
 import type { CliId } from "../adapters/registry.js";
+import { configPath } from "./paths.js";
+import { parseToml, stringifyToml } from "./toml.js";
 
-export const DEFAULT_MAX_CONCURRENT = 4;
-export const DEFAULT_MAX_DEPTH = 1;
-export const CONFIG_SCHEMA_VERSION = 2;
-/** Persisted in `[cli.<id>]` when discovery did not report a concurrent limit. */
-export const UNKNOWN_MAX_CONCURRENT = -1;
-
-export interface DirectorSettings {
-  max_concurrent: number;
-  max_depth: number;
-}
-
+export const CONFIG_SCHEMA_VERSION = 3;
 export interface CliProfileSettings {
-  runner: string;
-  longctx: string;
-  /** Ordered Coding routes. Array order is the user's priority. */
+  enabled: boolean;
   coding_models: string[];
-  /** Positive integer, or -1/0/missing for unknown (falls back to director). */
-  max_concurrent?: number;
-  max_depth?: number;
+  execution_models?: string[];
+  implementation_models?: string[];
+  investigation_models?: string[];
 }
-
-export type CliProfiles = Partial<{ [K in CliId]: CliProfileSettings }>;
-
-export type CliSettings = CliProfiles;
-
+export type CliProfiles = Partial<Record<CliId, CliProfileSettings>>;
 export interface Config {
   schema_version: number;
-  director: DirectorSettings;
-  cli: CliSettings;
+  cli: CliProfiles;
 }
-
 export interface ConfigEnvOptions {
   env?: NodeJS.ProcessEnv;
 }
@@ -44,211 +26,109 @@ export interface ConfigEnvOptions {
 export function isUnknownRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
 export function emptyConfig(): Config {
-  return {
-    schema_version: CONFIG_SCHEMA_VERSION,
-    director: {
-      max_concurrent: DEFAULT_MAX_CONCURRENT,
-      max_depth: DEFAULT_MAX_DEPTH,
-    },
-    cli: {},
-  };
+  return { schema_version: CONFIG_SCHEMA_VERSION, cli: {} };
 }
-
 export function emptyCliProfile(): CliProfileSettings {
-  return {
-    runner: "",
-    longctx: "",
-    coding_models: [],
-  };
-}
-
-function normalizeDirector(raw: unknown): DirectorSettings {
-  const director = isUnknownRecord(raw) ? raw : {};
-  const max = Number(director.max_concurrent);
-  const depth = Number(director.max_depth);
-  const settings: DirectorSettings = {
-    max_concurrent: Number.isFinite(max) && max > 0 ? Math.floor(max) : DEFAULT_MAX_CONCURRENT,
-    max_depth: Number.isFinite(depth) && depth >= 1 ? Math.floor(depth) : DEFAULT_MAX_DEPTH,
-  };
-  return settings;
+  return { enabled: false, coding_models: [] };
 }
 
 function stringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+  return Array.isArray(value)
+    ? [
+        ...new Set(
+          value.map((item) => String(item || "").trim()).filter(Boolean),
+        ),
+      ]
+    : [];
 }
-
-function positiveInteger(value: unknown): number | undefined {
-  if (typeof value !== "number" && typeof value !== "string") return undefined;
-  if (typeof value === "string" && !value.trim()) return undefined;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
-  return Math.floor(parsed);
-}
-
-/** A usable concurrent ceiling. Unknown sentinels and missing values stay unset. */
-export function reportedConcurrentLimit(value: unknown): number | undefined {
-  return positiveInteger(value);
-}
-
-/**
- * Persistable `[cli.<id>].max_concurrent`. Positive integers are reported
- * limits; `0` and `-1` normalize to `UNKNOWN_MAX_CONCURRENT`.
- */
-export function persistedConcurrentLimit(value: unknown): number | undefined {
-  const reported = reportedConcurrentLimit(value);
-  if (reported !== undefined) return reported;
-  if (typeof value !== "number" && typeof value !== "string") return undefined;
-  if (typeof value === "string" && !value.trim()) return undefined;
-  const parsed = Number(value);
-  if (parsed === 0 || parsed === UNKNOWN_MAX_CONCURRENT) return UNKNOWN_MAX_CONCURRENT;
-  return undefined;
-}
-
-/** First reported candidate, otherwise the unknown sentinel. */
-export function persistableCliMaxConcurrent(...candidates: unknown[]): number {
-  for (const candidate of candidates) {
-    const reported = reportedConcurrentLimit(candidate);
-    if (reported !== undefined) return reported;
-  }
-  return UNKNOWN_MAX_CONCURRENT;
-}
-
 function normalizeCliProfile(value: unknown): CliProfileSettings {
   const profile = isUnknownRecord(value) ? value : {};
-  const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
-  const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
-  const codingModels = stringList(profile.coding_models);
-  const maxConcurrent = persistedConcurrentLimit(profile.max_concurrent);
-  const maxDepth = positiveInteger(profile.max_depth);
+  const optional = (
+    name: "execution_models" | "implementation_models" | "investigation_models",
+  ) => {
+    const models = stringList(profile[name]);
+    return models.length ? { [name]: models } : {};
+  };
   return {
-    runner: rawRunner,
-    longctx: rawLongctx,
-    coding_models: codingModels,
-    ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
-    ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
+    enabled: profile.enabled === true,
+    coding_models: stringList(profile.coding_models),
+    ...optional("execution_models"),
+    ...optional("implementation_models"),
+    ...optional("investigation_models"),
   };
 }
-
-/**
- * Patch one raw host profile without normalizing the rest of the document.
- */
-export function patchRawCliProfile(
-  cwd: string,
+export function normalizeConfig(raw: unknown): Config {
+  const source = isUnknownRecord(raw) ? raw : {};
+  const cli = isUnknownRecord(source.cli) ? source.cli : {};
+  const profiles: CliProfiles = {};
+  for (const [id, value] of Object.entries(cli))
+    if (isUnknownRecord(value)) profiles[id] = normalizeCliProfile(value);
+  return { schema_version: CONFIG_SCHEMA_VERSION, cli: profiles };
+}
+export function cliProfileForHost(
+  config: Pick<Config, "cli">,
   host: CliId,
-  fields: UnknownRecord,
+): CliProfileSettings {
+  return config.cli[host] || emptyCliProfile();
+}
+export function configuredCodingModelsForHost(
+  config: Pick<Config, "cli">,
+  host: CliId,
+): string[] {
+  const profile = cliProfileForHost(config, host);
+  return profile.enabled ? [...profile.coding_models] : [];
+}
+function serializeConfig(config: Config): UnknownRecord {
+  const cli: UnknownRecord = {};
+  for (const [id, profile] of Object.entries(config.cli))
+    if (profile)
+      cli[id] = {
+        enabled: profile.enabled,
+        coding_models: profile.coding_models,
+        ...(profile.execution_models?.length
+          ? { execution_models: profile.execution_models }
+          : {}),
+        ...(profile.implementation_models?.length
+          ? { implementation_models: profile.implementation_models }
+          : {}),
+        ...(profile.investigation_models?.length
+          ? { investigation_models: profile.investigation_models }
+          : {}),
+      };
+  return { schema_version: CONFIG_SCHEMA_VERSION, cli };
+}
+export function loadConfig(
+  cwd: string,
   options: ConfigEnvOptions = {},
-): string {
+): Config {
   const file = configPath(cwd, { env: options.env });
   if (!fs.existsSync(file)) {
-    const error = new Error(`baton is not initialized here (missing ${file}). Run: baton init`) as CodedError;
+    const error = new Error(
+      `baton is not initialized here (missing ${file}). Run: baton init`,
+    ) as CodedError;
     error.code = "BATON_NOT_INITIALIZED";
     throw error;
   }
-  const raw = parseToml(fs.readFileSync(file, "utf8"));
-  const cli = isUnknownRecord(raw.cli) ? raw.cli : {};
-  const profile = isUnknownRecord(cli[host]) ? cli[host] : {};
-  cli[host] = { ...profile, ...fields };
-  raw.cli = cli;
+  return normalizeConfig(parseToml(fs.readFileSync(file, "utf8")));
+}
+export function saveConfig(
+  cwd: string,
+  config: unknown,
+  options: ConfigEnvOptions = {},
+): string {
+  const file = configPath(cwd, { env: options.env });
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   try {
-    fs.writeFileSync(temporary, stringifyToml(raw), { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(
+      temporary,
+      stringifyToml(serializeConfig(normalizeConfig(config))),
+      { encoding: "utf8", mode: 0o600 },
+    );
     fs.renameSync(temporary, file);
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }
   return file;
-}
-
-
-function normalizeCli(value: unknown): CliSettings {
-  const cli = isUnknownRecord(value) ? value : {};
-  const profiles = {} as CliProfiles;
-  for (const [id, rawProfile] of Object.entries(cli)) {
-    if (!isUnknownRecord(rawProfile)) continue;
-    profiles[id] = normalizeCliProfile(rawProfile);
-  }
-  return profiles;
-}
-
-/** Resolve a host-scoped profile. Host is required; there is no configured default CLI. */
-export function cliProfileForHost(config: Pick<Config, "cli">, host: CliId): CliProfileSettings {
-  return config.cli[host] || emptyCliProfile();
-}
-
-export function configuredCodingModelsForHost(config: Pick<Config, "cli">, host: CliId): string[] {
-  return [...cliProfileForHost(config, host).coding_models];
-}
-
-function serializeConfig(cfg: Config): UnknownRecord {
-  const profiles: UnknownRecord = {};
-  for (const [id, profile] of Object.entries(cfg.cli)) {
-    if (!profile) continue;
-    profiles[id] = {
-      runner: profile.runner,
-      longctx: profile.longctx,
-      coding_models: profile.coding_models,
-      ...(profile.max_concurrent !== undefined ? { max_concurrent: profile.max_concurrent } : {}),
-      ...(profile.max_depth !== undefined ? { max_depth: profile.max_depth } : {}),
-    };
-  }
-  return {
-    schema_version: CONFIG_SCHEMA_VERSION,
-    director: {
-      max_concurrent: cfg.director.max_concurrent,
-      max_depth: cfg.director.max_depth,
-    },
-    cli: profiles,
-  };
-}
-
-export function normalizeConfig(raw: unknown): Config {
-  const source = isUnknownRecord(raw) ? raw : {};
-  return {
-    schema_version: CONFIG_SCHEMA_VERSION,
-    director: normalizeDirector(source.director),
-    cli: normalizeCli(source.cli),
-  };
-}
-
-export function loadConfig(cwd: string, options: ConfigEnvOptions = {}): Config {
-  const file = configPath(cwd, { env: options.env });
-  if (!fs.existsSync(file)) {
-    const err = new Error(`baton is not initialized here (missing ${file}). Run: baton init`) as CodedError;
-    err.code = "BATON_NOT_INITIALIZED";
-    throw err;
-  }
-  return normalizeConfig(parseToml(fs.readFileSync(file, "utf8")));
-}
-
-export function saveConfig(cwd: string, cfg: unknown, options: ConfigEnvOptions = {}): string {
-  const file = configPath(cwd, { env: options.env });
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temporary, stringifyToml(serializeConfig(normalizeConfig(cfg))), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temporary, file);
-  } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-  }
-  return file;
-}
-
-/** Use a CLI-reported override when present, otherwise director limits. */
-export function effectiveMaxConcurrentForHost(
-  cfg: Config,
-  host?: CliId,
-  _env: NodeJS.ProcessEnv = process.env,
-): number {
-  if (!host) return cfg.director.max_concurrent;
-  return reportedConcurrentLimit(cfg.cli[host]?.max_concurrent) ?? cfg.director.max_concurrent;
-}
-
-/** Host-specific depth when reported, otherwise director limits. */
-export function effectiveMaxDepthForHost(cfg: Config, host?: CliId): number {
-  if (!host) return cfg.director.max_depth;
-  return cfg.cli[host]?.max_depth ?? cfg.director.max_depth;
 }

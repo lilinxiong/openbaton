@@ -1,426 +1,70 @@
-# Baton product guide
+# Baton 2.0 guide
 
-**English** | [中文](guide.zh.md)
+The root agent decides what to delegate, establishes shared contracts, reviews results and makes authorized commits. Baton prepares model parameters and a compact brief. Only the current host's native subagents execute work.
 
-This is the technical reference for Baton. The [landing README](../README.md)
-covers install and the first commands.
+## Choose the work and model
 
-## Public adapter boundary
+| Work mode | Remaining decisions | Default effort preference |
+|---|---|---|
+| execution | Follow settled steps or narrowly check facts | low |
+| implementation | Complete a bounded design | medium |
+| investigation | Resolve an uncertain cause or design | high |
 
-Baton core has no built-in catalog. An external adapter package is installed
-under `~/.baton/adapters/<adapter-id>/` (or supplied through
-`BATON_ADAPTER_PATHS`) and is discovered from `adapter.json`. The package owns
-executable resolution, its live model catalog, native child calls, and
-adapter-specific lifecycle details. Baton consumes the normalized SDK surface.
+Model and effort are independent. A multi-file migration with settled steps can use execution mode. The root can keep a task local; filling all slots is not a goal.
 
-The package exports the SDK from `@zhouliuya/openbaton/adapters` and
-`@zhouliuya/openbaton/adapters/sdk`.
+Run `baton models --host codex` to inspect actual model ids, then configure the selected ids:
 
-### Manifest
+```text
+baton init --cli codex
+baton config --cli codex --coding-model MODEL --execution-model MODEL --enable
+baton match --host codex --work-mode execution --model MODEL --effort low --json
+```
 
-Manifest schema `1` is intentionally small and exact:
+`MODEL` is a placeholder from the live catalog. Model flags can repeat. Configure `--implementation-model` and `--investigation-model` for their preference lists. Without `--cli`, `baton config` opens the interactive picker in a terminal.
+
+Explicit unsupported effort or service tier is rejected. With automatic model selection, candidates failing explicit constraints are skipped. `--unavailable-model ID` excludes a model known by the host to be unavailable; Baton does not invent quota information. `--context-tokens N` checks known capacity and discloses unknown capacity. No context requirement is inferred from task wording.
+
+## Prepare a worker
+
+Save a JSON brief, for example:
 
 ```json
 {
-  "schema": 1,
-  "adapter": {
-    "id": "sample-adapter",
-    "display_name": "Sample Adapter",
-    "package_name": "sample-adapter-package",
-    "package_version": "1.0.0",
-    "sdk_version": "1.0"
-  },
-  "catalog": {
-    "command": "catalog.js",
-    "args": [],
-    "protocol": "json",
-    "timeout_ms": 15000
-  },
-  "invocation": { "signal": "SAMPLE_ADAPTER_SESSION" },
-  "native": { "execution_handle_kind": "sample-native-task" },
-  "runtime_skill": {
-    "source": "runtime/SKILL.md",
-    "destination": ".baton/skills/sample-adapter/SKILL.md"
-  },
-  "quota": {
-    "max_concurrent_subagents": 3,
-    "max_depth": 1,
-    "backpressure": "defer"
+  "goal": "Update the known API call sites",
+  "decisions": ["Keep the established ownership contract"],
+  "scope": ["src/example"],
+  "acceptance": ["Report changed files and remaining old calls"],
+  "constraints": ["Do not change the public API"],
+  "mode": "write",
+  "handoff": {
+    "existingChanges": "The new API is already implemented",
+    "checks": "Static interface checks passed",
+    "unresolvedIssues": "The example call sites still need migration"
   }
 }
 ```
 
-The manifest identifies the adapter, package, SDK version, catalog command and
-protocol, invocation signal, opaque native handle kind, runtime skill paths,
-and any limits reported by the adapter. `quota.max_concurrent_subagents` means
-the maximum number of active descendants in one root-agent tree, excluding the
-root; it is not a workspace, host-wide, process, model-list, or total-agent
-count. Runtime-skill paths are package-relative and traversal-free; the catalog
-command may be a package path or an absolute executable. Duplicate ids or
-invalid fields stop discovery.
-
-The catalog command returns one JSON object with the matching `adapter_id`, an
-optional version, and `models`. Each model preserves its exact `id` and any
-reported display name, description, visibility, reasoning efforts, modalities,
-speed tiers, service tiers, and defaults. Missing optional values remain
-unknown. No catalog row or execution option is synthesized by Baton.
-
-## Configuration and automatic routing
-
-`baton init` discovers available manifests and `baton config --cli <id>` queries
-that adapter's live catalog. Only the explicitly selected profile is written
-to `~/.baton/config.toml`:
-
-```toml
-[director]
-max_concurrent = 3
-max_depth = 1
-
-[cli.sample-adapter]
-runner = "<model-id>"
-longctx = "<model-id>"
-coding_models = ["<model-id>", "<another-model-id>"]
-max_concurrent = 3
+```text
+baton spawn --host codex --brief brief.json --work-mode execution --json
 ```
 
-`[cli.<id>].max_concurrent` is that CLI's reported per-root-tree subagent
-ceiling. Discovery writes the live catalog value, else the adapter manifest
-quota, else preserves an existing positive reported value. Only when none of
-those sources is available does it write `-1`; `0` also normalizes to unknown.
-At runtime a positive profile value is the resolved host limit and replaces
-the manifest fallback. `director.max_concurrent` applies only while that host
-limit is unknown; it is not a workspace-wide pool. `max_depth` is an
-independent descendant-depth policy. A live depth value replaces the manifest
-depth, which otherwise replaces the director fallback.
+`goal` and nonempty `acceptance` are required. `mode` defaults to `read-only`; write mode requires scope. Decisions, context, constraints and handoff are optional. Scope names relative modules, directories or files. It is a prompt contract, **not a filesystem sandbox**. The root coordinates overlapping writes and checks the integrated diff.
 
-`runner` and `longctx` are routing labels. `coding_models` is an ordered
-allowlist and its order is the Coding priority. Automatic selection uses only
-that allowlist, the current catalog, task shape, supported reasoning options,
-service-tier metadata, route health, and capacity evidence. The selected
-model and options are recorded in the proposal, ticket, and Receipt; dispatch
-checks them again against the captured catalog.
+Spawn returns an exact catalog model id, supported effort, the formatted prompt, scope and `fork_context:false`, with `spawned:false`. Pass the supported parameters and prompt to the host's native child API using a fresh context. Baton has not started a worker. Native handles and native completion remain authoritative.
 
-There is no interactive model-choice step during execution. An unavailable or
-invalid adapter, model, effort, service tier, authorization, or classification
-stops before native execution. Baton never chooses outside the configured
-profile or invents a model option.
-
-Non-interactive config can also set labels in one command:
+## Record an outcome
 
 ```text
-baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model>
+baton record --host codex --handle HANDLE --model MODEL --status completed --text "Reviewed result"
+baton status --host codex --json
 ```
 
-`--coding-model all` selects every picker-visible catalog row. `--runner -`
-or `--longctx -` clears that label; a missing label blocks the corresponding
-classified work.
+Records are optional append-only history in `~/.baton/results.jsonl`. Status returns the latest twenty records matching host and working directory; it does not show live state. Use `blocked` or `failed` when appropriate, and put existing work into the next brief's handoff when escalating a task.
 
-## Compiled OpenSpec apply
+## Installation and breaking changes
 
-OpenSpec apply is an explicit dual-skill workflow. In Codex, invoke
-`$baton $openspec-apply-change <change>`; in Grok, invoke `/baton
-$openspec-apply-change <change>`. Baton is hookless and activates only after
-that explicit host invocation. Ordinary OpenSpec discussion does not create a
-ticket. The OpenSpec task ledger remains canonical and is never delegated to a
-worker.
+Run `python3 scripts/update_local_baton.py` from a source checkout to test, build, link and refresh installed skills. `baton update` refreshes installed files. `baton uninstall --clean --dry-run` previews cleanup; omit `--dry-run` to remove Baton config/results and owned integrations. Modified integrations are preserved and conflicts reported. Package-manager command links are separate from runtime uninstall.
 
-The main agent first reads the apply instructions, every file returned in
-`contextFiles`, applicable repository guidance, and the affected code. It then
-compiles a versioned, fine-grained plan before creating tickets. The plan
-contains exact task references and dependencies, read context, write paths and
-allowed operations, an imperative patch recipe, done criteria, permitted
-validation, parent gates, and task mappings. Its units are exactly one of:
+V2 removes managed dispatch, apply, activation, tickets, receipts, sessions, queue state and Git audits. The configuration no longer has runner, longctx or director capacity fields. There is no second compatibility runtime. Earlier managed-runtime measurements are not v2 performance evidence.
 
-- `patch-only`: a concrete mutation with non-empty write paths and an
-  operation allowlist;
-- `verification-only`: checks/evidence only, with no write paths or patch
-  fields.
-
-Task mappings are many-to-many by design. For example, one broad task can map
-to two disjoint utility units, two coupled tasks can map to one patch unit, and
-a later integration unit can overlap that patch only when its dependency
-orders it after the earlier unit. The persisted plan and run keep the source
-snapshot, immutable plan fingerprint, current revision, unit/gate state, and
-ticket lineage separate from the task ledger.
-
-Baton validates the whole plan atomically, persists revision `1`, computes the
-maximal safe ready frontier, and derives a per-unit minimum capability from
-complexity, estimated context, code scope, required reasoning, and native/tool
-execution needs. It then walks only the configured `coding_models` in exact
-priority order. Spark is only the first candidate: when Spark is
-under-capable or exhausted in the current session, a later configured route
-may qualify and is selected silently. No unconfigured route is eligible. The
-user is notified only when no configured route is both current-session
-available and capable. In that case the complete
-`NO_QUALIFIED_CANDIDATE` result lists every configured route and every
-candidate exclusion reason (catalog absence, quota, current-session quota or
-uncallability, context, reasoning, execution capability, and task mismatch).
-Quota and uncallability are current Baton session cache facts only; a new
-session rechecks them.
-
-For each reserved unit, the runtime passes the reservation prompt unchanged to
-a fresh native worker with the exact selected model/options, binds the returned
-opaque execution handle immediately, waits on real native liveness, records
-one terminal result, and releases before refilling. A terminal ticket keeps
-its paths owned until release. The worker returns to the director only for
-source staleness, changed contracts, scope changes, safety-blocked partial
-mutation, or structured `PLAN_INSUFFICIENT`. Workers do not redesign or
-broaden scope, spawn children, touch Git/OpenSpec, or choose models.
-
-The parent alone accepts unit evidence and parent gates. It runs a gate only
-after its mapped units are accepted, and reconciles OpenSpec conclusions and
-checkboxes only after every mapped unit and gate passes. A checkbox is never
-marked early. Manual apply remains compatible: legacy `baton apply` can still
-use explicit per-unit scopes or `--read-only`; compiled mode rejects manual
-scope flags rather than guessing a plan.
-
-### Compiled run commands
-
-```text
-baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
-baton apply <change> --host <host> --run <run-id> --status --json
-baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
-baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
-baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
-```
-
-`--status` reports unit, gate, task, terminal-unreleased, and linked-ticket
-state. `--accept-gate` stores sanitized parent-owned evidence. `--reconcile`
-is the only operation that writes the canonical task ledger. A successor plan
-is submitted against the current run's parent revision and fingerprint; it
-must preserve selected-task coverage and pass fresh catalog, routing,
-capability, scope, and baseline checks. Source staleness, changed contracts,
-scope changes, safety-blocked partial mutation, stale successor revisions, and
-`PLAN_INSUFFICIENT` fail closed and return to the director for a new plan.
-
-## Rolling source-neutral runs
-
-Use `baton run` for new multi-unit work that should start from the first safe
-window instead of waiting for whole-change analysis. OpenSpec is one source
-adapter, not a required outer protocol. A director source embeds stable caller
-task ids; the OpenSpec source maps stable Markdown numbers to Baton task keys
-and retains Apply ordinals only as diagnostics.
-
-```text
-baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
-baton run <run> --append-plan <delta.json|-> [--dispatch] --json
-baton run <run> --status --json
-baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
-baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
-baton run <run> --reconcile [--task <task-key>] --json
-baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] [--allow-noop] --json
-baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
-baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
-baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
-baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
-baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
-```
-
-Start with one complete dependency-ready unit contract. While it is queued or
-running, analyze and append the next bounded delta. Each delta compares the
-current append sequence, adds only local coverage, and never rewrites an
-active or accepted version. A storage race is retryable by rebasing only the
-compare token; a semantic failure requires a new delta or successor version.
-
-Task status remains open until the parent submits an exact seal for all known
-non-superseded unit and gate versions. `safety-precondition`,
-`integration-acceptance`, and `evidence` gates block only explicit edges.
-Terminal result, safety verdict, parent acceptance, and release remain
-separate idempotent facts, so reconnect recovery can repair a missing fact
-without starting a duplicate worker. Only adapter reconciliation writes the
-source task ledger.
-
-### Isolated execution, bundle, and integration lifecycle
-
-For a new run, Baton persists `isolated-worktree` on writing units by default;
-verification-only units do not own a root. Before materializing the current
-frontier, Baton requires the selected adapter to advertise
-`native.exact_execution_root=true`, resolves every declared write path to one
-repository, and verifies a detached worktree against an immutable base. It
-creates roots only for the current capacity frontier, not for every unit in a
-large change. Setup or capability failure is a local blocker and cannot fall
-back to the caller checkout. Explicit `shared-worktree` remains available only
-for legacy/manual compatibility.
-
-Overlapping paths in distinct verified roots may execute concurrently and are
-reported as `integration_conflict_risk`; same-root overlap remains forbidden.
-After a terminal attempt is released, `--freeze-unit` performs the complete
-Git audit and freezes an immutable `ChangeBundle v1`. Use `--allow-noop` only
-when the parent explicitly accepts an empty result. Worker text is never a
-substitute for the audited tree.
-
-The parent then owns the serialized repository integration queue. `begin`
-captures the exact caller baseline, `apply` computes a clean result or typed
-conflicts without mutating the caller, `resolve` audits a separately supplied
-parent result tree, and `accept` revalidates and applies only the frozen result.
-Earlier accepted bundles remain fixed if a later bundle conflicts. Integration
-acceptance supplies the exact result base to hard-dependent successor units.
-
-Run submodule work from the submodule repository root and integrate its bundle
-there. Represent the superproject gitlink change as a later repository-local
-unit with an explicit dependency/gate; never treat submodule files as
-superproject blobs. Status shows the live execution root and bounded diff facts
-separately from bundle/integration acceptance. Cleanup is exact and idempotent;
-it refuses identity drift and preserves every retained or unresolved artifact.
-
-Accepted rolling documents and facts are stored in
-`~/.baton/workspaces/<workspace>/v2/runs/rolling-runs-v2/`. They are auditable
-records: clean uninstall reports and retains them. Manual apply and compiled
-run v1 remain compatible and are never auto-migrated.
-
-## Director, scope, and scheduling
-
-Discussion and read-only analysis stay in the director session. Authorized
-implementation units and classified mechanical units use the selected
-adapter's native child API. The director supplies the structured execution
-class; operation labels are retained only as audit data.
-
-Before a write ticket is created, the director performs a read-only impact and
-dependency pass. Every unit records exact paths and allowed operations from
-`write`, `create`, `delete`, `rename`, and `chmod`. Baton validates all units
-atomically, including rename endpoints, path-prefix overlap, and scopes owned
-by active tickets. Unknown scope or operation stops before mutation.
-
-At each scheduling and refill decision, Baton calculates the maximal safe ready
-frontier for the current `(host, session_uid)` root-agent tree: all order-ready
-units with complete, pairwise-disjoint scopes that fit its effective subagent
-capacity. Direct and nested descendants consume one shared tree-local slot;
-the root does not. It fills every available slot, while another root tree's
-queued or active tickets are neither counted nor refilled. Section order only
-breaks an otherwise equal choice.
-
-The effective capacity is the minimum of each known source: the native/adapter
-`host_limit`, configured `configured_policy`, and an optional current-operation
-`operation_limit`. Dispatch snapshots expose the same value and provenance in
-`capacity_sources`, whose entries contain `kind`, `value`, and `applied`. An
-explicit `--capacity` only lowers the current tree and is never persisted;
-legacy `dispatch-<host>.json` values are inert rollback residue.
-
-## Ticket identity and lifecycle
-
-Every ticket-producing and capacity-sensitive dispatch command requires
-`BATON_SESSION_ID`. Baton hashes that value into `session_uid`, the immutable
-root-agent-tree identity, and allocates a contiguous `session_ordinal` for each
-ticket in that session. Root and descendant tickets retain that same identity;
-a descendant, reconnect, or successor cannot mint a new session to obtain more
-capacity. Ticket ids contain the opaque prefix, session uid, and ordinal; ids
-are opaque data and are not route selectors. Preserve the `session_id`,
-`ticket_id`, and native execution handle in the identity handoff.
-
-The lifecycle is:
-
-1. Create a ticket and immutable Receipt with `baton spawn` or scoped
-   `baton apply`.
-2. Reserve the ticket and receive its exact prompt, description, model, options,
-   scope, and reservation envelope.
-3. Call the adapter's native child API with a fresh context and the exact
-   selected values.
-4. Immediately bind the returned opaque native execution handle to the
-   `session_id` and ticket id.
-5. Wait on native activity, record concise progress, and record one terminal
-   result.
-6. Release the ticket before refilling capacity.
-
-The handle kind is adapter-defined. Baton does not infer identity from text or
-replace a native handle with a local identifier. A capacity response
-(`AGENT_LIMIT_REACHED`) defers the same reservation in its originating tree
-without consuming an attempt or changing its model, session identity, or
-another tree's state. A slot remains held from `dispatching` through bound
-running and terminal-awaiting-release until native release is confirmed.
-
-## Quota exhaustion and successors
-
-An explicit host/profile model quota-exhaustion result is recorded as
-availability evidence across all root trees using that route. For a write
-ticket whose pre-mutation baseline is unchanged, Baton may create an immutable
-successor from the next configured Coding priority. The successor receives a new per-session ordinal and Receipt, records
-`successor_from_ticket_id` and `successor_reason`, and retains the originating
-session, adapter, scope, authorization, and quota lineage. It reruns catalog,
-option, capacity, and scope checks.
-
-The original ticket is never rewritten with a different model, and quota is
-never reset. If mutation has started or the baseline cannot be reconciled,
-stop and report reconciliation instead of creating a successor.
-
-## Repository safety
-
-Read-only is the default. Write tickets carry a path/operation allowlist and a
-parent-owned repository observation. Workers do not perform Git operations. An
-explicit exclusive commit ticket over the parent-staged tree may create one
-commit; all other repository operations remain outside the worker. Tree-local
-capacity never weakens workspace-wide path ownership, Git safety audits,
-activation/dispatch locks, or cross-tree write-conflict checks.
-
-Receipts, ticket state, catalogs, and installation records live under the
-user-global `~/.baton` directory. Worktree files remain the caller's files.
-
-## Commands
-
-```text
-baton init
-baton config --cli <adapter-id>
-baton models refresh --host <adapter-id>
-baton models status --host <adapter-id>
-baton match "<work description>" --host <adapter-id>
-baton spawn "<request>" --host <adapter-id> --classification <class>
-baton apply <change> --host <adapter-id>
-baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
-baton run <run-id> --status --json
-baton dispatch next --host <adapter-id> [--capacity <n>] --json
-baton dispatch status --host <adapter-id> [--capacity <n>] --json
-baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
-```
-
-`dispatch status` is scoped to the current root tree and reports `host`,
-`session_uid`, `capacity`, `capacity_sources`, `active`, `available`, and its
-queue/lifecycle ticket lists. General `baton status` keeps workspace ticket
-inventory but groups capacity diagnostics under `capacity_trees`; it never
-publishes one aggregate workspace `available` value. Missing or mismatched tree
-identity, or an active record without a valid `session_uid`, fails closed with a
-compatibility diagnostic rather than rewriting ticket or Receipt history.
-
-For a release check, report SDK conformance, manifest discovery, package/build
-results, live catalog evidence, native execution-handle evidence, ticket and
-quota lineage, cleanup, and the exact changed-path audit separately.
-
-## Measured OpenSpec apply
-
-One completed change, `scope-subagent-capacity-per-agent-tree`, was applied
-through Baton with native subagents. The change scoped dispatch capacity to
-one immutable `(host, session_uid)` root-agent tree: session identity,
-tree-local slots, status provenance, cross-tree safety isolation, adapter
-quota wording, and installed-runtime acceptance.
-
-### Task scale
-
-| Dimension | Size |
-|---|---|
-| OpenSpec work | 7 sections, 30 tasks |
-| Spec contract | 10 requirements, 26 scenarios |
-| Implementation commit `2aca248` | 46 files, +3,293 / −246 |
-| Source verification | 223 tests passed, 1 skipped |
-
-### Execution
-
-The comparison excludes 33m36s of unrelated compatibility-gate wait from
-another task. Amounts are public-API equivalent cost, not a subscription
-invoice. The solo-director row is a counterfactual: the same productive
-token volume priced and serialized on `gpt-5.6-sol`, not a second live run.
-
-| | Solo director estimate | Baton (1 director + 36 subagents) |
-|---|---|---|
-| Models | `gpt-5.6-sol` throughout | director `gpt-5.6-sol` (`high`, 3 auto-compacts); subagents `gpt-5.6-luna` (no auto-compacts) |
-| Effective wall clock | 2h 34m 33s | 1h 58m 05s (−36m 28s, 1.31×) |
-| Productive tokens | ~137.16M | ~137.16M |
-| API-equivalent cost | $79.70 | $30.56 (−$49.14, −61.7%) |
-
-Subagents carried more than half of the tokens; at `gpt-5.6-luna` prices
-their combined equivalent cost was about $2.66.
-
-## Related documentation
-
-- [Getting started](../samples/getting-started/README.md)
-- [Samples](../samples/README.md)
-- [Architecture notes](architecture/baton-dynamic-director.md)
-- [Architecture diagram](architecture/openbaton-architecture.html)
-- [Layered runtime](architecture/openbaton-layered-architecture.html)
+Adapters supply catalog discovery and a runtime skill for their own host; they do not execute another CLI's tasks. See the [manifest example](../samples/manifest-example/) and the [isolated walkthrough](../samples/getting-started/).

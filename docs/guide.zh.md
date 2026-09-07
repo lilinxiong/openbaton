@@ -1,374 +1,70 @@
-# Baton 产品指南
+# Baton 2.0 指南
 
-[English](guide.md) | **中文**
+主 agent 决定是否派工、明确公共契约、审查结果，并执行已授权的提交。Baton 负责准备模型参数和简短任务说明；工作只交给当前宿主的原生 subagents。
 
-这是 Baton 的技术参考。[落地 README](../README.zh.md) 说明安装和第一组命令。
+## 工作方式与模型
 
-## Public Adapter SDK
+| 工作方式 | 子任务还需决定什么 | 默认 effort 偏好 |
+|---|---|---|
+| execution | 按已定步骤执行、窄范围核对 | low |
+| implementation | 在明确契约内补齐局部实现 | medium |
+| investigation | 查明原因或解决设计问题 | high |
 
-Baton core 不内置目录。外部 adapter 软件包放在
-`~/.baton/adapters/<adapter-id>/`，或通过 `BATON_ADAPTER_PATHS` 指定目录，
-由其中的 `adapter.json` 被发现。adapter 负责可执行文件解析、实时模型
-目录、原生子执行和自身生命周期；Baton 只消费 SDK 的规范化结果。
+模型与 effort 分别选择。步骤明确的多文件迁移也可以使用 execution。主 agent 可以自己实现，不需要为了填满并发槽位而派工。
 
-软件包从以下入口导出 SDK：
+先通过 `baton models --host codex` 查看真实模型 id，再配置：
 
 ```text
-@zhouliuya/openbaton/adapters
-@zhouliuya/openbaton/adapters/sdk
+baton init --cli codex
+baton config --cli codex --coding-model MODEL --execution-model MODEL --enable
+baton match --host codex --work-mode execution --model MODEL --effort low --json
 ```
 
-### Manifest
+`MODEL` 替换为目录中的真实 id，模型参数可以重复。`--implementation-model`、`--investigation-model` 设置其他工作方式的模型偏好。在终端运行不带 `--cli` 的 `baton config` 可交互选择。
 
-manifest schema 为 `1`，字段固定且可审计：
+显式指定的 effort、service tier 必须被模型支持；自动选模会跳过不满足显式条件的候选。宿主已知某模型不可用时，可传 `--unavailable-model ID`，Baton 不猜测额度。`--context-tokens N` 只检查目录中已知的容量，未知则明确披露；不会从“迁移、跨模块”等词猜测上下文需求。
+
+## 准备子任务
+
+保存一份 JSON brief，例如：
 
 ```json
 {
-  "schema": 1,
-  "adapter": {
-    "id": "sample-adapter",
-    "display_name": "Sample Adapter",
-    "package_name": "sample-adapter-package",
-    "package_version": "1.0.0",
-    "sdk_version": "1.0"
-  },
-  "catalog": {
-    "command": "catalog.js",
-    "args": [],
-    "protocol": "json",
-    "timeout_ms": 15000
-  },
-  "invocation": { "signal": "SAMPLE_ADAPTER_SESSION" },
-  "native": { "execution_handle_kind": "sample-native-task" },
-  "runtime_skill": {
-    "source": "runtime/SKILL.md",
-    "destination": ".baton/skills/sample-adapter/SKILL.md"
-  },
-  "quota": {
-    "max_concurrent_subagents": 3,
-    "max_depth": 1,
-    "backpressure": "defer"
+  "goal": "迁移已明确的新 API 调用方",
+  "decisions": ["遵守已有的所有权契约"],
+  "scope": ["src/example"],
+  "acceptance": ["列出修改文件和剩余旧调用"],
+  "constraints": ["不修改公共 API"],
+  "mode": "write",
+  "handoff": {
+    "existingChanges": "新 API 已实现",
+    "checks": "静态接口核对已通过",
+    "unresolvedIssues": "示例调用方尚未迁移"
   }
 }
 ```
 
-manifest 声明 adapter 标识、显示信息、软件包和 SDK 版本、目录命令与
-协议、调用环境信号、不透明的原生 handle 类型、运行时 skill 路径，以及
-adapter 报告的容量、深度和背压事实。`quota.max_concurrent_subagents` 表示
-一个 root-agent tree 中活跃 descendants 的最大数量，不包含 root；它不是
-workspace、host 全局、进程、模型目录或总 agent 数。路径必须是软件包内相对
-路径且不能越界；字段无效或 id 重复时停止发现。
-
-目录命令返回一个包含相同 `adapter_id`、可选版本和 `models` 数组的 JSON
-对象。每个模型的 `id`、显示名、描述、可见性、推理强度、模态、速度层、
-服务层和默认值都按原样保留；缺失的可选字段保持未知。Baton 不补造目录
-条目或执行选项。
-
-## 配置与自动路由
-
-`baton init` 发现 manifest，`baton config --cli <id>` 查询该 adapter 的
-实时目录。只有明确选择的 profile 会写入 `~/.baton/config.toml`：
-
-```toml
-[director]
-max_concurrent = 3
-max_depth = 1
-
-[cli.sample-adapter]
-runner = "<model-id>"
-longctx = "<model-id>"
-coding_models = ["<model-id>", "<another-model-id>"]
-max_concurrent = 3
+```text
+baton spawn --host codex --brief brief.json --work-mode execution --json
 ```
 
-`[cli.<id>].max_concurrent` 是该 CLI 报告的、按 root-agent tree 计算的
-subagent 上限。写入时优先用实时目录值，其次用 adapter manifest 的 quota，
-两者都没有时保留已有的正整数报告值；所有来源都未知才写入 `-1`，`0` 也会
-归一化为未知。运行时，profile 中的正整数就是已解析的 host 上限，并替代
-manifest fallback。只有 host 上限未知时才使用 `director.max_concurrent`；它
-不是 workspace 共享池。`max_depth` 是独立的 descendants 深度策略，不等同于
-并发容量；实时深度优先于 manifest 深度，manifest 深度又优先于 director
-fallback。
+`goal` 和非空 `acceptance` 必填；`mode` 默认 `read-only`，写入模式必须有 scope。其他字段可选。scope 可以是相对模块、目录或文件，属于任务约束，**不是文件系统沙箱**。主 agent 负责避免并发写入冲突并核对最终 diff。
 
-`runner` 与 `longctx` 是路由标签；`coding_models` 是有序 allowlist，数组
-顺序就是 Coding 优先级。自动选择只使用该 allowlist、当前目录、任务形状、
-adapter 支持的推理选项、服务层信息、路由健康和容量事实。选择结果会写入
-proposal、ticket 与 Receipt，并在 dispatch 时再次按目录校验。
+命令返回真实模型 id、受支持的 effort、格式化 prompt、scope、`fork_context:false` 和 `spawned:false`。主 agent 将参数传给宿主原生子 agent API，使用新的上下文。此时 Baton 还没有启动 worker；原生句柄和完成状态始终由宿主管理。
 
-执行阶段没有交互式模型选择。adapter、模型、推理选项、服务层、授权或
-分类无效时，在原生执行前停止；Baton 不越过已配置的 profile，也不凭空添加
-模型选项。
-
-非交互配置也可以一次写好标签：
+## 记录结果
 
 ```text
-baton config --cli <adapter-id> --runner <model> --longctx <model> --coding-model <model>
+baton record --host codex --handle HANDLE --model MODEL --status completed --text "已审查的结果"
+baton status --host codex --json
 ```
 
-`--coding-model all` 选择目录里所有 picker 可见的模型。`--runner -` 或
-`--longctx -` 会清空对应标签；标签缺失时，对应分类的工作会被拦住。
+结果记录可选，追加到 `~/.baton/results.jsonl`。status 仅返回当前宿主和工作目录最近二十条记录，不表示实时运行状态。必要时使用 `blocked`、`failed`；升级模型时把已有修改、检查和缺口写进下一份 handoff。
 
-## 编译后的 OpenSpec apply
+## 安装与不兼容变更
 
-OpenSpec apply 是显式的双 skill 流程：Codex 中使用
-`$baton $openspec-apply-change <change>`，Grok 中使用 `/baton
-$openspec-apply-change <change>`。Baton 没有 hook，只有显式调用 host skill
-后才会激活；普通 OpenSpec 讨论不会创建 ticket。OpenSpec task ledger 仍是
-规范事实源，绝不会交给 worker。
+源码安装运行 `python3 scripts/update_local_baton.py`，它会测试、构建、链接并刷新 skill。`baton update` 刷新已安装文件。`baton uninstall --clean --dry-run` 预览清理；移除 `--dry-run` 后删除 Baton 配置、结果和拥有的集成文件。被修改的集成文件会保留并报告冲突。包管理器的命令链接需要单独卸载。
 
-主 agent 先读取 apply instructions、返回的每个 `contextFiles`、适用的仓库
-指导和受影响代码，然后再创建 ticket。它编译带版本的细粒度计划，包含精确
-task refs 与 dependencies、read context、write paths 与 allowed operations、
-命令式 patch recipe、done criteria、permitted validation、parent gates 和
-task mappings。unit 只能是以下两种之一：
+V2 删除 managed dispatch、apply、activation、ticket、Receipt、session、队列和 Git 审计；配置不再包含 runner、longctx 和 director 容量字段，不保留第二套兼容运行时。旧 managed 版本的测量不能作为 v2 性能证据。
 
-- `patch-only`：具体修改，必须有非空 write paths 与 operation allowlist；
-- `verification-only`：只产生检查/证据，禁止 write paths 与 patch 字段。
-
-task mapping 支持多对多：一个宽任务可以拆成两个互不冲突的 utility unit，
-多个耦合任务可以合成一个 patch，后续与它重叠的 integration unit 只有在
-依赖明确排序后才可执行。持久化的 plan/run 将 source snapshot、不可变
-fingerprint、当前 revision、unit/gate 状态和 ticket lineage 与 task ledger
-分开保存。
-
-Baton 原子校验并持久化整份计划，建立 revision `1`，计算 maximal safe ready
-frontier，并根据复杂度、估算上下文、代码 scope、所需 reasoning 及
-native/tool 执行需求推导每个 unit 的 minimum capability。随后只沿用户配置的
-`coding_models` 原顺序选择。Spark 只是第一个候选：如果当前 session 中
-Spark 能力不足或已耗尽，而后面的已配置 route 合格，就静默前进。绝不使用
-profile 外的 route。只有没有任何同时满足“当前 session 可用”和“能力足够”的
-已配置 route 时才通知用户；此时完整的 `NO_QUALIFIED_CANDIDATE` 结果必须
-列出每个 configured route 及每个候选的排除原因（目录缺失、quota、当前
-session quota/uncallable、context、reasoning、execution capability、task
-不匹配）。quota 与 uncallability 只是当前 Baton session cache，新 session
-必须重新检查。
-
-每个 reservation 都要把 prompt 原样交给带精确模型/选项的新 native worker，
-立即绑定返回的 opaque execution handle，依据真实 native liveness 等待，记录
-一次 terminal result，并在 refill 前 release。terminal ticket 的 scope 在
-release 确认前继续占用。worker 不得重设计、扩大 scope、spawn 子 agent、触碰
-Git/OpenSpec 或选择模型。只有 parent 在所有 mapped unit 与 gate 通过后接受
-gate、reconcile task conclusion/checkbox；checkbox 不能提前勾选。
-
-### 编译 run 命令
-
-```text
-baton apply <change> --host <host> --plan-file <plan.json> [--dispatch] --json
-baton apply <change> --host <host> --run <run-id> --status --json
-baton apply <change> --host <host> --run <run-id> --accept-gate <gate-id> --text "..." --json
-baton apply <change> --host <host> --run <run-id> --reconcile [--task <number>] --json
-baton apply <change> --host <host> --run <run-id> --plan-file <successor.json> [--dispatch] --json
-```
-
-首个计划是 revision `1`。successor 必须针对当前 run 的 parent revision 和
-fingerprint，保留 selected-task coverage，并重新通过 catalog、routing、
-capability、scope 与 baseline 校验。`--status` 报告 run 状态，`--accept-gate`
-写入 parent gate 证据，只有 `--reconcile` 能写 canonical task ledger。source
-staleness、changed contract、scope 变化、安全门阻断的部分修改、过期 successor
-revision 和 `PLAN_INSUFFICIENT` 都 fail closed，返回 director 重新编译。
-旧式手工 `baton apply` 的显式 scope 与 `--read-only` 仍保持兼容；compiled 模式
-拒绝手工 scope flag，不猜测计划。
-
-## 来源中立的 Rolling run
-
-新的多 unit 工作如果希望从第一个安全窗口立刻启动，而不是等待整份 change
-分析完成，应使用 `baton run`。OpenSpec 只是一个 source adapter，不是外层协议
-前提。director source 携带调用方提供的稳定 task id；OpenSpec source 把 Markdown
-稳定任务号映射成 Baton task key，Apply ordinal 只作诊断信息。
-
-```text
-baton run start --host <host> --source-file <source.json|-> [--plan-delta-file <delta.json|->] [--run-id <run>] [--dispatch] --json
-baton run <run> --append-plan <delta.json|-> [--dispatch] --json
-baton run <run> --status --json
-baton run <run> --accept-gate <gate>@<version> --text "..." [--dispatch] --json
-baton run <run> --seal-task <task-key> --seal-file <seal.json|-> --json
-baton run <run> --reconcile [--task <task-key>] --json
-baton run <run> --freeze-unit <unit> --attempt attempt-<n> --text "..." [--validation "..."] [--allow-noop] --json
-baton integration begin --run <run> --repository-id <sha256> --bundle-id <bundle> --expected-before-tree <tree> --json
-baton integration apply --run <run> --repository-id <sha256> --bundle-id <bundle> --json
-baton integration resolve --run <run> --repository-id <sha256> --bundle-id <bundle> --resolved-tree <tree> --conclusion "..." --json
-baton integration accept --run <run> --repository-id <sha256> --bundle-id <bundle> --conclusion "..." --json
-baton run <run> --cleanup-unit <unit> --attempt attempt-<n> --json
-```
-
-先提交一个完整、依赖已就绪的 unit contract；它 queued/running 时继续分析并
-追加下一个有界 delta。每个 delta 比较当前 append sequence，只增加局部 coverage，
-绝不改写 active 或 accepted 版本。存储竞争只需要重置 compare token 后机械重试；
-语义失败必须生成新 delta 或 successor version。
-
-task 在 parent 为所有已知非 superseded unit/gate 提交精确 seal 前始终保持 open。
-`safety-precondition`、`integration-acceptance`、`evidence` gate 只阻断显式边。
-terminal result、safety verdict、parent acceptance 和 release 是独立幂等事实，
-因此 reconnect recovery 可以补齐缺失事实，而不会重复启动 worker。只有 source
-adapter reconciliation 可以写任务 ledger。
-
-### 隔离执行、bundle 与 integration 生命周期
-
-新 run 默认在写入 unit 上持久化 `isolated-worktree`；verification-only unit
-不拥有 root。物化当前 frontier 前，Baton 要求选定 adapter 明确声明
-`native.exact_execution_root=true`，把每个 write path 解析到唯一 repository，
-并相对不可变 base 验证 detached worktree。它只为当前容量 frontier 创建 root，
-不会在大 change 启动时给所有未来 unit 一次性建目录。setup 或 capability 失败
-只形成局部 blocker，绝不能回退到 caller checkout。显式 `shared-worktree` 只作为
-legacy/manual 兼容入口保留。
-
-不同 verified root 上的重叠路径可以并行执行，并记录为
-`integration_conflict_risk`；同一 root 内仍严格互斥。terminal attempt release 后，
-`--freeze-unit` 执行完整 Git audit 并冻结不可变 `ChangeBundle v1`。只有 parent
-明确允许空结果时才能使用 `--allow-noop`；worker 文字结论不能替代 audited tree。
-
-随后由 parent 独占每个 repository 的串行 integration queue。`begin` 捕获精确
-caller baseline，`apply` 在不修改 caller 的前提下计算 clean result 或 typed
-conflicts，`resolve` 审计另行提交的 parent result tree，`accept` 重新校验并只应用
-冻结结果。后续 bundle 冲突不会回滚之前已经 accepted 的 bundle；integration
-acceptance 会把精确 result base 提供给硬依赖 successor。
-
-submodule 工作必须从 submodule repository root 启动并在该仓库集成。superproject
-gitlink 更新要表示为后续 repository-local unit，并带显式 dependency/gate；不能把
-submodule 文件当作 superproject blob。status 分开显示 live execution root/有界
-diff facts 与 bundle/integration acceptance。cleanup 精确且幂等；identity drift 会
-被拒绝，所有 retained 或 unresolved artifact 都会保留。
-
-已接受的 rolling documents/facts 位于
-`~/.baton/workspaces/<workspace>/v2/runs/rolling-runs-v2/`。它们是审计记录，
-clean uninstall 会报告并保留。手工 apply 和 compiled-v1 run 保持兼容，绝不
-自动迁移。
-
-## Director、scope 与调度
-
-讨论和只读分析留在 director。已授权的实现单元与分类后的机械单元使用所
-选 adapter 的原生子执行接口。director 提供结构化执行类别；operation label
-只作为审计信息。
-
-创建写入 ticket 前，director 先做只读影响面与依赖分析，为每个 unit 记录
-精确路径和允许操作：`write`、`create`、`delete`、`rename`、`chmod`。Baton
-会在一次原子决策中校验全部 unit，包括 rename 两端、路径前缀重叠和已被活跃
-ticket 占用的 scope。未知 scope 或操作会在修改前停止。
-
-每次调度或补充容量时，Baton 针对当前 `(host, session_uid)` root-agent tree
-计算 maximal safe ready frontier：所有依赖已就绪、scope 完整且两两不冲突、并且
-适合该 tree 有效 subagent 容量的 unit。直接和嵌套 descendants 共用槽位，root
-不占槽；另一个 root tree 的 queued/active ticket 不会被计数，也不会被 refill。
-所有当前可用槽位都应填满；section 顺序只用于相同条件下的稳定排序。
-
-有效容量取已知来源的最小值：native/adapter `host_limit`、配置的
-`configured_policy`，以及可选的当前操作 `operation_limit`。dispatch snapshot
-会在 `capacity_sources` 中返回同一个值及其 provenance；每个来源包含 `kind`、
-`value` 和 `applied`。显式 `--capacity` 只降低当前 tree 的容量且不会持久化；
-旧的 `dispatch-<host>.json` 只保留作回滚残留，不再参与调度。
-
-## Ticket 身份与生命周期
-
-所有会产生 ticket 或对容量敏感的 dispatch 命令都要求 `BATON_SESSION_ID`。
-Baton 将其哈希为不可变的 root-agent-tree 身份 `session_uid`，并在该 session
-内分配连续的 `session_ordinal`。root 与 descendants 的 ticket 必须保留同一
-身份；child、reconnect 或 successor 不能通过创建新 session 获取额外容量。
-ticket id 包含不透明前缀、session uid 和 ordinal；id 是数据，不是路由信号。
-身份交接必须同时保留 `session_id`、`ticket_id` 和 adapter 返回的原生 execution
-handle。
-
-每张 ticket 都遵循以下流程：
-
-1. 用 `baton spawn` 或带 scope 的 `baton apply` 创建 ticket 与不可变 Receipt。
-2. reserve，取得精确 prompt、description、模型、选项、scope 和 reservation。
-3. 以新上下文调用 adapter 的原生子执行接口，并传入精确选择结果。
-4. 立即把不透明的原生 execution handle 与 session、ticket 身份绑定。
-5. 根据原生 activity 等待，按需记录简短进度，并记录一次 terminal result。
-6. release 后再补充容量。
-
-handle 类型由 adapter 定义。Baton 不从文本推断身份，也不把原生 handle 换成自行
-生成的标识。native 返回 `AGENT_LIMIT_REACHED` 时，Baton 在原 tree 中保留同一
-reservation、模型、session 身份和 attempt，等槽位释放后继续，不修改另一个 tree。
-槽位从 `dispatching` 起一直保持到 bound running；terminal 结果也要等 native
-release 确认后才归还。
-
-## 配额耗尽与 successor
-
-adapter 明确报告 host/profile 模型配额耗尽后，Baton 先保存对所有使用该 route
-的 root tree 都有效的可用性事实，并确认写入 ticket 的修改前 baseline 未变化。
-满足条件时，可从下一项 Coding 优先级创建不可变 successor。
-successor 获取该 session 的新 ordinal 和新 Receipt，记录
-`successor_from_ticket_id`、`successor_reason`，并保留原 session、adapter、
-scope、授权和配额 lineage；随后重新执行目录、选项、容量和 scope 校验。
-
-原 ticket 不会被改写成另一模型，配额也不会重置。若已经发生修改或 baseline
-无法核对，则停止并报告需要人工处理的 reconciliation，不创建 successor。
-
-## 仓库安全
-
-只读是默认模式。写入 ticket 携带路径/操作 allowlist 与由 parent 负责的仓库
-观察结果；worker 不执行 Git 操作。只有显式授权、独占、针对 parent 已暂存树的
-commit ticket 可以创建一次 commit，其余仓库操作都不属于 worker。tree-local
-容量不会削弱 workspace-wide 的路径所有权、Git safety 审计、activation/dispatch
-锁或跨 tree 写入冲突检查。
-
-Receipt、ticket 状态、目录快照和安装记录位于用户级 `~/.baton`；工作区文件
-仍由调用方负责。
-
-## 常用命令
-
-```text
-baton init
-baton config --cli <adapter-id>
-baton models refresh --host <adapter-id>
-baton models status --host <adapter-id>
-baton match "<work description>" --host <adapter-id>
-baton spawn "<request>" --host <adapter-id> --classification <class>
-baton apply <change> --host <adapter-id>
-baton run start --host <adapter-id> --source-file <source.json> --plan-delta-file <delta.json> --dispatch --json
-baton run <run-id> --status --json
-baton dispatch next --host <adapter-id> [--capacity <n>] --json
-baton dispatch status --host <adapter-id> [--capacity <n>] --json
-baton dispatch complete <ticket> --host <adapter-id> --text "<conclusion>" --release --json
-```
-
-`dispatch status` 只查看当前 root tree，返回 `host`、`session_uid`、`capacity`、
-`capacity_sources`、`active`、`available` 以及该 tree 的 queue/lifecycle ticket
-列表。普通 `baton status` 仍保留 workspace ticket inventory，但在
-`capacity_trees` 下按 tree 分组，绝不发布一个聚合 workspace `available`。缺失或
-不匹配的 tree 身份，以及没有有效 `session_uid` 的活跃记录，都会 fail closed 并
-报告 compatibility blocker，不改写 ticket 或 Receipt 历史。
-
-发布检查应分别报告 SDK conformance、manifest 发现、构建与打包、实时目录、
-原生 execution handle、ticket 与 quota lineage、清理结果，以及精确 changed-path
-审计。
-
-## 一次实测
-
-已完成的 OpenSpec 变更 `scope-subagent-capacity-per-agent-tree` 通过 Baton
-分派给原生子 agent 执行。这次把 dispatch 容量从 workspace/host 共享池改成
-不可变的 `(host, session_uid)` root-agent tree，覆盖 session 身份、tree-local
-槽位、status provenance、跨 tree 安全隔离、adapter quota 语义和
-installed-runtime 验收。
-
-### 任务规模
-
-| 维度 | 规模 |
-|---|---|
-| OpenSpec 工作 | 7 个章节，30 个任务 |
-| Spec 合同 | 10 条 requirement，26 个 scenario |
-| 实现提交 `2aca248` | 46 个文件，+3,293 / −246 |
-| 源码验证 | 223 passed，1 skipped |
-
-### 执行
-
-对比口径排除了另一任务的兼容性门禁等待 33分36秒。金额按公开 API 单价换算，
-不是订阅账单。主 Agent 单独执行一行是反事实估算：同样的生产性 Token 规模
-按 `gpt-5.6-sol` 计价并串行完成，不是第二次实跑。
-
-| | 主 Agent 单独串行估算 | Baton（1 个主 Agent + 36 个 subagent） |
-|---|---|---|
-| 模型 | 全程 `gpt-5.6-sol` | 主 Agent `gpt-5.6-sol`（`high`，3 次自动压缩）；subagent 全部 `gpt-5.6-luna`（无自动压缩） |
-| 有效端到端 | 2小时34分33秒 | 1小时58分05秒（节省 36分28秒，1.31×） |
-| 生产性 Token | 约 137.16M | 约 137.16M |
-| API 等价成本 | $79.70 | $30.56（节省 $49.14，降 61.7%） |
-
-subagent 承担了过半 Token，但按 `gpt-5.6-luna` 单价合计约 $2.66。
-
-## 相关文档
-
-- [入门样例](../samples/getting-started/README.zh.md)
-- [样例说明](../samples/README.zh.md)
-- [架构说明](architecture/baton-dynamic-director.zh.md)
-- [架构图](architecture/openbaton-architecture.html)
-- [分层运行图](architecture/openbaton-layered-architecture.html)
+adapter 提供当前宿主的模型目录和 runtime skill，不承担跨 CLI 执行。参见 [manifest 示例](../samples/manifest-example/) 和 [隔离 walkthrough](../samples/getting-started/)。

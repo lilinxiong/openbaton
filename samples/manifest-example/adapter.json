@@ -15,8 +15,7 @@
   },
   "invocation": { "signal": "SAMPLE_ADAPTER_SESSION" },
   "native": {
-    "execution_handle_kind": "sample-native-task",
-    "exact_execution_root": false
+    "execution_handle_kind": "sample-native-task"
   },
   "runtime_skill": {
     "source": "runtime/SKILL.md",

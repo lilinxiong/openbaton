@@ -4,7 +4,7 @@
     "id": "codex",
     "display_name": "Codex",
     "package_name": "@zhouliuya/openbaton-codex-adapter",
-    "package_version": "1.0.0",
+    "package_version": "2.0.0",
     "sdk_version": "1.0"
   },
   "catalog": {
@@ -18,8 +18,7 @@
     "environment": "Codex Desktop thread runtime"
   },
   "native": {
-    "execution_handle_kind": "task_name",
-    "exact_execution_root": true
+    "execution_handle_kind": "task_name"
   },
   "runtime_skill": {
     "source": "runtime/SKILL.md",

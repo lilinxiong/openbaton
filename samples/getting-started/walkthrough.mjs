@@ -1,85 +1,74 @@
 #!/usr/bin/env bun
-
-/**
- * Isolated newcomer walkthrough: init, config, match, spawn, dispatch.
- * Uses samples/manifest-example (sample-adapter). No paid host.
- */
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, "..", "..");
-const adapter = path.join(repoRoot, "samples", "manifest-example");
-const batonEntry = path.join(repoRoot, "bin", "baton.ts");
-const sessionId = "getting-started-session";
-
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-getting-started-home-"));
-const work = fs.mkdtempSync(path.join(os.tmpdir(), "baton-getting-started-work-"));
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "baton-native-example-"));
+const home = path.join(temporary, "home");
+const work = path.join(temporary, "work");
+fs.mkdirSync(home);
+fs.mkdirSync(work);
 const env = {
   ...process.env,
   HOME: home,
-  BATON_ADAPTER_PATHS: adapter,
-  BATON_SESSION_ID: sessionId,
+  USERPROFILE: home,
+  BATON_HOST: "sample-adapter",
+  BATON_ADAPTER_PATHS: path.join(root, "samples/manifest-example"),
 };
-delete env.BATON_HOST;
 
-function baton(args, cwd = work) {
-  const printable = ["baton", ...args].join(" ");
-  process.stdout.write(`\n$ ${printable}\n`);
-  const result = spawnSync("bun", [batonEntry, ...args], {
-    cwd,
-    env,
-    encoding: "utf8",
+function run(args, json = false) {
+  const result = spawnSync("bun", [path.join(root, "bin/baton.ts"), ...args], {
+    cwd: work, env, encoding: "utf8", timeout: 10_000,
   });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  if (result.status !== 0) {
-    throw new Error(`${printable} exited ${result.status}`);
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+  return json ? JSON.parse(result.stdout) : result.stdout;
+}
+
+try {
+  run(["init", "--cli", "sample-adapter"]);
+  run(["config", "--cli", "sample-adapter", "--coding-model", "sample-model",
+    "--execution-model", "sample-model", "--enable"]);
+  const catalog = run(["models", "--json"], true);
+  assert.deepEqual(catalog.models.map((model) => model.id), ["sample-model"]);
+  const matched = run(["match", "--work-mode", "execution", "--json"], true);
+  assert.equal(matched.model_id, "sample-model");
+  assert.equal(matched.reasoning_effort, "low");
+
+  const brief = path.join(work, "brief.json");
+  fs.writeFileSync(brief, JSON.stringify({
+    goal: "Check the known change",
+    decisions: ["Keep existing public names"],
+    scope: ["README.md"],
+    acceptance: ["Report remaining references"],
+    mode: "read-only",
+    handoff: {
+      existingChanges: "The implementation is already present",
+      checks: "Static checks passed",
+      unresolvedIssues: "One documentation reference needs review",
+    },
+  }));
+  const prepared = run(["spawn", "--brief", brief, "--work-mode", "execution", "--json"], true);
+  assert.equal(prepared.spawned, false);
+  assert.equal(prepared.model_id, "sample-model");
+  assert.equal(prepared.fork_context, false);
+  assert.match(prepared.prompt, /One documentation reference needs review/);
+  assert.deepEqual(fs.readdirSync(work), ["brief.json"]);
+  for (const name of ["spawns", "receipts", "workspaces", "state", "cache"]) {
+    assert.equal(fs.existsSync(path.join(home, ".baton", name)), false);
   }
-  return result.stdout;
+
+  // Simulated host result. This example does not execute a native worker.
+  run(["record", "--host", "sample-adapter", "--handle", "simulated-handle",
+    "--model", "sample-model", "--status", "completed", "--text", "Simulated host result"]);
+  const status = run(["status", "--json"], true);
+  assert.equal(status.results.length, 1);
+  assert.equal(status.results[0].native_handle, "simulated-handle");
+  assert.equal(status.results[0].result, "Simulated host result");
+  process.stdout.write("getting-started native-only walkthrough ok (simulated host; no worker executed)\n");
+} finally {
+  fs.rmSync(temporary, { recursive: true, force: true });
 }
-
-execFileSync("git", ["init", "-q"], { cwd: work });
-fs.writeFileSync(path.join(work, "README.md"), "demo\n");
-execFileSync("git", ["add", "README.md"], { cwd: work });
-execFileSync("git", ["-c", "user.email=gs@example.invalid", "-c", "user.name=GS", "commit", "-qm", "init"], { cwd: work });
-
-process.stdout.write(`HOME=${home}\nWORK=${work}\nADAPTER=${adapter}\n`);
-
-baton(["init", "--cli", "sample-adapter"], repoRoot);
-baton(["config", "--cli", "sample-adapter", "--runner", "sample-model", "--longctx", "sample-model", "--coding-model", "sample-model"], repoRoot);
-baton(["models", "refresh", "--host", "sample-adapter"], repoRoot);
-const matchOut = baton(["match", "tiny typo in one file", "--host", "sample-adapter"], repoRoot);
-if (!matchOut.includes("sample-model")) {
-  throw new Error("match did not select sample-model");
-}
-
-const spawnOut = baton([
-  "spawn", "tiny typo in one file",
-  "--host", "sample-adapter",
-  "--classification", "mechanical",
-  "--write-path", "README.md",
-  "--json",
-], work);
-const spawned = JSON.parse(spawnOut);
-const ticket = spawned.dispatched?.[0]?.ticket?.id;
-if (!ticket) throw new Error("spawn did not return a ticket id");
-process.stdout.write(`ticket=${ticket}\n`);
-
-const reserved = JSON.parse(baton(["dispatch", "next", "--host", "sample-adapter", "--json"], work));
-if (reserved.reserved?.[0]?.ticket_id !== ticket) {
-  throw new Error("dispatch next reserved a different ticket");
-}
-
-baton(["dispatch", "bind", ticket, "--execution-handle", "sample-native-task=demo-1", "--host", "sample-adapter", "--json"], work);
-const done = JSON.parse(baton(["dispatch", "complete", ticket, "--host", "sample-adapter", "--text", "fixed the typo", "--release", "--json"], work));
-if (done.ticket?.status !== "completed") {
-  throw new Error(`expected completed, got ${done.ticket?.status}`);
-}
-
-const status = JSON.parse(baton(["dispatch", "status", "--host", "sample-adapter", "--json"], work));
-if (status.active !== 0) throw new Error(`expected active 0, got ${status.active}`);
-process.stdout.write("\ngetting-started walkthrough ok\n");
