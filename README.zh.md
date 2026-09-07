@@ -5,8 +5,14 @@
 [English](README.md) | **中文**
 
 Baton 是 CLI 中立、由 manifest 驱动的调度与策略层。它让 director 对话
-保持清晰，从所选 adapter 的实时目录中自动选择模型，并通过原生子执行
-接口运行已授权的工作。
+保持清晰，从所选 adapter 的实时目录中自动选择模型，并在当前 managed
+ticket 路径中通过原生子执行接口运行已授权的工作。
+
+Codex 宿主未来的轻量 runtime 由宿主内原生 subagents 协作：root agent
+负责拆分和契约，也可以自己实现；只有在能降低剩余决策难度时才委派，不以
+填满槽位为目标。execution、implementation、investigation 是工作方式，
+model 与 reasoning effort 独立选择。这个轻量 runtime 属于后续阶段，当前
+CLI 尚未实现。
 
 子 agent 容量属于一个 root-agent tree，由哈希后的 `BATON_SESSION_ID` 标识。
 root agent 本身不计入容量；直接子 agent、孙级及更深层 descendants 共享同一个
@@ -164,6 +170,10 @@ baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model
 安装的 `agents/openai.yaml` 把 `policy.allow_implicit_invocation` 设置为
 `false`；通过 Codex skill picker 显式调用 `$baton` 仍然可用。
 
+### 当前 managed ticket 兼容路径
+
+以下描述的是当前 ticket 生命周期，不是未来的轻量 runtime。
+
 使用 `$baton`，并且 Codex profile 已配置之后：
 
 - 讨论和只读分析留在 Codex director 会话里。这些**不会**创建 Baton
@@ -174,6 +184,11 @@ baton config --cli codex --runner <model-id> --longctx <model-id> --coding-model
 
 `$baton` 仍然要求 director 给出**结构化 classification**。Baton 不会从
 自由文本里推断路由。缺少 classification 时，会阻止创建 ticket。
+
+未来的轻量 Codex runtime 会根据剩余决策难度选择 execution、
+implementation 或 investigation；root agent 可以把单元留在本地，委派
+不是必须，也不要求填满槽位。它只在当前 Codex 宿主内协作，不跨 CLI 启动或
+协调进程。本版本没有实现这个 runtime 的 CLI。
 
 ### CLI 命令
 

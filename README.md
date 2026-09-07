@@ -6,7 +6,15 @@
 
 Baton is a CLI-neutral, manifest-driven scheduling and policy layer. It keeps
 the director conversation focused, chooses from the selected adapter's live
-catalog, and runs authorized work through native child execution.
+catalog, and in the current managed-ticket path runs authorized work through
+native child execution.
+
+For Codex, the planned lightweight runtime is host-native: the root agent owns
+decomposition and contracts, may implement work itself, and delegates only when
+that reduces the remaining decision difficulty. Execution, implementation, and
+investigation are work modes; model and reasoning effort are independent
+choices. This runtime is a later phase and is not implemented by the current
+CLI.
 
 Subagent capacity belongs to one root-agent tree, identified by the hashed
 `BATON_SESSION_ID`. The root itself is excluded from the count; direct children,
@@ -156,8 +164,10 @@ keeps implicit invocation disabled.
 
 Then run `baton config --cli codex`. On a TTY it is a guided flow: arrow keys
 select, space toggles. It walks through `runner`, `longctx`, and Coding-model
-priority. Model ids come from the live Codex CLI catalog (`BATON_CODEX_PATH`
-if Codex is not on `PATH`).
+priority. These runner and long-context routes are compatibility fields for
+the managed-ticket path and future migration; they do not describe the
+lightweight native runtime. Model ids come from the live Codex CLI catalog
+(`BATON_CODEX_PATH` if Codex is not on `PATH`).
 
 Flags skip the prompts for non-interactive use and write only `[cli.codex]`:
 
@@ -179,6 +189,11 @@ The installed `agents/openai.yaml` sets `policy.allow_implicit_invocation` to
 `false`, while explicit `$baton` invocation remains available through Codex's
 skill picker.
 
+### Current managed-ticket compatibility path
+
+This section describes the current ticket lifecycle, not the future lightweight
+runtime.
+
 When `$baton` is used and the Codex profile is configured:
 
 - Discussion and read-only analysis stay in the Codex director session. These
@@ -189,6 +204,12 @@ When `$baton` is used and the Codex profile is configured:
 
 `$baton` still requires a director **structured classification**. Baton does
 not infer a route from prose. Missing classification blocks ticket creation.
+
+The future lightweight Codex runtime will choose execution, implementation, or
+investigation from the remaining decision difficulty. The root agent may keep a
+unit local, and delegation is optional rather than a requirement to fill slots.
+It stays within the current Codex host and does not start or coordinate a
+different CLI process. No CLI for that runtime exists in this release.
 
 ### CLI commands
 
