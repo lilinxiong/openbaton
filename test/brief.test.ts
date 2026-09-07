@@ -36,6 +36,11 @@ describe("worker briefs", () => {
   });
 
   it("rejects missing required fields and invalid scoped writes", () => {
+    assert.throws(() => parseBrief({ goal: "Review", acceptance: ["Done"], constaints: ["do not write"] }), /not a supported field/);
+    assert.throws(() => parseBrief({ goal: "Review", acceptance: ["Done"], handoff: { check: "passed" } }), /not a supported field/);
+    for (const scope of ["\\\\server\\share", "C:relative", "src\0file"]) {
+      assert.throws(() => parseBrief({ goal: "Review", acceptance: ["Done"], scope: [scope] }), /relative module or directory path/);
+    }
     assert.throws(() => parseBrief({ acceptance: ["Done"] }), /goal is required/);
     assert.throws(() => parseBrief({ goal: "Write", acceptance: [] }), /acceptance must not be empty/);
     assert.throws(() => parseBrief({ goal: "Write", acceptance: ["Done"], mode: "write" }), /scope is required/);

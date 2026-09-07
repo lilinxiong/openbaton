@@ -1,7 +1,4 @@
-import {
-  cliIds,
-  getCliAdapter,
-} from "../adapters/registry.js";
+import { cliIds, getCliAdapter } from "../adapters/registry.js";
 import type {
   CliAdapterProvider,
   CliId,
@@ -10,15 +7,10 @@ import type {
 } from "../adapters/contract.js";
 import {
   cliProfileForHost,
-  effectiveMaxConcurrentForHost,
-  effectiveMaxDepthForHost,
   loadConfig,
-  persistableCliMaxConcurrent,
-  reportedConcurrentLimit,
   saveConfig,
-  type Config,
+  type CliProfileSettings,
 } from "../lib/config.js";
-import { normalizeCliRuntimeCapabilities } from "../adapters/shared.js";
 import { detectInvokingHost } from "../lib/hosts.js";
 import {
   createTerminalPrompt,
@@ -26,7 +18,6 @@ import {
   type PromptChoice,
   type SelectPrompt,
 } from "../lib/prompt.js";
-import { publishRouteSnapshot } from "../lib/routes.js";
 import type { WritableLike } from "../types.js";
 
 export interface ConfigCommandOptions {
@@ -36,344 +27,236 @@ export interface ConfigCommandOptions {
   env?: NodeJS.ProcessEnv;
   adapterProvider?: CliAdapterProvider;
   prompt?: SelectPrompt;
-  /** Skip the CLI picker and configure these CLIs in order. */
   clis?: CliId[];
 }
+const modelFlags = [
+  "coding-model",
+  "execution-model",
+  "implementation-model",
+  "investigation-model",
+] as const;
 
 function repeated(args: string[], name: string): string[] {
   const values: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== `--${name}`) continue;
-    const value = args[index + 1];
-    if (value === undefined || value.startsWith("--")) throw new Error(`--${name} requires a value`);
-    values.push(value);
-    index += 1;
-  }
+  for (let index = 0; index < args.length; index += 1)
+    if (args[index] === `--${name}`) {
+      const value = args[++index];
+      if (!value || value.startsWith("--"))
+        throw new Error(`--${name} requires a value`);
+      values.push(value);
+    }
   return values;
 }
-
-/** Reject arguments outside the current config grammar before reading state. */
-function validateConfigArgs(args: string[]): void {
-  const valueFlags = new Set([
-    "cli", "runner", "longctx", "coding-model",
-    "execution-model", "implementation-model", "investigation-model",
-  ]);
-  const booleanFlags = new Set(["json"]);
-  const allowed = new Set([...valueFlags, ...booleanFlags]);
+function validateArgs(args: string[]): void {
+  const values = new Set(["cli", ...modelFlags]);
+  const flags = new Set(["enable", "disable", "json"]);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (!arg.startsWith("--")) throw new Error(`unknown config argument: ${arg}`);
+    if (!arg.startsWith("--"))
+      throw new Error(`unknown config argument: ${arg}`);
     const key = arg.slice(2);
-    if (!allowed.has(key)) throw new Error(`unknown option: ${arg}`);
-    if (valueFlags.has(key)) {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith("--")) throw new Error(`${arg} requires a value`);
-      index += 1;
+    if (!values.has(key) && !flags.has(key))
+      throw new Error(`unknown option: ${arg}`);
+    if (values.has(key)) {
+      const value = args[++index];
+      if (!value || value.startsWith("--"))
+        throw new Error(`${arg} requires a value`);
     }
   }
+  if (args.includes("--enable") && args.includes("--disable"))
+    throw new Error("--enable and --disable are mutually exclusive");
 }
-
-function lastFlag(args: string[], name: string): string | undefined {
-  const values = repeated(args, name);
-  return values.length ? values[values.length - 1].trim() : undefined;
-}
-
-function optionalModelFlag(args: string[], name: string): string | undefined {
-  const value = lastFlag(args, name);
-  return value === "-" ? "" : value;
-}
-
-function parseCliChoice(value: string, env: NodeJS.ProcessEnv = process.env): CliId {
-  const text = value.trim().toLowerCase();
-  if (cliIds(env).includes(text)) return text as CliId;
+function parseCli(value: string, env: NodeJS.ProcessEnv): CliId {
+  const id = value.trim().toLowerCase();
+  if (cliIds(env).includes(id)) return id;
   throw new Error(`invalid CLI choice: ${value}`);
 }
-
-function modelLabel(model: CliModel): string {
-  return `${model.display_name} (${model.id})`;
-}
-
-function modelHint(model: CliModel): string | undefined {
-  return model.description || undefined;
-}
-
-function modelByChoice(models: CliModel[], value: string): CliModel | null {
-  const text = value.trim();
-  if (!text || text === "0" || text === "-") return null;
-  return models.find((model) => model.id === text) || null;
-}
-
-function requireModel(models: CliModel[], value: string, label: string): string {
-  if (!value) return "";
-  const model = modelByChoice(models, value);
-  if (!model) throw new Error(`${label} model ${value} is not in the ${models.length}-model CLI response`);
-  return model.id;
-}
-
-function parseModelSet(models: CliModel[], values: string[], label = "coding model"): string[] {
-  const tokens = values.flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
-  if (tokens.some((value) => value.toLowerCase() === "all")) return models.map((model) => model.id);
-  if (tokens.length === 1 && ["0", "-", "none"].includes(tokens[0].toLowerCase())) return [];
-  const chosen: string[] = [];
-  for (const token of tokens) {
-    const model = modelByChoice(models, token);
-    if (!model) throw new Error(`${label} ${token} is not in the ${models.length}-model CLI response`);
-    if (!chosen.includes(model.id)) chosen.push(model.id);
-  }
-  return chosen;
-}
-
-export function cliPromptChoices(env: NodeJS.ProcessEnv = process.env): PromptChoice<CliId>[] {
-  return cliIds(env).map((id) => ({ value: id, label: id }));
-}
-
-function modelChoices(models: CliModel[]): PromptChoice<string>[] {
+function choices(models: CliModel[]): PromptChoice<string>[] {
   return models.map((model) => ({
     value: model.id,
-    label: modelLabel(model),
-    hint: modelHint(model),
+    label: `${model.display_name} (${model.id})`,
+    ...(model.description ? { hint: model.description } : {}),
   }));
 }
-
-function requirePrompt(
+function parseModels(
+  models: CliModel[],
+  raw: string[],
+  label: string,
+): string[] {
+  const values = raw
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (values.some((value) => value.toLowerCase() === "all"))
+    return models.map((model) => model.id);
+  if (
+    values.length === 1 &&
+    ["-", "0", "none"].includes(values[0].toLowerCase())
+  )
+    return [];
+  const selected: string[] = [];
+  for (const value of values) {
+    const model = models.find((item) => item.id === value);
+    if (!model)
+      throw new Error(
+        `${label} ${value} is not in the ${models.length}-model CLI response`,
+      );
+    if (!selected.includes(model.id)) selected.push(model.id);
+  }
+  return selected;
+}
+function askFor(
   prompt: SelectPrompt | undefined,
   stdin: NodeJS.ReadableStream,
   stdout: WritableLike,
   env: NodeJS.ProcessEnv,
-  missing: string,
 ): SelectPrompt {
   if (prompt) return prompt;
-  if (isInteractiveIo(stdin, stdout)) return createTerminalPrompt({ stdin, stdout, env });
-  throw new Error(`interactive config requires a TTY. Pass ${missing} for non-interactive use`);
+  if (isInteractiveIo(stdin, stdout))
+    return createTerminalPrompt({ stdin, stdout, env });
+  throw new Error(
+    "interactive config requires a TTY; pass --cli, model flags, and --enable or --disable",
+  );
+}
+export function cliPromptChoices(
+  env: NodeJS.ProcessEnv = process.env,
+): PromptChoice<CliId>[] {
+  return cliIds(env).map((value) => ({ value, label: value }));
 }
 
-interface CliProfileResult {
-  cli: CliId;
-  runner: string | null;
-  longctx: string | null;
-  coding_models: string[];
-  execution_models: string[];
-  implementation_models: string[];
-  investigation_models: string[];
-  /** Active descendants in one root-agent tree; the root is excluded. */
-  max_concurrent_subagents: number;
-  max_depth: number;
-  max_concurrent_subagents_source: "adapter" | "director_policy";
-  max_depth_source: "cli" | "adapter" | "director";
-  capacity_scope: "root_agent_tree";
-  model_source: string;
-  config: string;
-}
-
-async function configureCliProfile(
+async function configure(
   cli: CliId,
+  catalog: CliModelCatalog,
   args: string[],
-  {
+  current: CliProfileSettings,
+  ask: () => SelectPrompt,
+  interactive: boolean,
+): Promise<CliProfileSettings> {
+  if (catalog.cli !== cli || (catalog.adapter_id && catalog.adapter_id !== cli))
+    throw new Error(`${cli} returned a catalog for a different CLI`);
+  const visible = catalog.models.filter((model) => !model.hidden);
+  if (!visible.length)
+    throw new Error(`${cli} returned no picker-visible models`);
+  const selected = async (
+    flag: (typeof modelFlags)[number],
+    existing: string[],
+  ): Promise<string[]> => {
+    const supplied = repeated(args, flag);
+    if (supplied.length)
+      return parseModels(visible, supplied, flag.replace("-", " "));
+    if (!interactive) return [...existing];
+    return ask().multiSelect({
+      message: `Select ${flag.replace("-model", "")} models in priority order`,
+      choices: choices(visible),
+      initial: existing.filter((id) =>
+        visible.some((model) => model.id === id),
+      ),
+    });
+  };
+  const coding = await selected("coding-model", current.coding_models);
+  const execution = await selected(
+    "execution-model",
+    current.execution_models || [],
+  );
+  const implementation = await selected(
+    "implementation-model",
+    current.implementation_models || [],
+  );
+  const investigation = await selected(
+    "investigation-model",
+    current.investigation_models || [],
+  );
+  const enabled = args.includes("--enable")
+    ? true
+    : args.includes("--disable")
+      ? false
+      : interactive
+        ? await ask().select({
+            message: `Enable this ${cli} configuration?`,
+            choices: [
+              { value: true, label: "yes" },
+              { value: false, label: "no" },
+            ],
+            initial: current.enabled,
+          })
+        : current.enabled;
+  for (const model of [...execution, ...implementation, ...investigation])
+    if (!coding.includes(model)) coding.push(model);
+  return {
+    enabled,
+    coding_models: coding,
+    ...(execution.length ? { execution_models: execution } : {}),
+    ...(implementation.length ? { implementation_models: implementation } : {}),
+    ...(investigation.length ? { investigation_models: investigation } : {}),
+  };
+}
+
+export async function runConfig(
+  args: string[],
+  options: ConfigCommandOptions,
+): Promise<number> {
+  validateArgs(args);
+  const {
     cwd,
     stdout,
-    env,
-    current,
-    catalog,
-    hostLimit,
-    hostDepth,
-    ask,
-    single,
-  }: {
-    cwd: string;
-    stdout: WritableLike;
-    env: NodeJS.ProcessEnv;
-    current: Config;
-    catalog: CliModelCatalog;
-    hostLimit?: number;
-    hostDepth?: number;
-    ask: () => SelectPrompt;
-    single: boolean;
-  },
-): Promise<CliProfileResult> {
-  if (!catalog.models.length) throw new Error(`${cli} returned no picker-visible models`);
-  publishRouteSnapshot(cwd, { models: catalog.models }, new Date(), {
-    cli,
-    host: cli,
-    env,
-    engineVersion: catalog.version,
-  });
-
-  const existing = cliProfileForHost(current, cli);
-
-  // runner and longctx are legacy classification labels. Keep them when they
-  // are not explicitly supplied instead of making normal configuration depend
-  // on two additional route decisions.
-  let runner = single ? optionalModelFlag(args, "runner") : undefined;
-  if (runner === undefined) runner = existing.runner;
-  runner = requireModel(catalog.models, runner, "runner");
-
-  let longctx = single ? optionalModelFlag(args, "longctx") : undefined;
-  if (longctx === undefined) longctx = existing.longctx;
-  longctx = requireModel(catalog.models, longctx, "longctx");
-
-  const modeFlags = ["execution-model", "implementation-model", "investigation-model"];
-  const hasExplicitMode = single && modeFlags.some((flag) => repeated(args, flag).length > 0);
-  const codingFlags = single ? repeated(args, "coding-model") : [];
-  let codingModels: string[];
-  if (!codingFlags.length) {
-    if (hasExplicitMode) {
-      codingModels = [...existing.coding_models];
-    } else {
-      codingModels = await ask().multiSelect({
-        message: "Select Coding models in priority order",
-        choices: modelChoices(catalog.models),
-        initial: existing.coding_models.filter((id) => catalog.models.some((model) => model.id === id)),
-      });
-    }
-  } else {
-    codingModels = parseModelSet(catalog.models, codingFlags);
-  }
-
-  const modeModels = (flag: string, existingModels: string[], label: string): string[] => {
-    const values = single ? repeated(args, flag) : [];
-    return values.length
-      ? parseModelSet(catalog.models, values, label)
-      : parseModelSet(catalog.models, existingModels, label);
-  };
-  const executionModels = modeModels("execution-model", existing.execution_models || [], "execution model");
-  const implementationModels = modeModels("implementation-model", existing.implementation_models || [], "implementation model");
-  const investigationModels = modeModels("investigation-model", existing.investigation_models || [], "investigation model");
-  // coding_models remains the host allowlist and legacy fallback. A selected
-  // mode route must therefore also be executable through that allowlist.
-  for (const model of [...executionModels, ...implementationModels, ...investigationModels]) {
-    if (!codingModels.includes(model)) codingModels.push(model);
-  }
-
-
-  const capabilities = normalizeCliRuntimeCapabilities(catalog);
-  // Persist catalog > adapter quota > previously reported value; else -1.
-  const catalogLimit = reportedConcurrentLimit(capabilities?.max_concurrent_subagents);
-  const hostReported = reportedConcurrentLimit(hostLimit);
-  const maxConcurrent = persistableCliMaxConcurrent(
-    catalogLimit,
-    hostReported,
-    existing.max_concurrent,
-  );
-  const maxDepth = capabilities?.max_depth ?? hostDepth;
-  current.cli[cli] = {
-    runner,
-    longctx,
-    coding_models: codingModels,
-    execution_models: executionModels,
-    implementation_models: implementationModels,
-    investigation_models: investigationModels,
-    max_concurrent: maxConcurrent,
-    ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
-  };
-  return {
-    cli,
-    runner: runner || null,
-    longctx: longctx || null,
-    coding_models: codingModels,
-    execution_models: executionModels,
-    implementation_models: implementationModels,
-    investigation_models: investigationModels,
-    max_concurrent_subagents: effectiveMaxConcurrentForHost(current, cli),
-    max_depth: effectiveMaxDepthForHost(current, cli),
-    max_concurrent_subagents_source: reportedConcurrentLimit(maxConcurrent) !== undefined
-      ? "adapter"
-      : "director_policy",
-    max_depth_source: capabilities?.max_depth !== undefined
-      ? "cli"
-      : hostDepth !== undefined
-        ? "adapter"
-        : "director",
-    capacity_scope: "root_agent_tree",
-    model_source: `${cli} catalog`,
-    config: "",
-  };
-}
-
-function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
-  stdout.write(`  cli: ${result.cli}\n`);
-  stdout.write(`  runner (legacy): ${result.runner || "(unset)"}\n`);
-  stdout.write(`  longctx (legacy): ${result.longctx || "(unset)"}\n`);
-  stdout.write(`  Coding priority: ${result.coding_models.length ? result.coding_models.join(" > ") : "(none)"}\n`);
-  stdout.write(`  Execution priority: ${result.execution_models.length ? result.execution_models.join(" > ") : "(Coding fallback)"}\n`);
-  stdout.write(`  Implementation priority: ${result.implementation_models.length ? result.implementation_models.join(" > ") : "(Coding fallback)"}\n`);
-  stdout.write(`  Investigation priority: ${result.investigation_models.length ? result.investigation_models.join(" > ") : "(Coding fallback)"}\n`);
-  stdout.write(`  max_concurrent_subagents: ${result.max_concurrent_subagents} (${result.max_concurrent_subagents_source}; root-agent tree, root excluded)\n`);
-  stdout.write(`  max_depth: ${result.max_depth} (${result.max_depth_source})\n`);
-}
-
-export async function runConfig(args: string[], {
-  cwd,
-  stdout,
-  stdin = process.stdin,
-  env = process.env,
-  adapterProvider,
-  prompt,
-  clis: presetClis,
-}: ConfigCommandOptions): Promise<number> {
-  validateConfigArgs(args);
-  const current = structuredClone(loadConfig(cwd, { env }));
-  const discoverAdapter = adapterProvider || ((cli: CliId) => getCliAdapter(cli, env));
-  const ask = (): SelectPrompt => requirePrompt(
-    prompt, stdin, stdout, env,
-    "--cli, --coding-model, --execution-model, --implementation-model, --investigation-model, --runner, and --longctx",
-  );
-
-  const flaggedCli = lastFlag(args, "cli");
-  let initialClis: CliId[] = [];
-  if (!presetClis?.length && flaggedCli === undefined) {
+    stdin = process.stdin,
+    env = process.env,
+    adapterProvider,
+    prompt,
+    clis: preset,
+  } = options;
+  const flagged = repeated(args, "cli");
+  if (flagged.length > 1) throw new Error("--cli may be supplied once");
+  const interactive = !preset?.length && !flagged.length;
+  const ask = () => askFor(prompt, stdin, stdout, env);
+  let selected: CliId[];
+  if (preset?.length) selected = preset;
+  else if (flagged.length) selected = [parseCli(flagged[0], env)];
+  else {
+    let initial: CliId[] = [];
     try {
       const detected = detectInvokingHost(env);
-      if (detected) initialClis = [detected];
+      if (detected) initial = [detected];
     } catch {
-      // Ambiguous runtime hosts: leave the picker unselected.
+      /* select explicitly */
     }
+    selected = await ask().multiSelect({
+      message: "Select CLI",
+      choices: cliPromptChoices(env),
+      initial,
+      required: true,
+    });
   }
-  const clis = presetClis?.length
-    ? presetClis
-    : flaggedCli === undefined
-      ? await ask().multiSelect({
-        message: "Select CLI",
-        choices: cliPromptChoices(env),
-        initial: initialClis,
-        required: true,
-      })
-      : [parseCliChoice(flaggedCli, env)];
-  if (!clis.length) throw new Error("select at least one CLI");
-
-  const single = clis.length === 1;
-  const results: CliProfileResult[] = [];
-  for (let index = 0; index < clis.length; index += 1) {
-    const cli = clis[index];
-    const selectedAdapter = discoverAdapter(cli);
-    if (!single) stdout.write(`\n── ${cli} (${index + 1}/${clis.length}) ──\n`);
-    const catalog = await selectedAdapter.discoverModels({ cwd, env });
-    const hostMetadata = getCliAdapter(cli, env).host;
-    const hostLimit = hostMetadata.defaultMaxConcurrent;
-    const hostDepth = hostMetadata.defaultMaxDepth;
-    results.push(await configureCliProfile(cli, args, {
-      cwd, stdout, env, current, catalog, hostLimit, hostDepth, ask, single,
-    }));
+  if (!selected.length) throw new Error("select at least one CLI");
+  const config = structuredClone(loadConfig(cwd, { env }));
+  const discover = adapterProvider || ((cli: CliId) => getCliAdapter(cli, env));
+  const profiles: Array<{ cli: CliId; profile: CliProfileSettings }> = [];
+  for (const cli of selected) {
+    const catalog = await discover(cli).discoverModels({ cwd, env });
+    const profile = await configure(
+      cli,
+      catalog,
+      args,
+      cliProfileForHost(config, cli),
+      ask,
+      interactive,
+    );
+    config.cli[cli] = profile;
+    profiles.push({ cli, profile });
   }
-
-  const file = saveConfig(cwd, current, { env });
-  for (const result of results) result.config = file;
-
-  const payload = single
-    ? { ...results[0], config: file }
-    : {
-      profiles: results,
-      max_concurrent_subagents: current.director.max_concurrent,
-      max_concurrent_subagents_source: "director_policy",
-      max_depth: current.director.max_depth,
-      capacity_scope: "root_agent_tree",
-      config: file,
-    };
-  if (args.includes("--json")) stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  const file = saveConfig(cwd, config, { env });
+  const payload =
+    selected.length === 1
+      ? { cli: profiles[0].cli, ...profiles[0].profile, config: file }
+      : { profiles, config: file };
+  if (args.includes("--json"))
+    stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   else {
-    stdout.write(`\nwrote ${file}\n`);
-    for (const result of results) writeProfile(stdout, result);
-    stdout.write(`  director policy (per root-agent tree): max_concurrent_subagents=${current.director.max_concurrent}, max_depth=${current.director.max_depth}\n`);
-    stdout.write("  later routing: automatic; no model confirmation UI\n");
+    stdout.write(`wrote ${file}\n`);
+    for (const { cli, profile } of profiles)
+      stdout.write(
+        `  ${cli}: ${profile.enabled ? "enabled" : "disabled"}; coding=${profile.coding_models.join(" > ") || "(none)"}\n`,
+      );
   }
   return 0;
 }

@@ -1,7 +1,7 @@
 {
   "name": "@zhouliuya/openbaton",
-  "version": "1.0.0",
-  "description": "Manifest-driven, CLI-neutral scheduler with a public adapter SDK, native execution lifecycle, and scoped ticket orchestration.",
+  "version": "2.0.0",
+  "description": "Prepare bounded work and model choices for the current CLI native subagents.",
   "type": "module",
   "bin": {
     "baton": "dist/bin/baton.js"

@@ -54,7 +54,7 @@ function textList(value: unknown, path: string, required = false): string[] {
 function scopeList(value: unknown): string[] {
   const scope = textList(value, "scope");
   for (const [index, item] of scope.entries()) {
-    if (item.startsWith("/") || /^[A-Za-z]:[\\/]/.test(item)) {
+    if (item.startsWith("/") || item.startsWith("\\") || /^[A-Za-z]:/.test(item) || item.includes("\0")) {
       invalid(`scope[${index}]`, "must be a relative module or directory path");
     }
     if (item.split(/[\\/]+/).includes("..")) invalid(`scope[${index}]`, "must not contain '..'");
@@ -65,6 +65,7 @@ function scopeList(value: unknown): string[] {
 function handoff(value: unknown): WorkerBriefHandoff | undefined {
   if (value === undefined) return undefined;
   const input = record(value);
+  for (const key of Object.keys(input)) if (!["existingChanges", "checks", "unresolvedIssues"].includes(key)) invalid(`handoff.${key}`, "is not a supported field");
   const result: WorkerBriefHandoff = {};
   const existingChanges = text(input.existingChanges, "handoff.existingChanges");
   const checks = text(input.checks, "handoff.checks");
@@ -77,6 +78,8 @@ function handoff(value: unknown): WorkerBriefHandoff | undefined {
 
 export function parseBrief(value: unknown): WorkerBrief {
   const input = record(value);
+  const fields = new Set(["goal", "decisions", "scope", "acceptance", "context", "constraints", "mode", "handoff"]);
+  for (const key of Object.keys(input)) if (!fields.has(key)) invalid(key, "is not a supported field");
   const mode = input.mode === undefined ? "read-only" : input.mode;
   if (mode !== "read-only" && mode !== "write") invalid("mode", "must be 'read-only' or 'write'");
   const scope = scopeList(input.scope);

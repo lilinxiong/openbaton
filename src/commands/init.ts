@@ -1,11 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
-import { packageRoot, batonHomeDir, configPath, skillPath, displayHomePath } from "../lib/paths.js";
+import {
+  packageRoot,
+  batonHomeDir,
+  configPath,
+  skillPath,
+  displayHomePath,
+} from "../lib/paths.js";
 import { installHostSkills, type HostId } from "../lib/hosts.js";
 import { parseCliId, type CliId } from "../adapters/registry.js";
 import { loadConfig, saveConfig } from "../lib/config.js";
-import { buildInstallManifest, writeInstallManifest } from "../lib/install/manifest.js";
-import { installBundledAdapters } from "../lib/install/adapter-install.js";
+import {
+  buildInstallManifest,
+  writeInstallManifest,
+} from "../lib/install-manifest.js";
+import { installBundledAdapters } from "../lib/adapter-install.js";
 
 export interface InitProjectOptions {
   force?: boolean;
@@ -22,7 +31,10 @@ export interface InitProjectResult {
   tools: HostId[];
 }
 
-export async function initProject(cwd: string, options: InitProjectOptions = {}): Promise<InitProjectResult> {
+export async function initProject(
+  cwd: string,
+  options: InitProjectOptions = {},
+): Promise<InitProjectResult> {
   const { force = false, cli, env } = options;
   const dir = batonHomeDir(env);
   const created: string[] = [];
@@ -42,7 +54,6 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const destConfig = configPath(cwd, { env });
   const destSkill = skillPath(cwd, { env });
 
-  const skippedOwnership: string[] = [];
   const configExisted = fs.existsSync(destConfig) && !force;
   if (!configExisted) {
     fs.copyFileSync(configTmpl, destConfig);
@@ -56,7 +67,6 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
     created.push(displayHomePath(destSkill, { cwd, env }));
   } else {
     skipped.push(displayHomePath(destSkill, { cwd, env }));
-    skippedOwnership.push(destSkill);
   }
 
   const cfg = loadConfig(cwd, { env });
@@ -66,11 +76,17 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
     // for the other registered CLIs or fill limits from host defaults.
     const existing = cfg.cli[selectedCli];
     cfg.cli[selectedCli] = {
-      runner: existing?.runner || "",
-      longctx: existing?.longctx || "",
+      enabled: true,
       coding_models: existing?.coding_models ? [...existing.coding_models] : [],
-      ...(existing?.max_concurrent !== undefined ? { max_concurrent: existing.max_concurrent } : {}),
-      ...(existing?.max_depth !== undefined ? { max_depth: existing.max_depth } : {}),
+      ...(existing?.execution_models?.length
+        ? { execution_models: [...existing.execution_models] }
+        : {}),
+      ...(existing?.implementation_models?.length
+        ? { implementation_models: [...existing.implementation_models] }
+        : {}),
+      ...(existing?.investigation_models?.length
+        ? { investigation_models: [...existing.investigation_models] }
+        : {}),
     };
   }
   // An ordinary init must not silently rewrite the Coding model profile.
@@ -81,8 +97,15 @@ export async function initProject(cwd: string, options: InitProjectOptions = {})
   const hosts = installHostSkills(cwd, { force, env });
   created.push(...hosts.created);
   skipped.push(...hosts.skipped);
-  skippedOwnership.push(...hosts.skippedFiles);
-  writeInstallManifest(buildInstallManifest(cwd, hosts.tools, env, adapters.ownership, skippedOwnership), env);
+  writeInstallManifest(
+    buildInstallManifest(cwd, hosts.tools, env, adapters.ownership),
+    env,
+  );
 
-  return { dir: displayHomePath(dir, { cwd, env }), created, skipped, tools: hosts.tools };
+  return {
+    dir: displayHomePath(dir, { cwd, env }),
+    created,
+    skipped,
+    tools: hosts.tools,
+  };
 }

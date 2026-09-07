@@ -1,6 +1,6 @@
 ---
 name: baton
-description: "Use Baton for host-native subagent collaboration and current managed dispatch. Invoke only with /baton; discussion and read-only analysis stay in the director session."
+description: "Use Baton to prepare bounded work for the current host native subagents. Invoke only with /baton; discussion and read-only analysis stay in the director session."
 disable-model-invocation: true
 user-invocable: true
 ---
@@ -11,28 +11,41 @@ This skill is slash-command only. Apply these rules only after the user
 explicitly ran `/baton`. Do not load or follow this skill from ordinary
 conversation, implementation requests, or implied intent.
 
-The root agent owns decomposition, contracts, and the final decision. It may
-implement a unit itself. Delegate only when that reduces remaining decision
-difficulty; do not delegate merely to fill capacity.
+The root agent owns decomposition, shared contracts, integration and commits.
+It may implement work itself. Delegate only when the independent work justifies
+the handoff; never fill slots for their own sake.
 
-Choose `execution`, `implementation`, or `investigation` as the work mode.
-Choose model and reasoning effort independently. Use the selected adapter's
-live catalog and exact supported parameters. Keep native subagents in the
-current host; never start or coordinate another CLI process.
+Use only the current host's native subagents. Model discovery is read-only;
+Baton never launches another CLI to perform a task. If the host cannot execute
+the selected model or parameters, report that limitation instead of substituting.
 
-Before writes, inspect dependencies and record exact paths and operations.
-Read-only is the default. Repository operations and publication remain root
-owned. Stop when authorization, scope, dependency, model, or parameter
-information is unknown.
+Choose a work mode by the decisions still left to make:
+- execution: follow settled steps or narrowly check facts; prefer low effort.
+- implementation: complete a bounded design; prefer medium effort.
+- investigation: resolve an uncertain cause or design; prefer high effort.
 
-The target runtime retains host-native state and necessary model-parameter
-checks. It removes the old ticket/Receipt control plane and fixed
-`runner`/`longctx` routes. Do not add new dependencies on those concepts.
+Choose model and effort independently from the current catalog and configured
+mode preferences. Supply an explicit model when task complexity warrants it.
+Do not infer large context requirements from words like migration or monorepo.
+Do not invent quota facts; pass known unavailable models when relevant.
 
-The current CLI still exposes managed commands. For those commands only:
-reserve, pass the reserved prompt unchanged to the native child API, bind the
-opaque native handle, record one terminal result, complete, and release before
-another reservation. This is transitional behavior, not the target design.
+Write one JSON brief with goal, decisions, scope, acceptance, context,
+constraints and mode (read-only or write). Scope can name modules or directories.
+Inspect dependencies, keep concurrent write scopes disjoint, and coordinate any
+overlap with the root. Scope is a prompt contract, not a filesystem sandbox.
+Use handoff fields for existingChanges, checks and unresolvedIssues when
+continuing or upgrading a worker. Do not resend the complete conversation.
 
-Report source review, build, tests, native execution, and runtime evidence
-separately.
+Run `baton spawn --host <host> --brief <file> --work-mode <mode> --json`.
+This returns native execution parameters; it does not start an agent.
+Pass the returned prompt and supported model/effort to the host's native child
+API with a fresh context. Native handles, activity and completion are the
+runtime authority. Do not add tickets, receipts, queues or a second state machine.
+
+When a worker finishes, review its result and optionally append a short record
+with `baton record --host <host> --handle <handle> --model <model> --status
+completed --text <result>`. `baton status` shows recorded outcomes, not live state.
+
+The root preserves user changes, checks the integrated result, and performs
+any authorized commits. Report static review, build, tests and real native
+execution separately. Never claim the prompt contract enforces write isolation.
