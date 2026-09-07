@@ -20,12 +20,16 @@ Baton never launches another CLI to perform a task. If the host cannot execute
 the selected model or parameters, report that limitation instead of substituting.
 
 Choose a work mode by the decisions still left to make:
-- execution: follow settled steps or narrowly check facts; prefer low effort.
-- implementation: complete a bounded design; prefer medium effort.
-- investigation: resolve an uncertain cause or design; prefer high effort.
+- execution: follow settled steps or narrowly check facts.
+- implementation: complete a bounded design.
+- investigation: resolve an uncertain cause or design.
 
-Choose model and effort independently from the current catalog and configured
-mode preferences. Supply an explicit model when task complexity warrants it.
+Choose a model from the selected mode's configured candidate pool, in list
+order; do not fall back across modes. An explicit model must belong to that
+pool. The root chooses effort for the current task independently of work mode.
+Pass `--effort <level>` when making that choice; no mode implies an effort.
+When effort is omitted, Baton omits `reasoning_effort` and leaves the host
+default unchanged; it does not substitute a catalog default.
 Do not infer large context requirements from words like migration or monorepo.
 Do not invent quota facts; pass known unavailable models when relevant.
 

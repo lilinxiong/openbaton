@@ -1,9 +1,11 @@
 # Baton installation config. Only profiles explicitly selected by the user are stored.
-schema_version = 3
+schema_version = 4
 
 # A selected [cli.<id>] profile stores:
 # enabled = true
-# coding_models = ["<model-id>"]
 # execution_models = ["<model-id>"]
 # implementation_models = ["<model-id>"]
 # investigation_models = ["<model-id>"]
+
+# Each mode is an independent ordered candidate pool; no cross-mode fallback.
+# The root selects effort per task; modes do not imply an effort level.

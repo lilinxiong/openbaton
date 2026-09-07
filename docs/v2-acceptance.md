@@ -1,5 +1,7 @@
 # Baton 2.0 acceptance — 2026-09-07
 
+> Historical acceptance record for the original v2 delivery (config schema 3). Current configuration and effort semantics are documented in the guides.
+
 The user approved the five-batch implementation, a clean local reinstall without backup after the first two batches, and breaking removal of the managed runtime. This is an implementation and acceptance record, not a token-cost or performance benchmark.
 
 ## Code reduction

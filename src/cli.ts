@@ -186,7 +186,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       output(stdout, selected, Boolean(flags.json), [
         `host: ${selected.host}`,
         `model: ${selected.model_id}`,
-        `effort: ${selected.reasoning_effort || "catalog default"}`,
+        `effort: ${selected.reasoning_effort || "unspecified (host default)"}`,
         `service tier: ${selected.service_tier || "catalog default"}`,
         `context capacity: ${selected.context_capacity}`,
         ...selected.disclosures.map((item) => `note: ${item}`),

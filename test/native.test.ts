@@ -35,11 +35,10 @@ function setup() {
     cli: {
       alpha: {
         enabled: true,
-        coding_models: ["small", "large", "hidden"],
-        execution_models: ["small", "large"],
+        execution_models: ["small", "large", "hidden"],
         implementation_models: ["large", "small"],
       },
-      beta: { enabled: true, coding_models: ["beta-model"] },
+      beta: { enabled: true, execution_models: ["beta-model"] },
     },
   }, { env });
   const catalogs: Record<string, CliModelCatalog> = {
@@ -73,6 +72,47 @@ async function invoke(argv: string[], context: ReturnType<typeof setup>) {
 }
 
 describe("native Baton CLI", () => {
+  it("never falls back to another mode pool or accepts an explicit foreign-pool model", async () => {
+    const context = setup();
+    saveConfig(context.cwd, { cli: { alpha: {
+      enabled: true,
+      execution_models: ["small"],
+      implementation_models: ["large"],
+    } } }, { env: context.env });
+    const empty = await invoke(["match", "--host", "alpha", "--work-mode", "investigation"], context);
+    assert.equal(empty.code, 1);
+    assert.match(empty.stderr, /NO_MODE_MODELS.*investigation/);
+    const unavailable = await invoke(["match", "--host", "alpha", "--unavailable-model", "small"], context);
+    assert.equal(unavailable.code, 1);
+    assert.match(unavailable.stderr, /NO_ELIGIBLE_MODEL/);
+    const explicit = await invoke(["match", "--host", "alpha", "--model", "large"], context);
+    assert.equal(explicit.code, 1);
+    assert.match(explicit.stderr, /MODEL_NOT_ALLOWED/);
+    const unsupported = await invoke(["match", "--host", "alpha", "--effort", "high"], context);
+    assert.equal(unsupported.code, 1);
+    assert.match(unsupported.stderr, /NO_ELIGIBLE_MODEL/);
+  });
+
+  it("uses caller effort independently of all three work modes", async () => {
+    const context = setup();
+    saveConfig(context.cwd, { cli: { alpha: {
+      enabled: true,
+      execution_models: ["large"],
+      implementation_models: ["large"],
+      investigation_models: ["large"],
+    } } }, { env: context.env });
+    for (const mode of ["execution", "implementation", "investigation"]) {
+      const omitted = await invoke(["match", "--host", "alpha", "--work-mode", mode, "--json"], context);
+      assert.equal(omitted.code, 0);
+      assert.equal("reasoning_effort" in JSON.parse(omitted.stdout), false);
+      for (const effort of ["low", "medium", "high"]) {
+        const chosen = await invoke(["match", "--host", "alpha", "--work-mode", mode, "--effort", effort, "--json"], context);
+        assert.equal(chosen.code, 0);
+        assert.equal(JSON.parse(chosen.stdout).reasoning_effort, effort);
+      }
+    }
+  });
+
   it("uses mode priority and skips candidates that fail explicit constraints", async () => {
     const context = setup();
     const byMode = await invoke(["match", "--host", "alpha", "--work-mode", "implementation", "--json"], context);
@@ -87,9 +127,6 @@ describe("native Baton CLI", () => {
     assert.equal(JSON.parse(byTier.stdout).model_id, "large");
     const unavailable = await invoke(["match", "--host", "alpha", "--unavailable-model", "small", "--json"], context);
     assert.equal(JSON.parse(unavailable.stdout).model_id, "large");
-    const fallback = await invoke(["match", "--host", "alpha", "--model", "small", "--work-mode", "investigation", "--json"], context);
-    assert.equal(JSON.parse(fallback.stdout).reasoning_effort, "low");
-    assert.match(JSON.parse(fallback.stdout).disclosures[0], /catalog default low/);
 
     const mismatch = await invoke(["match", "--host", "alpha", "--model", "small", "--effort", "high"], context);
     assert.equal(mismatch.code, 1);
@@ -161,7 +198,7 @@ describe("native Baton CLI", () => {
     assert.deepEqual(fs.readdirSync(path.join(context.home, ".baton")), ["config.toml"]);
   });
 
-  it("discloses unknown context and catalog-default effort without inferring requirements", async () => {
+  it("leaves omitted effort to the host even when the catalog advertises a default", async () => {
     const context = setup();
     const provider = context.provider;
     context.provider = (host) => ({ discoverModels: async () => {
@@ -173,8 +210,8 @@ describe("native Baton CLI", () => {
     assert.equal(result.code, 0, result.stderr);
     const selected = JSON.parse(result.stdout);
     assert.equal(selected.context_capacity, "unknown");
-    assert.equal(selected.reasoning_effort, "medium");
-    assert.ok(selected.disclosures.some((text) => text.includes("catalog default")));
+    assert.equal("reasoning_effort" in selected, false);
+    assert.ok(selected.disclosures.some((text) => text.includes("effort not specified")));
     assert.ok(selected.disclosures.some((text) => text.includes("capacity unknown")));
     const brief = path.join(context.cwd, "brief.json");
     fs.writeFileSync(brief, JSON.stringify({ goal: "Check facts", acceptance: ["Report findings"] }));

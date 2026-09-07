@@ -6,10 +6,9 @@ import type { CliId } from "../adapters/registry.js";
 import { configPath } from "./paths.js";
 import { parseToml, stringifyToml } from "./toml.js";
 
-export const CONFIG_SCHEMA_VERSION = 3;
+export const CONFIG_SCHEMA_VERSION = 4;
 export interface CliProfileSettings {
   enabled: boolean;
-  coding_models: string[];
   execution_models?: string[];
   implementation_models?: string[];
   investigation_models?: string[];
@@ -30,7 +29,7 @@ export function emptyConfig(): Config {
   return { schema_version: CONFIG_SCHEMA_VERSION, cli: {} };
 }
 export function emptyCliProfile(): CliProfileSettings {
-  return { enabled: false, coding_models: [] };
+  return { enabled: false };
 }
 
 function stringList(value: unknown): string[] {
@@ -52,7 +51,6 @@ function normalizeCliProfile(value: unknown): CliProfileSettings {
   };
   return {
     enabled: profile.enabled === true,
-    coding_models: stringList(profile.coding_models),
     ...optional("execution_models"),
     ...optional("implementation_models"),
     ...optional("investigation_models"),
@@ -72,20 +70,12 @@ export function cliProfileForHost(
 ): CliProfileSettings {
   return config.cli[host] || emptyCliProfile();
 }
-export function configuredCodingModelsForHost(
-  config: Pick<Config, "cli">,
-  host: CliId,
-): string[] {
-  const profile = cliProfileForHost(config, host);
-  return profile.enabled ? [...profile.coding_models] : [];
-}
 function serializeConfig(config: Config): UnknownRecord {
   const cli: UnknownRecord = {};
   for (const [id, profile] of Object.entries(config.cli))
     if (profile)
       cli[id] = {
         enabled: profile.enabled,
-        coding_models: profile.coding_models,
         ...(profile.execution_models?.length
           ? { execution_models: profile.execution_models }
           : {}),

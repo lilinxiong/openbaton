@@ -4,23 +4,23 @@ The root agent decides what to delegate, establishes shared contracts, reviews r
 
 ## Choose the work and model
 
-| Work mode | Remaining decisions | Default effort preference |
-|---|---|---|
-| execution | Follow settled steps or narrowly check facts | low |
-| implementation | Complete a bounded design | medium |
-| investigation | Resolve an uncertain cause or design | high |
+| Work mode | Remaining decisions |
+|---|---|
+| execution | Follow settled steps or narrowly check facts |
+| implementation | Complete a bounded design |
+| investigation | Resolve an uncertain cause or design |
 
-Model and effort are independent. A multi-file migration with settled steps can use execution mode. The root can keep a task local; filling all slots is not a goal.
+The root chooses effort for the current task independently of work mode. No mode implies an effort preference. Pass `--effort LEVEL` to request a supported level; if omitted, Baton emits no `reasoning_effort`, leaves the host default unchanged, and does not substitute a catalog default. A multi-file migration with settled steps can use execution mode. The root can keep a task local; filling all slots is not a goal.
 
 Run `baton models --host codex` to inspect actual model ids, then configure the selected ids:
 
 ```text
 baton init --cli codex
-baton config --cli codex --coding-model MODEL --execution-model MODEL --enable
+baton config --cli codex --execution-model MODEL --enable
 baton match --host codex --work-mode execution --model MODEL --effort low --json
 ```
 
-`MODEL` is a placeholder from the live catalog. Model flags can repeat. Configure `--implementation-model` and `--investigation-model` for their preference lists. Without `--cli`, `baton config` opens the interactive picker in a terminal.
+`MODEL` is a placeholder from the live catalog. Model flags can repeat. Configure `--implementation-model` and `--investigation-model` for their independent ordered candidate pools. Selection stays inside the chosen mode; an explicit model must also belong to that pool. If no candidate is available, Baton reports the reason so the root can decide the next action. There is no cross-mode fallback. Without `--cli`, `baton config` opens the interactive picker in a terminal.
 
 Explicit unsupported effort or service tier is rejected. With automatic model selection, candidates failing explicit constraints are skipped. `--unavailable-model ID` excludes a model known by the host to be unavailable; Baton does not invent quota information. `--context-tokens N` checks known capacity and discloses unknown capacity. No context requirement is inferred from task wording.
 
@@ -50,7 +50,7 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 
 `goal` and nonempty `acceptance` are required. `mode` defaults to `read-only`; write mode requires scope. Decisions, context, constraints and handoff are optional. Scope names relative modules, directories or files. It is a prompt contract, **not a filesystem sandbox**. The root coordinates overlapping writes and checks the integrated diff.
 
-Spawn returns an exact catalog model id, supported effort, the formatted prompt, scope and `fork_context:false`, with `spawned:false`. Pass the supported parameters and prompt to the host's native child API using a fresh context. Baton has not started a worker. Native handles and native completion remain authoritative.
+Spawn returns an exact catalog model id, explicitly requested supported effort (when supplied), the formatted prompt, scope and `fork_context:false`, with `spawned:false`. Pass the supported parameters and prompt to the host's native child API using a fresh context. Baton has not started a worker. Native handles and native completion remain authoritative.
 
 ## Record an outcome
 
@@ -64,6 +64,8 @@ Records are optional append-only history in `~/.baton/results.jsonl`. Status ret
 ## Installation and breaking changes
 
 Run `python3 scripts/update_local_baton.py` from a source checkout to test, build, link and refresh installed skills. `baton update` refreshes installed files. `baton uninstall --clean --dry-run` previews cleanup; omit `--dry-run` to remove Baton config/results and owned integrations. Modified integrations are preserved and conflicts reported. Package-manager command links are separate from runtime uninstall.
+
+Config schema 4 removes `coding_models` and `--coding-model`; configure each needed mode directly. Existing mode lists are retained; the retired total pool is never copied into any mode. Saving writes schema 4 and drops retired fields. Users who configured only the total pool must explicitly configure their mode pools.
 
 V2 removes managed dispatch, apply, activation, tickets, receipts, sessions, queue state and Git audits. The configuration no longer has runner, longctx or director capacity fields. There is no second compatibility runtime. Earlier managed-runtime measurements are not v2 performance evidence.
 

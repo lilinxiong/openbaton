@@ -30,13 +30,12 @@ function run(args, json = false) {
 
 try {
   run(["init", "--cli", "sample-adapter"]);
-  run(["config", "--cli", "sample-adapter", "--coding-model", "sample-model",
-    "--execution-model", "sample-model", "--enable"]);
+  run(["config", "--cli", "sample-adapter", "--implementation-model", "sample-model", "--enable"]);
   const catalog = run(["models", "--json"], true);
   assert.deepEqual(catalog.models.map((model) => model.id), ["sample-model"]);
-  const matched = run(["match", "--work-mode", "execution", "--json"], true);
+  const matched = run(["match", "--work-mode", "implementation", "--json"], true);
   assert.equal(matched.model_id, "sample-model");
-  assert.equal(matched.reasoning_effort, "low");
+  assert.equal(Object.hasOwn(matched, "reasoning_effort"), false);
 
   const brief = path.join(work, "brief.json");
   fs.writeFileSync(brief, JSON.stringify({
@@ -51,10 +50,11 @@ try {
       unresolvedIssues: "One documentation reference needs review",
     },
   }));
-  const prepared = run(["spawn", "--brief", brief, "--work-mode", "execution", "--json"], true);
+  const prepared = run(["spawn", "--brief", brief, "--work-mode", "implementation", "--json"], true);
   assert.equal(prepared.spawned, false);
   assert.equal(prepared.model_id, "sample-model");
   assert.equal(prepared.fork_context, false);
+  assert.equal(Object.hasOwn(prepared, "reasoning_effort"), false);
   assert.match(prepared.prompt, /One documentation reference needs review/);
   assert.deepEqual(fs.readdirSync(work), ["brief.json"]);
   for (const name of ["spawns", "receipts", "workspaces", "state", "cache"]) {
