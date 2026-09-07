@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { inspectObservation, summarizeObservations } from "../src/lib/observation.js";
 import { run } from "../src/cli.js";
 
@@ -95,7 +96,7 @@ describe("host task observation accounting", () => {
     const file = new URL("../docs/reports/2026-09-07-task-observation.json", import.meta.url);
     assert.equal(inspectObservation(JSON.parse(fs.readFileSync(file, "utf8"))).total_tokens, null);
     const output: string[] = [];
-    const exit = await run(["observe", "--file", file.pathname, "--json"], {
+    const exit = await run(["observe", "--file", fileURLToPath(file), "--json"], {
       stdout: { write: (text) => output.push(text) }, stderr: { write: (text) => assert.fail(text) },
     });
     assert.equal(exit, 0);
