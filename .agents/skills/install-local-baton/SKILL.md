@@ -66,8 +66,8 @@ executing it. The dry-run must not invoke package-manager unlink: Bun 1.4.0
 package-manager dry-run is unsafe. If a step fails, stop on the concrete
 blocker; do not replace the source checkout with another installation method.
 
-The clean plan is blocked when active tickets have not drained, an owned-file
-or package conflict is detected, state is invalid/incomplete, or the command
+The clean plan is blocked when an owned-file or package conflict is detected,
+the installation manifest is invalid/incomplete, or the command
 to remove a recognized registration is ambiguous. Resolve the reported state
 and rerun the installer; never use `rm -rf ~/.baton` or manually delete a
 selected host/profile as a shortcut.
@@ -79,13 +79,13 @@ It must not open the host picker or create model choices. Users configure a
 host explicitly afterward:
 
 ```bash
-baton config --cli <adapter-id> --runner <model-id> --longctx <model-id> --coding-model <model-id>
+baton config --cli <adapter-id> --coding-model <model-id> --enable
 ```
 
-This current syntax writes only `[cli.<adapter-id>]`; use `-` to clear
-`runner` or `longctx`, and `--coding-model all` only when the catalog's
-complete Coding order is explicitly desired. Do not use `--enable`. An empty
-profile is valid after init but blocks classified routing until configured.
+This writes only `[cli.<adapter-id>]`. Optionally select mode-specific models
+with `--execution-model`, `--implementation-model`, and `--investigation-model`.
+Use exact live catalog IDs from `baton models --cli <adapter-id> --json`.
+An empty profile is valid after init but cannot select a worker model.
 Profile choices remain user-owned and are never synthesized by the installer.
 
 ## Verify and report
