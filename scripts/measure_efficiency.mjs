@@ -62,7 +62,6 @@ function parseArgs(argv) {
     baselineId: values.get("--baseline-id") || null,
     candidateId: values.get("--candidate-id") || null,
     bun: values.get("--bun") || process.env.BUN_EXE || process.execPath,
-    bunSupplied: values.has("--bun"),
   };
 }
 
@@ -106,13 +105,13 @@ function runtimeSkillCodePoints(root) {
   }));
 }
 function ensureParent(file) { fs.mkdirSync(path.dirname(file), { recursive: true }); }
-function shellQuote(value) { return `'${String(value).replaceAll("'", "'\\\"'\\\"'")}'`; }
-function reproducibleCommand(options) {
-  const args = ["bun", "scripts/measure_efficiency.mjs", "--baseline", options.baseline, "--candidate", options.candidate,
+function shellQuote(value) { return `'${String(value).replaceAll("'", `'"'"'`)}'`; }
+function originalCommand(options) {
+  const args = [process.execPath, fileURLToPath(import.meta.url), "--baseline", options.baseline, "--candidate", options.candidate,
     "--repeats", String(options.repeats), "--warmups", String(options.warmups), "--brief-budget-chars", String(options.briefBudgetChars)];
   if (options.baselineId) args.push("--baseline-id", options.baselineId);
   if (options.candidateId) args.push("--candidate-id", options.candidateId);
-  if (options.bunSupplied) args.push("--bun", options.bun);
+  args.push("--bun", options.bun);
   return args.map(shellQuote).join(" ");
 }
 
@@ -139,20 +138,20 @@ process.stdout.write(JSON.stringify({ code, stdout: out.join(""), stderr: err.jo
   return helper;
 }
 
-function writeFixtureAdapter(root) {
+function writeFixtureAdapter(root, bun) {
   const adapter = path.join(root, "adapter");
   fs.cpSync(path.join(REPO_ROOT, "test", "fixtures", "adapters", "alpha"), adapter, { recursive: true });
   const manifestPath = path.join(adapter, "adapter.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  manifest.catalog.command = "catalog-count.mjs";
-  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   const catalog = path.join(adapter, "catalog-count.mjs");
-  fs.writeFileSync(catalog, `#!/usr/bin/env bun
+  manifest.catalog.command = bun;
+  manifest.catalog.args = [catalog];
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  fs.writeFileSync(catalog, `
 import fs from "node:fs";
 fs.appendFileSync(process.env.BATON_MEASURE_CATALOG_LOG, "catalog\\n");
 process.stdout.write(JSON.stringify({ adapter_id: "alpha", version: "efficiency-fixture-1", models: [{ id: "alpha-model", model: "alpha-model", display_name: "Alpha", description: "fixture", hidden: false, reasoning_efforts: [{ id: "high", description: "high" }], default_reasoning_effort: "high", input_modalities: ["text"], additional_speed_tiers: [], service_tiers: [], default_service_tier: null, is_default: true }] }));
 `, "utf8");
-  fs.chmodSync(catalog, 0o755);
   return adapter;
 }
 
@@ -265,7 +264,7 @@ function measureScenario(options, handoffCount) {
   try {
     const home = path.join(root, "home"); const project = path.join(root, "project");
     fs.mkdirSync(home); fs.mkdirSync(project); writeConfig(home);
-    const adapter = writeFixtureAdapter(root); const helper = writeHelper(root);
+    const adapter = writeFixtureAdapter(root, options.bun); const helper = writeHelper(root);
     const catalogLog = path.join(root, "catalog.log");
     const sourceBriefs = briefs(handoffCount);
     const baselineBriefPaths = sourceBriefs.map((brief, index) => {
@@ -281,11 +280,19 @@ function measureScenario(options, handoffCount) {
       const row = invoke({ source: options.candidate, helper, home, adapter, project, catalogLog, bun: options.bun, args: ["spawn", "--briefs", candidateBriefs, "--brief-budget-chars", String(options.briefBudgetChars), "--host", "alpha", "--work-mode", "execution", "--effort", "high", "--json"] });
       return { elapsedMs: row.elapsedMs, manifestReads: row.wrapper.manifest_reads, catalogInvocations: row.catalogInvocations, outputChars: codePoints(row.output), promptChars: normalize(row.payload, handoffCount).reduce((total, item) => total + codePoints(Array.isArray(row.payload.handoffs) ? row.payload.handoffs.find((handoff) => handoff.scope === item.scope).prompt : row.payload.prompt), 0), payload: row.payload, handoffCount };
     };
-    for (let index = 0; index < options.warmups; index += 1) { baselineRun(); candidateRun(); }
+    const runPair = () => {
+      const before = baselineRun();
+      const after = candidateRun();
+      const parity = assertParity(before.payload, after, sourceBriefs);
+      return { before, after, parity };
+    };
+    for (let index = 0; index < options.warmups; index += 1) runPair();
     const baseline = []; const candidate = [];
-    for (let index = 0; index < options.repeats; index += 1) { baseline.push(baselineRun()); candidate.push(candidateRun()); }
-    const baselinePayload = baseline.at(-1).payload;
-    const candidatePayload = candidate.at(-1);
+    let parity;
+    for (let index = 0; index < options.repeats; index += 1) {
+      const pair = runPair();
+      baseline.push(pair.before); candidate.push(pair.after); parity = pair.parity;
+    }
     const aggregate = (rows, name) => ({
       median_elapsed_ms: median(rows.map((row) => row.elapsedMs)),
       manifest_read_count: median(rows.map((row) => row.manifestReads)),
@@ -295,7 +302,7 @@ function measureScenario(options, handoffCount) {
     });
     const baselineMetrics = aggregate(baseline, "baseline");
     const candidateMetrics = aggregate(candidate, "candidate");
-    return { handoff_count: handoffCount, baseline: baselineMetrics, candidate: candidateMetrics, parity: assertParity(baselinePayload, candidatePayload, sourceBriefs) };
+    return { handoff_count: handoffCount, baseline: baselineMetrics, candidate: candidateMetrics, parity };
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -309,7 +316,7 @@ function difference(baseline, candidate) {
 }
 
 function markdown(report) {
-  const lines = ["# Baton efficiency measurement", "", `Command: \`${report.metadata.reproducible_command}\``, "", "| Handoffs | Metric | Baseline | Candidate | Delta |", "| ---: | --- | ---: | ---: | ---: |"];
+  const lines = ["# Baton efficiency measurement", "", `Original local command: \`${report.metadata.original_command}\``, "", "| Handoffs | Metric | Baseline | Candidate | Delta |", "| ---: | --- | ---: | ---: | ---: |"];
   for (const scenario of report.scenarios) {
     for (const [metric, row] of Object.entries(scenario.differences)) lines.push(`| ${scenario.handoff_count} | ${metric} | ${row.baseline} | ${row.candidate} | ${row.delta} |`);
   }
@@ -324,6 +331,10 @@ function markdown(report) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) { process.stdout.write(help()); return; }
+  // Resolve a command name or wrapper once; every source and catalog uses it.
+  const resolved = childProcess.spawnSync(options.bun, ["-e", "if (typeof Bun === 'undefined') process.exit(1); process.stdout.write(process.execPath)"], { encoding: "utf8", timeout: 10_000 });
+  if (resolved.status !== 0 || !path.isAbsolute(resolved.stdout.trim())) fail("--bun must resolve to a runnable Bun executable");
+  options.bun = resolved.stdout.trim();
   const scenarios = [1, 4].map((handoffCount) => {
     const measured = measureScenario(options, handoffCount);
     return { ...measured, differences: difference(measured.baseline, measured.candidate) };
@@ -338,7 +349,7 @@ async function main() {
       repeats: options.repeats,
       warmups: options.warmups,
       brief_budget_chars: options.briefBudgetChars,
-      reproducible_command: reproducibleCommand(options),
+      original_command: originalCommand(options),
       token_estimate: null,
     },
     scenarios,

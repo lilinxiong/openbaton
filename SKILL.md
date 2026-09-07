@@ -38,7 +38,7 @@ advisory: warn only above N, never truncate/reject.
 `baton spawn --host <host> --brief <file> --work-mode <mode> --json` prepares
 native parameters, never starts agents. For matching briefs sharing selection
 flags, use `baton spawn --briefs FILE --host HOST --work-mode MODE --json`;
-`FILE` is a nonempty JSON array of brief objects. Start independent workers in
+`FILE` is a JSON array of 1–128 brief objects. Start independent workers in
 parallel through the native host API, with returned prompt and supported model/effort
 in fresh context. Native handles/activity/completion are authority; no tickets,
 receipts, queues or another state machine.

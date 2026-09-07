@@ -8,24 +8,32 @@ import path from "node:path";
 const repoRoot = path.resolve(import.meta.dir, "..");
 const script = path.join(repoRoot, "scripts", "measure_efficiency.mjs");
 
-function writeSource(root: string, batched: boolean, omitAcceptance = false): void {
+function writeSource(root: string, batched: boolean, omitAcceptance = false, wrongFirstModel = false): void {
   const source = path.join(root, "src");
   fs.mkdirSync(source, { recursive: true });
   fs.writeFileSync(path.join(source, "cli.ts"), `
 import childProcess from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+let modelId = "alpha-model";
 
 function handoff(brief: any) {
   return {
-    host: "alpha", model_id: "alpha-model", reasoning_effort: "high",
+    host: "alpha", model_id: modelId, reasoning_effort: "high",
     prompt: ${omitAcceptance} ? brief.goal : [brief.goal, ...brief.acceptance, ...brief.constraints].join("\\n"),
     fork_context: false, spawned: false, scope: brief.scope, mode: brief.mode, work_mode: "execution",
   };
 }
 export async function run(argv: string[], options: any) {
   const manifest = JSON.parse(fs.readFileSync(path.join(process.env.BATON_ADAPTER_PATHS!, "adapter.json"), "utf8"));
-  childProcess.execFileSync(path.join(process.env.BATON_ADAPTER_PATHS!, manifest.catalog.command), [], { env: process.env });
+  const command = path.isAbsolute(manifest.catalog.command) ? manifest.catalog.command : path.join(process.env.BATON_ADAPTER_PATHS!, manifest.catalog.command);
+  childProcess.execFileSync(command, manifest.catalog.args, { env: process.env });
+  if (${wrongFirstModel}) {
+    const counterFile = path.join(options.cwd, "model-counter");
+    const count = fs.existsSync(counterFile) ? Number(fs.readFileSync(counterFile, "utf8")) : 0;
+    fs.writeFileSync(counterFile, String(count + 1));
+    if (count === 0) modelId = "wrong-first-model";
+  }
   const briefsIndex = argv.indexOf("--briefs");
   const briefIndex = argv.indexOf("--brief");
   if (${batched} && briefsIndex >= 0) {
@@ -108,5 +116,63 @@ describe("efficiency measurement harness", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects an incorrect early measured or warmup result even if a later run would pass", () => {
+    for (const warmups of ["0", "1"]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "baton-efficiency-early-"));
+      try {
+        const baseline = path.join(root, "baseline");
+        const candidate = path.join(root, "candidate");
+        writeSource(baseline, false);
+        writeSource(candidate, true, false, true);
+        const json = path.join(root, "report.json");
+        const result = childProcess.spawnSync(process.execPath, [script,
+          "--baseline", baseline, "--candidate", candidate, "--repeats", "2", "--warmups", warmups, "--json", json,
+        ], { encoding: "utf8", timeout: 30_000 });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /BEHAVIORAL_PARITY_FAILED.*model_id/);
+        assert.equal(fs.existsSync(json), false);
+      } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    }
+  });
+
+  it("uses the selected Bun for catalogs when PATH has no Bun or a different executable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "baton-efficiency-runtime-"));
+    try {
+      const baseline = path.join(root, "baseline");
+      const candidate = path.join(root, "candidate");
+      const bin = path.join(root, "bin");
+      fs.mkdirSync(bin);
+      writeSource(baseline, false);
+      writeSource(candidate, true);
+      for (const otherBun of [false, true]) {
+        if (otherBun) fs.writeFileSync(path.join(bin, "bun"), "#!/bin/sh\nexit 97\n", { mode: 0o755 });
+        const result = childProcess.spawnSync(process.execPath, [script,
+          "--baseline", baseline, "--candidate", candidate, "--repeats", "1", "--warmups", "0", "--bun", process.execPath,
+        ], { encoding: "utf8", env: { ...process.env, PATH: bin }, timeout: 30_000 });
+        assert.equal(result.status, 0, result.stderr);
+        const report = JSON.parse(result.stdout);
+        assert.equal(report.scenarios[1].candidate.catalog_invocation_count, 1);
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("can rerun the original command with apostrophes and spaces in paths and identifiers", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "baton-efficiency-quoting-"));
+    try {
+      const baseline = path.join(root, "baseline's source");
+      const candidate = path.join(root, "candidate's source");
+      writeSource(baseline, false);
+      writeSource(candidate, true);
+      const result = childProcess.spawnSync(process.execPath, [script,
+        "--baseline", baseline, "--candidate", candidate, "--repeats", "1", "--warmups", "0", "--candidate-id", "candidate's revision",
+      ], { encoding: "utf8", cwd: repoRoot, timeout: 30_000 });
+      assert.equal(result.status, 0, result.stderr);
+      const command = JSON.parse(result.stdout).metadata.original_command;
+      const rerun = childProcess.spawnSync("sh", ["-c", command], { encoding: "utf8", cwd: repoRoot, timeout: 30_000 });
+      assert.equal(rerun.status, 0, rerun.stderr);
+      assert.equal(JSON.parse(rerun.stdout).metadata.sources.candidate.identifier, "candidate's revision");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 });

@@ -20,9 +20,9 @@ bun scripts/measure_efficiency.mjs \
 ```
 
 The supplied `--baseline-id` and `--candidate-id` are recorded when a source
-identifier other than its Git `HEAD` is needed. The JSON report also saves the
-fully reproducible command, runtime versions, source paths/identifiers and the
-warmup/repeat settings. Each scenario creates its own temporary `HOME`, project
+identifier other than its Git `HEAD` is needed. The local JSON report saves `original_command`, runtime versions, source
+paths/identifiers and warmup/repeat settings. This command records the actual
+local invocation; it is not a promise that temporary inputs remain available. Each scenario creates its own temporary `HOME`, project
 directory, and copied Alpha fixture adapter. The temporary directory is removed
 after the scenario.
 
@@ -42,13 +42,38 @@ files are not summed or treated as simultaneously loaded. This makes added
 runtime instructions visible alongside any shorter handoff payload. The
 optional Markdown report is a readable rendering of the same measurements.
 
-Before publishing a comparison, the harness verifies behavioral parity for
-each handoff: selected host/model/effort/tier, host-owned execution flags,
+For every warmup and measured pair, the harness verifies behavioral parity for
+each handoff before including that pair in statistics: selected host/model/effort/tier, host-owned execution flags,
 mode/work mode and scope must agree. It separately verifies that every prompt
 still carries the original goal, acceptance criteria and constraints. Prompt
 text itself need not be identical because the batch prompt has a concise result
 contract. `brief_diagnostics` is not a parity requirement; it is expected only
 for an over-budget individual handoff.
+
+## Reproducing and publishing a report
+
+`--bun` (or `BUN_EXE`) selects the executable for both source invocations and
+fixture catalogs. The script resolves it once and records its version and
+absolute path in the private local command. Catalogs do not select another Bun
+from `PATH`.
+
+Keep generated local reports private: they contain absolute paths and may
+identify the local user. Before committing or sharing a report:
+
+- Record immutable baseline, candidate, and harness Git revisions. When the
+  measured source is an archive, supply its exact revision via `--baseline-id`
+  or `--candidate-id`; verify the archive corresponds to that revision. A
+  working-tree hash alone is insufficient to locate the input later.
+- Remove `sources.*.path` and `original_command` from the published JSON and
+  Markdown. Retain revisions and runtime versions. Use repository-relative
+  locators and a `reproduction_command` with replaceable directory placeholders.
+- Export the recorded baseline and candidate revisions to fresh directories,
+  run the harness from its recorded revision, and replace `BASELINE_DIR` and
+  `CANDIDATE_DIR` in that command with the export locations. Use the recorded
+  Bun version; timing will still depend on the machine.
+- If repositories have different histories, record corresponding revisions
+  only after verifying their Git trees match. The published report must let
+  readers recover both inputs without relying on a developer's temporary HOME.
 
 ## Optional real-task observation format
 
