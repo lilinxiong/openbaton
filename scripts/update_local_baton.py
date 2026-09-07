@@ -407,7 +407,7 @@ def build_plan(
     actions.append(PlannedAction("build the distribution", (bun, "run", "build")))
     if footprint.has_prior_installation:
         actions.append(PlannedAction("plan clean uninstall with the newly built CLI", (str(cli), "uninstall", "--clean", "--dry-run", "--json"), capture=True))
-        actions.append(PlannedAction("apply clean uninstall with the newly built CLI", (str(cli), "uninstall", "--clean", "--yes", "--json"), capture=True))
+        actions.append(PlannedAction("apply clean uninstall with the newly built CLI", (str(cli), "uninstall", "--clean", "--json"), capture=True))
         if footprint.registration:
             actions.append(PlannedAction("remove the recognized old package registration", footprint.registration.remove_command))
     actions.extend([
@@ -458,26 +458,12 @@ def _parse_json_output(output: str) -> dict[str, Any]:
     return value
 
 
-_UNINSTALL_PLAN_KEYS = frozenset({
-    "hosts", "clean", "dry_run", "applied", "targets", "active_tickets", "retained_runtime_records", "constraints",
-})
-_UNINSTALL_TARGET_REQUIRED_KEYS = frozenset({
-    "action", "path", "reason", "expected_fingerprint", "expected_mode", "expected_kind",
-})
-_UNINSTALL_TARGET_CORE_KEYS = frozenset({"action", "path", "reason"})
-_UNINSTALL_TARGET_KEYS = frozenset({
-    "action", "path", "host", "reason", "expected_fingerprint", "expected_mode", "expected_kind",
-})
-_UNINSTALL_TICKET_KEYS = frozenset({"path", "ticket_id", "status", "host"})
-_UNINSTALL_RETAINED_RECORD_KEYS = frozenset({"path", "kind", "reason"})
+_UNINSTALL_PLAN_KEYS = frozenset({"hosts", "clean", "dry_run", "applied", "targets", "constraints"})
+_UNINSTALL_TARGET_KEYS = frozenset({"action", "path", "reason"})
 _UNINSTALL_ACTIONS = frozenset({"remove", "already-absent", "conflict"})
-_UNINSTALL_KINDS = frozenset({"file", "directory", "absent"})
 _SAFE_UNINSTALL_CONSTRAINTS = frozenset({
-    "preserve modified or ambiguous skills",
-    "never remove package-manager executable",
-    "never recurse outside explicit Baton/host integration paths",
-    "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
-    "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
+    "preserve modified or ambiguous external integrations",
+    "only remove manifest-owned external files and known Baton files during clean",
 })
 
 
@@ -516,28 +502,10 @@ def _require_exact_keys(value: Mapping[str, Any], expected: frozenset[str], labe
         raise _invalid_uninstall_schema(f"{label} has " + "; ".join(details))
 
 
-def _require_keys(value: Mapping[str, Any], required: frozenset[str], allowed: frozenset[str], label: str) -> None:
-    missing = sorted(required - set(value))
-    unknown = sorted(set(value) - allowed)
-    if missing or unknown:
-        details: list[str] = []
-        if missing:
-            details.append("missing " + ", ".join(missing))
-        if unknown:
-            details.append("unknown " + ", ".join(unknown))
-        raise _invalid_uninstall_schema(f"{label} has " + "; ".join(details))
-
-
 def validate_uninstall_plan(
     payload: Mapping[str, Any], *, expected_dry_run: bool = True, expected_applied: bool = False,
 ) -> None:
-    """Validate the complete JSON contract before trusting an uninstall result.
-
-    The installer is a destructive caller, so a syntactically valid but
-    incomplete result is not sufficient. Both the preview and apply result
-    must carry the expected state flags and every target/ticket must have the
-    shape emitted by ``src/lib/uninstall.ts``.
-    """
+    """Validate the v2 CLI result before continuing package replacement."""
     plan = _require_object(payload, "top-level result")
     _require_exact_keys(plan, _UNINSTALL_PLAN_KEYS, "top-level result")
     if plan["clean"] is not True:
@@ -548,69 +516,19 @@ def validate_uninstall_plan(
     if len(set(hosts)) != len(hosts):
         raise _invalid_uninstall_schema("hosts contains duplicates")
 
-    active = plan["active_tickets"]
-    if not isinstance(active, list):
-        raise _invalid_uninstall_schema("active_tickets must be an array")
-    for index, item in enumerate(active):
-        ticket = _require_object(item, f"active_tickets[{index}]")
-        _require_exact_keys(ticket, _UNINSTALL_TICKET_KEYS, f"active_tickets[{index}]")
-        for field in _UNINSTALL_TICKET_KEYS:
-            _require_string(ticket[field], f"active_tickets[{index}].{field}")
-    if active:
-        ids = ", ".join(str(item["ticket_id"]) for item in active)
-        raise RuntimeError(f"clean uninstall blocked by active tickets: {ids}")
-
-    retained = plan["retained_runtime_records"]
-    if not isinstance(retained, list):
-        raise _invalid_uninstall_schema("retained_runtime_records must be an array")
-    retained_paths: set[str] = set()
-    for index, item in enumerate(retained):
-        record = _require_object(item, f"retained_runtime_records[{index}]")
-        _require_exact_keys(record, _UNINSTALL_RETAINED_RECORD_KEYS, f"retained_runtime_records[{index}]")
-        record_path = _require_string(record["path"], f"retained_runtime_records[{index}].path")
-        if record_path in retained_paths:
-            raise _invalid_uninstall_schema(f"retained_runtime_records contains duplicate path: {record_path}")
-        retained_paths.add(record_path)
-        if record["kind"] != "rolling-run-v2":
-            raise _invalid_uninstall_schema(f"retained_runtime_records[{index}].kind must be rolling-run-v2")
-        _require_string(record["reason"], f"retained_runtime_records[{index}].reason")
-
     targets = plan["targets"]
     if not isinstance(targets, list):
         raise _invalid_uninstall_schema("targets must be an array")
     for index, item in enumerate(targets):
         target = _require_object(item, f"targets[{index}]")
-        _require_keys(target, _UNINSTALL_TARGET_CORE_KEYS, _UNINSTALL_TARGET_KEYS, f"targets[{index}]")
+        _require_exact_keys(target, _UNINSTALL_TARGET_KEYS, f"targets[{index}]")
         action = _require_string(target["action"], f"targets[{index}].action")
         if action not in _UNINSTALL_ACTIONS:
             raise _invalid_uninstall_schema(f"targets[{index}].action is unknown: {action}")
         path = _require_string(target["path"], f"targets[{index}].path")
         _require_string(target["reason"], f"targets[{index}].reason")
-        # Surface a newly reported ownership conflict even if a buggy caller
-        # omitted optional fingerprint metadata; it must never be treated as
-        # an ordinary target or allow package unregister/link to proceed.
         if action == "conflict":
             raise RuntimeError("clean uninstall has ownership conflicts: " + path)
-        _require_keys(target, _UNINSTALL_TARGET_REQUIRED_KEYS, _UNINSTALL_TARGET_KEYS, f"targets[{index}]")
-        if "host" in target:
-            _require_string(target["host"], f"targets[{index}].host")
-        fingerprint = target["expected_fingerprint"]
-        mode = target["expected_mode"]
-        kind = target["expected_kind"]
-        if action == "remove":
-            if not isinstance(kind, str) or kind not in {"file", "directory"}:
-                raise _invalid_uninstall_schema(f"targets[{index}].remove expected_kind must be file or directory")
-            if not isinstance(fingerprint, str) or not fingerprint:
-                raise _invalid_uninstall_schema(f"targets[{index}].remove expected_fingerprint must be a non-empty string")
-            if type(mode) is not int or mode < 0:
-                raise _invalid_uninstall_schema(f"targets[{index}].remove expected_mode must be a non-negative integer")
-        elif action == "already-absent":
-            if kind != "absent" or fingerprint is not None or mode is not None:
-                raise _invalid_uninstall_schema(
-                    f"targets[{index}].already-absent requires expected_kind=absent and null fingerprint/mode"
-                )
-        elif not isinstance(kind, str) or kind not in _UNINSTALL_KINDS:
-            raise _invalid_uninstall_schema(f"targets[{index}].expected_kind is invalid: {kind!r}")
     constraints = _require_string_list(plan["constraints"], "constraints")
     blocking = [item for item in constraints if item not in _SAFE_UNINSTALL_CONSTRAINTS]
     if blocking:
@@ -671,23 +589,6 @@ def verify_installation(
     missing_hosts = [str(path) for path in _manifest_host_files(baton_home(values)) if not path.is_file()]
     if missing_hosts:
         raise RuntimeError("verification failed: missing manifest-owned host skills: " + ", ".join(missing_hosts))
-    required_runtime_modules = (
-        Path("worktree") / "setup.js",
-        Path("worktree") / "audit.js",
-        Path("worktree") / "bundle.js",
-        Path("worktree-integration.js"),
-        Path("worktree-lifecycle.js"),
-    )
-    missing_runtime_modules = [
-        str(repo_root / "dist" / "src" / "lib" / name)
-        for name in required_runtime_modules
-        if not (repo_root / "dist" / "src" / "lib" / name).is_file()
-    ]
-    if missing_runtime_modules:
-        raise RuntimeError(
-            "verification failed: missing rolling isolation runtime modules: "
-            + ", ".join(missing_runtime_modules)
-        )
     config = baton_home(values) / "config.toml"
     if not config.is_file() or re.search(r"(?m)^\s*\[cli(?:\.|\s*\])", config.read_text(encoding="utf-8")):
         raise RuntimeError("verification failed: initialization restored a CLI profile")
@@ -701,8 +602,7 @@ def recovery_guidance(repo_root: Path = REPO_ROOT) -> str:
     return (
         "Recovery (cleanup has begun): inspect `command -v baton` and `~/.baton`, "
         f"then repair the link with `bun link` and initialize with `{cli} init`; "
-        "verify with `baton version`. Inspect retained rolling-run status before removing "
-        "any worktree, bundle refs, or integration context. Existing CLI profiles are not restored automatically."
+        "verify with `baton version`. Existing CLI profiles are not restored automatically."
     )
 
 
@@ -761,7 +661,7 @@ def install(
             )
             cleanup_started = True
             apply_output = run(
-                [str(built_cli), "uninstall", "--clean", "--yes", "--json"],
+                [str(built_cli), "uninstall", "--clean", "--json"],
                 env=values, runner=runner, capture=True, cwd=repo_root,
             )
             validate_uninstall_plan(

@@ -13,7 +13,7 @@ const SYSTEM_NODE = execFileSync("which", ["node"], {
 }).trim();
 const ISOLATED_SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(path.delimiter);
 
-type PlanMode = "success" | "active" | "conflict" | "invalid" | "stale" | "retained" | "malformed-preflight" | "malformed-remove" | "malformed-already-absent" | "malformed-manifest" | "apply-conflict";
+type PlanMode = "success" | "conflict" | "invalid" | "stale" | "malformed-preflight" | "malformed-remove" | "malformed-already-absent" | "malformed-manifest" | "apply-conflict";
 type Fixture = {
   root: string;
   checkout: string;
@@ -36,31 +36,24 @@ const home = process.env.HOME;
 const log = process.env.FAKE_LOG;
 const record = (line) => fs.appendFileSync(log, line + "\\n");
 record("cli " + args.join(" "));
+if (args.includes("--yes")) { console.error("unknown option: --yes"); process.exit(1); }
 const mode = process.env.FAKE_PLAN_MODE || "success";
-const plan = { hosts: ["codex", "grok"], clean: true, dry_run: true, applied: false, targets: [], active_tickets: [], retained_runtime_records: [], constraints: [] };
+const plan = { hosts: ["codex", "grok"], clean: true, dry_run: true, applied: false, targets: [], constraints: [] };
 if (args[0] === "uninstall" && args.includes("--dry-run")) {
-  if (mode === "active") plan.active_tickets = [{ path: "~/.baton/workspaces/active/v2/spawns/ticket.json", ticket_id: "ticket-active", status: "running", host: "codex" }];
-  if (mode === "conflict") plan.targets = [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", host: "codex", reason: "skill was modified or ownership is ambiguous" }];
+  if (mode === "conflict") plan.targets = [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", reason: "skill was modified or ownership is ambiguous" }];
   if (mode === "invalid") plan.constraints = ["UNINSTALL_STATE_INVALID: malformed runtime state"];
-  if (mode === "stale") plan.targets = [{ action: "remove", path: "~/.baton/stale", reason: "clean removes Baton-owned global file", expected_kind: "file", expected_mode: 420, expected_fingerprint: "stale" }];
-  if (mode === "retained") {
-    plan.retained_runtime_records = [{ path: "~/.baton/workspaces/example/v2/runs/rolling-runs-v2/run-1/facts.ndjson", kind: "rolling-run-v2", reason: "retain auditable rolling execution record" }];
-    plan.constraints = [
-      "preserve auditable rolling-run v2 records and their containing workspace runtime namespaces",
-      "preserve rolling isolation worktrees, snapshots, bundles, integration contexts, and retained evidence",
-    ];
-  }
+  if (mode === "stale") plan.targets = [{ action: "remove", path: "~/.baton/stale", reason: "clean removes Baton-owned global file" }];
   if (mode === "malformed-preflight") {
-    console.log(JSON.stringify({ hosts: plan.hosts, clean: true, dry_run: true, targets: [], active_tickets: [], constraints: [] }));
+    console.log(JSON.stringify({ hosts: plan.hosts, clean: true, dry_run: true, targets: [], constraints: [] }));
     process.exit(0);
   }
   if (mode === "malformed-remove") {
-    plan.targets = [{ action: "remove", path: "~/.baton/malformed", reason: "invalid remove metadata", expected_kind: "file", expected_fingerprint: "", expected_mode: -1 }];
+    plan.targets = [{ action: "remove", path: "~/.baton/malformed", reason: "" }];
     console.log(JSON.stringify(plan));
     process.exit(0);
   }
   if (mode === "malformed-already-absent") {
-    plan.targets = [{ action: "already-absent", path: "~/.baton/missing", reason: "invalid absent metadata", expected_kind: "file", expected_fingerprint: "present", expected_mode: 420 }];
+    plan.targets = [{ action: "already-absent", path: "~/.baton/missing", reason: 42 }];
     console.log(JSON.stringify(plan));
     process.exit(0);
   }
@@ -68,18 +61,14 @@ if (args[0] === "uninstall" && args.includes("--dry-run")) {
   process.exit(0);
 }
 if (args[0] === "uninstall") {
-  if (mode === "stale") { console.error("UNINSTALL_PLAN_STALE: target bytes changed: ~/.baton/stale"); process.exit(1); }
+  if (mode === "stale") { console.error("uninstall target changed: ~/.baton/stale"); process.exit(1); }
   if (mode === "apply-conflict") {
-    console.log(JSON.stringify({ ...plan, dry_run: false, applied: false, targets: [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", host: "codex", reason: "ownership changed after preflight" }] }));
+    console.log(JSON.stringify({ ...plan, dry_run: false, applied: false, targets: [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", reason: "ownership changed after preflight" }] }));
     process.exit(0);
   }
   const batonHome = path.join(home, ".baton");
-  if (mode === "retained" && fs.existsSync(batonHome)) {
-    for (const entry of fs.readdirSync(batonHome)) {
-      if (entry !== "workspaces") fs.rmSync(path.join(batonHome, entry), { recursive: true, force: true });
-    }
-  } else {
-    fs.rmSync(batonHome, { recursive: true, force: true });
+  for (const name of ["SKILL.md", "config.toml", "results.jsonl", "install-manifest.json", "adapters"]) {
+    fs.rmSync(path.join(batonHome, name), { recursive: true, force: true });
   }
   fs.rmSync(path.join(home, ".codex", "skills", "baton"), { recursive: true, force: true });
   fs.rmSync(path.join(home, ".grok", "skills", "baton"), { recursive: true, force: true });
@@ -96,7 +85,7 @@ if (args[0] === "init") {
   fs.writeFileSync(path.join(home, ".baton", "SKILL.md"), fs.readFileSync(path.join(process.cwd(), "SKILL.md")));
   fs.writeFileSync(path.join(home, ".baton", "adapters", "codex", "adapter.json"), "{}\\n");
   fs.writeFileSync(path.join(home, ".baton", "adapters", "grok", "adapter.json"), "{}\\n");
-  fs.writeFileSync(path.join(home, ".baton", "config.toml"), "schema_version = 2\\ncli = {}\\n[director]\\nmax_concurrent = 4\\nmax_depth = 1\\n");
+  fs.writeFileSync(path.join(home, ".baton", "config.toml"), "schema_version = 3\\ncli = {}\\n");
   fs.mkdirSync(path.join(home, ".codex", "skills", "baton"), { recursive: true });
   fs.mkdirSync(path.join(home, ".grok", "skills", "baton"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "skills", "baton", "SKILL.md"), "codex host skill\\n");
@@ -108,7 +97,7 @@ if (args[0] === "init") {
   fs.writeFileSync(path.join(home, ".baton", "install-manifest.json"), JSON.stringify({ files: manifestFiles }));
   process.exit(0);
 }
-if (args[0] === "version") { console.log("1.0.0"); process.exit(0); }
+if (args[0] === "version") { console.log("2.0.0"); process.exit(0); }
 process.exit(0);
 `;
 
@@ -127,12 +116,9 @@ if [ "\${1:-}" = "run" ] && { [ "\${2:-}" = "test" ] || [ "\${2:-}" = "check" ];
 fi
 if [ "\${1:-}" = "run" ] && [ "\${2:-}" = "build" ]; then
   [ "\${FAKE_FAIL:-}" = "build" ] && exit 24
+  [ "\${FAKE_REAL_CLI:-}" = "1" ] && exit 0
   cp "$FAKE_CLI_TEMPLATE" "$FAKE_CHECKOUT/dist/bin/baton.js"
   chmod +x "$FAKE_CHECKOUT/dist/bin/baton.js"
-  mkdir -p "$FAKE_CHECKOUT/dist/src/lib/worktree"
-  for module in worktree/setup worktree/audit worktree/bundle worktree-integration worktree-lifecycle; do
-    touch "$FAKE_CHECKOUT/dist/src/lib/$module.js"
-  done
   exit 0
 fi
 if [ "\${1:-}" = "link" ]; then [ "\${FAKE_FAIL:-}" = "link" ] && exit 25 || ln -sfn "$FAKE_CHECKOUT/dist/bin/baton.js" "$FAKE_BIN/baton"; exit 0; fi
@@ -190,7 +176,6 @@ function fixture(): Fixture {
     REAL_NODE: SYSTEM_NODE,
     FAKE_PM_JSON: "{}",
     FAKE_NPM_ROOT: path.join(root, "npm-global", "lib", "node_modules"),
-    BATON_SESSION_ID: "isolated-installer-test",
   };
   for (const key of ["BATON_HOST", "CODEX_THREAD_ID", "GROK_SESSION_ID", "BATON_ADAPTER_PATHS"]) delete env[key];
   return { root, checkout, home, bin, log, env };
@@ -236,6 +221,48 @@ function setupPriorNpmInstall(f: Fixture): string {
 }
 
 describe("isolated local Baton installer", () => {
+  it("fresh-installs and clean-reinstalls using the real v2 CLI in an isolated home", () => {
+    const f = fixture();
+    try {
+      // Compile the current sources directly into the fixture. Only package
+      // registration is faked; uninstall, init and verification use real code.
+      execFileSync(path.join(REPO, "node_modules", ".bin", "tsc"), [
+        "-p", path.join(REPO, "tsconfig.json"), "--outDir", path.join(f.checkout, "dist"),
+      ], { cwd: REPO, env: process.env });
+      fs.chmodSync(path.join(f.checkout, "dist", "bin", "baton.js"), 0o755);
+      f.env.FAKE_REAL_CLI = "1";
+      fs.mkdirSync(path.join(f.home, ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(f.home, "unrelated.txt"), "preserved");
+      const fresh = runInstaller(f, ["--skip-install", "--skip-tests"]);
+      assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
+      assert.match(fresh.stdout, /Local Baton installed complete/);
+      const config = path.join(f.home, ".baton", "config.toml");
+      fs.writeFileSync(config, 'schema_version = 3\n[cli.codex]\nenabled = true\ncoding_models = ["old-choice"]\n');
+      const results = path.join(f.home, ".baton", "results.jsonl");
+      fs.writeFileSync(results, '{"old":true}\n');
+      // Model Bun's global package symlink so provenance remains verifiable.
+      const registration = path.join(f.home, ".bun", "install", "global", "node_modules", "@zhouliuya", "openbaton");
+      fs.mkdirSync(path.dirname(registration), { recursive: true });
+      fs.symlinkSync(f.checkout, registration);
+      fs.unlinkSync(path.join(f.bin, "baton"));
+      fs.symlinkSync(path.join(registration, "dist", "bin", "baton.js"), path.join(f.bin, "baton"));
+      f.env.FAKE_PM_JSON = JSON.stringify({ packages: [{ name: "@zhouliuya/openbaton", path: registration }] });
+      const reinstall = runInstaller(f, ["--skip-install", "--skip-tests"]);
+      assert.equal(reinstall.status, 0, reinstall.stdout + reinstall.stderr);
+      assert.match(reinstall.stdout, /Local Baton clean-reinstalled complete/);
+      assert.doesNotMatch(fs.readFileSync(config, "utf8"), /old-choice|\[cli\./);
+      assert.equal(fs.existsSync(results), false);
+      assert.equal(fs.readFileSync(path.join(f.home, "unrelated.txt"), "utf8"), "preserved");
+      assert.deepEqual(
+        fs.readFileSync(path.join(f.home, ".codex", "skills", "baton", "SKILL.md")),
+        fs.readFileSync(path.join(f.checkout, "adapters", "codex", "runtime", "SKILL.md")),
+      );
+      assert.equal(fs.realpathSync(path.join(f.bin, "baton")), fs.realpathSync(path.join(f.checkout, "dist", "bin", "baton.js")));
+    } finally {
+      fs.rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
   it("detects fresh installs and keeps a dry-run read-only", () => {
     const f = fixture();
     const before = fs.readdirSync(f.home);
@@ -345,29 +372,12 @@ describe("isolated local Baton installer", () => {
     const lines = logLines(f);
     assert.equal(lines.some((line) => line === "bun run test"), false);
     assert.equal(lines.some((line) => line === "bun run build"), true);
-    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --yes --json")), true);
+    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --json")), true);
     assert.equal(lines.some((line) => line.includes("bun remove") || line.includes("npm uninstall --global @zhouliuya/openbaton")), true);
     assert.equal(lines.some((line) => line === "bun link"), true);
     assert.equal(lines.some((line) => line.startsWith("cli init")), true);
     assert.equal(lines.some((line) => line.startsWith("cli version")), true);
     assert.equal(lines.some((line) => line.includes("cli uninstall --clean --dry-run --json")), true);
-  });
-
-  it("accepts auditable rolling-run retention records from clean uninstall", () => {
-    const f = fixture();
-    setupPriorInstall(f);
-    f.env.FAKE_PLAN_MODE = "retained";
-    const factLog = path.join(f.home, ".baton", "workspaces", "example", "v2", "runs", "rolling-runs-v2", "run-1", "facts.ndjson");
-    fs.mkdirSync(path.dirname(factLog), { recursive: true });
-    fs.writeFileSync(factLog, '{"kind":"accepted"}\n');
-
-    const result = runInstaller(f, ["--skip-install", "--skip-tests"]);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /clean-reinstalled/i);
-    const lines = logLines(f);
-    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --dry-run --json")), true);
-    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --yes --json")), true);
-    assert.equal(fs.readFileSync(factLog, "utf8"), '{"kind":"accepted"}\n');
   });
 
   it("installs a partial footprint even without a visible command or package registration", () => {
@@ -382,10 +392,10 @@ describe("isolated local Baton installer", () => {
     assert.equal(fs.realpathSync(path.join(f.bin, "baton")), fs.realpathSync(path.join(f.checkout, "dist", "bin", "baton.js")));
     assert.equal(fs.existsSync(path.join(f.home, ".baton", "SKILL.md")), true);
     assert.equal(fs.existsSync(path.join(f.home, ".baton", "config.toml")), true);
-    assert.equal(fs.existsSync(path.join(f.home, ".baton", "partial")), false);
+    assert.equal(fs.readFileSync(path.join(f.home, ".baton", "partial"), "utf8"), "replace me\n");
     const lines = logLines(f);
     assert.equal(lines.some((line) => line.includes("cli uninstall --clean --dry-run --json")), true);
-    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --yes --json")), true);
+    assert.equal(lines.some((line) => line.includes("cli uninstall --clean --json")), true);
     assert.equal(lines.some((line) => line === "bun link"), true);
     assert.equal(lines.some((line) => line.startsWith("cli init")), true);
   });
@@ -401,15 +411,15 @@ describe("isolated local Baton installer", () => {
     assert.ok(index("bun run test") > index("bun install --frozen-lockfile"));
     assert.ok(index("bun run build") > index("bun run test"));
     assert.ok(index("cli uninstall --clean --dry-run --json") > index("bun run build"));
-    assert.ok(index("cli uninstall --clean --yes --json") > index("cli uninstall --clean --dry-run --json"));
-    assert.ok(index("bun remove") > index("cli uninstall --clean --yes --json") || index("npm uninstall") > index("cli uninstall --clean --yes --json"));
+    assert.ok(index("cli uninstall --clean --json") > index("cli uninstall --clean --dry-run --json"));
+    assert.ok(index("bun remove") > index("cli uninstall --clean --json") || index("npm uninstall") > index("cli uninstall --clean --json"));
     assert.ok(index("bun link") > index("bun remove") || index("bun link") > index("npm uninstall"));
     assert.ok(index("cli init") > index("bun link"));
     assert.ok(index("cli version") > index("cli init"));
   });
 
-  it("blocks active tickets, conflicts, invalid state, and stale plans before package replacement", () => {
-    for (const mode of ["active", "conflict", "invalid", "stale"] as PlanMode[]) {
+  it("blocks conflicts, invalid state, and changed targets before package replacement", () => {
+    for (const mode of ["conflict", "invalid", "stale"] as PlanMode[]) {
       const f = fixture();
       const oldCli = setupPriorInstall(f);
       f.env.FAKE_PLAN_MODE = mode;
@@ -418,9 +428,9 @@ describe("isolated local Baton installer", () => {
       assert.equal(fs.realpathSync(path.join(f.bin, "baton")), oldCli);
       const lines = logLines(f);
       assert.equal(lines.some((line) => line.includes("bun remove") || line.includes("npm uninstall") || line === "bun link"), false, mode);
-      assert.equal(lines.some((line) => line.includes("--clean --yes")), mode === "stale");
+      assert.equal(lines.some((line) => line.includes("--clean --json")), mode === "stale");
       if (mode === "stale") {
-        assert.match(`${result.stdout}\n${result.stderr}`, /UNINSTALL_PLAN_STALE: target bytes changed/);
+        assert.match(`${result.stdout}\n${result.stderr}`, /uninstall target changed/);
       }
     }
   });
@@ -458,10 +468,10 @@ describe("isolated local Baton installer", () => {
     assert.deepEqual(fs.readFileSync(path.join(f.home, ".baton", "old-runtime")), oldRuntime);
     assert.equal(fs.realpathSync(path.join(f.bin, "baton")), oldCli);
     const lines = logLines(f);
-    assert.equal(lines.some((line) => line.includes("--clean --yes") || line.includes("bun remove") || line.includes("bun unlink") || line.includes("npm uninstall") || line === "bun link"), false);
+    assert.equal(lines.some((line) => line.includes("--clean --json") || line.includes("bun remove") || line.includes("bun unlink") || line.includes("npm uninstall") || line === "bun link"), false);
   });
 
-  it("fails closed for malformed remove and already-absent expected metadata", () => {
+  it("fails closed for malformed remove and already-absent targets", () => {
     for (const mode of ["malformed-remove", "malformed-already-absent"] as const) {
       const f = fixture();
       const oldCli = setupPriorInstall(f);
@@ -473,7 +483,7 @@ describe("isolated local Baton installer", () => {
       assert.deepEqual(fs.readFileSync(path.join(f.home, ".baton", "old-runtime")), oldRuntime);
       assert.equal(fs.realpathSync(path.join(f.bin, "baton")), oldCli);
       const lines = logLines(f);
-      assert.equal(lines.some((line) => line.includes("--clean --yes") || line.includes("bun remove") || line.includes("bun unlink") || line.includes("npm uninstall") || line === "bun link"), false, mode);
+      assert.equal(lines.some((line) => line.includes("--clean --json") || line.includes("bun remove") || line.includes("bun unlink") || line.includes("npm uninstall") || line === "bun link"), false, mode);
     }
   });
 
@@ -508,7 +518,7 @@ describe("isolated local Baton installer", () => {
     const result = runInstaller(f, ["--skip-install", "--skip-tests"]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /clean-reinstalled/i);
-    assert.match(result.stdout, /1\.0\.0/);
+    assert.match(result.stdout, /2\.0\.0/);
     assert.match(result.stdout, /command|target|checkout/i);
     assert.equal(fs.realpathSync(path.join(f.bin, "baton")), fs.realpathSync(path.join(f.checkout, "dist", "bin", "baton.js")));
     assert.deepEqual(fs.readFileSync(path.join(f.home, ".baton", "SKILL.md")), fs.readFileSync(path.join(f.checkout, "SKILL.md")));
