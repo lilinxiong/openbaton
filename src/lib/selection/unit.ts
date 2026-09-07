@@ -1,6 +1,9 @@
 import {
   TaskCapabilityExclusion,
-  taskCapabilityExclusion
+  WORK_MODE_DEFAULT_EFFORT,
+  normalizeWorkMode,
+  taskCapabilityExclusion,
+  type WorkMode,
 } from "../task-suitability.js";
 import {
   candidateFor,
@@ -12,15 +15,15 @@ import {
 } from "../routes.js";
 import {
   deriveMinimumModelRequirements,
-  estimateTaskComplexity,
   estimateTaskContext,
   firstBoolean,
   recordValue
 } from "./requirements.js";
 import {
-  COMPLEXITY_VALUES,
+  EFFORT_VALUES,
   MinimumModelRequirementsInput,
   QuotaPoolStatus,
+  ReasoningEffort,
   SelectionCandidate,
   SelectionNoQualifiedResult,
   SelectionUnit
@@ -69,6 +72,7 @@ export function compareEffortFit(left: string | null, right: string | null, targ
 export function restrictAutomaticEffortCandidates(
   candidates: SelectionCandidate[],
   target: SelectionUnit["target_reasoning_effort"],
+  explicit = false,
 ): void {
   const byRoute = new Map<string, SelectionCandidate[]>();
   for (const candidate of candidates) {
@@ -77,12 +81,25 @@ export function restrictAutomaticEffortCandidates(
     byRoute.set(candidate.route_id, values);
   }
   for (const values of byRoute.values()) {
-    if (!values.some((candidate) => candidate.reasoning_effort_configurable)) continue;
+    if (!values.some((candidate) => candidate.reasoning_effort_configurable)) {
+      if (!explicit) continue;
+      for (const candidate of values) {
+        candidate.automatic_eligible = false;
+        if (candidate.selection_code === "AVAILABLE") {
+          candidate.selectable = false;
+          candidate.selection_code = "REASONING_EFFORT_UNSUPPORTED";
+          candidate.selection_reason = `route does not expose requested reasoning effort ${target}`;
+        }
+      }
+      continue;
+    }
     const targetRank = EFFORT_RANK[target];
     const eligibleProfiles = values
       .filter((candidate) => candidate.automatic_eligible
-        && (candidate.effective_reasoning_effort === null
-          || EFFORT_RANK[normalizedEffort(candidate.effective_reasoning_effort) || "none"] >= targetRank))
+        && candidate.reasoning_effort
+        && (explicit
+          ? normalizedEffort(candidate.effective_reasoning_effort) === target
+          : EFFORT_RANK[normalizedEffort(candidate.effective_reasoning_effort) || "none"] >= targetRank))
       .sort((left, right) => compareEffortFit(
         left.effective_reasoning_effort,
         right.effective_reasoning_effort,
@@ -91,9 +108,40 @@ export function restrictAutomaticEffortCandidates(
         || left.model_id.localeCompare(right.model_id));
     for (const candidate of values) {
       candidate.automatic_eligible = false;
+      if (explicit
+        && candidate.reasoning_effort
+        && normalizedEffort(candidate.effective_reasoning_effort) !== target
+        && candidate.selection_code === "AVAILABLE") {
+        candidate.selectable = false;
+        candidate.selection_code = "REASONING_EFFORT_UNSUPPORTED";
+        candidate.selection_reason = `reasoning effort ${candidate.effective_reasoning_effort || candidate.reasoning_effort} does not match required ${target}`;
+      }
     }
     if (eligibleProfiles[0]) eligibleProfiles[0].automatic_eligible = true;
   }
+}
+
+function resolveReasoningEffort(
+  reasoningEffort: ReasoningEffort | string | null | undefined,
+  workMode: WorkMode,
+): ReasoningEffort {
+  if (reasoningEffort !== undefined && reasoningEffort !== null && String(reasoningEffort).trim()) {
+    const normalized = normalizedEffort(reasoningEffort);
+    if (!normalized || !EFFORT_VALUES.has(normalized as ReasoningEffort)) {
+      throw new Error(`REASONING_EFFORT_INVALID: ${String(reasoningEffort)}`);
+    }
+    return normalized as ReasoningEffort;
+  }
+  return WORK_MODE_DEFAULT_EFFORT[workMode];
+}
+
+function resolveContextTokens(contextTokens: number | null | undefined): {
+  tokens: number;
+  reason: SelectionUnit["context_estimate_reason"];
+} {
+  if (contextTokens === undefined || contextTokens === null) return { tokens: 0, reason: "unspecified" };
+  if (!Number.isFinite(contextTokens) || contextTokens < 0) throw new Error(`CONTEXT_TOKENS_INVALID: ${String(contextTokens)}`);
+  return { tokens: Math.floor(contextTokens), reason: "explicit" };
 }
 
 /** Stable catalog-backed ordering when task text does not identify one winner. */
@@ -138,6 +186,10 @@ export function buildSelectionUnit({
   requestedModelId = null,
   directorLocal = false,
   codingModels,
+  modelPreferences = {},
+  workMode = "implementation",
+  reasoningEffort,
+  contextTokens,
   probeRouteIds = [],
   env,
   metadata = {},
@@ -157,6 +209,11 @@ export function buildSelectionUnit({
   directorLocal?: boolean;
   /** Ordered base route ids from cli.<host>.coding_models. */
   codingModels: string[];
+  /** Optional per-work-mode ordering, constrained to the enabled codingModels allowlist. */
+  modelPreferences?: Partial<Record<WorkMode, string[]>>;
+  workMode?: WorkMode | string;
+  reasoningEffort?: ReasoningEffort | string | null;
+  contextTokens?: number | null;
   /** At most one due route may be enabled by a real spawn/apply probe lease. */
   probeRouteIds?: string[];
   env?: NodeJS.ProcessEnv;
@@ -214,32 +271,44 @@ export function buildSelectionUnit({
   if (toolRequirement === null) {
     explicitRequirements.tool = !directorLocal;
   }
+  const resolvedWorkMode = normalizeWorkMode(workMode);
+  if (!resolvedWorkMode) throw new Error(`WORK_MODE_INVALID: ${String(workMode)}`);
+  const hasExplicitReasoningEffort = reasoningEffort !== undefined
+    && reasoningEffort !== null
+    && String(reasoningEffort).trim().length > 0;
+  let targetEffort = resolveReasoningEffort(reasoningEffort, resolvedWorkMode);
+  const requestedInputCard = requestedModelId ? cards.find((card) => card.id === requestedModelId) : undefined;
+  if (requestedInputCard?.reasoning_effort) {
+    const requestedProfileEffort = normalizedEffort(requestedInputCard.reasoning_effort);
+    if (!requestedProfileEffort) throw new Error(`REASONING_EFFORT_INVALID: ${requestedInputCard.reasoning_effort}`);
+    if (hasExplicitReasoningEffort && requestedProfileEffort !== targetEffort) {
+      throw new Error(`REQUESTED_MODEL_EFFORT_CONFLICT: ${requestedModelId} uses ${requestedProfileEffort}, requested ${targetEffort}`);
+    }
+    if (!hasExplicitReasoningEffort) targetEffort = requestedProfileEffort as ReasoningEffort;
+  }
+  const parsedContext = estimateTaskContext(prompt);
+  const contextEstimate = contextTokens !== undefined && contextTokens !== null
+    ? resolveContextTokens(contextTokens)
+    : parsedContext.reason === "explicit"
+      ? parsedContext
+      : { tokens: 0, reason: "unspecified" as const };
+  const complexityReason: SelectionUnit["complexity_reason"] = resolvedWorkMode === "execution" ? "simple"
+    : resolvedWorkMode === "investigation" ? "complex" : "standard";
+  explicitRequirements.complexity = explicitRequirements.complexity ?? complexityReason;
+  explicitRequirements.reasoning_effort = explicitRequirements.reasoning_effort ?? targetEffort;
+  explicitRequirements.estimated_context_tokens = explicitRequirements.estimated_context_tokens
+    ?? (contextEstimate.reason === "explicit" ? contextEstimate.tokens : 0);
   const minimum = deriveMinimumModelRequirements(prompt, explicitRequirements);
-  const contextEstimate = estimateTaskContext(prompt);
-  const complexityEstimate = estimateTaskComplexity(prompt);
-  const explicitContextValue = explicitRequirements.estimated_context_tokens
-    ?? explicitRequirements.estimatedContextTokens
-    ?? explicitRequirements.estimated_context
-    ?? explicitRequirements.context_tokens
-    ?? explicitRequirements.contextTokens
-    ?? explicitRequirements.estimated_context_length
-    ?? explicitRequirements.estimatedContextLength
-    ?? explicitRequirements.required_context_tokens
-    ?? explicitRequirements.requiredContextTokens;
-  const contextEstimateReason: SelectionUnit["context_estimate_reason"] = explicitContextValue != null
-    ? "explicit"
-    : contextEstimate.reason;
-  const complexityReason: SelectionUnit["complexity_reason"] = COMPLEXITY_VALUES.has(minimum.complexity)
-    ? minimum.complexity
-    : complexityEstimate.reason;
+  const contextEstimateReason = contextEstimate.reason;
   if (directorLocal) {
     return {
       ...(host ? { host } : {}), key, description, prompt, director_local: true,
       recommended_model_id: null, requested_model_id: null, default_model_id: null,
       recommendation_reason: "DIRECTOR_LOCAL",
-      target_reasoning_effort: minimum.reasoning,
+      work_mode: resolvedWorkMode,
+      target_reasoning_effort: targetEffort,
       complexity_reason: complexityReason,
-      estimated_context_tokens: minimum.estimated_context_tokens,
+      estimated_context_tokens: contextEstimate.tokens,
       context_estimate_reason: contextEstimateReason,
       minimum_requirements: minimum,
       requires_manual_choice: false,
@@ -260,7 +329,11 @@ export function buildSelectionUnit({
   const selectedHost = String(host || snapshot.cli || "");
   if (!selectedHost) throw new Error("HOST_REQUIRED: model selection must name its runtime host");
   const claimedProbeRoutes = new Set(probeRouteIds);
-  const configuredIds = [...new Set(codingModels.map((item) => String(item || "").trim()).filter(Boolean))];
+  const enabledRoutes = new Set(codingModels.map((item) => String(item || "").trim()).filter(Boolean));
+  const preferredRoutes = (modelPreferences[resolvedWorkMode] || [])
+    .map((routeId) => String(routeId || "").trim())
+    .filter((routeId) => enabledRoutes.has(routeId));
+  const configuredIds = [...new Set([...preferredRoutes, ...codingModels.map((item) => String(item || "").trim()).filter(Boolean)])];
   const configuredPriorityFor = (candidate: Pick<SelectionCandidate, "model_id" | "route_id">): number => {
     const exact = configuredIds.indexOf(candidate.model_id);
     if (exact >= 0) return exact;
@@ -324,34 +397,56 @@ export function buildSelectionUnit({
       // Keep task suitability exclusions as a separate audit list, but do not
       // let an unconfigured card leak into the candidate set.
       const taskExcluded = excludedIds.has(card.id);
-      const candidate = candidateFor(cwd, prompt, card, snapshot, automaticIds, selectedHost, minimum.estimated_context_tokens, claimedProbeRoutes, minimum, taskExcluded, env);
+      const candidate = candidateFor(cwd, prompt, card, snapshot, automaticIds, selectedHost, contextEstimate.tokens, claimedProbeRoutes, minimum, taskExcluded, env);
       if (candidate && !candidateIds.has(candidate.model_id)) {
         candidateIds.add(candidate.model_id);
         candidates.push(candidate);
       }
     }
   }
-  restrictAutomaticEffortCandidates(candidates, minimum.reasoning);
+  restrictAutomaticEffortCandidates(candidates, targetEffort, hasExplicitReasoningEffort);
   candidates.sort((a, b) => {
     return configuredPriorityFor(a) - configuredPriorityFor(b)
       || Number(b.selectable) - Number(a.selectable)
-      || recommendationTieBreak(a, b, minimum.reasoning, minimum.estimated_context_tokens);
+      || recommendationTieBreak(a, b, targetEffort, contextEstimate.tokens);
   });
   const automatic = candidates.filter((item) => item.automatic_eligible);
   const priorityOrdered = automatic.slice().sort((left, right) =>
     configuredPriorityFor(left) - configuredPriorityFor(right)
-    || recommendationTieBreak(left, right, minimum.reasoning, minimum.estimated_context_tokens));
-  const recommended = priorityOrdered[0]?.model_id || null;
+    || recommendationTieBreak(left, right, targetEffort, contextEstimate.tokens));
+  const automaticRecommended = priorityOrdered[0]?.model_id || null;
   let reason: SelectionUnit["recommendation_reason"];
   if (!automatic.length) reason = "CODING_MODELS_EXHAUSTED";
   else reason = "CODING_PRIORITY";
 
+  let requested: SelectionCandidate | undefined;
+  let resolvedRequestedModelId = requestedModelId;
   if (requestedModelId) {
-    const requested = candidates.find((item) => item.model_id === requestedModelId);
+    requested = candidates.find((item) => item.model_id === requestedModelId)
+      || candidates.find((item) => item.route_id === requestedModelId && !item.reasoning_effort);
     if (!requested) throw new Error(`requested model is not an exact route/profile id in this proposal: ${requestedModelId}`);
+    if (!requested.reasoning_effort && requested.reasoning_effort_configurable) {
+      const requestedProfiles = candidates.filter((item) => item.route_id === requested!.route_id && item.reasoning_effort);
+      const requestedProfile = hasExplicitReasoningEffort
+        ? requestedProfiles.find((item) => item.reasoning_effort === targetEffort)
+        : requestedProfiles
+          .filter((item) => EFFORT_RANK[normalizedEffort(item.reasoning_effort) || "none"] >= EFFORT_RANK[targetEffort])
+          .sort((left, right) => compareEffortFit(left.reasoning_effort, right.reasoning_effort, targetEffort))[0];
+      if (!requestedProfile) {
+        throw new Error(`${requestedModelId}: REASONING_EFFORT_UNSUPPORTED: reasoning effort ${targetEffort} was not returned for ${requested.route_id}`);
+      }
+      requested = requestedProfile;
+      resolvedRequestedModelId = requested.model_id;
+    }
+    if (hasExplicitReasoningEffort && !requested.reasoning_effort_configurable) {
+      throw new Error(`${requestedModelId}: REASONING_EFFORT_UNSUPPORTED: route does not expose requested reasoning effort ${targetEffort}`);
+    }
     if (!requested.selectable) throw new Error(`${requestedModelId}: ${requested.selection_code}: ${requested.selection_reason}`);
+    reason = "REQUESTED_MODEL";
+    candidates.sort((left, right) => Number(right.model_id === resolvedRequestedModelId) - Number(left.model_id === resolvedRequestedModelId));
   }
-  const defaultModel = requestedModelId || recommended;
+  const recommended = requested?.model_id || automaticRecommended;
+  const defaultModel = recommended;
   const noQualifiedResult: SelectionNoQualifiedResult | null = automatic.length ? null : {
     code: "NO_QUALIFIED_CANDIDATE",
     configured_route_ids: configuredIds,
@@ -369,12 +464,13 @@ export function buildSelectionUnit({
     prompt,
     director_local: false,
     recommended_model_id: recommended,
-    requested_model_id: requestedModelId,
+    requested_model_id: resolvedRequestedModelId,
     default_model_id: defaultModel,
     recommendation_reason: reason,
-    target_reasoning_effort: minimum.reasoning,
-    complexity_reason: minimum.complexity,
-    estimated_context_tokens: minimum.estimated_context_tokens,
+    work_mode: resolvedWorkMode,
+    target_reasoning_effort: targetEffort,
+    complexity_reason: complexityReason,
+    estimated_context_tokens: contextEstimate.tokens,
     context_estimate_reason: contextEstimateReason,
     minimum_requirements: minimum,
     requires_manual_choice: defaultModel == null,

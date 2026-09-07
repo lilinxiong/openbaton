@@ -54,7 +54,10 @@ function repeated(args: string[], name: string): string[] {
 
 /** Reject arguments outside the current config grammar before reading state. */
 function validateConfigArgs(args: string[]): void {
-  const valueFlags = new Set(["cli", "runner", "longctx", "coding-model"]);
+  const valueFlags = new Set([
+    "cli", "runner", "longctx", "coding-model",
+    "execution-model", "implementation-model", "investigation-model",
+  ]);
   const booleanFlags = new Set(["json"]);
   const allowed = new Set([...valueFlags, ...booleanFlags]);
   for (let index = 0; index < args.length; index += 1) {
@@ -132,13 +135,6 @@ function modelChoices(models: CliModel[]): PromptChoice<string>[] {
   }));
 }
 
-function optionalModelChoices(models: CliModel[]): PromptChoice<string>[] {
-  return [
-    { value: "", label: "(missing route blocks classified work)" },
-    ...modelChoices(models),
-  ];
-}
-
 function requirePrompt(
   prompt: SelectPrompt | undefined,
   stdin: NodeJS.ReadableStream,
@@ -156,6 +152,9 @@ interface CliProfileResult {
   runner: string | null;
   longctx: string | null;
   coding_models: string[];
+  execution_models: string[];
+  implementation_models: string[];
+  investigation_models: string[];
   /** Active descendants in one root-agent tree; the root is excluded. */
   max_concurrent_subagents: number;
   max_depth: number;
@@ -201,37 +200,50 @@ async function configureCliProfile(
 
   const existing = cliProfileForHost(current, cli);
 
+  // runner and longctx are legacy classification labels. Keep them when they
+  // are not explicitly supplied instead of making normal configuration depend
+  // on two additional route decisions.
   let runner = single ? optionalModelFlag(args, "runner") : undefined;
-  if (runner === undefined) {
-    runner = await ask().select({
-      message: "Select runner (missing route blocks classified mechanical work; label only)",
-      choices: optionalModelChoices(catalog.models),
-      initial: existing.runner,
-    });
-  }
+  if (runner === undefined) runner = existing.runner;
   runner = requireModel(catalog.models, runner, "runner");
 
   let longctx = single ? optionalModelFlag(args, "longctx") : undefined;
-  if (longctx === undefined) {
-    longctx = await ask().select({
-      message: "Select longctx (missing route blocks classified long-context work; label only)",
-      choices: optionalModelChoices(catalog.models),
-      initial: existing.longctx,
-    });
-  }
+  if (longctx === undefined) longctx = existing.longctx;
   longctx = requireModel(catalog.models, longctx, "longctx");
 
+  const modeFlags = ["execution-model", "implementation-model", "investigation-model"];
+  const hasExplicitMode = single && modeFlags.some((flag) => repeated(args, flag).length > 0);
   const codingFlags = single ? repeated(args, "coding-model") : [];
   let codingModels: string[];
   if (!codingFlags.length) {
-    codingModels = await ask().multiSelect({
-      message: "Select Coding models in priority order",
-      choices: modelChoices(catalog.models),
-      initial: existing.coding_models.filter((id) => catalog.models.some((model) => model.id === id)),
-    });
+    if (hasExplicitMode) {
+      codingModels = [...existing.coding_models];
+    } else {
+      codingModels = await ask().multiSelect({
+        message: "Select Coding models in priority order",
+        choices: modelChoices(catalog.models),
+        initial: existing.coding_models.filter((id) => catalog.models.some((model) => model.id === id)),
+      });
+    }
   } else {
     codingModels = parseModelSet(catalog.models, codingFlags);
   }
+
+  const modeModels = (flag: string, existingModels: string[], label: string): string[] => {
+    const values = single ? repeated(args, flag) : [];
+    return values.length
+      ? parseModelSet(catalog.models, values, label)
+      : parseModelSet(catalog.models, existingModels, label);
+  };
+  const executionModels = modeModels("execution-model", existing.execution_models || [], "execution model");
+  const implementationModels = modeModels("implementation-model", existing.implementation_models || [], "implementation model");
+  const investigationModels = modeModels("investigation-model", existing.investigation_models || [], "investigation model");
+  // coding_models remains the host allowlist and legacy fallback. A selected
+  // mode route must therefore also be executable through that allowlist.
+  for (const model of [...executionModels, ...implementationModels, ...investigationModels]) {
+    if (!codingModels.includes(model)) codingModels.push(model);
+  }
+
 
   const capabilities = normalizeCliRuntimeCapabilities(catalog);
   // Persist catalog > adapter quota > previously reported value; else -1.
@@ -247,6 +259,9 @@ async function configureCliProfile(
     runner,
     longctx,
     coding_models: codingModels,
+    execution_models: executionModels,
+    implementation_models: implementationModels,
+    investigation_models: investigationModels,
     max_concurrent: maxConcurrent,
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
@@ -255,6 +270,9 @@ async function configureCliProfile(
     runner: runner || null,
     longctx: longctx || null,
     coding_models: codingModels,
+    execution_models: executionModels,
+    implementation_models: implementationModels,
+    investigation_models: investigationModels,
     max_concurrent_subagents: effectiveMaxConcurrentForHost(current, cli),
     max_depth: effectiveMaxDepthForHost(current, cli),
     max_concurrent_subagents_source: reportedConcurrentLimit(maxConcurrent) !== undefined
@@ -273,9 +291,12 @@ async function configureCliProfile(
 
 function writeProfile(stdout: WritableLike, result: CliProfileResult): void {
   stdout.write(`  cli: ${result.cli}\n`);
-  stdout.write(`  runner: ${result.runner || "(missing route blocks classified work)"}\n`);
-  stdout.write(`  longctx: ${result.longctx || "(missing route blocks classified work)"}\n`);
+  stdout.write(`  runner (legacy): ${result.runner || "(unset)"}\n`);
+  stdout.write(`  longctx (legacy): ${result.longctx || "(unset)"}\n`);
   stdout.write(`  Coding priority: ${result.coding_models.length ? result.coding_models.join(" > ") : "(none)"}\n`);
+  stdout.write(`  Execution priority: ${result.execution_models.length ? result.execution_models.join(" > ") : "(Coding fallback)"}\n`);
+  stdout.write(`  Implementation priority: ${result.implementation_models.length ? result.implementation_models.join(" > ") : "(Coding fallback)"}\n`);
+  stdout.write(`  Investigation priority: ${result.investigation_models.length ? result.investigation_models.join(" > ") : "(Coding fallback)"}\n`);
   stdout.write(`  max_concurrent_subagents: ${result.max_concurrent_subagents} (${result.max_concurrent_subagents_source}; root-agent tree, root excluded)\n`);
   stdout.write(`  max_depth: ${result.max_depth} (${result.max_depth_source})\n`);
 }
@@ -294,7 +315,7 @@ export async function runConfig(args: string[], {
   const discoverAdapter = adapterProvider || ((cli: CliId) => getCliAdapter(cli, env));
   const ask = (): SelectPrompt => requirePrompt(
     prompt, stdin, stdout, env,
-    "--cli, --runner, --longctx, and --coding-model",
+    "--cli, --coding-model, --execution-model, --implementation-model, --investigation-model, --runner, and --longctx",
   );
 
   const flaggedCli = lastFlag(args, "cli");

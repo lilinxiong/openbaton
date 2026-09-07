@@ -5,7 +5,8 @@ import { classifyTask, scoreCard } from "./cards.js";
 import { quotaForProvider, type ProviderQuotaDisclosure } from "./provider-quotas.js";
 import { selectionsDir } from "./paths.js";
 import { readRouteSnapshot, type RouteSnapshot } from "./routes.js";
-import { TaskCapabilityExclusion } from "./task-suitability.js";
+import { TaskCapabilityExclusion, type WorkMode } from "./task-suitability.js";
+export type { WorkMode } from "./task-suitability.js";
 import type { ModelSelectionApproval, UnknownRecord } from "../types.js";
 export type QuotaPoolStatus = "available" | "unknown" | "exhausted";
 export interface SelectionQuotaPool {
@@ -16,6 +17,7 @@ export interface SelectionQuotaPool {
 }
 
 export type SelectionProposalStatus = "pending_confirmation" | "approved";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Stable diagnostic codes used by the selector.  The legacy selection codes
  * remain part of the public candidate shape; these codes make the reason for
@@ -136,11 +138,12 @@ export interface SelectionUnit {
   recommended_model_id: string | null;
   requested_model_id: string | null;
   default_model_id: string | null;
-  recommendation_reason: "CODING_PRIORITY" | "CODING_MODELS_EXHAUSTED" | "DIRECTOR_LOCAL";
-  target_reasoning_effort: "low" | "medium" | "high" | "xhigh" | "max";
+  recommendation_reason: "REQUESTED_MODEL" | "CODING_PRIORITY" | "CODING_MODELS_EXHAUSTED" | "DIRECTOR_LOCAL";
+  work_mode: WorkMode;
+  target_reasoning_effort: ReasoningEffort;
   complexity_reason: "simple" | "standard" | "complex" | "very-complex";
   estimated_context_tokens: number;
-  context_estimate_reason: "explicit" | "large-scope" | "small-scope" | "standard";
+  context_estimate_reason: "explicit" | "large-scope" | "small-scope" | "standard" | "unspecified";
   minimum_requirements?: MinimumModelRequirements;
   requires_manual_choice: boolean;
   candidates: SelectionCandidate[];
@@ -213,7 +216,7 @@ export const COMPLEXITY_VALUES = new Set<SelectionUnit["complexity_reason"]>([
   "simple", "standard", "complex", "very-complex",
 ]);
 export const EFFORT_VALUES = new Set<SelectionUnit["target_reasoning_effort"]>([
-  "low", "medium", "high", "xhigh", "max",
+  "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ]);
 export interface TaskContextEstimate {
   tokens: number;

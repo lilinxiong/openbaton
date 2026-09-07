@@ -116,7 +116,7 @@ describe("configured mechanical operations", () => {
       const catalog = await manifestCatalog(ALPHA, env);
       const model = modelId(catalog);
       const out = capture();
-      const selects: unknown[] = [model, model];
+      const selects: unknown[] = [];
       const multiSelects: unknown[][] = [[ALPHA], [model]];
       const code = await runConfig([], {
         cwd,
@@ -146,8 +146,8 @@ describe("configured mechanical operations", () => {
 
       const config = loadConfig(cwd, { env });
       assert.deepEqual(config.cli[ALPHA], {
-        runner: model,
-        longctx: model,
+        runner: "",
+        longctx: "",
         coding_models: [model],
         max_concurrent: 2,
         max_depth: 3,
@@ -169,7 +169,7 @@ describe("configured mechanical operations", () => {
       const betaCatalog = await manifestCatalog(BETA, env);
       const alphaModel = modelId(alphaCatalog);
       const betaModel = modelId(betaCatalog);
-      const selects: unknown[] = [alphaModel, alphaModel, betaModel, ""];
+      const selects: unknown[] = [];
       const multiSelects: unknown[][] = [[ALPHA, BETA], [alphaModel], [betaModel]];
       const out = capture();
       assert.equal(await runConfig([], {
@@ -200,14 +200,14 @@ describe("configured mechanical operations", () => {
       const config = loadConfig(cwd, { env });
       assert.equal(config.director.max_concurrent, 4);
       assert.deepEqual(config.cli[ALPHA], {
-        runner: alphaModel,
-        longctx: alphaModel,
+        runner: "",
+        longctx: "",
         coding_models: [alphaModel],
         max_concurrent: 2,
         max_depth: 3,
       });
       assert.deepEqual(config.cli[BETA], {
-        runner: betaModel,
+        runner: "",
         longctx: "",
         coding_models: [betaModel],
         max_concurrent: 5,
@@ -251,6 +251,51 @@ describe("configured mechanical operations", () => {
       const removed = capture();
       assert.equal(await run(["config", "unsupported-subcommand", "on"], { cwd, env, stdout: removed, stderr: removed }), 1);
       assert.match(removed.text(), /unknown config argument/);
+    });
+  });
+
+  it("persists mode priorities and adds selected mode models to the Coding allowlist", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-modes-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const catalog = await manifestCatalog(ALPHA, env);
+      const model = modelId(catalog);
+      const out = capture();
+      assert.equal(await runConfig([
+        "--cli", ALPHA,
+        "--execution-model", model,
+        "--implementation-model", model,
+        "--investigation-model", model,
+      ], { cwd, env, stdout: out, adapterProvider: adapterProviderFor(catalog) }), 0);
+      const profile = loadConfig(cwd, { env }).cli[ALPHA];
+      assert.deepEqual(profile?.coding_models, [model]);
+      assert.deepEqual(profile?.execution_models, [model]);
+      assert.deepEqual(profile?.implementation_models, [model]);
+      assert.deepEqual(profile?.investigation_models, [model]);
+
+      assert.equal(await runConfig([
+        "--cli", ALPHA, "--coding-model", model,
+      ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }), 0);
+      const persisted = loadConfig(cwd, { env }).cli[ALPHA];
+      assert.deepEqual(persisted?.execution_models, [model]);
+      assert.deepEqual(persisted?.implementation_models, [model]);
+      assert.deepEqual(persisted?.investigation_models, [model]);
+    });
+  });
+
+  it("rejects a mode model outside the selected host catalog", async () => {
+    await withHome(async (home) => {
+      const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "baton-config-invalid-mode-"));
+      const env = fakeEnv(home);
+      assert.equal(await run(["init"], { cwd, env, stdout: capture(), stderr: capture() }), 0);
+      const catalog = await manifestCatalog(ALPHA, env);
+      await assert.rejects(
+        runConfig([
+          "--cli", ALPHA, "--execution-model", "not-in-alpha",
+        ], { cwd, env, stdout: capture(), adapterProvider: adapterProviderFor(catalog) }),
+        /execution model not-in-alpha is not in the 1-model CLI response/,
+      );
     });
   });
 

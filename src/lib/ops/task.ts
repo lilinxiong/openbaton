@@ -4,6 +4,8 @@
  * a profile.
  */
 export type AgentExecutionClass =
+  | "execution"
+  | "investigation"
   | "mechanical"
   | "long-context"
   | "general"
@@ -25,6 +27,8 @@ export interface NormalizedAgentTaskClassification extends AgentTaskClassificati
 }
 
 const CLASSES = new Set<AgentExecutionClass>([
+  "execution",
+  "investigation",
   "mechanical",
   "long-context",
   "general",

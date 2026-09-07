@@ -101,7 +101,7 @@ describe("capability-routed selection", () => {
     const cwd = workspace();
     const env = fakeEnv(home);
     setup(cwd, env);
-    const result = unit(cwd, env, cards());
+    const result = unit(cwd, env, cards(), cards(), { workMode: "execution" });
     assert.equal(result.recommended_model_id, `${SPARK}@low`);
     assert.equal(result.qualification_status, "qualified");
     assert.equal(result.no_qualified_result, null);
@@ -142,7 +142,7 @@ describe("capability-routed selection", () => {
     const env = fakeEnv(home);
     setup(cwd, env);
     const extra = card("unconfigured-route", undefined, { is_default: true, strengths: "best coding model" });
-    const result = unit(cwd, env, [...cards(), extra]);
+    const result = unit(cwd, env, [...cards(), extra], [...cards(), extra], { workMode: "execution" });
     assert.equal(result.candidates.some((item) => item.route_id === "unconfigured-route"), false);
     assert.equal(result.recommended_model_id, `${SPARK}@low`);
   }));

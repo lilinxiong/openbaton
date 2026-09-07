@@ -22,8 +22,10 @@ import {
   directorOnlyClassification,
   resolvedCards,
   runtimeHost,
+  selectionOptions,
   validateClassificationContract
 } from "../cli.js";
+import { normalizeAgentTaskClassification } from "../lib/ops/task.js";
 import {
   createSelectionProposal,
   selectionSourceFingerprint
@@ -62,7 +64,7 @@ import {
 
 export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   validateCommandArgs(args, {
-    value: ["host", "unit", "classification", "operation", "unit-classification", "unit-operation", "write-path", "write-ops", "capacity"],
+    value: ["host", "unit", "classification", "operation", "unit-classification", "unit-operation", "work-mode", "model", "effort", "context-tokens", "write-path", "write-ops", "capacity"],
     boolean: ["dispatch", "json", "read-only"],
     positional: "allow",
   });
@@ -72,7 +74,12 @@ export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike
   if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]");
   const allCards = resolvedCards(cwd, env, host);
   const codingModels = codingModelsForHost(cwd, env, host);
+  const selection = selectionOptions(flags, cwd, env, host);
   const classificationFlag = parseClassificationFlags(flags);
+  if (!classificationFlag.present && selection.workMode) {
+    classificationFlag.present = true;
+    classificationFlag.value = normalizeAgentTaskClassification(selection.workMode);
+  }
   const unitClassifications = parseClassificationAssignments(multiFlag(flags, "unit-classification"), "--unit-classification");
   const unitOperations = parseOperationAssignments(multiFlag(flags, "unit-operation"), "--unit-operation");
   const declaredUnitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
@@ -84,7 +91,10 @@ export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike
   const writePathsEarly = standaloneScopes.globalPaths;
   const writeOperationsEarly = standaloneScopes.globalOperations;
   validateClassificationContract(classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
-  const explicitModel = null;
+  const explicitModel = selection.requestedModelId;
+  if ((selection.workMode || explicitModel || selection.reasoningEffort) && [classificationFlag.value, ...unitClassifications.values()].some((value) => value?.commit_only)) {
+    throw new Error("commit-only uses the managed mechanical route; model overrides are not supported");
+  }
   if (unitDefinitions.length) {
     if (writePathsEarly.length && unitDefinitions.length > 1) {
       throw new Error("TASK_SCOPE_REQUIRED: multi-unit standalone writes require per-unit --unit KEY=TASK --write-path PATH declarations");
@@ -104,7 +114,7 @@ export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike
     const resolved = unitDefinitions.map((item, index) => ({
       item,
       index,
-      ops: explicitModel
+      ops: (selection.workMode || explicitModel || selection.reasoningEffort) && !directorOnlyClassification(unitClassifications.get(item.key) || classificationFlag.value)
         ? { kind: "not-ops" } as OpsResolution
         : resolveOpsUnitDispatch(cwd, text, item.description, allCards, {
           env,
@@ -164,6 +174,7 @@ export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike
         continue;
       }
       const unit = buildSelectionUnit({
+        ...selection,
         cwd,
         host,
         key: item.key,

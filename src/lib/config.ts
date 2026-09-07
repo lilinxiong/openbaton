@@ -22,6 +22,12 @@ export interface CliProfileSettings {
   longctx: string;
   /** Ordered Coding routes. Array order is the user's priority. */
   coding_models: string[];
+  /** Ordered execution routes, falling back to coding_models when empty. */
+  execution_models?: string[];
+  /** Ordered implementation routes, falling back to coding_models when empty. */
+  implementation_models?: string[];
+  /** Ordered investigation routes, falling back to coding_models when empty. */
+  investigation_models?: string[];
   /** Positive integer, or -1/0/missing for unknown (falls back to director). */
   max_concurrent?: number;
   max_depth?: number;
@@ -121,12 +127,18 @@ function normalizeCliProfile(value: unknown): CliProfileSettings {
   const rawRunner = typeof profile.runner === "string" ? profile.runner.trim() : "";
   const rawLongctx = typeof profile.longctx === "string" ? profile.longctx.trim() : "";
   const codingModels = stringList(profile.coding_models);
+  const executionModels = stringList(profile.execution_models);
+  const implementationModels = stringList(profile.implementation_models);
+  const investigationModels = stringList(profile.investigation_models);
   const maxConcurrent = persistedConcurrentLimit(profile.max_concurrent);
   const maxDepth = positiveInteger(profile.max_depth);
   return {
     runner: rawRunner,
     longctx: rawLongctx,
     coding_models: codingModels,
+    ...(executionModels.length ? { execution_models: executionModels } : {}),
+    ...(implementationModels.length ? { implementation_models: implementationModels } : {}),
+    ...(investigationModels.length ? { investigation_models: investigationModels } : {}),
     ...(maxConcurrent !== undefined ? { max_concurrent: maxConcurrent } : {}),
     ...(maxDepth !== undefined ? { max_depth: maxDepth } : {}),
   };
@@ -191,6 +203,9 @@ function serializeConfig(cfg: Config): UnknownRecord {
       runner: profile.runner,
       longctx: profile.longctx,
       coding_models: profile.coding_models,
+      ...(profile.execution_models?.length ? { execution_models: profile.execution_models } : {}),
+      ...(profile.implementation_models?.length ? { implementation_models: profile.implementation_models } : {}),
+      ...(profile.investigation_models?.length ? { investigation_models: profile.investigation_models } : {}),
       ...(profile.max_concurrent !== undefined ? { max_concurrent: profile.max_concurrent } : {}),
       ...(profile.max_depth !== undefined ? { max_depth: profile.max_depth } : {}),
     };

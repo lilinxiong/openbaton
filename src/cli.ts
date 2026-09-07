@@ -149,6 +149,23 @@ export function codingModelsForHost(cwd: string, env: NodeJS.ProcessEnv, host: C
   return [...configuredCodingModelsForHost(loadConfig(cwd, { env }), host)];
 }
 
+export function selectionOptions(flags: FlagMap, cwd: string, env: NodeJS.ProcessEnv, host: CliId) {
+  const workMode = stringFlag(flags, "work-mode");
+  if (workMode && !["execution", "implementation", "investigation"].includes(workMode)) throw new Error("--work-mode must be execution, implementation, or investigation");
+  const reasoningEffort = stringFlag(flags, "effort");
+  const context = stringFlag(flags, "context-tokens");
+  const contextTokens = context === undefined ? undefined : Number(context);
+  if (contextTokens !== undefined && (!Number.isSafeInteger(contextTokens) || contextTokens < 1)) throw new Error("--context-tokens must be a positive integer");
+  const profile = cliProfileForHost(loadConfig(cwd, { env }), host);
+  return {
+    workMode: workMode as "execution" | "implementation" | "investigation" | undefined,
+    reasoningEffort,
+    contextTokens,
+    requestedModelId: stringFlag(flags, "model") || null,
+    modelPreferences: { execution: profile.execution_models, implementation: profile.implementation_models, investigation: profile.investigation_models },
+  };
+}
+
 export function formatExecutionHandle(handle: unknown): string | null {
   if (!handle) return null;
   if (typeof handle === "object" && !Array.isArray(handle)) {
@@ -220,7 +237,8 @@ Usage:
   baton uninstall [--host ${HOSTS}] [--dry-run]
   baton uninstall --clean [--dry-run] [--yes]
   baton match <text> [--host ${HOSTS}]  disclose preferred/candidate models without creating work
-  baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--classification mechanical|long-context|implementation|analysis|discussion|general] [--operation LABEL]
+  baton spawn <request> [--host ${HOSTS}] [--unit KEY=TEXT ...] [--work-mode execution|implementation|investigation] [--model ID] [--effort LEVEL] [--context-tokens N]
+               [--classification mechanical|long-context|implementation|analysis|discussion|general] [--operation LABEL]
                [--unit-classification KEY=CLASS ...] [--unit-operation KEY=LABEL ...] [--dispatch]
                director classification is authoritative; operation is free-form audit metadata
   baton apply [change] [--host ${HOSTS}]  plan the ready OpenSpec wave (no tickets)
@@ -431,7 +449,7 @@ function cmdCards(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
 }
 
 function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): number {
-  validateCommandArgs(args, { value: ["host"], boolean: ["json"], positional: "allow" });
+  validateCommandArgs(args, { value: ["host", "work-mode", "model", "effort", "context-tokens"], boolean: ["json"], positional: "allow" });
   const flags = parseFlags(args);
   const text = positionalText(args);
   if (!text) {
@@ -441,6 +459,7 @@ function cmdMatch(args: string[], cwd: string, stdout: WritableLike, env: NodeJS
     const host = runtimeHost(flags, cwd, env);
     const cards = resolvedCards(cwd, env, host);
     const unit = buildSelectionUnit({
+      ...selectionOptions(flags, cwd, env, host),
       cwd, host, key: "preview", description: text, prompt: text, cards,
       automaticCards: cardsForAutomaticSelection(cwd, cards, text, host, env),
       codingModels: codingModelsForHost(cwd, env, host),

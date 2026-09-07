@@ -6,7 +6,8 @@ import {
   CompiledApplyHandler,
   codingModelsForHost,
   resolvedCards,
-  runtimeHost
+  runtimeHost,
+  selectionOptions
 } from "../cli.js";
 import { detectOpenSpecRoot } from "../lib/openspec/cli.js";
 import {
@@ -64,7 +65,7 @@ export async function cmdApply(
     return await cmdCompiledApply(args, cwd, stdout, env, stdin, injectedStdin, compiledApplyHandler);
   }
   validateCommandArgs(args, {
-    value: ["host", "unit", "write-path", "write-ops", "capacity"],
+    value: ["host", "unit", "work-mode", "model", "effort", "context-tokens", "write-path", "write-ops", "capacity"],
     boolean: ["dispatch", "json", "read-only"],
     positional: "single",
   });
@@ -112,6 +113,7 @@ export async function cmdApply(
   for (const task of tasks) {
     const prompt = formatTaskPrompt(task);
     const unit = buildSelectionUnit({
+      ...selectionOptions(flags, cwd, env, host),
       cwd,
       host,
       key: task.number,
@@ -122,7 +124,6 @@ export async function cmdApply(
       codingModels,
       probeRouteIds: [],
       env,
-      requestedModelId: null,
       // An explicitly scoped OpenSpec unit is an executable implementation
       // request.  Its prose must never reclassify it as a tiny director edit.
       directorLocal: false,

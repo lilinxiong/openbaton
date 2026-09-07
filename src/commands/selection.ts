@@ -104,10 +104,10 @@ function scopedSelectionSourceFingerprint(proposal: SelectionProposal, value: un
 function recommendedCandidate(proposal: SelectionProposal, key: string): SelectionCandidate {
   const unit = proposal.units.find((item) => item.key === key);
   if (!unit || unit.director_local) throw new Error(`selection unit is not delegable: ${key}`);
-  const candidate = unit.recommended_model_id
-    ? unit.candidates.find((item) => item.model_id === unit.recommended_model_id)
+  const candidate = unit.default_model_id
+    ? unit.candidates.find((item) => item.model_id === unit.default_model_id)
     : null;
-  if (!candidate?.selectable || !candidate.automatic_eligible) {
+  if (!candidate?.selectable || (!unit.requested_model_id && !candidate.automatic_eligible)) {
     throw unavailableRecommendationError(unit, key);
   }
   return candidate;
@@ -296,7 +296,7 @@ export function assertRecommendedSelectionAvailable(units: SelectionProposal["un
     const candidate = unit.recommended_model_id
       ? unit.candidates.find((item) => item.model_id === unit.recommended_model_id)
       : null;
-    if (!candidate?.selectable || !candidate.automatic_eligible) {
+    if (!candidate?.selectable || (!unit.requested_model_id && !candidate.automatic_eligible)) {
       throw unavailableRecommendationError(unit, unit.key);
     }
   }

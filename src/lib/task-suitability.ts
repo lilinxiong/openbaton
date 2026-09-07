@@ -1,5 +1,18 @@
 import type { ModelCard } from "../types.js";
 
+export type WorkMode = "execution" | "implementation" | "investigation";
+
+export const WORK_MODE_DEFAULT_EFFORT = {
+  execution: "low",
+  implementation: "medium",
+  investigation: "high",
+} as const satisfies Record<WorkMode, "low" | "medium" | "high">;
+
+export function normalizeWorkMode(value: unknown): WorkMode | null {
+  const mode = String(value || "").trim().toLowerCase();
+  return mode === "execution" || mode === "implementation" || mode === "investigation" ? mode : null;
+}
+
 export interface TaskCapabilityExclusion {
   model_id: string;
   route_id: string;
