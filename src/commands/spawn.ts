@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import { WritableLike } from "../types.js";
+import { parseBrief, formatBrief } from "../lib/brief.js";
 import {
   ApplyUnitScope,
   DEFAULT_WRITE_OPERATIONS,
@@ -64,13 +66,15 @@ import {
 
 export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike, env: NodeJS.ProcessEnv): Promise<number> {
   validateCommandArgs(args, {
-    value: ["host", "unit", "classification", "operation", "unit-classification", "unit-operation", "work-mode", "model", "effort", "context-tokens", "write-path", "write-ops", "capacity"],
+    value: ["host", "unit", "classification", "operation", "unit-classification", "unit-operation", "brief", "work-mode", "model", "effort", "context-tokens", "write-path", "write-ops", "capacity"],
     boolean: ["dispatch", "json", "read-only"],
     positional: "allow",
   });
   const flags = parseFlags(args);
   const host = runtimeHost(flags, cwd, env);
-  const text = positionalText(args);
+  const briefPath = stringFlag(flags, "brief");
+  const brief = briefPath ? parseBrief(JSON.parse(fs.readFileSync(briefPath, "utf8"))) : null;
+  const text = brief ? formatBrief(brief) : positionalText(args);
   if (!text) throw new Error("usage: baton spawn <request> [--unit KEY=TEXT ...] [--dispatch]");
   const allCards = resolvedCards(cwd, env, host);
   const codingModels = codingModelsForHost(cwd, env, host);
@@ -82,12 +86,17 @@ export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike
   }
   const unitClassifications = parseClassificationAssignments(multiFlag(flags, "unit-classification"), "--unit-classification");
   const unitOperations = parseOperationAssignments(multiFlag(flags, "unit-operation"), "--unit-operation");
+  if (brief && multiFlag(flags, "unit").length) throw new Error("--brief describes one worker; use a separate brief for each worker");
   const declaredUnitDefinitions = parseStandaloneUnits(multiFlag(flags, "unit"));
   // A single request is the one-unit form of the canonical multi-unit proposal.
   const unitDefinitions = declaredUnitDefinitions.length
     ? declaredUnitDefinitions
     : [{ key: "standalone", description: text }];
-  const standaloneScopes = parseStandaloneWriteScopes(args, unitDefinitions);
+  if (brief && (multiFlag(flags, "write-path").length || multiFlag(flags, "write-ops").length || flags["read-only"])) throw new Error("--brief owns the worker scope; do not combine it with scope flags");
+  const scopeArgs = brief?.mode === "write"
+    ? [...args, ...brief.scope.flatMap((scope) => ["--write-path", scope])]
+    : args;
+  const standaloneScopes = parseStandaloneWriteScopes(scopeArgs, unitDefinitions);
   const writePathsEarly = standaloneScopes.globalPaths;
   const writeOperationsEarly = standaloneScopes.globalOperations;
   validateClassificationContract(classificationFlag.value, unitDefinitions, unitClassifications, unitOperations);
@@ -193,6 +202,7 @@ export async function cmdSpawn(args: string[], cwd: string, stdout: WritableLike
           operation: unitOperations.get(item.key) || classificationFlag.value?.operation || null,
         },
       });
+      if (brief) unit.prompt = text;
       units.push(unit);
     }
     if (pendingDispatches.length) {

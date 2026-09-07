@@ -152,6 +152,7 @@ async function approveStandalone(cwd: string, proposal: SelectionProposal, cards
     const approval = approvalFor(proposal, unit.key, candidate, unit.recommended_model_id, context);
     const planned = planStandaloneSpawn({
       description: unit.description,
+      ...(unit.prompt !== unit.description ? { prompt: unit.prompt } : {}),
       cards,
       explicitModel: candidate.model_id,
       cwd,
