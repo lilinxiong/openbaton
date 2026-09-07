@@ -1,20 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
-import { getCliAdapter, type CliAdapterProvider, type CliId } from "./adapters/registry.js";
+import { createCliAdapterRegistrySnapshot, getCliAdapter, type CliAdapterProvider, type CliId } from "./adapters/registry.js";
 import { runConfig } from "./commands/config.js";
 import { runHost } from "./commands/host.js";
 import { initProject } from "./commands/init.js";
 import { runUninstall } from "./commands/uninstall.js";
 import { updateProject } from "./commands/update.js";
-import { formatBrief, inspectBrief, parseBrief, type WorkerBrief } from "./lib/brief.js";
+import { prepareBrief, type WorkerBrief } from "./lib/brief.js";
 import {
   appendNativeResult,
   recentNativeResults,
+  summarizeNativeResult,
   resolveNativeHost,
   selectNativeModel,
+  selectNativeModels,
   type NativeResultStatus,
   type WorkMode,
 } from "./lib/native.js";
+import { mergeSelection, parseSpawnRequest, type SpawnRequest } from "./lib/spawn-request.js";
 import type { SelectPrompt } from "./lib/prompt.js";
 import type { WritableLike } from "./types.js";
 
@@ -48,7 +51,7 @@ Usage:
               [--brief-budget-chars N] [--json]
   baton record --host HOST --handle H --model ID
                --status completed|blocked|failed --text TEXT [--json]
-  baton status [--host HOST] [--json]
+  baton status [--host HOST] [--limit N | --handle H] [--full] [--json]
   baton help | --help | -h
   baton version | --version | -v
 `;
@@ -130,35 +133,35 @@ function selectionInput(flags: Flags, cwd: string, env: NodeJS.ProcessEnv, adapt
   };
 }
 
-function output(stdout: WritableLike, value: unknown, json: boolean, lines: string[], compactJson = false): void {
-  stdout.write(json ? `${JSON.stringify(value, compactJson ? undefined : null, compactJson ? undefined : 2)}\n` : `${lines.join("\n")}\n`);
+function output(stdout: WritableLike, value: unknown, json: boolean, lines: string[]): void {
+  stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : `${lines.join("\n")}\n`);
 }
 
-function readSpawnBriefs(flags: Flags): WorkerBrief[] {
+function readSpawnBriefs(flags: Flags): SpawnRequest[] {
   const briefFile = one(flags, "brief");
   const briefsFile = one(flags, "briefs");
   if (briefFile && briefsFile) throw new Error("--brief and --briefs are mutually exclusive");
   if (!briefFile && !briefsFile) throw new Error("--brief or --briefs is required");
   const parsed = JSON.parse(fs.readFileSync(briefFile || briefsFile!, "utf8"));
-  if (briefFile) return [parseBrief(parsed)];
+  if (briefFile) return [parseSpawnRequest(parsed)];
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error("WORKER_BRIEFS_INVALID: briefs must be a non-empty JSON array");
   }
   if (parsed.length > 128) throw new Error("WORKER_BRIEFS_INVALID: briefs must contain at most 128 items");
-  return parsed.map((item) => parseBrief(item));
+  return parsed.map(parseSpawnRequest);
 }
 
 function handoffPayload(
   brief: WorkerBrief,
   selected: Awaited<ReturnType<typeof selectNativeModel>>,
-  diagnostics: ReturnType<typeof inspectBrief>,
+  prepared: ReturnType<typeof prepareBrief>,
 ) {
   return {
     host: selected.host,
     model_id: selected.model_id,
     ...(selected.reasoning_effort ? { reasoning_effort: selected.reasoning_effort } : {}),
     ...(selected.service_tier ? { service_tier: selected.service_tier } : {}),
-    prompt: formatBrief(brief),
+    prompt: prepared.prompt,
     fork_context: false,
     scope: brief.scope,
     mode: brief.mode,
@@ -166,7 +169,7 @@ function handoffPayload(
     work_mode: selected.work_mode,
     ...(selected.context_tokens === undefined ? {} : { context_tokens: selected.context_tokens, context_capacity: selected.context_capacity }),
     ...(selected.disclosures.length ? { disclosures: selected.disclosures } : {}),
-    ...(diagnostics.over_budget ? { brief_diagnostics: diagnostics } : {}),
+    ...(prepared.diagnostics ? { brief_diagnostics: prepared.diagnostics } : {}),
   };
 }
 
@@ -212,8 +215,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
     if (command === "models") {
       const flags = parseArgs(args, ["host"], ["json"]);
-      const host = resolveNativeHost(one(flags, "host"), env);
-      const provider = options.adapterProvider || ((id: CliId) => getCliAdapter(id, env));
+      const snapshot = createCliAdapterRegistrySnapshot(env);
+      const host = resolveNativeHost(one(flags, "host"), env, snapshot);
+      const provider = options.adapterProvider || ((id: CliId) => getCliAdapter(id, env, snapshot));
       const catalog = await provider(host).discoverModels({ cwd, env });
       if ((catalog.cli && catalog.cli !== host) || (catalog.adapter_id && catalog.adapter_id !== host)) {
         throw new Error(`CATALOG_HOST_MISMATCH: requested ${host}`);
@@ -241,12 +245,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const flags = parseArgs(args, ["brief", "briefs", "brief-budget-chars", ...SELECTION_VALUES], ["json"]);
       const briefs = readSpawnBriefs(flags);
       const briefBudgetChars = parseBriefBudgetChars(one(flags, "brief-budget-chars"));
-      const diagnostics = briefs.map((brief) => inspectBrief(brief, briefBudgetChars));
+      const prepared = briefs.map(({ brief }) => prepareBrief(brief, briefBudgetChars));
       const input = selectionInput(flags, cwd, env, options.adapterProvider);
-      const selected = await selectNativeModel(input);
-      const handoffs = briefs.map((brief, index) => handoffPayload(brief, selected, diagnostics[index]));
+      const selected = await selectNativeModels(input, briefs.map(({ selection }) => mergeSelection(input, selection)));
+      const handoffs = briefs.map(({ brief }, index) => handoffPayload(brief, selected[index], prepared[index]));
       const payload = one(flags, "briefs") ? { handoffs } : handoffs[0];
-      output(stdout, payload, Boolean(flags.json), [JSON.stringify(payload, null, 2)], true);
+      stdout.write(`${JSON.stringify(payload, null, flags.json ? undefined : 2)}\n`);
       return 0;
     }
     if (command === "record") {
@@ -268,13 +272,18 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       return 0;
     }
     if (command === "status") {
-      const flags = parseArgs(args, ["host"], ["json"]);
+      const flags = parseArgs(args, ["host", "limit", "handle"], ["full", "json"]);
       const host = resolveNativeHost(one(flags, "host"), env);
-      const results = recentNativeResults(cwd, host, env);
+      const handle = one(flags, "handle");
+      if (handle !== undefined && !handle.trim()) throw new Error("--handle must not be empty");
+      if (handle !== undefined && one(flags, "limit") !== undefined) throw new Error("--handle and --limit are mutually exclusive");
+      const limit = one(flags, "limit") === undefined ? (handle === undefined ? 20 : 1) : Number(one(flags, "limit"));
+      const records = recentNativeResults(cwd, host, env, limit, handle);
+      const results = flags.full || handle !== undefined ? records : records.map(summarizeNativeResult);
       const payload = { cwd: path.resolve(cwd), host, results };
       output(stdout, payload, Boolean(flags.json), [
         `recent results for ${host}: ${results.length}`,
-        ...results.map((item) => `  ${item.status} ${item.model} ${item.native_handle}: ${item.result}`),
+        ...results.map((item) => `  ${item.status} ${item.model} ${item.native_handle}: ${item.result}${"result_truncated" in item ? "… (use --handle for full result)" : ""}`),
       ]);
       return 0;
     }

@@ -153,6 +153,22 @@ export function inspectBrief(brief: WorkerBrief, budgetChars = 12_000): BriefIns
   };
 }
 
+/** CLI fast path: render once and rank field contributions only on overflow. */
+export function prepareBrief(brief: WorkerBrief, budgetChars = 12_000): { prompt: string; diagnostics?: BriefInspection } {
+  if (!Number.isSafeInteger(budgetChars) || budgetChars < 1) {
+    throw new Error("BRIEF_BUDGET_INVALID: must be a positive safe integer");
+  }
+  const prompt = formatBrief(brief);
+  const chars = codePoints(prompt);
+  return {
+    prompt,
+    ...(chars > budgetChars ? { diagnostics: {
+      prompt_chars: chars, budget_chars: budgetChars, over_budget: true,
+      largest_fields: fieldContributions(brief),
+    } } : {}),
+  };
+}
+
 export function formatBrief(brief: WorkerBrief): string {
   const lines = [
     "[Baton worker brief]",
