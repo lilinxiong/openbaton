@@ -118,3 +118,17 @@ baton observe --file run-a.json --file run-b.json --json
 V2 删除 managed dispatch、apply、activation、ticket、Receipt、session、队列和 Git 审计；配置不再包含 runner、longctx 和 director 容量字段，不保留第二套兼容运行时。旧 managed 版本的测量不能作为 v2 性能证据。
 
 adapter 提供当前宿主的模型目录和 runtime skill，不承担跨 CLI 执行。参见 [manifest 示例](../samples/manifest-example/) 和 [隔离 walkthrough](../samples/getting-started/)。
+
+### 可选子代理容量测试
+
+`baton config` 默认选择跳过容量测试，跳过或取消该步骤会保存
+`max_concurrent_subagents = 3`。选择测试后，会在独立 Codex CLI 会话中实际创建
+并保留子代理，遇容量限制或达到 20 个后停止，再关闭全部探针。测试会产生模型
+调用，不代表已有桌面任务的剩余名额或覆盖配置。成功后可选择 1～测得的数量；
+20 个全部成功表示“至少 20 个”。不支持、超时或结果不完整时提示原因并回退到 3。
+
+非交互用法：`baton config --cli codex --test-subagents --max-subagents 6`。
+不传 `--max-subagents` 则使用测得值；未测试时手动值仅允许 1～3。
+无关的非交互配置更新保留已保存的并发数。测试期间 Ctrl-C 取消探测并使用 3；
+其他配置步骤取消仍中止整个命令。`baton spawn` 返回保存的并发预算，由宿主主代理
+在启动及关闭子代理时遵守，不修改 Codex 自身的上限。

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { SubagentTestOptions, SubagentTestResult } from "./sdk.js";
 
 /**
  * The adapters that are part of this release. The registry owns the runtime
@@ -91,6 +92,7 @@ export interface CliHostMetadata {
  * config, host installation, and route refresh code.
  */
 export interface CliAdapter {
+  readonly testSubagents?: (options?: SubagentTestOptions) => Promise<SubagentTestResult>;
   readonly id: CliId;
   readonly host: CliHostMetadata;
   readonly resolveCommand: (env?: NodeJS.ProcessEnv) => string | null;
@@ -102,4 +104,4 @@ export interface CliAdapter {
  * tests can provide a current adapter without reintroducing a cross-host
  * discovery function.
  */
-export type CliAdapterProvider = (cli: CliId) => Pick<CliAdapter, "discoverModels">;
+export type CliAdapterProvider = (cli: CliId) => Pick<CliAdapter, "discoverModels" | "testSubagents">;

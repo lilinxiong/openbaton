@@ -41,7 +41,7 @@ const HELP = `baton — host-native subagent selection
 Usage:
   baton init [--force] [--cli HOST]
   baton update
-  baton config [configuration flags]
+  baton config [configuration flags] [--test-subagents] [--max-subagents N]
   baton host detect [--json]
   baton uninstall [--host HOST] [--dry-run] [--clean]
   baton models [--host HOST] [--json]
@@ -160,6 +160,7 @@ function handoffPayload(
 ) {
   return {
     host: selected.host,
+    max_concurrent_subagents: selected.max_concurrent_subagents,
     model_id: selected.model_id,
     ...(selected.reasoning_effort ? { reasoning_effort: selected.reasoning_effort } : {}),
     ...(selected.service_tier ? { service_tier: selected.service_tier } : {}),
@@ -209,7 +210,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       return 0;
     }
     if (command === "config") {
-      return await runConfig(args, { cwd, stdout, stdin, env, adapterProvider: options.adapterProvider, prompt: options.prompt });
+      return await runConfig(args, { cwd, stdout, stderr, stdin, env, adapterProvider: options.adapterProvider, prompt: options.prompt });
     }
     if (command === "host") return runHost(args, { cwd, stdout, env });
     if (command === "uninstall") {

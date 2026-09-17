@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { run } from "../src/cli.js";
 import type { CliAdapterProvider, CliModel, CliModelCatalog } from "../src/adapters/contract.js";
-import { saveConfig } from "../src/lib/config.js";
+import { saveConfig, loadConfig } from "../src/lib/config.js";
 import { fixtureAdapterEnv } from "./home.js";
 import { recentNativeResults, resultsPath } from "../src/lib/native.js";
 
@@ -264,10 +264,17 @@ describe("native Baton CLI", () => {
     assert.equal(payload.reasoning_effort, "high");
     assert.equal(payload.fork_context, false);
     assert.equal(payload.spawned, false);
+    assert.equal(payload.max_concurrent_subagents, 3);
     assert.equal(payload.mode, "write");
     assert.match(payload.prompt, /Implement selection/);
     assert.equal("ticket" in payload || "ticket_id" in payload || "reservation" in payload, false);
     assert.equal(fs.existsSync(path.join(context.home, ".baton", "spawns")), false);
+    const config = loadConfig(context.cwd, { env: context.env });
+    config.cli.alpha!.max_concurrent_subagents = 6;
+    saveConfig(context.cwd, config, { env: context.env });
+    const updated = await invoke(["spawn", "--brief", brief, "--host", "alpha", "--json"], context);
+    assert.equal(updated.code, 0);
+    assert.equal(JSON.parse(updated.stdout).max_concurrent_subagents, 6);
   });
 
   it("prepares batch handoffs with one catalog selection and preserves single-brief payloads", async () => {

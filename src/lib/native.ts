@@ -6,7 +6,7 @@ import {
   getCliAdapter,
   type CliAdapterRegistrySnapshot,
 } from "../adapters/registry.js";
-import { cliProfileForHost, loadConfig } from "./config.js";
+import { cliProfileForHost, loadConfig, DEFAULT_SUBAGENTS } from "./config.js";
 import { batonHomeDir } from "./paths.js";
 
 export type WorkMode = "execution" | "implementation" | "investigation";
@@ -30,6 +30,7 @@ export interface NativeSelectionOptions extends NativeModelRequirements {
 
 export interface NativeSelection {
   host: CliId;
+  max_concurrent_subagents?: number;
   model_id: string;
   work_mode: WorkMode;
   reasoning_effort?: string;
@@ -153,7 +154,10 @@ export async function selectNativeModels(
     throw new Error(`CATALOG_HOST_MISMATCH: requested ${host}, received ${catalog.cli || catalog.adapter_id}`);
   }
   const visible = new Map(catalog.models.filter((item) => !item.hidden).map((item) => [item.id, item]));
-  return requests.map((request, index) => selectFromCatalog(host, visible, priorities[index], request));
+  return requests.map((request, index) => ({
+    ...selectFromCatalog(host, visible, priorities[index], request),
+    max_concurrent_subagents: profile.max_concurrent_subagents ?? DEFAULT_SUBAGENTS,
+  }));
 }
 
 function selectFromCatalog(

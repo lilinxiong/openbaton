@@ -7,8 +7,16 @@ import { configPath } from "./paths.js";
 import { parseToml, stringifyToml } from "./toml.js";
 
 export const CONFIG_SCHEMA_VERSION = 4;
+export const DEFAULT_SUBAGENTS = 3;
+export const MAX_SUBAGENTS = 20;
+export function validateSubagents(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_SUBAGENTS)
+    throw new Error(`max_concurrent_subagents must be an integer from 1 to ${MAX_SUBAGENTS}`);
+  return value;
+}
 export interface CliProfileSettings {
   enabled: boolean;
+  max_concurrent_subagents?: number;
   execution_models?: string[];
   implementation_models?: string[];
   investigation_models?: string[];
@@ -51,6 +59,9 @@ function normalizeCliProfile(value: unknown): CliProfileSettings {
   };
   return {
     enabled: profile.enabled === true,
+    ...(profile.max_concurrent_subagents === undefined ? {} : {
+      max_concurrent_subagents: validateSubagents(profile.max_concurrent_subagents),
+    }),
     ...optional("execution_models"),
     ...optional("implementation_models"),
     ...optional("investigation_models"),
@@ -76,6 +87,9 @@ function serializeConfig(config: Config): UnknownRecord {
     if (profile)
       cli[id] = {
         enabled: profile.enabled,
+        ...(profile.max_concurrent_subagents === undefined ? {} : {
+          max_concurrent_subagents: profile.max_concurrent_subagents,
+        }),
         ...(profile.execution_models?.length
           ? { execution_models: profile.execution_models }
           : {}),

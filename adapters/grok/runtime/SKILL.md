@@ -55,3 +55,8 @@ never live state.
 Root preserves user changes, checks integration and makes authorized commits.
 Report static review, build, tests and native execution separately; never claim
 prompt contracts enforce write isolation.
+
+Respect `max_concurrent_subagents` returned by `baton spawn` as the user-selected
+concurrent budget (default 3, maximum 20). It is not a live host-capacity guarantee.
+Keep no more than this many native workers open; close finished workers before
+starting queued work. Host capacity errors still take precedence.

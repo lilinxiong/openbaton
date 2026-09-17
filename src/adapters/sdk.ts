@@ -65,9 +65,21 @@ export interface AdapterManifest {
   native: { execution_handle_kind: ExecutionHandleKind };
   runtime_skill: { source: string; destination: string };
   quota: AdapterManifestQuota;
+  subagent_test?: { command: string; args: string[]; timeout_ms?: number };
+}
+
+export interface SubagentTestResult {
+  capacity: number;
+  ceiling_reached: boolean;
+}
+export interface SubagentTestOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 
 export interface DiscoveredAdapter {
+  readonly testSubagents?: (options?: SubagentTestOptions) => Promise<SubagentTestResult>;
   readonly manifest: AdapterManifest;
   readonly directory: string;
   readonly discoverModels: (options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => Promise<AdapterCatalog>;
@@ -123,7 +135,7 @@ export function normalizeAdapterManifestQuota(value: unknown): AdapterManifestQu
 
 export function validateAdapterManifest(value: unknown, directory: string): AdapterManifest {
   const raw = object(value, "root");
-  exactKeys(raw, ["schema", "adapter", "catalog", "invocation", "native", "runtime_skill", "quota"], "root");
+  exactKeys(raw, ["schema", "adapter", "catalog", "invocation", "native", "runtime_skill", "quota", "subagent_test"], "root");
   if (raw.schema !== ADAPTER_MANIFEST_SCHEMA) throw new Error(`ADAPTER_MANIFEST_INVALID: unsupported schema ${String(raw.schema)}`);
   const a = object(raw.adapter, "adapter");
   exactKeys(a, ["id", "display_name", "package_name", "package_version", "sdk_version"], "adapter");
@@ -145,8 +157,18 @@ export function validateAdapterManifest(value: unknown, directory: string): Adap
   const destination = stringField(s.destination, "runtime_skill.destination");
   if (!RELATIVE(source) || !RELATIVE(destination)) throw new Error("ADAPTER_MANIFEST_INVALID: runtime skill paths must be relative and traversal-free");
   const quota = normalizeAdapterManifestQuota(raw.quota);
+  let subagent_test: AdapterManifest["subagent_test"];
+  if (raw.subagent_test !== undefined) {
+    const t = object(raw.subagent_test, "subagent_test");
+    exactKeys(t, ["command", "args", "timeout_ms"], "subagent_test");
+    const command = stringField(t.command, "subagent_test.command");
+    if (!RELATIVE(command) && !path.isAbsolute(command)) throw new Error("ADAPTER_MANIFEST_INVALID: subagent_test.command");
+    if (!Array.isArray(t.args) || t.args.some((arg) => typeof arg !== "string")) throw new Error("ADAPTER_MANIFEST_INVALID: subagent_test.args");
+    if (t.timeout_ms !== undefined && (!Number.isSafeInteger(t.timeout_ms) || Number(t.timeout_ms) <= 0)) throw new Error("ADAPTER_MANIFEST_INVALID: subagent_test.timeout_ms");
+    subagent_test = { command, args: t.args as string[], ...(t.timeout_ms === undefined ? {} : { timeout_ms: t.timeout_ms as number }) };
+  }
   if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) throw new Error("ADAPTER_MANIFEST_INVALID: adapter directory missing");
-  return { schema: 1, adapter: { id, display_name: stringField(a.display_name, "adapter.display_name"), package_name: stringField(a.package_name, "adapter.package_name"), package_version: stringField(a.package_version, "adapter.package_version"), sdk_version: sdk }, catalog: { command, args: c.args as string[], protocol, ...(c.timeout_ms === undefined ? {} : { timeout_ms: c.timeout_ms as number }) }, invocation: { signal: stringField(i.signal, "invocation.signal"), ...(i.environment === undefined ? {} : { environment: stringField(i.environment, "invocation.environment") }) }, native: { execution_handle_kind: stringField(n.execution_handle_kind, "native.execution_handle_kind") }, runtime_skill: { source, destination }, quota };
+  return { schema: 1, adapter: { id, display_name: stringField(a.display_name, "adapter.display_name"), package_name: stringField(a.package_name, "adapter.package_name"), package_version: stringField(a.package_version, "adapter.package_version"), sdk_version: sdk }, catalog: { command, args: c.args as string[], protocol, ...(c.timeout_ms === undefined ? {} : { timeout_ms: c.timeout_ms as number }) }, invocation: { signal: stringField(i.signal, "invocation.signal"), ...(i.environment === undefined ? {} : { environment: stringField(i.environment, "invocation.environment") }) }, native: { execution_handle_kind: stringField(n.execution_handle_kind, "native.execution_handle_kind") }, runtime_skill: { source, destination }, quota, ...(subagent_test ? { subagent_test } : {}) };
 }
 
 function manifestDirectories(env: NodeJS.ProcessEnv): string[] {
@@ -177,7 +199,8 @@ export function discoverAdapters(env: NodeJS.ProcessEnv = process.env): Discover
     ids.add(manifest.adapter.id); found.push({ manifest, directory });
   }
   return found.map(({ manifest, directory }) => {
-    return { manifest, directory, discoverModels: (options = {}) => runCatalog(manifest, directory, options) };
+    return { manifest, directory, discoverModels: (options = {}) => runCatalog(manifest, directory, options),
+      ...(manifest.subagent_test ? { testSubagents: (options: SubagentTestOptions = {}) => runSubagentTest(manifest, directory, options) } : {}) };
   });
 }
 
@@ -190,5 +213,51 @@ async function runCatalog(manifest: AdapterManifest, directory: string, options:
     child.stdout.on("data", (v) => out.push(String(v))); child.stderr.on("data", (v) => err.push(String(v)));
     child.once("error", (e) => { clearTimeout(timer); reject(new Error(`ADAPTER_CATALOG_FAILED: ${e.message}`)); });
     child.once("close", (code) => { clearTimeout(timer); if (code !== 0) return reject(new Error(`ADAPTER_CATALOG_FAILED: ${err.join("").trim() || code}`)); try { const parsed = JSON.parse(out.join("")); const row = object(parsed, "catalog response"); if (row.adapter_id !== manifest.adapter.id || !Array.isArray(row.models)) throw new Error("catalog response must contain matching adapter_id and models"); resolve({ adapter_id: manifest.adapter.id, version: row.version == null ? null : String(row.version), models: row.models as AdapterModel[], ...(row.capabilities && typeof row.capabilities === "object" ? { capabilities: row.capabilities as Record<string, unknown> } : {}) }); } catch (e) { reject(new Error(`ADAPTER_CATALOG_INVALID: ${e instanceof Error ? e.message : String(e)}`)); } });
+  });
+}
+
+async function runSubagentTest(manifest: AdapterManifest, directory: string, options: SubagentTestOptions): Promise<SubagentTestResult> {
+  const spec = manifest.subagent_test!;
+  if (options.signal?.aborted) throw new Error("SUBAGENT_TEST_CANCELLED");
+  const command = path.isAbsolute(spec.command) ? spec.command : path.join(directory, spec.command);
+  return new Promise((resolve, reject) => {
+    // Own an isolated process group so cancellation also stops the probe's host.
+    const child = spawn(command, spec.args, { cwd: options.cwd, env: options.env || process.env,
+      detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    let out = "", err = "", failure: string | undefined;
+    let force: ReturnType<typeof setTimeout> | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch { /* process group already exited */ }
+    };
+    const stop = (reason: string) => {
+      if (failure) return;
+      failure = reason;
+      kill("SIGTERM");
+      force = setTimeout(() => kill("SIGKILL"), 1500);
+    };
+    const cancel = () => stop("SUBAGENT_TEST_CANCELLED");
+    const timer = setTimeout(() => stop("SUBAGENT_TEST_TIMEOUT"), spec.timeout_ms || 180000);
+    const clean = () => { clearTimeout(timer); if (force) clearTimeout(force); options.signal?.removeEventListener("abort", cancel); };
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    if (options.signal?.aborted) cancel();
+    child.stdout.on("data", (chunk) => { out += String(chunk); if (out.length > 65536) stop("SUBAGENT_TEST_OUTPUT_LIMIT"); });
+    child.stderr.on("data", (chunk) => { err = (err + String(chunk)).slice(-4096); });
+    child.once("error", (error) => { clean(); reject(error); });
+    child.once("close", (code) => {
+      // Ensure no descendant process outlives a failed/cancelled adapter.
+      if (failure || code !== 0) kill("SIGKILL");
+      clean();
+      if (failure || code !== 0) return reject(new Error(failure || `SUBAGENT_TEST_FAILED: ${err.trim() || code}`));
+      try {
+        const result = JSON.parse(out);
+        if (result.adapter_id !== manifest.adapter.id || !Number.isSafeInteger(result.capacity)
+          || result.capacity < 1 || result.capacity > 20 || typeof result.ceiling_reached !== "boolean"
+          || result.ceiling_reached !== (result.capacity === 20)) throw new Error("invalid capacity evidence");
+        resolve({ capacity: result.capacity, ceiling_reached: result.ceiling_reached });
+      } catch { reject(new Error("SUBAGENT_TEST_INVALID")); }
+    });
   });
 }

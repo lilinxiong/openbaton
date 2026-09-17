@@ -99,7 +99,8 @@ describe("external Codex adapter package", () => {
     assert.deepEqual(manifests.map((manifest) => manifest.adapter.id), ["codex"]);
     assert.equal(manifests[0].catalog.command, "catalog.mjs");
     assert.equal(manifests[0].native.execution_handle_kind, "task_name");
-    assert.equal(manifests[0].quota.max_concurrent_subagents, 3);
+    assert.equal(manifests[0].quota.max_concurrent_subagents, undefined);
+    assert.equal(manifests[0].subagent_test?.command, "test-subagents.mjs");
   });
 
   it("detects Codex from CODEX_THREAD_ID without sandbox or adapter-path signals", () => {
@@ -190,7 +191,8 @@ describe("external Codex adapter package", () => {
       parseToml(fs.readFileSync(path.join(repoRoot, "templates", "config.toml"), "utf8")),
     );
     const sourceManifestText = fs.readFileSync(sourceManifest, "utf8");
-    assert.match(sourceManifestText, /max_concurrent_subagents/);
+    assert.match(sourceManifestText, /subagent_test/);
+    assert.doesNotMatch(sourceManifestText, /max_concurrent_subagents/);
     assert.doesNotMatch(sourceManifestText, /"max_concurrent"\s*:/);
   });
 

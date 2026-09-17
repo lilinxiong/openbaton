@@ -9,6 +9,9 @@ import {
   cliProfileForHost,
   loadConfig,
   saveConfig,
+  DEFAULT_SUBAGENTS,
+  MAX_SUBAGENTS,
+  validateSubagents,
   type CliProfileSettings,
 } from "../lib/config.js";
 import { detectInvokingHost } from "../lib/hosts.js";
@@ -23,6 +26,7 @@ import type { WritableLike } from "../types.js";
 export interface ConfigCommandOptions {
   cwd: string;
   stdout: WritableLike;
+  stderr?: WritableLike;
   stdin?: NodeJS.ReadableStream;
   env?: NodeJS.ProcessEnv;
   adapterProvider?: CliAdapterProvider;
@@ -47,8 +51,8 @@ function repeated(args: string[], name: string): string[] {
   return values;
 }
 function validateArgs(args: string[]): void {
-  const values = new Set(["cli", ...modelFlags]);
-  const flags = new Set(["enable", "disable", "json"]);
+  const values = new Set(["cli", "max-subagents", ...modelFlags]);
+  const flags = new Set(["enable", "disable", "json", "test-subagents"]);
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg.startsWith("--"))
@@ -64,6 +68,13 @@ function validateArgs(args: string[]): void {
   }
   if (args.includes("--enable") && args.includes("--disable"))
     throw new Error("--enable and --disable are mutually exclusive");
+  const counts = repeated(args, "max-subagents");
+  if (counts.length > 1) throw new Error("--max-subagents may be supplied once");
+  if (counts.length) {
+    const count = validateSubagents(Number(counts[0]));
+    if (count > DEFAULT_SUBAGENTS && !args.includes("--test-subagents"))
+      throw new Error("--max-subagents above 3 requires --test-subagents");
+  }
 }
 function parseCli(value: string, env: NodeJS.ProcessEnv): CliId {
   const id = value.trim().toLowerCase();
@@ -130,6 +141,7 @@ async function configure(
   current: CliProfileSettings,
   ask: () => SelectPrompt,
   interactive: boolean,
+  capacity: () => Promise<number>,
 ): Promise<CliProfileSettings> {
   if (catalog.cli !== cli || (catalog.adapter_id && catalog.adapter_id !== cli))
     throw new Error(`${cli} returned a catalog for a different CLI`);
@@ -164,6 +176,7 @@ async function configure(
     "investigation-model",
     current.investigation_models || [],
   );
+  const max_concurrent_subagents = await capacity();
   const enabled = args.includes("--enable")
     ? true
     : args.includes("--disable")
@@ -180,10 +193,80 @@ async function configure(
         : current.enabled;
   return {
     enabled,
+    max_concurrent_subagents,
     ...(execution.length ? { execution_models: execution } : {}),
     ...(implementation.length ? { implementation_models: implementation } : {}),
     ...(investigation.length ? { investigation_models: investigation } : {}),
   };
+}
+
+async function configureCapacity(
+  cli: CliId,
+  args: string[],
+  current: CliProfileSettings,
+  interactive: boolean,
+  ask: () => SelectPrompt,
+  adapter: ReturnType<CliAdapterProvider>,
+  options: ConfigCommandOptions,
+): Promise<number> {
+  const report = (message: string) => (options.stderr || process.stderr).write(`${message}\n`);
+  const supplied = repeated(args, "max-subagents");
+  const requested = supplied.length ? validateSubagents(Number(supplied[0])) : undefined;
+  let test = args.includes("--test-subagents");
+  if (!test && requested !== undefined) return requested;
+  if (!test && !interactive) return current.max_concurrent_subagents ?? DEFAULT_SUBAGENTS;
+  try {
+    if (!test) test = await ask().select({
+      message: `Test subagent capacity for ${cli}? (uses model calls; up to ${MAX_SUBAGENTS} probes)`,
+      choices: [{ value: false, label: "Skip test — use 3" }, { value: true, label: "Test capacity" }],
+      initial: false,
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "cancelled") throw error;
+    report("Subagent test cancelled; using default 3.");
+    return DEFAULT_SUBAGENTS;
+  }
+  if (!test) return DEFAULT_SUBAGENTS;
+  if (!adapter.testSubagents) {
+    report(`${cli} does not support a capacity test; using default 3 (untested).`);
+    return DEFAULT_SUBAGENTS;
+  }
+  report(`Testing ${cli} in a fresh session, up to ${MAX_SUBAGENTS} subagents. Ctrl-C cancels this test and uses 3.`);
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  process.on("SIGINT", cancel);
+  let result;
+  try {
+    result = await adapter.testSubagents({ cwd: options.cwd, env: options.env, signal: controller.signal });
+    if (controller.signal.aborted) throw new Error("SUBAGENT_TEST_CANCELLED");
+    validateSubagents(result.capacity);
+    if (result.ceiling_reached !== (result.capacity === MAX_SUBAGENTS)) throw new Error("invalid test ceiling");
+  } catch (error) {
+    report(`Subagent test inconclusive (${error instanceof Error ? error.message : String(error)}); using default 3 (untested).`);
+    return DEFAULT_SUBAGENTS;
+  } finally {
+    process.removeListener("SIGINT", cancel);
+  }
+  report(`Tested capacity: ${result.ceiling_reached ? "at least " : ""}${result.capacity}. All probes closed. Applies to this CLI test session.`);
+  if (requested !== undefined) {
+    if (requested > result.capacity) throw new Error(`--max-subagents must be from 1 to ${result.capacity} (tested capacity)`);
+    return requested;
+  }
+  if (!interactive) return result.capacity;
+  try {
+    const chosen = await ask().select({
+      message: `Select concurrent subagents (1–${result.capacity})`,
+      choices: Array.from({ length: result.capacity }, (_, index) => ({ value: index + 1, label: String(index + 1) })),
+      initial: Math.min(current.max_concurrent_subagents ?? DEFAULT_SUBAGENTS, result.capacity),
+    });
+    validateSubagents(chosen);
+    if (chosen > result.capacity) throw new Error("selection exceeds tested capacity");
+    return chosen;
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "cancelled") throw error;
+    report("Subagent selection cancelled; using default 3.");
+    return DEFAULT_SUBAGENTS;
+  }
 }
 
 export async function runConfig(
@@ -227,7 +310,8 @@ export async function runConfig(
   const discover = adapterProvider || ((cli: CliId) => getCliAdapter(cli, env));
   const profiles: Array<{ cli: CliId; profile: CliProfileSettings }> = [];
   for (const cli of selected) {
-    const catalog = await discover(cli).discoverModels({ cwd, env });
+    const adapter = discover(cli);
+    const catalog = await adapter.discoverModels({ cwd, env });
     const profile = await configure(
       cli,
       catalog,
@@ -235,6 +319,7 @@ export async function runConfig(
       cliProfileForHost(config, cli),
       ask,
       interactive,
+      () => configureCapacity(cli, args, cliProfileForHost(config, cli), interactive, ask, adapter, options),
     );
     config.cli[cli] = profile;
     profiles.push({ cli, profile });
@@ -250,7 +335,7 @@ export async function runConfig(
     stdout.write(`wrote ${file}\n`);
     for (const { cli, profile } of profiles)
       stdout.write(
-        `  ${cli}: ${profile.enabled ? "enabled" : "disabled"}; execution=${profile.execution_models?.join(" > ") || "(none)"}; implementation=${profile.implementation_models?.join(" > ") || "(none)"}; investigation=${profile.investigation_models?.join(" > ") || "(none)"}\n`,
+        `  ${cli}: ${profile.enabled ? "enabled" : "disabled"}; subagents=${profile.max_concurrent_subagents}; execution=${profile.execution_models?.join(" > ") || "(none)"}; implementation=${profile.implementation_models?.join(" > ") || "(none)"}; investigation=${profile.investigation_models?.join(" > ") || "(none)"}\n`,
       );
   }
   return 0;
