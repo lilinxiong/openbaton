@@ -141,3 +141,25 @@ Config schema 4 removes `coding_models` and `--coding-model`; configure each nee
 V2 removes managed dispatch, apply, activation, tickets, receipts, sessions, queue state and Git audits. The configuration no longer has runner, longctx or director capacity fields. There is no second compatibility runtime. Earlier managed-runtime measurements are not v2 performance evidence.
 
 Adapters supply catalog discovery and a runtime skill for their own host; they do not execute another CLI's tasks. See the [manifest example](../samples/manifest-example/) and the [isolated walkthrough](../samples/getting-started/).
+
+### Optional subagent capacity test
+
+`baton config` offers a capacity test, skipped by default. Skip or cancel the
+capacity step to save `max_concurrent_subagents = 3`. Testing uses real model
+calls in a fresh Codex CLI session, holds up to 20 native agents open, then closes
+them. It does not measure free slots or overrides in an existing desktop task.
+Choose 1 through the measured capacity; at 20 the result means “at least 20”.
+Unsupported, timed-out or inconclusive tests report the problem and use 3.
+The test budget is a Baton scheduling preference, not a change to Codex limits.
+
+For noninteractive use:
+
+```sh
+baton config --cli codex --test-subagents --max-subagents 6
+```
+
+Omit `--max-subagents` to use the tested capacity. Without a test, explicit values
+are limited to 1–3; unrelated noninteractive updates retain the saved value.
+Ctrl-C during testing cancels the probe and falls back to 3. Cancelling other
+config steps still aborts the command. `baton spawn` returns the saved budget for
+the host agent to apply when starting and closing workers.

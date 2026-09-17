@@ -3,6 +3,7 @@ schema_version = 4
 
 # A selected [cli.<id>] profile stores:
 # enabled = true
+# max_concurrent_subagents = 3 # optional test in config; Baton ceiling is 20
 # execution_models = ["<model-id>"]
 # implementation_models = ["<model-id>"]
 # investigation_models = ["<model-id>"]

@@ -33,6 +33,7 @@ function toCliAdapter(adapter: DiscoveredAdapter): CliAdapter {
   const { manifest, directory } = adapter;
   return {
     id: manifest.adapter.id,
+    ...(adapter.testSubagents ? { testSubagents: adapter.testSubagents } : {}),
     host: { id: manifest.adapter.id, skillPath: manifest.runtime_skill.destination,
       isInvoking: (env = process.env) => Boolean(String(env[manifest.invocation.signal] || "").trim()),
       executionHandleKind: manifest.native.execution_handle_kind },

@@ -17,6 +17,11 @@
     "signal": "CODEX_THREAD_ID",
     "environment": "Codex Desktop thread runtime"
   },
+  "subagent_test": {
+    "command": "test-subagents.mjs",
+    "args": [],
+    "timeout_ms": 180000
+  },
   "native": {
     "execution_handle_kind": "task_name"
   },
@@ -25,7 +30,6 @@
     "destination": ".codex/skills/baton/SKILL.md"
   },
   "quota": {
-    "max_concurrent_subagents": 3,
     "max_depth": 1,
     "backpressure": "defer"
   }
