@@ -191,6 +191,65 @@ describe("installation config", () => {
     );
   });
 
+  it("preserves saved capacity across interactive skip, cancellation and failed retests", async () => {
+    for (const scenario of ["skip", "question-cancel", "unsupported", "failure", "probe-cancel", "selection-cancel", "success"]) {
+      const { cwd, env } = isolated();
+      await initProject(cwd, { env, cli: "alpha" });
+      // Persist through the public config command, then start a separate config run.
+      await runConfig(["--cli", "alpha", "--test-subagents", "--max-subagents", "7"], {
+        cwd, env,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+        adapterProvider: () => ({
+          discoverModels: async () => catalog,
+          testSubagents: async () => ({ capacity: 8, ceiling_reached: false }),
+        }),
+      });
+      let probes = 0;
+      const output: string[] = [];
+      const messages: string[] = [];
+      const prompt: SelectPrompt = {
+        select: async <T>(options: SelectPromptOptions<T>): Promise<T> => {
+          if (options.message.includes("Test subagent capacity")) {
+            assert.equal(options.initial, false);
+            assert.match(options.choices.find((choice) => choice.value === false)!.label, /7/);
+            if (scenario === "question-cancel") throw new Error("cancelled");
+            return (scenario !== "skip") as T;
+          }
+          if (options.message.includes("concurrent subagents")) {
+            assert.equal(options.initial, 6);
+            if (scenario === "selection-cancel") throw new Error("cancelled");
+            return 5 as T;
+          }
+          return (options.initial ?? options.choices[0].value) as T;
+        },
+        multiSelect: async <T>(options: MultiSelectPromptOptions<T>): Promise<T[]> =>
+          (options.message === "Select CLI" ? ["alpha"] : options.initial || []) as T[],
+      };
+      await runConfig(["--enable", "--json"], {
+        cwd, env, prompt,
+        stdout: { write: (chunk) => output.push(chunk) },
+        stderr: { write: (chunk) => messages.push(chunk) },
+        adapterProvider: () => ({
+          discoverModels: async () => catalog,
+          ...(scenario === "unsupported" ? {} : {
+            testSubagents: async () => {
+              probes += 1;
+              if (scenario === "failure") throw new Error("probe failed");
+              if (scenario === "probe-cancel") process.emit("SIGINT");
+              return { capacity: 6, ceiling_reached: false };
+            },
+          }),
+        }),
+      });
+      const expected = scenario === "success" ? 5 : 7;
+      assert.equal(loadConfig(cwd, { env }).cli.alpha.max_concurrent_subagents, expected, scenario);
+      assert.equal(JSON.parse(output.join("")).max_concurrent_subagents, expected, scenario);
+      assert.equal(probes, ["skip", "question-cancel", "unsupported"].includes(scenario) ? 0 : 1, scenario);
+      if (!["skip", "success"].includes(scenario)) assert.match(messages.join(""), /keeping configured value 7/, scenario);
+    }
+  });
+
   it("defaults to 3 and reports it on test failure or cancellation", async () => {
     const scenarios: Array<{
       name: string;

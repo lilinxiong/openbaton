@@ -210,28 +210,30 @@ async function configureCapacity(
   options: ConfigCommandOptions,
 ): Promise<number> {
   const report = (message: string) => (options.stderr || process.stderr).write(`${message}\n`);
+  const retained = current.max_concurrent_subagents ?? DEFAULT_SUBAGENTS;
+  const fallback = `keeping configured value ${retained}`;
   const supplied = repeated(args, "max-subagents");
   const requested = supplied.length ? validateSubagents(Number(supplied[0])) : undefined;
   let test = args.includes("--test-subagents");
   if (!test && requested !== undefined) return requested;
-  if (!test && !interactive) return current.max_concurrent_subagents ?? DEFAULT_SUBAGENTS;
+  if (!test && !interactive) return retained;
   try {
     if (!test) test = await ask().select({
       message: `Test subagent capacity for ${cli}? (uses model calls; up to ${MAX_SUBAGENTS} probes)`,
-      choices: [{ value: false, label: "Skip test — use 3" }, { value: true, label: "Test capacity" }],
+      choices: [{ value: false, label: `Keep current value (${retained}) — skip test` }, { value: true, label: "Test capacity" }],
       initial: false,
     });
   } catch (error) {
     if (!(error instanceof Error) || error.message !== "cancelled") throw error;
-    report("Subagent test cancelled; using default 3.");
-    return DEFAULT_SUBAGENTS;
+    report(`Subagent test cancelled; ${fallback}.`);
+    return retained;
   }
-  if (!test) return DEFAULT_SUBAGENTS;
+  if (!test) return retained;
   if (!adapter.testSubagents) {
-    report(`${cli} does not support a capacity test; using default 3 (untested).`);
-    return DEFAULT_SUBAGENTS;
+    report(`${cli} does not support a capacity test; ${fallback}.`);
+    return retained;
   }
-  report(`Testing ${cli} in a fresh session, up to ${MAX_SUBAGENTS} subagents. Ctrl-C cancels this test and uses 3.`);
+  report(`Testing ${cli} in a fresh session, up to ${MAX_SUBAGENTS} subagents. Ctrl-C cancels this test and keeps ${retained}.`);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.on("SIGINT", cancel);
@@ -242,8 +244,8 @@ async function configureCapacity(
     validateSubagents(result.capacity);
     if (result.ceiling_reached !== (result.capacity === MAX_SUBAGENTS)) throw new Error("invalid test ceiling");
   } catch (error) {
-    report(`Subagent test inconclusive (${error instanceof Error ? error.message : String(error)}); using default 3 (untested).`);
-    return DEFAULT_SUBAGENTS;
+    report(`Subagent test inconclusive (${error instanceof Error ? error.message : String(error)}); ${fallback}.`);
+    return retained;
   } finally {
     process.removeListener("SIGINT", cancel);
   }
@@ -264,8 +266,8 @@ async function configureCapacity(
     return chosen;
   } catch (error) {
     if (!(error instanceof Error) || error.message !== "cancelled") throw error;
-    report("Subagent selection cancelled; using default 3.");
-    return DEFAULT_SUBAGENTS;
+    report(`Subagent selection cancelled; ${fallback}.`);
+    return retained;
   }
 }
 

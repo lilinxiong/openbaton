@@ -145,11 +145,12 @@ Adapters supply catalog discovery and a runtime skill for their own host; they d
 ### Optional subagent capacity test
 
 `baton config` offers a capacity test, skipped by default. Skip or cancel the
-capacity step to save `max_concurrent_subagents = 3`. Testing uses real model
+capacity step to retain the saved `max_concurrent_subagents` (default `3` for a
+new profile). Testing uses real model
 calls in a fresh Codex CLI session, holds up to 20 native agents open, then closes
 them. It does not measure free slots or overrides in an existing desktop task.
 Choose 1 through the measured capacity; at 20 the result means “at least 20”.
-Unsupported, timed-out or inconclusive tests report the problem and use 3.
+Unsupported, timed-out or inconclusive tests report the problem and retain the saved value.
 The test budget is a Baton scheduling preference, not a change to Codex limits.
 
 For noninteractive use:
@@ -160,6 +161,6 @@ baton config --cli codex --test-subagents --max-subagents 6
 
 Omit `--max-subagents` to use the tested capacity. Without a test, explicit values
 are limited to 1–3; unrelated noninteractive updates retain the saved value.
-Ctrl-C during testing cancels the probe and falls back to 3. Cancelling other
+Ctrl-C during testing cancels the probe and retains the saved value. Cancelling other
 config steps still aborts the command. `baton spawn` returns the saved budget for
 the host agent to apply when starting and closing workers.
