@@ -52,6 +52,8 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 
 命令返回真实模型 id、显式指定且受支持的 effort（省略时不输出）、格式化 prompt、scope、`fork_context:false` 和 `spawned:false`。主 agent 将参数传给宿主原生子 agent API，使用新的上下文。此时 Baton 还没有启动 worker；原生句柄和完成状态始终由宿主管理。
 
+返回的 `execution_contract` 是给调用方的执行约定，不是原生 API 参数，也不属于 worker prompt。必须使用完整模型 ID 尝试原生启动，不能根据供应商、模型家族或名称前缀提前拒绝。失败反馈须保留工具名称、请求的模型 ID 和原始错误。缺少启动工具属于宿主能力阻塞；并发、网络和 effort 错误本身不证明模型不可用，创建句柄也不代表执行成功。只有用户明确约束或实际观测到的模型不可用，才可将 ID 加入 `unavailable_models`。这是调用方约定，Baton 不强制执行启动，也不验证失败证据。
+
 ## 批量准备与上下文预算
 
 多个任务使用同一宿主时，把 1–128 个输入保存为 JSON 数组：

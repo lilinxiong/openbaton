@@ -52,6 +52,8 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 
 Spawn returns an exact catalog model id, explicitly requested supported effort (when supplied), the formatted prompt, scope and `fork_context:false`, with `spawned:false`. Pass the supported parameters and prompt to the host's native child API using a fresh context. Baton has not started a worker. Native handles and native completion remain authoritative.
 
+The returned `execution_contract` is guidance for the caller, not native API arguments or part of the worker prompt. Attempt native launch with the exact model ID; never reject a model because of its provider, family or name prefix. Failure feedback must retain the tool name, requested model ID and original error. A missing launch tool is a host capability blocker; capacity, network and effort errors do not by themselves establish model unavailability. A created handle is not proof of successful execution. Only explicit user constraints or observed model-specific unavailability justify adding an ID to `unavailable_models`. This contract guides the caller; Baton does not enforce launch or verify failure evidence.
+
 ## Prepare a batch and control context
 
 For several tasks on the same host, save a JSON array of 1–128 inputs and run:
