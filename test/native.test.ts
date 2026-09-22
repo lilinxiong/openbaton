@@ -27,6 +27,20 @@ function model(id: string, options: Partial<CliModel & Record<string, unknown>> 
   };
 }
 
+function assertExecutionContract(contract: unknown) {
+  const value = contract as { next_action?: unknown; model_id_policy?: unknown; instructions?: unknown };
+  assert.equal(value.next_action, "start_native_worker");
+  assert.equal(value.model_id_policy, "pass_through_exactly");
+  const instructions = value.instructions;
+  assert.ok(Array.isArray(instructions) && instructions.length > 0);
+  const text = instructions.join("\n");
+  assert.match(text, /[Aa]ttempt the native start/);
+  assert.match(text, /family, provider, or name/);
+  assert.match(text, /host capability failure/);
+  assert.match(text, /proves the model unavailable/);
+  assert.match(text, /exact requested model ID/);
+}
+
 function setup() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "baton-native-"));
   const cwd = path.join(home, "project");
@@ -310,6 +324,50 @@ describe("native Baton CLI", () => {
     const overBudget = await invoke(["spawn", "--brief", singleFile, "--brief-budget-chars", "1", "--host", "alpha", "--json"], context);
     assert.equal(overBudget.code, 0, overBudget.stderr);
     assert.equal(JSON.parse(overBudget.stdout).brief_diagnostics.over_budget, true);
+  });
+
+  it("passes non-GPT provider-prefixed model IDs through selection and handoffs unchanged", async () => {
+    const context = setup();
+    const prefixed = ["cursor/claude-fable-5-1", "kimi/k3-256k"];
+    const config = loadConfig(context.cwd, { env: context.env });
+    config.cli.alpha!.execution_models = [...prefixed];
+    config.cli.alpha!.implementation_models = [...prefixed];
+    saveConfig(context.cwd, config, { env: context.env });
+    context.provider = (host) => ({ discoverModels: async () => ({
+      cli: host,
+      adapter_id: host,
+      version: "test",
+      models: prefixed.map((id) => model(id)),
+    }) });
+
+    const matched = await invoke(["match", "--host", "alpha", "--model", prefixed[0], "--json"], context);
+    assert.equal(matched.code, 0, matched.stderr);
+    assert.equal(JSON.parse(matched.stdout).model_id, prefixed[0]);
+
+    const briefFile = path.join(context.cwd, "prefixed-single.json");
+    fs.writeFileSync(briefFile, JSON.stringify({ goal: "Investigate", acceptance: ["Report"] }));
+    const single = await invoke(["spawn", "--brief", briefFile, "--host", "alpha", "--model", prefixed[0], "--json"], context);
+    assert.equal(single.code, 0, single.stderr);
+    const singlePayload = JSON.parse(single.stdout);
+    assert.equal(singlePayload.model_id, prefixed[0]);
+    assert.equal("reasoning_effort" in singlePayload, false);
+
+    const batchFile = path.join(context.cwd, "prefixed-batch.json");
+    fs.writeFileSync(batchFile, JSON.stringify([
+      { brief: { goal: "First", acceptance: ["Report"] }, selection: { model: prefixed[0] } },
+      { brief: { goal: "Second", acceptance: ["Report"] }, selection: { model: prefixed[1] } },
+    ]));
+    const batch = await invoke(["spawn", "--briefs", batchFile, "--host", "alpha", "--json"], context);
+    assert.equal(batch.code, 0, batch.stderr);
+    const handoffs = JSON.parse(batch.stdout).handoffs;
+    assert.deepEqual(handoffs.map((item: { model_id: string }) => item.model_id), prefixed);
+    for (const handoff of handoffs) {
+      assert.equal("reasoning_effort" in handoff, false);
+      assert.equal("effort" in handoff, false);
+      assert.equal(handoff.spawned, false);
+      assertExecutionContract(handoff.execution_contract);
+    }
+    assertExecutionContract(singlePayload.execution_contract);
   });
 
   it("rejects empty and malformed batches before catalog discovery", async () => {

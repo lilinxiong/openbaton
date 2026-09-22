@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "bun:test";
+import { run } from "../src/cli.js";
 import { getCliAdapter } from "../src/adapters/registry.js";
 import { discoverAdapterManifests } from "../src/adapters/sdk.js";
 import { initProject } from "../src/commands/init.js";
@@ -22,6 +23,7 @@ import {
 } from "../src/lib/install-manifest.js";
 import { buildUninstallPlan } from "../src/lib/uninstall.js";
 import { configPath, skillPath } from "../src/lib/paths.js";
+import { loadConfig, saveConfig } from "../src/lib/config.js";
 import { parseToml } from "../src/lib/toml.js";
 
 const repoRoot = process.cwd();
@@ -67,25 +69,28 @@ function isolatedEnv(): { home: string; cwd: string; env: NodeJS.ProcessEnv } {
   return { home, cwd, env };
 }
 
-function fakeCodexExecutable(): string {
+function fakeCodexExecutable(models?: unknown[]): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "baton-codex-protocol-"));
   const executable = path.join(directory, "codex");
-  fs.writeFileSync(executable, `#!/usr/bin/env node
+  const script = `#!/usr/bin/env node
 const readline = require("node:readline");
 const lines = readline.createInterface({ input: process.stdin });
 let page = 0;
+const pageOneModels = MODELS_PLACEHOLDER;
+const pageTwoModels = PAGE_TWO_PLACEHOLDER;
 lines.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") process.stdout.write(JSON.stringify({ id: 0, result: { userAgent: "fake-codex/1" } }) + "\\n");
   if (message.method === "model/list") {
     page += 1;
-    const data = page === 1
-      ? [{ id: "gpt-visible", model: "gpt-visible", displayName: "Visible", description: "Exact", hidden: false, supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Deep" }], defaultReasoningEffort: "high", inputModalities: ["text", "image"], serviceTiers: [{ id: "priority", name: "Fast", description: "Quick" }], defaultServiceTier: "priority", isDefault: true, experimentalFlag: "keep-me" }, { id: "hidden", hidden: true }]
-      : [{ id: "gpt-second", displayName: "Second", hidden: false }];
+    const data = page === 1 ? pageOneModels : pageTwoModels;
     process.stdout.write(JSON.stringify({ id: message.id, result: { data, nextCursor: page === 1 ? "next" : null } }) + "\\n");
   }
 });
-`, "utf8");
+`;
+  const modelsJson = JSON.stringify(models ?? [{ id: "gpt-visible", model: "gpt-visible", displayName: "Visible", description: "Exact", hidden: false, supportedReasoningEfforts: [{ reasoningEffort: "high", description: "Deep" }], defaultReasoningEffort: "high", inputModalities: ["text", "image"], serviceTiers: [{ id: "priority", name: "Fast", description: "Quick" }], defaultServiceTier: "priority", isDefault: true, experimentalFlag: "keep-me" }, { id: "hidden", hidden: true }]);
+  const pageTwoJson = JSON.stringify(models ? [] : [{ id: "gpt-second", displayName: "Second", hidden: false }]);
+  fs.writeFileSync(executable, script.replace("MODELS_PLACEHOLDER", modelsJson).replace("PAGE_TWO_PLACEHOLDER", pageTwoJson), "utf8");
   fs.chmodSync(executable, 0o755);
   return executable;
 }
@@ -208,5 +213,58 @@ describe("external Codex adapter package", () => {
     fs.appendFileSync(path.join(destination, "catalog.mjs"), "\n// modified\n");
     const conflict = buildUninstallPlan({ cwd, env, hosts: ["codex"] });
     assert.equal(conflict.targets.find((item) => item.path === target?.path)?.action, "conflict");
+  });
+
+  it("passes non-GPT provider-prefixed model IDs through the Codex catalog unchanged", async () => {
+    const { home, cwd, env } = isolatedEnv();
+    try {
+      fs.mkdirSync(path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
+      fs.cpSync(packageSource, path.join(env.HOME!, ".baton", "adapters", "codex"), { recursive: true });
+      env.BATON_CODEX_PATH = fakeCodexExecutable([
+        { id: "cursor/claude-fable-5-1", model: "cursor/claude-fable-5-1", displayName: "Fable", hidden: false, isDefault: true },
+        { id: "kimi/k3-256k", model: "kimi/k3-256k", displayName: "K3", hidden: false, isDefault: false },
+      ]);
+      const catalog = await getCliAdapter("codex", env).discoverModels({ cwd, env });
+      assert.deepEqual(catalog.models.map((item) => item.id), ["cursor/claude-fable-5-1", "kimi/k3-256k"]);
+
+      await initProject(cwd, { env });
+      const config = loadConfig(cwd, { env });
+      config.cli.codex = {
+        enabled: true,
+        execution_models: ["cursor/claude-fable-5-1", "kimi/k3-256k"],
+      };
+      saveConfig(cwd, config, { env });
+
+      const brief = path.join(cwd, "brief.json");
+      fs.writeFileSync(brief, JSON.stringify({
+        goal: "Implement scoped fix",
+        acceptance: ["Targeted tests pass"],
+        scope: ["src/cli.ts"],
+        mode: "write",
+      }));
+      const out: string[] = [];
+      const code = await run(
+        ["spawn", "--brief", brief, "--host", "codex", "--model", "cursor/claude-fable-5-1", "--json"],
+        { cwd, env, stdout: { write: (chunk) => out.push(chunk) }, stderr: { write() {} } },
+      );
+      assert.equal(code, 0);
+      const payload = JSON.parse(out.join(""));
+      assert.equal(payload.host, "codex");
+      assert.equal(payload.model_id, "cursor/claude-fable-5-1");
+      assert.equal("reasoning_effort" in payload, false);
+      assert.equal("effort" in payload, false);
+      assert.equal(payload.spawned, false);
+      assert.equal(payload.execution_contract.next_action, "start_native_worker");
+      assert.equal(payload.execution_contract.model_id_policy, "pass_through_exactly");
+      const instructions = payload.execution_contract.instructions;
+      assert.ok(Array.isArray(instructions) && instructions.length > 0);
+      const text = instructions.join("\n");
+      assert.match(text, /caller-only metadata/);
+      assert.match(text, /proves the model unavailable/);
+      assert.equal(payload.prompt.includes("execution_contract"), false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

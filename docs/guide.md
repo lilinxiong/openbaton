@@ -52,6 +52,8 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 
 Spawn returns an exact catalog model id, explicitly requested supported effort (when supplied), the formatted prompt, scope and `fork_context:false`, with `spawned:false`. Pass the supported parameters and prompt to the host's native child API using a fresh context. Baton has not started a worker. Native handles and native completion remain authoritative.
 
+The returned `execution_contract` is guidance for the caller, not native API arguments or part of the worker prompt. Attempt native launch with the exact model ID; never reject a model because of its provider, family or name prefix. Failure feedback must retain the tool name, requested model ID and original error. A missing launch tool is a host capability blocker; capacity, network and effort errors do not by themselves establish model unavailability. A created handle is not proof of successful execution. Only explicit user constraints or observed model-specific unavailability justify adding an ID to `unavailable_models`. This contract guides the caller; Baton does not enforce launch or verify failure evidence.
+
 ## Prepare a batch and control context
 
 For several tasks on the same host, save a JSON array of 1–128 inputs and run:
@@ -145,11 +147,12 @@ Adapters supply catalog discovery and a runtime skill for their own host; they d
 ### Optional subagent capacity test
 
 `baton config` offers a capacity test, skipped by default. Skip or cancel the
-capacity step to save `max_concurrent_subagents = 3`. Testing uses real model
+capacity step to retain the saved `max_concurrent_subagents` (default `3` for a
+new profile). Testing uses real model
 calls in a fresh Codex CLI session, holds up to 20 native agents open, then closes
 them. It does not measure free slots or overrides in an existing desktop task.
 Choose 1 through the measured capacity; at 20 the result means “at least 20”.
-Unsupported, timed-out or inconclusive tests report the problem and use 3.
+Unsupported, timed-out or inconclusive tests report the problem and retain the saved value.
 The test budget is a Baton scheduling preference, not a change to Codex limits.
 
 For noninteractive use:
@@ -160,6 +163,6 @@ baton config --cli codex --test-subagents --max-subagents 6
 
 Omit `--max-subagents` to use the tested capacity. Without a test, explicit values
 are limited to 1–3; unrelated noninteractive updates retain the saved value.
-Ctrl-C during testing cancels the probe and falls back to 3. Cancelling other
+Ctrl-C during testing cancels the probe and retains the saved value. Cancelling other
 config steps still aborts the command. `baton spawn` returns the saved budget for
 the host agent to apply when starting and closing workers.

@@ -153,6 +153,24 @@ function readSpawnBriefs(flags: Flags): SpawnRequest[] {
   return parsed.map(parseSpawnRequest);
 }
 
+/**
+ * Advisory metadata for the host caller that executes this handoff.
+ * Caller-only: never forward it as native tool arguments or worker prompt.
+ */
+const EXECUTION_CONTRACT = {
+  next_action: "start_native_worker",
+  model_id_policy: "pass_through_exactly",
+  instructions: [
+    "Attempt the native start before reporting model-unavailable feedback.",
+    "Never infer model incompatibility from family, provider, or name.",
+    "A missing launch tool is a host capability failure.",
+    "Concurrency, network, or effort failures do not establish model unavailability.",
+    "Exclude a model as unavailable only on explicit user constraint or a failure that proves the model unavailable in this host context.",
+    "Preserve the tool name, the exact requested model ID, and the original runtime error.",
+    "This contract is advisory caller-only metadata; never forward it as native tool arguments or worker prompt.",
+  ],
+} as const;
+
 function handoffPayload(
   brief: WorkerBrief,
   selected: Awaited<ReturnType<typeof selectNativeModel>>,
@@ -162,6 +180,7 @@ function handoffPayload(
     host: selected.host,
     max_concurrent_subagents: selected.max_concurrent_subagents,
     model_id: selected.model_id,
+    execution_contract: EXECUTION_CONTRACT,
     ...(selected.reasoning_effort ? { reasoning_effort: selected.reasoning_effort } : {}),
     ...(selected.service_tier ? { service_tier: selected.service_tier } : {}),
     prompt: prepared.prompt,

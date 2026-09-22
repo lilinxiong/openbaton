@@ -52,6 +52,8 @@ baton spawn --host codex --brief brief.json --work-mode execution --json
 
 命令返回真实模型 id、显式指定且受支持的 effort（省略时不输出）、格式化 prompt、scope、`fork_context:false` 和 `spawned:false`。主 agent 将参数传给宿主原生子 agent API，使用新的上下文。此时 Baton 还没有启动 worker；原生句柄和完成状态始终由宿主管理。
 
+返回的 `execution_contract` 是给调用方的执行约定，不是原生 API 参数，也不属于 worker prompt。必须使用完整模型 ID 尝试原生启动，不能根据供应商、模型家族或名称前缀提前拒绝。失败反馈须保留工具名称、请求的模型 ID 和原始错误。缺少启动工具属于宿主能力阻塞；并发、网络和 effort 错误本身不证明模型不可用，创建句柄也不代表执行成功。只有用户明确约束或实际观测到的模型不可用，才可将 ID 加入 `unavailable_models`。这是调用方约定，Baton 不强制执行启动，也不验证失败证据。
+
 ## 批量准备与上下文预算
 
 多个任务使用同一宿主时，把 1–128 个输入保存为 JSON 数组：
@@ -121,14 +123,14 @@ adapter 提供当前宿主的模型目录和 runtime skill，不承担跨 CLI �
 
 ### 可选子代理容量测试
 
-`baton config` 默认选择跳过容量测试，跳过或取消该步骤会保存
-`max_concurrent_subagents = 3`。选择测试后，会在独立 Codex CLI 会话中实际创建
+`baton config` 默认选择跳过容量测试，跳过或取消该步骤会保留
+已保存的 `max_concurrent_subagents`，首次配置才使用默认值 `3`。选择测试后，会在独立 Codex CLI 会话中实际创建
 并保留子代理，遇容量限制或达到 20 个后停止，再关闭全部探针。测试会产生模型
 调用，不代表已有桌面任务的剩余名额或覆盖配置。成功后可选择 1～测得的数量；
-20 个全部成功表示“至少 20 个”。不支持、超时或结果不完整时提示原因并回退到 3。
+20 个全部成功表示“至少 20 个”。不支持、超时或结果不完整时提示原因并保留原值。
 
 非交互用法：`baton config --cli codex --test-subagents --max-subagents 6`。
 不传 `--max-subagents` 则使用测得值；未测试时手动值仅允许 1～3。
-无关的非交互配置更新保留已保存的并发数。测试期间 Ctrl-C 取消探测并使用 3；
+无关的非交互配置更新保留已保存的并发数。测试期间 Ctrl-C 取消探测并保留原值；
 其他配置步骤取消仍中止整个命令。`baton spawn` 返回保存的并发预算，由宿主主代理
 在启动及关闭子代理时遵守，不修改 Codex 自身的上限。

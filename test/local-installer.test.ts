@@ -38,7 +38,7 @@ const record = (line) => fs.appendFileSync(log, line + "\\n");
 record("cli " + args.join(" "));
 if (args.includes("--yes")) { console.error("unknown option: --yes"); process.exit(1); }
 const mode = process.env.FAKE_PLAN_MODE || "success";
-const plan = { hosts: ["codex", "grok"], clean: true, dry_run: true, applied: false, targets: [], constraints: [] };
+const plan = { hosts: ["codex"], clean: true, dry_run: true, applied: false, targets: [], constraints: [] };
 if (args[0] === "uninstall" && args.includes("--dry-run")) {
   if (mode === "conflict") plan.targets = [{ action: "conflict", path: "~/.codex/skills/baton/SKILL.md", reason: "skill was modified or ownership is ambiguous" }];
   if (mode === "invalid") plan.constraints = ["UNINSTALL_STATE_INVALID: malformed runtime state"];
@@ -71,7 +71,6 @@ if (args[0] === "uninstall") {
     fs.rmSync(path.join(batonHome, name), { recursive: true, force: true });
   }
   fs.rmSync(path.join(home, ".codex", "skills", "baton"), { recursive: true, force: true });
-  fs.rmSync(path.join(home, ".grok", "skills", "baton"), { recursive: true, force: true });
   console.log(JSON.stringify({ ...plan, dry_run: false, applied: true }));
   process.exit(0);
 }
@@ -81,18 +80,13 @@ if (args[0] === "init") {
   record("init-stdin=" + JSON.stringify(stdin) + " args=" + args.join(" "));
   fs.mkdirSync(path.join(home, ".baton", "adapters"), { recursive: true });
   fs.mkdirSync(path.join(home, ".baton", "adapters", "codex"), { recursive: true });
-  fs.mkdirSync(path.join(home, ".baton", "adapters", "grok"), { recursive: true });
   fs.writeFileSync(path.join(home, ".baton", "SKILL.md"), fs.readFileSync(path.join(process.cwd(), "SKILL.md")));
   fs.writeFileSync(path.join(home, ".baton", "adapters", "codex", "adapter.json"), "{}\\n");
-  fs.writeFileSync(path.join(home, ".baton", "adapters", "grok", "adapter.json"), "{}\\n");
   fs.writeFileSync(path.join(home, ".baton", "config.toml"), "schema_version = 3\\ncli = {}\\n");
   fs.mkdirSync(path.join(home, ".codex", "skills", "baton"), { recursive: true });
-  fs.mkdirSync(path.join(home, ".grok", "skills", "baton"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "skills", "baton", "SKILL.md"), "codex host skill\\n");
-  fs.writeFileSync(path.join(home, ".grok", "skills", "baton", "SKILL.md"), "grok host skill\\n");
   const manifestFiles = mode === "malformed-manifest" ? ["not-an-object"] : [
     { kind: "host-skill", host: "codex", path: path.join(home, ".codex", "skills", "baton", "SKILL.md") },
-    { kind: "host-skill", host: "grok", path: path.join(home, ".grok", "skills", "baton", "SKILL.md") },
   ];
   fs.writeFileSync(path.join(home, ".baton", "install-manifest.json"), JSON.stringify({ files: manifestFiles }));
   process.exit(0);
@@ -177,7 +171,7 @@ function fixture(): Fixture {
     FAKE_PM_JSON: "{}",
     FAKE_NPM_ROOT: path.join(root, "npm-global", "lib", "node_modules"),
   };
-  for (const key of ["BATON_HOST", "CODEX_THREAD_ID", "GROK_SESSION_ID", "BATON_ADAPTER_PATHS"]) delete env[key];
+  for (const key of ["BATON_HOST", "CODEX_THREAD_ID", "BATON_ADAPTER_PATHS"]) delete env[key];
   return { root, checkout, home, bin, log, env };
 }
 
@@ -236,6 +230,7 @@ describe("isolated local Baton installer", () => {
       const fresh = runInstaller(f, ["--skip-install", "--skip-tests"]);
       assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
       assert.match(fresh.stdout, /Local Baton installed complete/);
+      assert.deepEqual(fs.readdirSync(path.join(f.home, ".baton", "adapters")), ["codex"]);
       const config = path.join(f.home, ".baton", "config.toml");
       fs.writeFileSync(config, 'schema_version = 3\n[cli.codex]\nenabled = true\ncoding_models = ["old-choice"]\n');
       const results = path.join(f.home, ".baton", "results.jsonl");
@@ -523,9 +518,7 @@ describe("isolated local Baton installer", () => {
     assert.equal(fs.realpathSync(path.join(f.bin, "baton")), fs.realpathSync(path.join(f.checkout, "dist", "bin", "baton.js")));
     assert.deepEqual(fs.readFileSync(path.join(f.home, ".baton", "SKILL.md")), fs.readFileSync(path.join(f.checkout, "SKILL.md")));
     assert.equal(fs.existsSync(path.join(f.home, ".baton", "adapters", "codex", "adapter.json")), true);
-    assert.equal(fs.existsSync(path.join(f.home, ".baton", "adapters", "grok", "adapter.json")), true);
     assert.equal(fs.existsSync(path.join(f.home, ".codex", "skills", "baton", "SKILL.md")), true);
-    assert.equal(fs.existsSync(path.join(f.home, ".grok", "skills", "baton", "SKILL.md")), true);
     const config = fs.readFileSync(path.join(f.home, ".baton", "config.toml"), "utf8");
     assert.match(config, /^cli = \{\}$/m);
     assert.doesNotMatch(config, /\[cli\./);
