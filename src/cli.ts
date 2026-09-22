@@ -34,7 +34,7 @@ interface RunOptions {
 
 type Flags = Record<string, string | boolean | Array<string | boolean>>;
 
-export const VERSION = "2.0.1";
+export const VERSION = "2.0.2";
 
 const HELP = `baton — host-native subagent selection
 
