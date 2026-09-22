@@ -17,7 +17,7 @@ Baton 帮助你的编程 agent 选择模型、准备聚焦的任务，并通过�
 
 ## 安装
 
-需要 Node.js **22.5+**，以及支持原生子 agent 执行的宿主。目前捆绑支持 **Codex** 和 **Grok**。
+需要 Node.js **22.5+**，以及支持原生子 agent 执行的宿主。目前捆绑支持 **Codex**。
 
 ```bash
 npm install -g @zhouliuya/openbaton@latest
@@ -60,7 +60,7 @@ $baton 按已确定的方案实现 src/parser.ts 的输入校验。
 保持公共 API 不变，并验证异常输入的处理。
 ```
 
-将任务和文件路径换成你自己项目中的内容。宿主会准备限定范围的任务说明、启动原生 worker 并检查结果。使用 Grok 时，配置中的参数换成 `--cli grok` 和 `--host grok`，在对话中用 `/baton` 调用。
+将任务和文件路径换成你自己项目中的内容。宿主会准备限定范围的任务说明、启动原生 worker 并检查结果。
 
 ## 工作方式
 

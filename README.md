@@ -24,7 +24,7 @@ work through the current host's native subagents.
 ## Install
 
 Requires Node.js **22.5+** and a supported host with native subagent execution.
-Bundled hosts are **Codex** and **Grok**.
+The bundled host is **Codex**.
 
 ```bash
 npm install -g @zhouliuya/openbaton@latest
@@ -74,8 +74,7 @@ Keep the public API unchanged and verify malformed-input handling.
 ```
 
 Use a task and file path from your own project. The host prepares a bounded brief,
-starts a native worker, and reviews its result. For Grok, use `--cli grok` and
-`--host grok` during setup, then invoke `/baton` in the conversation.
+starts a native worker, and reviews its result.
 
 ## How it works
 

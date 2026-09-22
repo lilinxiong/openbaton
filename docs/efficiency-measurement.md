@@ -36,8 +36,8 @@ catalog invocations, CLI JSON output code points, and generated prompt code
 points. Character counts use Unicode code points, not UTF-16 units. The report
 has `token_estimate: null`; it deliberately contains no character-to-token
 conversion and may honestly show increases for any metric. It also records the
-code-point count of `SKILL.md`, `adapters/codex/runtime/SKILL.md`, and
-`adapters/grok/runtime/SKILL.md` separately for baseline and candidate. Those
+code-point count of `SKILL.md` and `adapters/codex/runtime/SKILL.md`
+separately for baseline and candidate. Those
 files are not summed or treated as simultaneously loaded. This makes added
 runtime instructions visible alongside any shorter handoff payload. The
 optional Markdown report is a readable rendering of the same measurements.

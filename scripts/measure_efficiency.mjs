@@ -98,7 +98,7 @@ function version(command, args) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 function runtimeSkillCodePoints(root) {
-  const files = ["SKILL.md", "adapters/codex/runtime/SKILL.md", "adapters/grok/runtime/SKILL.md"];
+  const files = ["SKILL.md", "adapters/codex/runtime/SKILL.md"];
   return Object.fromEntries(files.map((relative) => {
     const file = path.join(root, relative);
     return [relative, fs.existsSync(file) ? codePoints(fs.readFileSync(file, "utf8")) : null];
